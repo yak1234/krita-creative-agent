@@ -36,7 +36,11 @@ export class DecisionClient {
     // Visual decisions go only to a model known to read images (the image check itself excepted).
     if (hasImages(parts) && this.images !== true && !this.checkingImages)
       return { fallback: this.images === false ? 'text_only_model' : 'images_unverified', elapsed_ms: 0 };
-    const deadline = AbortSignal.timeout(this.timeout), combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    // A ref'd timer, not AbortSignal.timeout(): its unref'd timer let Node 22 exit with the request
+    // still pending whenever nothing else held the process open (a stub or in-process transport).
+    const timer = new AbortController(), deadline = timer.signal;
+    const clock = setTimeout(() => timer.abort(new DOMException('The decision request timed out.', 'TimeoutError')), this.timeout);
+    const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
     try {
       combined.throwIfAborted();
       const response = await this.fetchImpl(this.endpoint.url, { method: 'POST', signal: combined,
@@ -55,7 +59,7 @@ export class DecisionClient {
         usage: { input_tokens: Number(usage.input_tokens) || 0, output_tokens: Number(usage.output_tokens) || 0, cost: Number(usage.cost) || 0 } };
     } catch {
       return { fallback: signal?.aborted ? 'cancelled' : deadline.aborted ? 'timeout' : 'service_or_response_error', elapsed_ms: elapsed() };
-    }
+    } finally { clearTimeout(clock); }
   }
 }
 

@@ -1,0 +1,31 @@
+# Dependencies and builds
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+companion/output/
+dist/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+companion/.local-config.json
+# Keys and agent state: never commit credentials or local agent folders.
+**/auth.json
+*.pem
+*.key
+*.p12
+.pi/
+.codex/
+.repowise/
+.mcp.json
+
+# Studies and artwork produced while painting
+.creative-agent/
+*.kra
+*.kra~
+
+# OS
+.DS_Store

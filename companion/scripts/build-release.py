@@ -1,0 +1,222 @@
+"""Build a Mac release from pinned installed packages. Node is not bundled: the release pins an official
+Node version and its archive checksums, and the panel fetches that runtime once (plugin/kritamcp/node_runtime.py)."""
+import argparse
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+NODE_VERSION = '22.23.2'
+
+
+def runtime_module(plugin):
+    spec = importlib.util.spec_from_file_location('node_runtime', Path(plugin) / 'kritamcp' / 'node_runtime.py')
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    return module
+
+
+def hash_file(path):
+    checksum = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''): checksum.update(block)
+    return checksum.hexdigest()
+
+
+def inventory(directory):
+    result = {}
+    for path in sorted(directory.rglob('*')):
+        if path.is_symlink(): raise ValueError('Release contains a symlink: ' + str(path.relative_to(directory)))
+        if path.is_file(): result[str(path.relative_to(directory))] = hash_file(path)
+    return result
+
+
+def verify_node(node):
+    details = json.loads(subprocess.check_output([str(node), '-p', 'JSON.stringify({platform:process.platform,architecture:process.arch,node:process.version})'], text=True))
+    if details['platform'] != 'darwin' or details['architecture'] not in ('arm64', 'x64'):
+        raise ValueError('Provide a standalone macOS Node runtime for this architecture.')
+    if int(details['node'].lstrip('v').split('.')[0]) < 22: raise ValueError('Node 22 or newer is required.')
+    libraries = subprocess.check_output(['/usr/bin/otool', '-L', str(node)], text=True).splitlines()[1:]
+    for library in libraries:
+        dependency = library.strip().split(' (', 1)[0]
+        if not dependency.startswith(('/usr/lib/', '/System/Library/')):
+            raise ValueError('Node depends on a non-system library; use an official standalone distribution: ' + dependency)
+    return details
+
+
+BANNER = ("import { createRequire as __cr } from 'node:module'; import { fileURLToPath as __fu } from 'node:url'; "
+          "import { dirname as __dn, join as __jn } from 'node:path'; const require = __cr(import.meta.url); "
+          # Pi finds its package.json (version, templates) through this override when bundled.
+          "process.env.PI_PACKAGE_DIR ??= __jn(__dn(__fu(import.meta.url)), '..', 'pi-package');")
+
+
+def bundle_companion(root, dependency_root, companion, lock):
+    esbuild = dependency_root / '.bin' / 'esbuild'
+    if not esbuild.exists(): raise ValueError('esbuild is missing; run npm ci (it is a pinned devDependency).')
+    # Pi's pi-ai sits where npm put it (nested under pi-coding-agent); the release entry imports it by name.
+    # NODE_PATH is esbuild's last resort, so Pi's own imports still resolve to the same copy.
+    pi_ai = next((folder for folder in (dependency_root, dependency_root / '@earendil-works/pi-coding-agent/node_modules')
+                  if (folder / '@earendil-works/pi-ai/package.json').exists()), None)
+    if pi_ai is None: raise ValueError('@earendil-works/pi-ai is missing; run npm ci.')
+    result = subprocess.run([str(esbuild), str(root / 'src/release-entry.mjs'), '--bundle', '--platform=node', '--format=esm', '--target=node22',
+                             '--outfile=' + str(companion / 'src/main.mjs'), '--external:pyodide', '--log-level=warning', '--legal-comments=none', '--banner:js=' + BANNER],
+                            cwd=root, text=True, capture_output=True, env={**os.environ, 'NODE_PATH': str(pi_ai)})
+    if result.returncode or 'warning' in result.stderr.lower():
+        raise ValueError('Bundling the companion failed or warned: ' + (result.stderr or result.stdout)[-2000:])
+    shutil.copy2(root / 'src/visual-check-questions.json', companion / 'src/visual-check-questions.json')
+    shutil.copy2(root / 'src/brush-catalog.json', companion / 'src/brush-catalog.json')
+    # Python for image assets: the sandbox runner beside main.mjs, Pyodide itself, the bundled skills
+    # and the wheels the scripts import, fetched now so an artist's Mac never downloads them.
+    shutil.copy2(root / 'src/pyodide-runner.mjs', companion / 'src/pyodide-runner.mjs')
+    shutil.copytree(dependency_root / 'pyodide', companion / 'node_modules/pyodide', ignore=shutil.ignore_patterns('*.map', '*.html', '*.d.ts'))
+    shutil.copytree(root / 'skills', companion / 'skills', ignore=shutil.ignore_patterns('__pycache__'))
+    fetch = ("import(process.argv[1]).then(async ({loadPyodide}) => { const py = await loadPyodide({packageCacheDir: process.argv[2]});"
+             " await py.loadPackage(process.argv[3].split(',')); })")
+    subprocess.run([shutil.which('node') or 'node', '-e', fetch, (companion / 'node_modules/pyodide/pyodide.mjs').as_uri(),
+                    str(companion / 'pyodide-packages'), 'numpy,pillow'], check=True, timeout=300, capture_output=True)
+    (companion / 'pi-package').mkdir()
+    shutil.copy2(dependency_root / '@earendil-works/pi-coding-agent/package.json', companion / 'pi-package/package.json')
+    # Bundled code keeps its licenses: one file with every shipped package's license text.
+    sections = []
+    for name, entry in sorted(lock['packages'].items()):
+        if not name or entry.get('dev'): continue
+        folder = dependency_root.parent / name
+        licenses = sorted(p for p in folder.glob('*') if p.is_file() and p.name.upper().startswith(('LICENSE', 'LICENCE', 'COPYING', 'NOTICE')))
+        text = '\n'.join(p.read_text(errors='replace').strip() for p in licenses) or 'License: ' + str(entry.get('license', 'see package'))
+        sections.append('%s@%s\n%s' % (name.removeprefix('node_modules/'), entry.get('version', ''), text))
+    (companion / 'THIRD_PARTY_LICENSES.txt').write_text(('\n\n' + '=' * 72 + '\n\n').join(sections) + '\n')
+
+
+def validate_companion(node, companion):
+    with tempfile.TemporaryDirectory(prefix='creative-validate-') as home:
+        config = Path(home) / 'config.json'
+        config.write_text(json.dumps({'output': str(Path(home) / 'out'), 'bridge_url': 'http://127.0.0.1:9', 'prevent_idle_sleep': False}))
+        process = subprocess.Popen([str(node), str(companion / 'src/main.mjs')], cwd=companion / 'src', text=True,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   env={'HOME': home, 'PATH': str(node.parent) + ':/usr/bin:/bin', 'KRITA_CREATIVE_CONFIG': str(config)})
+        seen = set()
+        try:
+            import selectors, time
+            selector = selectors.DefaultSelector(); selector.register(process.stdout, selectors.EVENT_READ)
+            deadline = time.monotonic() + 60
+            while not {'ready', 'build'} <= seen and time.monotonic() < deadline and process.poll() is None:
+                if selector.select(timeout=1):
+                    line = process.stdout.readline()
+                    try: seen.add(json.loads(line).get('type'))
+                    except ValueError: pass
+            if not {'ready', 'build'} <= seen:
+                process.kill()
+                raise ValueError('The bundled companion did not start: ' + process.stderr.read()[-2000:])
+            process.stdin.write(json.dumps({'type': 'shutdown'}) + '\n'); process.stdin.flush()
+            process.wait(timeout=30)
+        finally:
+            if process.poll() is None: process.kill()
+
+
+def build(destination, node=None, root=ROOT, plugin=None, node_spec=None, dependencies=None, runtime_cache=None):
+    destination, root = Path(destination).resolve(), Path(root).resolve()
+    plugin = Path(plugin).resolve() if plugin else root.parent / 'plugin'
+    if destination.exists(): raise ValueError('Choose a new release output folder; existing files are never overwritten.')
+    runtime = runtime_module(plugin)
+    node_spec = node_spec or runtime.fetch_spec(NODE_VERSION)
+    # Validate the staged companion with the exact runtime artists will get, unless one is given.
+    node = Path(node).resolve() if node else runtime.ensure(node_spec, root=runtime_cache or Path(tempfile.gettempdir()) / 'creative-agent-build-runtimes')
+    details = verify_node(node)
+    if details['node'].lstrip('v') != node_spec['version'] and not os.environ.get('CREATIVE_AGENT_ALLOW_NODE_MISMATCH'):
+        raise ValueError('Validate with the pinned Node ' + node_spec['version'] + ', not ' + details['node'] + '.')
+    package = json.loads((root / 'package.json').read_text())
+    lock_path = root / 'package-lock.json'
+    if not lock_path.is_file(): raise ValueError('A registry package-lock.json is required. Run npm ci from the approved lockfile.')
+    lock = json.loads(lock_path.read_text())
+    if lock.get('packages', {}).get('', {}).get('dependencies') != package['dependencies']:
+        raise ValueError('package.json dependencies differ from the approved lockfile.')
+    dependency_root = Path(dependencies).resolve() if dependencies else root / 'node_modules'
+    if not (dependency_root / '.package-lock.json').is_file():
+        raise ValueError('Use a complete npm ci dependency tree; development package symlinks are not a release input.')
+    for name, entry in lock['packages'].items():
+        if not name: continue
+        if entry.get('link') or not entry.get('resolved', '').startswith('https://registry.npmjs.org/'):
+            raise ValueError('Use registry dependencies in the release lockfile: ' + name)
+        installed_manifest = dependency_root / name.removeprefix('node_modules/') / 'package.json'
+        if not installed_manifest.is_file():
+            if entry.get('optional'): continue
+            raise ValueError('Locked dependency is absent: ' + name)
+        if json.loads(installed_manifest.read_text())['version'] != entry['version']:
+            raise ValueError('Installed dependency differs from the lockfile: ' + name)
+    for candidate in dependency_root.rglob('*'):
+        if candidate.is_symlink() and '.bin' not in candidate.parts:
+            raise ValueError('Use physical npm ci dependencies, not development symlinks: ' + str(candidate.relative_to(dependency_root)))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix='.creative-release-', dir=destination.parent))
+    try:
+        companion = staging / 'companion'; (companion / 'src').mkdir(parents=True)
+        shutil.copy2(root / 'package.json', companion)
+        shutil.copy2(lock_path, companion)
+        packages = {}
+        for name, version in package['dependencies'].items():
+            source = dependency_root / name
+            installed = json.loads((source / 'package.json').read_text())
+            if installed['version'] != version: raise ValueError('Dependency version differs from package.json: ' + name)
+            packages[name] = installed['version']
+        # One bundled file instead of ~17,500 node_modules files (~180 MB → ~14 MB).
+        bundle_companion(root, dependency_root, companion, lock)
+        shutil.copytree(plugin / 'kritamcp', staging / 'plugin/kritamcp',
+                        ignore=shutil.ignore_patterns('__pycache__', '*.pyc', 'creative-agent-config.json', 'build-info.json', '.DS_Store'))
+        shutil.copy2(plugin / 'kritamcp.desktop', staging / 'plugin/kritamcp.desktop')
+        shutil.copy2(root / 'scripts/install.py', staging / 'install.py')
+        # Start the bundled companion in an isolated home, as the panel would. A module the
+        # bundle missed, or an asset it cannot find, fails here instead of on an artist's Mac.
+        validate_companion(node, companion)
+        # The digest covers physical payloads. Derived manifests are excluded
+        # from their own digest and then separately covered by the file list.
+        old_info = companion / 'build-info.json'
+        if old_info.exists(): old_info.unlink()
+        payload = inventory(staging)
+        build_id = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        info = {'version': package['version'], 'protocol_version': 2, 'build_id': build_id,
+                'platform': 'darwin', 'architecture': 'any', 'node': 'v' + node_spec['version'], 'validation': 'staged-sdk-import-passed',
+                'live_krita_verified': False, 'clean_mac_verified': False,
+                'krita_support': 'Krita 5.2/5.3 candidate; exact-version live compatibility validation required'}
+        for target in (companion / 'build-info.json', staging / 'plugin/kritamcp/build-info.json'):
+            target.write_text(json.dumps(info, indent=2) + '\n')
+        manifest = {**info, 'node_runtime': node_spec, 'dependencies': packages, 'files': inventory(staging)}
+        (staging / 'release-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+        staging.rename(destination)
+        return {key: manifest[key] for key in ('version','build_id','platform','architecture','node','validation','live_krita_verified','clean_mac_verified')}
+    finally:
+        if staging.exists(): shutil.rmtree(staging)
+
+
+def prune_builds(output, keep):
+    """Keep the newest `keep` release bundles beside `output` (each holds Node and node_modules, ~290 MB).
+    Only sibling folders containing a release-manifest.json are considered."""
+    output = Path(output).resolve()
+    siblings = [p for p in output.parent.iterdir() if p.is_dir() and (p / 'release-manifest.json').is_file()]
+    siblings.sort(key=lambda p: (p == output, p.stat().st_mtime), reverse=True)
+    removed = []
+    for old in siblings[max(keep, 1):]:
+        shutil.rmtree(old); removed.append(old.name)
+    return removed
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--node', type=Path, help='Node used only to validate the staged companion (default: the pinned managed runtime)')
+    parser.add_argument('--node-spec', type=Path, help='Pinned runtime spec JSON (default: fetched from nodejs.org SHASUMS256.txt)')
+    parser.add_argument('--dependencies', type=Path, help='Complete physical node_modules from npm ci; defaults to the source checkout')
+    parser.add_argument('--keep-builds', type=int, default=2, help='Release bundles to keep beside --output, including this one (default 2)')
+    args = parser.parse_args()
+    try:
+        spec = json.loads(args.node_spec.read_text()) if args.node_spec else None
+        result = build(args.output, args.node, node_spec=spec, dependencies=args.dependencies)
+        result['pruned_builds'] = prune_builds(args.output, args.keep_builds)
+        print(json.dumps(result, indent=2))
+    except (ValueError, OSError, subprocess.SubprocessError) as error: raise SystemExit(str(error))
+
+
+if __name__ == '__main__': main()

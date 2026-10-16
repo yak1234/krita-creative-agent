@@ -4,6 +4,8 @@ ARGS: input (asset file in /work), output, tolerance (0-255, default 40; raise i
 crop (default true), feather (px, default 1.5)."""
 import asset_ops as ops
 
+ARGS = globals()['ARGS']  # set by the sandbox before the script runs
+
 im, removed = ops.cutout(ops.load_rgba('/work/' + ARGS['input']), tolerance=ARGS.get('tolerance', 40), feather=ARGS.get('feather', 1.5))
 if ARGS.get('crop', True):
     im = ops.crop_to_content(im)

@@ -59,7 +59,7 @@ test('Python runs in a sandbox: only /work is visible, js has no process or fetc
       'import os, js',
       'from PIL import Image',
       'Image.new("RGB", (4, 4), "red").save("/work/made.png")',
-      'RESULT = {"double": ARGS["n"] * 2, "outside_visible": os.path.exists(ARGS["outside"]), "home_visible": os.path.exists("' + homedir() + '"),',
+      'RESULT = {"double": ARGS["n"] * 2, "outside_visible": os.path.exists(ARGS["outside"]), "home_visible": os.path.exists(' + JSON.stringify(homedir()) + '),',
       '          "js_process": hasattr(js, "process"), "js_fetch": hasattr(js, "fetch"), "files": os.listdir("/work")}',
     ].join('\n') });
     assert.deepEqual(result, { double: 42, outside_visible: false, home_visible: false, js_process: false, js_fetch: false, files: ['made.png'] });
@@ -165,7 +165,7 @@ test('a cut-out on a textured "paper" background leaves no specks, and fit_to re
     const answer = JSON.parse(result.content[0].text);
     assert.deepEqual(answer.paint_from_reference, { reference_id: answer.reference_id, source: [0, 0, 384, 512], target: [320, 141, 384, 512], steps: [6, 2.5, 1.2] });
     const asset = h.runtime.study.references.at(-1);
-    const { result: specks } = await runPython({ work: raw, args: { file: asset.path.split('/').at(-1) }, code: [
+    const { result: specks } = await runPython({ work: raw, args: { file: (await import('node:path')).basename(asset.path) }, code: [
       'import numpy as np', 'from PIL import Image',
       'a = np.asarray(Image.open("/work/" + ARGS["file"]).convert("RGBA")).astype(int)',
       'light = (a[..., :3].min(axis=2) > 190) & (a[..., 3] > 8)',

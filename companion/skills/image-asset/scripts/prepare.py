@@ -4,6 +4,8 @@ ARGS: input, output, preview (file names in /work); cutout (bool), tolerance, cr
 fit [width, height] and anchor (bottom, center, fill) to size it for one canvas target."""
 import asset_ops as ops
 
+ARGS = globals()['ARGS']  # set by the sandbox before the script runs
+
 im = ops.load_rgba('/work/' + ARGS['input'])
 removed = None
 if ARGS.get('cutout') and ops.has_transparency(im) and not ARGS.get('tolerance'):

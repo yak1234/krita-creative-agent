@@ -23,6 +23,7 @@ COMPANION_SCRIPTS = [
     'langfuse-smoke.mjs', 'live-acceptance.mjs', 'live-krita-flow.mjs', 'live-reject-check.mjs', 'live-switch-check.mjs',
     'mac-installer.swift', 'reload_panel_in_krita.py', 'setup-local.mjs', 'verify-model-route.mjs',
     'accept-native-tools-live.py', 'test-native-adapters-live.py', 'test-smart-patch-live.py', 'curate-public-repo.py', 'live-asset-test.mjs', 'run-unit-tests.mjs',
+    'calibrate-luna-artifacts.mjs', 'evaluate-layer-need.mjs', 'project-dir.mjs', 'luna-artifact-labels.json',
 ]
 COPY = [
     (BRIDGE / 'krita-plugin/kritamcp', 'plugin/kritamcp'),

@@ -79,6 +79,7 @@ async function shutdown() {
   await Promise.allSettled([...pending]);
   runtime.busy = false;
   await runtime.end().catch(() => {});
+  runtime.dispose?.();
   await runtime.bridge.close().catch(() => {});
   await runtime.diagnostics.close().catch(() => {});
   await runtime.tracing?.shutdown();

@@ -1893,6 +1893,9 @@ export class StudioRuntime extends PaintingRuntime {
       void this.remember('assistant', text).catch(() => { this.stop(); this.emit({type:'error',message:'Conversation could not be saved. Painting paused.'}); });
     }
   }
+  // Close the records database. Windows cannot delete or replace a file that is still open, so the
+  // companion's shutdown and every test cleanup dispose before removing a data folder.
+  dispose() { this.store?.close?.(); }
   stop(clearQueued = true) {
     this.sleepGuard.stop();
     if (this.transition) this.transition.cancelled=true;

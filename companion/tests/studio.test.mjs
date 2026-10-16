@@ -62,7 +62,7 @@ async function harness(respond, bridgeHook) {
   const capabilities={async initialize(){},status(){return {status:'verified',route_verified:true,images_supported:true,tools_supported:true};},async verify(){return {route_verified:true,cached:true};},async invalidate(){}};
   const runtime=new StudioRuntime({root:output,config:{output},models,bridge,capabilities,tracing:recordingTracing(),emit:e=>events.push(e)});
   return {runtime,requests,calls,events,output,start:(mode,prompt='Help me plan',extra={})=>runtime.start({provider:'local-test',model:'vision-test',chat_mode:mode,prompt,mode:'copy',...extra}),
-    async close(){if(runtime.busy) runtime.stop(); await runtime.writeQueue; await runtime.end().catch(()=>{}); server.closeAllConnections(); await new Promise(r=>server.close(r)); await rm(output,{recursive:true,force:true});}};
+    async close(){if(runtime.busy) runtime.stop(); await runtime.writeQueue; await runtime.end().catch(()=>{}); runtime.dispose(); server.closeAllConnections(); await new Promise(r=>server.close(r)); await rm(output,{recursive:true,force:true});}};
 }
 
 test('Ask and Plan are read-only; questions and user-edited character rules persist through resume', {timeout:20000}, async()=>{

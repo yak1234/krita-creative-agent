@@ -21,9 +21,10 @@ async function machine(root, name) {
 }
 
 test('a chat moves to another machine through one archive file', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'archive-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await mkdtemp(join(tmpdir(), 'archive-'));
   const a = await machine(root, 'a'), b = await machine(root, 'b');
-  t.after(() => { a.store.close(); b.store.close(); });
+  // Close before deleting: after-hooks run in order, and Windows cannot delete an open database.
+  t.after(async () => { a.store.close(); b.store.close(); await rm(root, { recursive: true, force: true }); });
   const id = randomUUID(), directory = a.store.studyDirectory(id);
   await mkdir(join(directory, '.previews'), { recursive: true });
   await writeFile(join(directory, 'reference-1.png'), 'reference bytes');
@@ -70,13 +71,14 @@ test('a chat moves to another machine through one archive file', async t => {
 });
 
 test('a whole project exports; an unknown archive format is refused', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'archive-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await mkdtemp(join(tmpdir(), 'archive-'));
   const a = await machine(root, 'a'); t.after(() => a.store.close());
   for (const name of ['One', 'Two']) { const id = randomUUID(); await a.store.saveStudy({ id, directory: a.store.studyDirectory(id), name, references: [] }, { status: 'draft' }); }
   const path = join(root, 'project.creative-agent-archive');
   assert.equal((await exportChats(a.store, path)).chats, 2);
   const db = new DatabaseSync(path); db.exec("UPDATE meta SET value = '99' WHERE key = 'format'"); db.close();
   const b = await machine(root, 'b'); t.after(() => b.store.close());
+  t.after(() => rm(root, { recursive: true, force: true }));   // after both stores close
   await assert.rejects(importArchive(b.store, path), /different Creative Agent version/);
   assert.deepEqual(await b.store.list(), []);
 });

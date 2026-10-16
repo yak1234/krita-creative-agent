@@ -110,6 +110,7 @@ test('actual Pi compaction may omit character facts while durable rules survive 
     await assert.rejects(readFile(file, 'utf8'), { code: 'ENOENT' });
     const persisted = runtime.store.sessions.load(runtime.store.sessions.locate(file));
     assert.ok(persisted.some(entry => entry.type === 'compaction'), 'The SDK persisted compaction in its actual session log.');
+    runtime.dispose();
     runtime = makeRuntime();
     const beforeResume = requests.length;
     await runtime.resume(id);
@@ -128,6 +129,7 @@ test('actual Pi compaction may omit character facts while durable rules survive 
   } finally {
     if (runtime.busy) runtime.stop();
     await runtime.writeQueue; await runtime.end().catch(() => {});
+    runtime.dispose();
     server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
     await rm(output, { recursive: true, force: true });
   }

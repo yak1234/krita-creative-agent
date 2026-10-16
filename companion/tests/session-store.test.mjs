@@ -15,10 +15,10 @@ const reply = text => ({ role: 'assistant', content: [{ type: 'text', text }], a
   usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: 'stop', timestamp: 2 });
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'session-store-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await mkdtemp(join(tmpdir(), 'session-store-'));
   const project = join(root, 'project'); await mkdir(project);
   const store = new ProjectStore({ projectRoot: project, dataDirectory: join(root, 'data') }); await store.initialize();
-  t.after(() => store.close());
+  t.after(() => { store.close(); return rm(root, { recursive: true, force: true }); });   // close before deleting (Windows)
   const id = randomUUID(), directory = store.studyDirectory(id);
   await store.saveStudy({ id, directory, name: 'Chat', references: [] }, { status: 'draft' });
   return { root, store, id, directory, managers: store.sessions.managers() };

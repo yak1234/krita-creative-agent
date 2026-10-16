@@ -8,9 +8,10 @@ import { ProjectStore } from '../src/project-store.mjs';
 
 async function fixture(t) {
   const outer = await mkdtemp(join(tmpdir(), 'creative-store-'));
-  t.after(() => rm(outer, { recursive: true, force: true }));
   const root = join(outer, 'project'); await mkdir(root);
   const store = new ProjectStore({ projectRoot: root }); await store.initialize();
+  // Close before deleting: Windows cannot delete an open database. close() is safe to repeat.
+  t.after(() => { store.close(); return rm(outer, { recursive: true, force: true }); });
   const id = randomUUID(), directory = store.studyDirectory(id);
   const study = { id, directory, name: 'Rothko material study', painting_file: 'painting.kra', references: [], bound: false };
   const goal = { version: 1, mode: 'agent', status: 'paused', brief: { objective: 'Dry chalky texture' }, locked_requirements: ['Keep the lower field unchanged'] };

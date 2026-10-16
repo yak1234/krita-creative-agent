@@ -1,6 +1,7 @@
 import {createServer} from 'node:http';
 import {mkdtemp, chmod, writeFile, appendFile, rename, rm} from 'node:fs/promises';
-import {join} from 'node:path';
+import {basename, join} from 'node:path';
+import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
 import {BUILD_INFO} from './build-info.mjs';
 import {sanitize, exportDiagnostics} from './diagnostics.mjs';
@@ -76,8 +77,15 @@ export class LiveDiagnostics {
       snapshot:{...this.snapshot(),timeline:this.timeline(0,500)},redact:text=>this.runtime.redact(text)});
   }
   async start() {
-    this.directory=await mkdtemp('/tmp/krita-diagnostics-'); await chmod(this.directory,0o700);
-    this.socket=join(this.directory,'socket');
+    // Unix socket paths are length-limited and macOS temp folders are long, so macOS and Linux use a short
+    // /tmp folder; Windows has no /tmp and local sockets there are named pipes.
+    if (process.platform==='win32') {
+      this.directory=await mkdtemp(join(tmpdir(),'krita-diagnostics-'));
+      this.socket='\\\\.\\pipe\\'+basename(this.directory);
+    } else {
+      this.directory=await mkdtemp('/tmp/krita-diagnostics-'); await chmod(this.directory,0o700);
+      this.socket=join(this.directory,'socket');
+    }
     this.logPath=join(this.runtime.config.output,'diagnostic-events.jsonl');
     await rename(this.logPath,this.logPath+'.previous').catch(e=>{if(e.code!=='ENOENT')throw e;});
     this.descriptor=join(this.runtime.config.output,'diagnostics-endpoint.json');
@@ -100,7 +108,7 @@ export class LiveDiagnostics {
     });
     try {
       await new Promise((resolve,reject)=>{this.server.once('error',reject);this.server.listen(this.socket,resolve);});
-      await chmod(this.socket,0o600);
+      if (process.platform!=='win32') await chmod(this.socket,0o600);   // a named pipe has no file mode
       const temporary=this.descriptor+'.'+this.instance;
       await writeFile(temporary,JSON.stringify({socket:this.socket,pid:process.pid,instance:this.instance}),{mode:0o600});
       await rename(temporary,this.descriptor);

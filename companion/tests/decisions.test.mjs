@@ -106,7 +106,8 @@ test('the service resolves keys (saved, then .env, then environment), stores the
   assert.equal(await service.key('typesafe'), 'ts-env');
   await service.saveKey('openai', 'sk-saved');
   assert.equal(await service.key('openai'), 'sk-saved', 'a saved key wins');
-  assert.equal((await stat(join(dir, 'decision-endpoints.json'))).mode & 0o777, 0o600);
+  // Windows has no POSIX permissions; the file is private through the user's profile folder instead.
+  if (process.platform !== 'win32') assert.equal((await stat(join(dir, 'decision-endpoints.json'))).mode & 0o777, 0o600);
   assert.ok(['sk-or-painter', 'sk-from-dotenv', 'ts-env', 'sk-saved'].every(k => secrets.includes(k)), 'every key is redacted');
   const endpoints = await service.endpoints();
   assert.ok(!JSON.stringify(endpoints).includes('sk-'), 'endpoint listings never carry keys');

@@ -1,3 +1,4 @@
+import { pathToFileURL } from 'node:url';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -39,7 +40,7 @@ test('a transaction commits all or nothing; nested calls join it; backup is a fu
 test('only the SQLite experimental warning is silenced', () => {
   const module = fileURLToPath(new URL('../src/db.mjs', import.meta.url));
   const run = spawnSync(process.execPath, ['--input-type=module', '-e',
-    `await import(${JSON.stringify(module)}); process.emitWarning('other warning'); await new Promise(r => setTimeout(r, 50));`], { encoding: 'utf8' });
+    `await import(${JSON.stringify(pathToFileURL(module).href)}); process.emitWarning('other warning'); await new Promise(r => setTimeout(r, 50));`], { encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr);
   assert.doesNotMatch(run.stderr, /SQLite/); assert.match(run.stderr, /other warning/);
 });

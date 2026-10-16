@@ -9,19 +9,21 @@ import { ProjectStore } from '../src/project-store.mjs';
 async function fixture(t) {
   const outer = await mkdtemp(join(tmpdir(), 'creative-store-'));
   const root = join(outer, 'project'); await mkdir(root);
-  const store = new ProjectStore({ projectRoot: root }); await store.initialize();
-  // Close before deleting: Windows cannot delete an open database. close() is safe to repeat.
-  t.after(() => { store.close(); return rm(outer, { recursive: true, force: true }); });
+  // Every store a test opens goes through open(), so cleanup closes them all before deleting the folder:
+  // Windows cannot delete an open database. close() is safe to repeat.
+  const stores = [], open = options => { const opened = new ProjectStore(options); stores.push(opened); return opened; };
+  const store = open({ projectRoot: root }); await store.initialize();
+  t.after(() => { for (const opened of stores) opened.close(); return rm(outer, { recursive: true, force: true }); });
   const id = randomUUID(), directory = store.studyDirectory(id);
   const study = { id, directory, name: 'Rothko material study', painting_file: 'painting.kra', references: [], bound: false };
   const goal = { version: 1, mode: 'agent', status: 'paused', brief: { objective: 'Dry chalky texture' }, locked_requirements: ['Keep the lower field unchanged'] };
-  return { outer, root, store, id, directory, study, goal };
+  return { outer, root, store, id, directory, study, goal, open };
 }
 
 test('records live outside the project; a moved project keeps its chats', async t => {
   const f = await fixture(t), data = join(f.outer, 'data');
   f.root = join(f.outer, 'fresh project'); await mkdir(f.root);       // not touched by the fixture's store
-  const store = new ProjectStore({ projectRoot: f.root, dataDirectory: data });
+  const store = f.open({ projectRoot: f.root, dataDirectory: data });
   const directory = store.studyDirectory(f.id); await mkdir(directory, { recursive: true });
   const ref = join(directory, 'reference.png'); await writeFile(ref, 'reference bytes');
   const study = { ...f.study, directory, references: [{ path: ref, source_path: '/external/private/reference.png', name: 'Reference' }] };
@@ -34,7 +36,7 @@ test('records live outside the project; a moved project keeps its chats', async 
   assert.deepEqual(await readdir(join(f.root, '.creative-agent')), ['project.json'], 'only the project id is in the project folder');
   store.close();
   const moved = join(f.outer, 'renamed project'); await rename(f.root, moved);
-  const reopened = new ProjectStore({ projectRoot: moved, dataDirectory: data });
+  const reopened = f.open({ projectRoot: moved, dataDirectory: data });
   const record = await reopened.load(f.id);
   assert.equal(record.paintingPath, join(moved, 'painting.kra'));
   assert.equal(record.study.references[0].path, ref, 'chat files stay in the records folder');
@@ -72,14 +74,14 @@ test('a newer database is refused; app files move to the data directory, caches 
   await mkdir(join(state, 'capabilities')); await writeFile(join(state, 'capabilities', 'route.json'), 'verified');
   await mkdir(join(state, 'previews')); await writeFile(join(state, 'previews', 'v.png'), 'cache');
   await mkdir(join(state, 'live-tests')); await writeFile(join(state, 'companion.lock'), JSON.stringify({ pid: 999999 }));
-  const store = new ProjectStore({ projectRoot: f.root, dataDirectory: data }); await store.initialize();
+  const store = f.open({ projectRoot: f.root, dataDirectory: data }); await store.initialize();
   assert.equal(await readFile(join(data, 'model-connections.json'), 'utf8'), '{"keys":"kept"}');
   assert.equal(await readFile(join(data, 'capabilities', 'route.json'), 'utf8'), 'verified');
   const left = await readdir(state);
   for (const gone of ['model-connections.json', 'capabilities', 'previews', 'companion.lock']) assert.ok(!left.includes(gone), gone);
   assert.ok(left.includes('live-tests'), 'script output is not the agent\'s to move');
   store.db.exec('PRAGMA user_version = 99'); store.close();
-  await assert.rejects(new ProjectStore({ projectRoot: f.root, dataDirectory: data }).initialize(), /newer Creative Agent/);
+  await assert.rejects(f.open({ projectRoot: f.root, dataDirectory: data }).initialize(), /newer Creative Agent/);
 });
 
 async function oldLayout(f, data) {
@@ -93,7 +95,7 @@ async function oldLayout(f, data) {
     study: { id: f.id, name: 'Old chat', painting_file: 'painting.kra', references: [{ path: prefix + 'reference.png' }], session_file: prefix + 'sessions/s.jsonl', directory: prefix.slice(0, -1) },
     goal: { ...f.goal, status: 'active', brief: { objective: 'Old objective' } } }));
   await writeFile(join(old, '.operations.json'), JSON.stringify({ op: ['fp', { checkpoint: '../../../painting.kra', image_path: '.previews/v.jpg' }] }));
-  return { old, store: new ProjectStore({ projectRoot: f.root, dataDirectory: data }) };
+  return { old, store: f.open({ projectRoot: f.root, dataDirectory: data }) };
 }
 
 test('chats in the project folder move to the records folder, artwork stays, paths still resolve', async t => {
@@ -189,7 +191,7 @@ test('load imports one legacy conversation and protects unsupported/corrupt reco
   const f = await fixture(t), legacy = join(f.root, 'legacy'), source = join(legacy, f.id);
   await mkdir(source, { recursive: true });
   await writeFile(join(source, 'study.json'), JSON.stringify({ id: f.id, name: 'Legacy draft', references: [] }));
-  const store = new ProjectStore({ projectRoot: f.root, legacyRoots: [legacy] });
+  const store = f.open({ projectRoot: f.root, legacyRoots: [legacy] });
   const record = await store.load(f.id); assert.equal(record.study.name, 'Legacy draft');
   assert.equal(record.paintingPath, null);
   await assert.rejects(store.load('../outside'), /identifier/);

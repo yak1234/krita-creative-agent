@@ -25,7 +25,7 @@ test('live socket reads existing runtime, correlates pending work, exports nativ
     await writeFile(join(directory,'.operations.json'),JSON.stringify({'op-1':{status:'committed'}}));
     await writeFile(join(directory,'.passes.json'),'[{"id":"pass-1"}]');
     await diagnostics.start();
-    assert.equal((await stat(diagnostics.socket)).mode & 0o777,0o600);
+    if (process.platform!=='win32') assert.equal((await stat(diagnostics.socket)).mode & 0o777,0o600);   // a Windows named pipe has no file mode
     const pending=runtime.bridge.call('paint_pass',{},id,'op-1');
     const state=await query(diagnostics.socket,'/state');
     assert.equal(state.body.goal.current_step,1);assert.equal(state.body.pending_native[0].operation_id,'op-1');

@@ -21,6 +21,9 @@ const PATH_KEYS = new Set(['path', 'image', 'image_path', 'last_image', 'before_
 const APP_FILES = ['model-connections.json', 'execution-settings.json', 'decision-endpoints.json', 'model-catalog.json',
   'active-session.json', 'last-migration.json', 'diagnostic-events.jsonl', 'diagnostic-events.jsonl.previous', 'capabilities', 'diagnostics', 'recovery'];
 const REBUILT_FILES = ['previews', 'diagnostics-endpoint.json'];
+// A relative path as records store it: always "/" so a chat saved on Windows opens on macOS and Linux
+// (and is moved between machines by archives). Node resolves "/" on Windows too.
+const stored = (from, to) => relative(from, to).split(sep).join('/');
 const within = (root, file) => { const part = relative(root, file); return part !== '..' && !part.startsWith('..' + sep) && !isAbsolute(part); };
 const exists = async file => { try { await access(file); return true; } catch (e) { if (e.code === 'ENOENT') return false; throw e; } };
 const readJson = async file => JSON.parse(await readFile(file, 'utf8'));
@@ -131,8 +134,8 @@ export class ProjectStore {
     const chat = this.studyDirectory(id);
     return path => {
       const absolute = resolve(this.projectRoot, path);
-      if (within(chat, absolute)) return CHAT + relative(chat, absolute);
-      if (within(this.projectRoot, absolute)) return relative(this.projectRoot, absolute);
+      if (within(chat, absolute)) return CHAT + stored(chat, absolute);
+      if (within(this.projectRoot, absolute)) return stored(this.projectRoot, absolute);
       return absolute;
     };
   }
@@ -144,7 +147,7 @@ export class ProjectStore {
     const encode = this.encoder(study.id);
     const saved = mapPaths(study, encode);
     delete saved.directory;
-    if (study.painting_file) saved.painting_file = relative(this.projectRoot, resolve(this.projectRoot, study.painting_file));
+    if (study.painting_file) saved.painting_file = stored(this.projectRoot, resolve(this.projectRoot, study.painting_file));
     saved.path_schema = 'chat-relative-v2';
     return { version: SCHEMA, updated_at: new Date().toISOString(), study: saved, goal: mapPaths(goal ?? null, encode) };
   }
@@ -297,7 +300,7 @@ export class ProjectStore {
     if (!(await stat(actual)).isFile()) throw new Error('Choose an existing painting file.');
     const record = await this.load(id);
     const previous = record.study.painting_file ?? null;
-    record.study.painting_file = relative(await realpath(this.projectRoot), actual);
+    record.study.painting_file = stored(await realpath(this.projectRoot), actual);
     record.study.bound = false;
     record.study.binding_started = false;
     record.study.relinks = [...(record.study.relinks ?? []), { previous, current: record.study.painting_file, at: new Date().toISOString() }];
@@ -443,10 +446,10 @@ export class ProjectStore {
         const decode = this.decoder(id);
         const encode = path => {
           const absolute = decode(path);
-          return relative(this.projectRoot, within(source, absolute) ? join(destination, relative(source, absolute)) : absolute);
+          return stored(this.projectRoot, within(source, absolute) ? join(destination, relative(source, absolute)) : absolute);
         };
         const study = mapPaths(record.study, encode);
-        study.directory = relative(this.projectRoot, destination); study.path_schema = 'project-relative-v1';
+        study.directory = stored(this.projectRoot, destination); study.path_schema = 'project-relative-v1';
         await mkdir(source, { recursive: true });
         // The plugin's journal database back to the JSON files earlier builds read.
         const journal = join(source, 'journal.sqlite');
@@ -501,11 +504,11 @@ export class ProjectStore {
           // Legacy painting_file was rooted at the configured artwork folder;
           // an absent field meant painting.kra in that legacy study directory.
           const legacyPainting = join(source, 'painting.kra');
-          if (study.painting_file) migrated.painting_file = relative(this.projectRoot, resolve(this.projectRoot, study.painting_file));
+          if (study.painting_file) migrated.painting_file = stored(this.projectRoot, resolve(this.projectRoot, study.painting_file));
           else if (await exists(legacyPainting) || study.bound || study.binding_started)
-            migrated.painting_file = relative(this.projectRoot, legacyPainting);
+            migrated.painting_file = stored(this.projectRoot, legacyPainting);
           else delete migrated.painting_file;
-          migrated.migrated_from = relative(this.projectRoot, source);
+          migrated.migrated_from = stored(this.projectRoot, source);
           migrated.bound = false; migrated.binding_started = false;
           const migratedGoal = mapPaths(goal, remap);
           if (migratedGoal && ['active','reviewing'].includes(migratedGoal.status)) migratedGoal.status = 'paused';
@@ -542,7 +545,7 @@ async function migrateNativePaths(source, destination, staging) {
     // Preview/session records move; artwork is deliberately left in place.
     const relocated = within(source, original) && !/\.kra(?:~|\..*)?$/i.test(original)
       ? join(destination, relative(source, original)) : original;
-    return relative(destination, relocated);
+    return stored(destination, relocated);
   };
   for (const name of ['.operations.json', '.passes.json']) {
     const file = join(staging, name);

@@ -4,13 +4,16 @@ import {createHash} from 'node:crypto';
 import {mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
-import {canonicalInventory, installRelease, sha256, verifyBundle} from '../scripts/install-release.mjs';
+import {canonicalInventory, defaultLocations, installRelease, runtimeKey, sha256, verifyBundle} from '../scripts/install-release.mjs';
+
+// The fixture is a release for the OS running the test, so the same tests run on macOS, Windows and Linux.
+const KEY = runtimeKey(), NODE = process.platform === 'win32' ? 'node.exe' : 'bin/node';
 
 async function fixture({root: existingRoot, name = 'release', main = 'export const test = true;', managed = false} = {}) {
   const root = existingRoot ?? await realpath(await mkdtemp(join(tmpdir(), 'creative-installer-test-')));
   const bundle = join(root, name);
   const files = {
-    ...(managed ? {} : {'runtime/bin/node': '# test runtime', 'runtime/LICENSE': 'license'}),
+    ...(managed ? {} : {['runtime/'+NODE]: '# test runtime', 'runtime/LICENSE': 'license'}),
     'companion/src/main.mjs': main,
     'companion/data/étoile.txt': 'unicode resource',
     'plugin/kritamcp/creative_docker.py': '# test plugin',
@@ -20,11 +23,11 @@ async function fixture({root: existingRoot, name = 'release', main = 'export con
   const checksums = {};
   for (const name of Object.keys(files)) checksums[name] = await sha256(join(bundle,name));
   const build_id = createHash('sha256').update(canonicalInventory(checksums)).digest('hex');
-  const info = {version:'1.0.0', protocol_version:2, platform:'darwin', architecture:process.arch, build_id};
+  const info = {version:'1.0.0', protocol_version:2, platform:process.platform, architecture:process.arch, build_id};
   for (const name of ['companion/build-info.json','plugin/kritamcp/build-info.json']) {
     await writeFile(join(bundle,name),JSON.stringify(info)); checksums[name] = await sha256(join(bundle,name));
   }
-  const node_runtime = {version:'22.23.2',archives:{['darwin-'+process.arch]:{file:`node-v22.23.2-darwin-${process.arch}.tar.gz`,sha256:'a'.repeat(64)}}};
+  const node_runtime = {version:'22.23.2',archives:{[KEY]:{file:`node-v22.23.2-${KEY}.archive`,sha256:'a'.repeat(64)}}};
   const manifest = {...info,...(managed?{architecture:'any',node_runtime}:{}),files:checksums}; await writeFile(join(bundle,'release-manifest.json'),JSON.stringify(manifest));
   const project = join(root, 'Artist’s paintings'); await mkdir(project,{recursive:true}); if (!existingRoot) await writeFile(join(project,'painting.kra'),'original artwork');
   return {root,bundle,project,destination:join(root,'Krita support/pykrita'),runtimeDestination:join(root,'Creative Agent/releases'),manifest};
@@ -95,9 +98,10 @@ test('tampered payload and changed installed runtime are rejected before replaci
 test('manifest traversal, unknown files, symbolic links and incompatible architecture fail closed',async()=>{
   const f = await fixture();
   try {
-    await assert.rejects(verifyBundle(f.bundle,{platform:'darwin',architecture:'unsupported'}),/does not support/);
+    await assert.rejects(verifyBundle(f.bundle,{platform:process.platform,architecture:'unsupported'}),/does not support/);
+    await assert.rejects(verifyBundle(f.bundle,{platform:process.platform==='linux'?'darwin':'linux',architecture:process.arch}),/does not support/);
     await writeFile(join(f.bundle,'unexpected.txt'),'extra'); await assert.rejects(verifyBundle(f.bundle),/inventory/); await rm(join(f.bundle,'unexpected.txt'));
-    await symlink(f.project,join(f.bundle,'external')); await assert.rejects(verifyBundle(f.bundle),/symbolic link/); await rm(join(f.bundle,'external'));
+    await symlink(f.project,join(f.bundle,'external'),'junction'); await assert.rejects(verifyBundle(f.bundle),/symbolic link/); await rm(join(f.bundle,'external'));
     f.manifest.files['../outside'] = 'a'.repeat(64);
     await writeFile(join(f.bundle,'release-manifest.json'),JSON.stringify(f.manifest));
     await assert.rejects(verifyBundle(f.bundle),/unsafe file entry/);
@@ -116,14 +120,14 @@ test('updates hard-link unchanged files from the previous install and keep only 
     const second = await fixture({root:first.root,name:'release-2',main:'export const version = 2;'});
     const two = await installRelease(second);
     assert.equal(two.staged.copied,2,'only the changed companion file and build info are copied');
-    assert.equal((await stat(join(two.release,'runtime/bin/node'))).ino,(await stat(join(one.release,'runtime/bin/node'))).ino,'the runtime is shared, not duplicated');
+    assert.equal((await stat(join(two.release,'runtime',NODE))).ino,(await stat(join(one.release,'runtime',NODE))).ino,'the runtime is shared, not duplicated');
     const third = await fixture({root:first.root,name:'release-3',main:'export const version = 3;'});
     const three = await installRelease({...third,keepBackups:1});
     const remaining = (await readdir(first.runtimeDestination)).filter(n=>/^[0-9a-f]{64}$/.test(n)).sort();
     assert.deepEqual(remaining,[second.manifest.build_id,third.manifest.build_id].sort(),'current and previous are kept');
     assert.deepEqual(three.pruned.releases,[first.manifest.build_id]);
     assert.equal((await readdir(dirname(three.backup))).length,1,'old plugin backups are pruned');
-    assert.equal(await readFile(join(three.release,'runtime/bin/node'),'utf8'),'# test runtime','a pruned donor does not break the shared runtime');
+    assert.equal(await readFile(join(three.release,'runtime',NODE),'utf8'),'# test runtime','a pruned donor does not break the shared runtime');
     assert.equal(await readFile(join(first.project,'painting.kra'),'utf8'),'original artwork');
   } finally { await cleanup(first); }
 });
@@ -132,12 +136,35 @@ test('a release that pins a managed Node installs without a runtime and points t
   const f = await fixture({managed:true});
   try {
     const runtimes = join(dirname(f.runtimeDestination),'runtimes');
-    await mkdir(join(runtimes,'node-v20.0.0-darwin-'+process.arch),{recursive:true});   // no longer pinned by any release
+    await mkdir(join(runtimes,'node-v20.0.0-'+KEY),{recursive:true});   // no longer pinned by any release
     const result = await installRelease(f);
     const settings = JSON.parse(await readFile(join(f.destination,'kritamcp/creative-agent-config.json'),'utf8'));
-    assert.equal(settings.node,join(runtimes,'node-v22.23.2-darwin-'+process.arch,'bin/node'));
+    assert.equal(settings.node,join(runtimes,'node-v22.23.2-'+KEY,NODE));
     assert.deepEqual(settings.node_runtime,f.manifest.node_runtime); assert.equal(settings.node_runtimes,runtimes);
     assert.deepEqual(await readdir(result.release),['companion','release-manifest.json'],'no runtime copied into the release');
-    assert.deepEqual(result.pruned.runtimes,['node-v20.0.0-darwin-'+process.arch]);
+    assert.deepEqual(result.pruned.runtimes,['node-v20.0.0-'+KEY]);
   } finally { await cleanup(f); }
+});
+
+test('a managed release for platform "any" installs on each OS whose Node it pins, and only those',async()=>{
+  const f = await fixture({managed:true});
+  try {
+    f.manifest.platform = 'any'; await writeFile(join(f.bundle,'release-manifest.json'),JSON.stringify(f.manifest));
+    assert.equal((await verifyBundle(f.bundle)).platform,'any');
+    await assert.rejects(verifyBundle(f.bundle,{platform:'win32',architecture:'ia32'}),/does not support/);
+    const other = process.platform==='win32' ? 'linux' : 'win32';
+    await assert.rejects(verifyBundle(f.bundle,{platform:other,architecture:process.arch}),/does not support/,'no pinned Node for that OS');
+  } finally { await cleanup(f); }
+});
+
+test('runtime keys and default folders follow each OS',()=>{
+  assert.equal(runtimeKey('darwin','arm64'),'darwin-arm64'); assert.equal(runtimeKey('linux','x64'),'linux-x64');
+  assert.equal(runtimeKey('win32','arm64'),'win-arm64'); assert.equal(runtimeKey('win32','ia32'),null); assert.equal(runtimeKey('freebsd','x64'),null);
+  const home = join('/','home','artist');
+  assert.deepEqual(defaultLocations('linux',{},home),{destination:join(home,'.local','share','krita','pykrita'),
+    runtimeDestination:join(home,'.local','share','creative-agent','releases'),cacheDestination:join(home,'.cache','creative-agent')});
+  assert.equal(defaultLocations('linux',{XDG_DATA_HOME:join('/','data')},home).runtimeDestination,join('/','data','creative-agent','releases'));
+  const windows = defaultLocations('win32',{APPDATA:join('/','roaming'),LOCALAPPDATA:join('/','local')},home);
+  assert.equal(windows.destination,join('/','roaming','krita','pykrita')); assert.equal(windows.runtimeDestination,join('/','local','Creative Agent','releases'));
+  assert.equal(defaultLocations('darwin',{},home).runtimeDestination,join(home,'Library/Application Support/Creative Agent/releases'));
 });

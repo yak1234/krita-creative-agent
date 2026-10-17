@@ -3,11 +3,40 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import re
 import shutil
 import tempfile
+
+
+# Matches scripts/install-release.mjs and kritamcp/node_runtime.py: Node's platform names and nodejs.org's runtime keys.
+PLATFORMS = {'Darwin': 'darwin', 'Linux': 'linux', 'Windows': 'win32'}
+MACHINES = {'arm64': 'arm64', 'aarch64': 'arm64', 'x86_64': 'x64', 'amd64': 'x64'}
+
+
+def runtime_key(system=None, machine=None):
+    system = {'darwin': 'darwin', 'linux': 'linux', 'win32': 'win'}.get(PLATFORMS.get(system or platform.system()))
+    machine = MACHINES.get((machine or platform.machine()).lower())
+    return system + '-' + machine if system and machine else None
+
+
+def node_file(system=None):
+    return 'node.exe' if (system or platform.system()) == 'Windows' else 'bin/node'
+
+
+def default_locations(system=None, environ=None, home=None):
+    """Krita's plugin folder and this app's per-user folders on each OS (releases and runtimes share a parent)."""
+    system, environ, home = system or platform.system(), os.environ if environ is None else environ, Path(home or Path.home())
+    if system == 'Windows':
+        local, roaming = Path(environ.get('LOCALAPPDATA') or home / 'AppData/Local'), Path(environ.get('APPDATA') or home / 'AppData/Roaming')
+        return {'destination': roaming / 'krita/pykrita', 'runtime_destination': local / 'Creative Agent/releases', 'cache': local / 'Creative Agent/cache'}
+    if system == 'Linux':
+        data, cache = Path(environ.get('XDG_DATA_HOME') or home / '.local/share'), Path(environ.get('XDG_CACHE_HOME') or home / '.cache')
+        return {'destination': data / 'krita/pykrita', 'runtime_destination': data / 'creative-agent/releases', 'cache': cache / 'creative-agent'}
+    return {'destination': home / 'Library/Application Support/krita/pykrita', 'runtime_destination': home / 'Library/Application Support/Creative Agent/releases',
+            'cache': home / 'Library/Caches/Creative Agent'}
 
 
 def verify_bundle(bundle):
@@ -16,7 +45,7 @@ def verify_bundle(bundle):
         raise ValueError('Unsupported release manifest.')
     if not re.fullmatch(r'[a-f0-9]{64}', manifest.get('build_id', '')):
         raise ValueError('Invalid release identifier.')
-    actual_files = {str(path.relative_to(bundle)) for path in bundle.rglob('*') if path.is_file()}
+    actual_files = {path.relative_to(bundle).as_posix() for path in bundle.rglob('*') if path.is_file()}
     if actual_files - {'release-manifest.json'} != set(manifest['files']):
         raise ValueError('Release file inventory does not match its manifest.')
     for name, expected in manifest['files'].items():
@@ -27,7 +56,7 @@ def verify_bundle(bundle):
             raise ValueError('Bundle checksum mismatch: ' + name)
     for name in ('companion/src/main.mjs', 'plugin/kritamcp/creative_docker.py', 'plugin/kritamcp.desktop'):
         if name not in manifest['files']: raise ValueError('Incomplete release: ' + name)
-    if not manifest.get('node_runtime') and 'runtime/bin/node' not in manifest['files']: raise ValueError('Incomplete release: runtime/bin/node')
+    if not manifest.get('node_runtime') and 'runtime/' + node_file() not in manifest['files']: raise ValueError('Incomplete release: runtime/' + node_file())
     for name in ('companion/build-info.json', 'plugin/kritamcp/build-info.json'):
         info = json.loads((bundle / name).read_text())
         if any(info.get(key) != manifest.get(key) for key in ('build_id','protocol_version','version')):
@@ -36,12 +65,11 @@ def verify_bundle(bundle):
                if name not in ('companion/build-info.json', 'plugin/kritamcp/build-info.json')}
     expected_id = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     if expected_id != manifest['build_id']: raise ValueError('Release content does not match its identifier.')
-    if manifest.get('platform') != 'darwin': raise ValueError('This installer requires a macOS release.')
-    architecture = {'arm64': 'arm64', 'aarch64': 'arm64', 'x86_64': 'x64'}.get(platform.machine())
-    # A release either bundles a runtime for one architecture or pins a managed Node for several.
-    runtime = manifest.get('node_runtime')
-    supported = ('darwin-%s' % architecture) in (runtime or {}).get('archives', {}) if runtime else architecture == manifest.get('architecture')
-    if platform.system() != 'Darwin' or not supported:
+    # A release either bundles a runtime for one OS and architecture or pins a managed Node for several;
+    # a pinned release may say platform "any".
+    runtime, key = manifest.get('node_runtime'), runtime_key()
+    supported = (key in (runtime or {}).get('archives', {})) if runtime else MACHINES.get(platform.machine().lower()) == manifest.get('architecture')
+    if not (manifest.get('platform') == PLATFORMS.get(platform.system()) or (runtime and manifest.get('platform') == 'any')) or not key or not supported:
         raise ValueError('This release does not support this operating system or architecture.')
     return manifest
 
@@ -77,15 +105,14 @@ def install(bundle, destination, runtime_destination, project):
         # Managed runtime: shared by releases, fetched by the panel on first start (kritamcp/node_runtime.py).
         runtimes = runtime_destination.parent / 'runtimes'
         runtime = manifest.get('node_runtime')
-        architecture = {'arm64': 'arm64', 'aarch64': 'arm64', 'x86_64': 'x64'}.get(platform.machine())
-        node = runtimes / ('node-v%s-darwin-%s' % (runtime['version'], architecture)) / 'bin' / 'node' if runtime else release / 'runtime' / 'bin' / 'node'
+        node = runtimes / ('node-v%s-%s' % (runtime['version'], runtime_key())) / node_file() if runtime else release / 'runtime' / node_file()
         settings = {
             'node': str(node), **({'node_runtime': runtime, 'node_runtimes': str(runtimes)} if runtime else {}),
             'companion': str(release / 'companion' / 'src' / 'main.mjs'),
             'project_root': str(project), 'paintings_dir': str(project),
             # Records and app files live beside the releases, not in the artwork folder (storage-layout).
             'data_dir': str(runtime_destination.parent / 'data'),
-            'cache_dir': str(Path.home() / 'Library/Caches/Creative Agent'),
+            'cache_dir': str(default_locations()['cache']),
             'output': str(runtime_destination.parent / 'data'),
             'bridge_url': 'http://127.0.0.1:5678',
             'build_id': manifest['build_id'], 'protocol_version': 2,
@@ -122,8 +149,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', type=Path, required=True, help='Verified output of build-release.py')
     parser.add_argument('--project', type=Path, required=True, help='Existing folder for ordinary artwork files')
-    parser.add_argument('--destination', type=Path, default=Path.home() / 'Library/Application Support/krita/pykrita')
-    parser.add_argument('--runtime-destination', type=Path, default=Path.home() / 'Library/Application Support/Creative Agent/releases')
+    parser.add_argument('--destination', type=Path, default=default_locations()['destination'])
+    parser.add_argument('--runtime-destination', type=Path, default=default_locations()['runtime_destination'])
     args = parser.parse_args()
     try: result = install(args.bundle, args.destination, args.runtime_destination, args.project)
     except (ValueError, OSError, KeyError) as error: raise SystemExit(str(error))

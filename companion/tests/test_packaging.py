@@ -116,4 +116,16 @@ class PackagingTests(unittest.TestCase):
         self.assertEqual((self.destination / 'kritamcp.desktop').read_text(), 'old desktop')
 
 
+class PlatformTests(unittest.TestCase):
+    def test_keys_node_file_and_folders_match_the_javascript_installer(self):
+        self.assertEqual(installer.runtime_key('Windows', 'AMD64'), 'win-x64'); self.assertEqual(installer.runtime_key('Linux', 'aarch64'), 'linux-arm64')
+        self.assertEqual(installer.runtime_key('Darwin', 'arm64'), 'darwin-arm64'); self.assertIsNone(installer.runtime_key('Linux', 'i686'))
+        self.assertEqual(installer.node_file('Windows'), 'node.exe'); self.assertEqual(installer.node_file('Linux'), 'bin/node')
+        home = Path('/home/artist')
+        self.assertEqual(installer.default_locations('Linux', {}, home)['runtime_destination'], home / '.local/share/creative-agent/releases')
+        self.assertEqual(installer.default_locations('Linux', {}, home)['destination'], home / '.local/share/krita/pykrita')
+        windows = installer.default_locations('Windows', {'APPDATA': '/roaming', 'LOCALAPPDATA': '/local'}, home)
+        self.assertEqual(windows['destination'], Path('/roaming/krita/pykrita')); self.assertEqual(windows['runtime_destination'], Path('/local/Creative Agent/releases'))
+
+
 if __name__ == '__main__': unittest.main()

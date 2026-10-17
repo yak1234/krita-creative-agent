@@ -12,6 +12,27 @@ const requiredFiles = ['companion/src/main.mjs', 'plugin/kritamcp/creative_docke
 const supportedVersion = '1.0.0';
 const hex = /^[a-f0-9]{64}$/;
 
+/** nodejs.org's name for a platform (darwin-arm64, linux-x64, win-x64), as kritamcp/node_runtime.py keys a pinned runtime. */
+export function runtimeKey(platform = process.platform, architecture = process.arch) {
+  const system = {darwin: 'darwin', linux: 'linux', win32: 'win'}[platform];
+  return system && ['x64', 'arm64'].includes(architecture) ? system + '-' + architecture : null;
+}
+// Where node sits in an unpacked Node: Windows keeps node.exe at the top.
+const nodeFile = platform => platform === 'win32' ? 'node.exe' : 'bin/node';
+/** Krita's plugin folder and this app's per-user folders on each OS (releases and runtimes share a parent). */
+export function defaultLocations(platform = process.platform, env = process.env, home = homedir()) {
+  if (platform === 'win32') {
+    const local = env.LOCALAPPDATA || join(home, 'AppData', 'Local'), roaming = env.APPDATA || join(home, 'AppData', 'Roaming');
+    return {destination: join(roaming, 'krita', 'pykrita'), runtimeDestination: join(local, 'Creative Agent', 'releases'), cacheDestination: join(local, 'Creative Agent', 'cache')};
+  }
+  if (platform === 'linux') {
+    const data = env.XDG_DATA_HOME || join(home, '.local', 'share'), cache = env.XDG_CACHE_HOME || join(home, '.cache');
+    return {destination: join(data, 'krita', 'pykrita'), runtimeDestination: join(data, 'creative-agent', 'releases'), cacheDestination: join(cache, 'creative-agent')};
+  }
+  return {destination: join(home, 'Library/Application Support/krita/pykrita'), runtimeDestination: join(home, 'Library/Application Support/Creative Agent/releases'),
+    cacheDestination: join(home, 'Library/Caches/Creative Agent')};
+}
+
 export async function sha256(path) {
   const hash = createHash('sha256');
   for await (const chunk of createReadStream(path)) hash.update(chunk);
@@ -54,13 +75,14 @@ export async function verifyBundle(bundle, system = {platform: process.platform,
   const manifest = JSON.parse(await readFile(join(bundle, 'release-manifest.json'), 'utf8'));
   if (manifest.version !== supportedVersion || manifest.protocol_version !== 2 || !hex.test(manifest.build_id || ''))
     throw new Error('This release has an unsupported or invalid manifest.');
-  // A release either bundles a runtime for one architecture or pins a managed Node for several.
-  const runtimeKey = 'darwin-' + system.architecture;
-  const supported = manifest.node_runtime ? !!manifest.node_runtime.archives?.[runtimeKey] && /^\d+\.\d+\.\d+$/.test(manifest.node_runtime.version ?? '')
+  // A release either bundles a runtime for one OS and architecture, or pins a managed Node for several;
+  // a pinned release whose payload is plain JavaScript and Python may say platform "any".
+  const key = runtimeKey(system.platform, system.architecture);
+  const supported = manifest.node_runtime ? !!key && !!manifest.node_runtime.archives?.[key] && /^\d+\.\d+\.\d+$/.test(manifest.node_runtime.version ?? '')
     : manifest.architecture === system.architecture;
-  if (manifest.platform !== 'darwin' || system.platform !== 'darwin' || !supported)
-    throw new Error('This release does not support this Mac’s processor or operating system.');
-  if (!manifest.node_runtime && !Object.hasOwn(manifest.files ?? {}, 'runtime/bin/node')) throw new Error('The release is missing a required component.');
+  if (!(manifest.platform === system.platform || (manifest.node_runtime && manifest.platform === 'any')) || !supported)
+    throw new Error('This release does not support this computer’s processor or operating system.');
+  if (!manifest.node_runtime && !Object.hasOwn(manifest.files ?? {}, 'runtime/' + nodeFile(system.platform))) throw new Error('The release is missing a required component.');
   if (!manifest.files || typeof manifest.files !== 'object' || Array.isArray(manifest.files)) throw new Error('Missing release file inventory.');
   const names = Object.keys(manifest.files);
   if (names.some(name => !safeName(name) || !hex.test(manifest.files[name]))) throw new Error('The release manifest contains an unsafe file entry.');
@@ -144,9 +166,9 @@ export async function pruneInstalls({runtimeDestination, current, previous, keep
   return removed;
 }
 
-export async function installRelease({bundle, project, destination = join(homedir(), 'Library/Application Support/krita/pykrita'),
-  runtimeDestination = join(homedir(), 'Library/Application Support/Creative Agent/releases'),
-  cacheDestination = join(homedir(), 'Library/Caches/Creative Agent'), keepReleases = 2, keepBackups = 5}, hooks = {}) {
+export async function installRelease({bundle, project, destination = defaultLocations().destination,
+  runtimeDestination = defaultLocations().runtimeDestination,
+  cacheDestination = defaultLocations().cacheDestination, keepReleases = 2, keepBackups = 5}, hooks = {}) {
   bundle = await realpath(bundle); project = await realpath(project);
   if (!(await lstat(project)).isDirectory()) throw new Error('Choose an existing folder for your paintings.');
   const manifest = await verifyBundle(bundle);
@@ -167,13 +189,13 @@ export async function installRelease({bundle, project, destination = join(homedi
     else {
       runtimeStage = await mkdtemp(join(runtimeDestination, '.release-'));
       staged = await stageRelease(bundle, runtimeStage, manifest, await installedReleases(runtimeDestination));
-      if (!manifest.node_runtime) await chmod(join(runtimeStage, 'runtime/bin/node'), 0o755);
+      if (!manifest.node_runtime && process.platform !== 'win32') await chmod(join(runtimeStage, 'runtime/bin/node'), 0o755);
       await verifyInstalledRuntime(runtimeStage, manifest);
       await rename(runtimeStage, release); runtimeStage = undefined;
     }
     // Managed runtime: shared by releases, fetched by the panel on first start (kritamcp/node_runtime.py).
     const runtimes = join(dirname(runtimeDestination), 'runtimes');
-    const node = manifest.node_runtime ? join(runtimes, `node-v${manifest.node_runtime.version}-darwin-${process.arch}`, 'bin/node') : join(release, 'runtime/bin/node');
+    const node = manifest.node_runtime ? join(runtimes, `node-v${manifest.node_runtime.version}-${runtimeKey()}`, nodeFile(process.platform)) : join(release, 'runtime', nodeFile(process.platform));
     const settings = {node, ...(manifest.node_runtime ? {node_runtime: manifest.node_runtime, node_runtimes: runtimes} : {}),
       companion: join(release, 'companion/src/main.mjs'),
       // Records and app files live beside the releases, not in the artwork folder (storage-layout).

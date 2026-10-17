@@ -1,8 +1,10 @@
 """Managed Node runtime, fetched on first use and shared by every release (like uv's Python).
 
-A release pins `{"version": "22.23.2", "archives": {"darwin-arm64": {"file": ..., "sha256": ...}, ...}}`.
-`ensure()` downloads the official nodejs.org archive once, refuses it unless the SHA-256
-matches, unpacks it under runtimes/node-v<version>-<platform>/ and returns bin/node.
+A release pins `{"version": "22.23.2", "archives": {"darwin-arm64": {"file": ..., "sha256": ...}, ...}}`,
+keyed by nodejs.org's own platform names (darwin-, linux-, win- with x64 or arm64).
+`ensure()` downloads the official archive once (.tar.gz on macOS, .tar.xz on Linux, .zip on
+Windows), refuses it unless the SHA-256 matches, unpacks it under
+runtimes/node-v<version>-<key>/ and returns its node (bin/node, or node.exe on Windows).
 Standard library only: this runs inside Krita's Python, in install.py and in build-release.py.
 """
 import hashlib
@@ -12,6 +14,7 @@ import shutil
 import subprocess
 import tempfile
 import urllib.request
+import zipfile
 from pathlib import Path
 
 DIST = 'https://nodejs.org/dist'
@@ -19,43 +22,73 @@ OVERRIDE = 'CREATIVE_AGENT_NODE'        # a developer's own Node 22+, bypassing 
 MARKER = '.creative-agent-verified'
 
 
-# Krita's bundled Python has no CA bundle (urllib fails with CERTIFICATE_VERIFY_FAILED); macOS curl
-# trusts the system keychain. The archive is verified by SHA-256 either way.
-CURL = '/usr/bin/curl'
+KEYS = ('darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win-arm64', 'win-x64')
+EXTENSIONS = {'darwin': '.tar.gz', 'linux': '.tar.xz', 'win': '.zip'}
+
+
+def find_curl():
+    # Krita's bundled Python has no CA bundle (urllib fails with CERTIFICATE_VERIFY_FAILED). The system
+    # curl trusts the system store: the keychain on macOS, Schannel on Windows 10+ (System32\curl.exe).
+    # The archive is verified by SHA-256 either way; without curl, urllib is tried.
+    if os.name == 'nt':
+        bundled = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'curl.exe'
+        return str(bundled) if bundled.is_file() else None
+    return '/usr/bin/curl' if Path('/usr/bin/curl').is_file() else shutil.which('curl')
+
+
+CURL = find_curl()
 
 
 def download_with_curl(url, target, progress=None):
     import time
     # Use the system trust store even if the host process points these at an unusable bundle.
     env = {k: v for k, v in os.environ.items() if k not in ('SSL_CERT_FILE', 'SSL_CERT_DIR', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE')}
-    process = subprocess.Popen([CURL, '--fail', '--silent', '--show-error', '--location', '--max-time', '600', '--output', str(target), url],
-                               stderr=subprocess.PIPE, env=env)
-    while process.poll() is None:
-        if progress and target.exists(): progress(target.stat().st_size, 0)
-        time.sleep(0.25)
+    with subprocess.Popen([CURL, '--fail', '--silent', '--show-error', '--location', '--max-time', '600', '--output', str(target), url],
+                          stderr=subprocess.PIPE, env=env) as process:
+        while process.poll() is None:
+            if progress and target.exists(): progress(target.stat().st_size, 0)
+            time.sleep(0.25)
+        error = process.stderr.read().decode(errors='replace').strip()[-300:]
     if process.returncode:
-        raise ValueError('The Node runtime could not be downloaded: ' + process.stderr.read().decode(errors='replace').strip()[-300:])
+        raise ValueError('The Node runtime could not be downloaded: ' + error)
     if progress: progress(target.stat().st_size, target.stat().st_size)
 
 
-def default_root():
-    return Path.home() / 'Library' / 'Application Support' / 'Creative Agent' / 'runtimes'
+def default_root(system=None, environ=None, home=None):
+    """Per-user app data, beside the installer's releases folder: one shared runtime per Node version."""
+    system, environ, home = (system or platform.system()).lower(), os.environ if environ is None else environ, Path(home or Path.home())
+    if system == 'windows':
+        return Path(environ.get('LOCALAPPDATA') or home / 'AppData' / 'Local') / 'Creative Agent' / 'runtimes'
+    if system == 'linux':
+        return Path(environ.get('XDG_DATA_HOME') or home / '.local' / 'share') / 'creative-agent' / 'runtimes'
+    return home / 'Library' / 'Application Support' / 'Creative Agent' / 'runtimes'
 
 
 def platform_key(system=None, machine=None):
-    system = (system or platform.system()).lower()
+    """nodejs.org's name for this platform, such as darwin-arm64, linux-x64 or win-x64."""
+    system = {'darwin': 'darwin', 'linux': 'linux', 'windows': 'win'}.get((system or platform.system()).lower())
     machine = {'arm64': 'arm64', 'aarch64': 'arm64', 'x86_64': 'x64', 'amd64': 'x64'}.get((machine or platform.machine()).lower())
-    if system != 'darwin' or not machine:
-        raise ValueError('The managed Node runtime supports macOS on Apple silicon or Intel.')
-    return 'darwin-' + machine
+    if not system or not machine:
+        raise ValueError('The managed Node runtime supports macOS, Windows and Linux on 64-bit Intel/AMD or ARM.')
+    return system + '-' + machine
+
+
+def archive_name(version, key):
+    return 'node-v%s-%s%s' % (version, key, EXTENSIONS[key.split('-')[0]])
 
 
 def runtime_dir(spec, root=None, key=None):
     return Path(root or default_root()) / ('node-v%s-%s' % (spec['version'], key or platform_key()))
 
 
+def executable(key):
+    """Where node sits inside an unpacked archive: Windows zips keep node.exe at the top."""
+    return Path('node.exe') if key.startswith('win-') else Path('bin') / 'node'
+
+
 def node_path(spec, root=None, key=None):
-    return runtime_dir(spec, root, key) / 'bin' / 'node'
+    key = key or platform_key()
+    return runtime_dir(spec, root, key) / executable(key)
 
 
 def is_ready(spec, root=None, key=None):
@@ -63,9 +96,31 @@ def is_ready(spec, root=None, key=None):
     key = key or platform_key()
     directory = runtime_dir(spec, root, key)
     try:
-        return (directory / 'bin' / 'node').is_file() and (directory / MARKER).read_text().strip() == spec['archives'][key]['sha256']
+        return (directory / executable(key)).is_file() and (directory / MARKER).read_text().strip() == spec['archives'][key]['sha256']
     except (OSError, KeyError):
         return False
+
+
+def unpack(archive, directory):
+    """Unpack a verified official archive. A zip (Windows) needs no system tool; a tarball uses the
+    system tar, which keeps npm's symlinks and detects gzip or xz itself, and falls back to tarfile."""
+    if archive.name.endswith('.zip'):
+        with zipfile.ZipFile(archive) as bundle:
+            for member in bundle.namelist():
+                if member.startswith(('/', '\\')) or '..' in Path(member).parts:
+                    raise ValueError('The Node archive contains an unsafe path: ' + member)
+            bundle.extractall(directory)
+        return
+    tar = '/usr/bin/tar' if Path('/usr/bin/tar').is_file() else shutil.which('tar')
+    if tar:
+        subprocess.run([tar, '-xf', str(archive), '-C', str(directory)], check=True, capture_output=True)
+        return
+    import tarfile
+    with tarfile.open(archive) as bundle:
+        for member in bundle.getmembers():
+            if member.name.startswith('/') or '..' in Path(member.name).parts or (member.issym() and Path(member.linkname).is_absolute()):
+                raise ValueError('The Node archive contains an unsafe path: ' + member.name)
+        bundle.extractall(directory)
 
 
 def resolve(spec, root=None):
@@ -77,7 +132,7 @@ def resolve(spec, root=None):
 
 
 def ensure(spec, root=None, progress=None, opener=None, base_url=DIST, key=None):
-    """Return bin/node for `spec`, downloading and verifying it first if needed.
+    """Return the node executable for `spec`, downloading and verifying it first if needed.
 
     progress(done_bytes, total_bytes) is called while downloading. Raises ValueError on a
     hash mismatch or an unusable archive; nothing partial is left in place.
@@ -99,7 +154,7 @@ def ensure(spec, root=None, progress=None, opener=None, base_url=DIST, key=None)
     try:
         target = work / archive['file']
         url = '%s/v%s/%s' % (base_url, spec['version'], archive['file'])
-        if opener is None and Path(CURL).is_file():
+        if opener is None and CURL and Path(CURL).is_file():
             download_with_curl(url, target, progress)
         else:
             with (opener or urllib.request.urlopen)(url, timeout=60) as response, target.open('wb') as stream:
@@ -112,17 +167,16 @@ def ensure(spec, root=None, progress=None, opener=None, base_url=DIST, key=None)
             for block in iter(lambda: stream.read(1024 * 1024), b''): checksum.update(block)
         if checksum.hexdigest() != archive['sha256']:
             raise ValueError('The downloaded Node runtime does not match its pinned checksum; it was discarded.')
-        # The archive is the verified official build, so the system tar may unpack it (it keeps npm's symlinks).
-        subprocess.run(['/usr/bin/tar', '-xzf', str(target), '-C', str(work)], check=True, capture_output=True)
+        unpack(target, work)
         unpacked = work / ('node-v%s-%s' % (spec['version'], key))
-        if not (unpacked / 'bin' / 'node').is_file():
-            raise ValueError('The Node archive did not contain bin/node.')
+        if not (unpacked / executable(key)).is_file():
+            raise ValueError('The Node archive did not contain ' + executable(key).as_posix() + '.')
         (unpacked / MARKER).write_text(archive['sha256'] + '\n')
         destination = runtime_dir(spec, root, key)
         if destination.exists():
             shutil.rmtree(destination)          # an unverified or damaged earlier attempt
         unpacked.rename(destination)
-        return destination / 'bin' / 'node'
+        return destination / executable(key)
     except subprocess.CalledProcessError as error:
         raise ValueError('The Node archive could not be unpacked: ' + (error.stderr or b'').decode(errors='replace')[-300:])
     finally:
@@ -141,7 +195,7 @@ def prune(keep_versions, root=None):
     return removed
 
 
-def spec_from_shasums(version, shasums_text, keys=('darwin-arm64', 'darwin-x64')):
+def spec_from_shasums(version, shasums_text, keys=KEYS):
     """Build a release spec from nodejs.org's SHASUMS256.txt for `version`."""
     sums = {}
     for line in shasums_text.splitlines():
@@ -149,7 +203,7 @@ def spec_from_shasums(version, shasums_text, keys=('darwin-arm64', 'darwin-x64')
         if len(parts) == 2: sums[parts[1]] = parts[0]
     archives = {}
     for key in keys:
-        name = 'node-v%s-%s.tar.gz' % (version, key)
+        name = archive_name(version, key)
         if name not in sums: raise ValueError('SHASUMS256.txt has no ' + name)
         archives[key] = {'file': name, 'sha256': sums[name]}
     return {'version': version, 'archives': archives}

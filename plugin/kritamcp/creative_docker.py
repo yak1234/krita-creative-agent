@@ -2052,7 +2052,8 @@ class CreativeAgentDocker(DockWidget):
             # A managed Node runtime is fetched once, in the background, then the companion starts.
             if config.get('node_runtime') and not os.environ.get(node_runtime.OVERRIDE) and not node_runtime.is_ready(config['node_runtime'], config.get('node_runtimes')):
                 self.fetch_node_runtime(config); return
-            if config.get('node_runtime') and os.environ.get(node_runtime.OVERRIDE): config['node'] = os.environ[node_runtime.OVERRIDE]
+            # The runtime manager names this OS's node (bin/node, or node.exe on Windows); the installer's path is a hint.
+            if config.get('node_runtime'): config['node'] = str(node_runtime.resolve(config['node_runtime'], config.get('node_runtimes')))
             if not os.path.isfile(config['companion']) or not os.path.isfile(config['node']):
                 raise ValueError('The companion path is unavailable. Run the local setup and installer.')
             self.paintings_directory = os.path.normpath(os.path.join(os.path.dirname(os.path.dirname(config['companion'])), config.get('paintings_dir', 'output')))

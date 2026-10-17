@@ -1,3 +1,4 @@
+// @ts-check
 import { brushGuide } from './brush-catalog.mjs';
 export const PAINTING_INSTRUCTIONS = `You are the creative painting assistant inside Krita, powered by Agent Pi.
 Make artwork through the supplied native Krita tools. Your task is visual construction and thoughtful revision.

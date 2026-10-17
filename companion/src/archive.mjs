@@ -1,3 +1,4 @@
+// @ts-check
 // Export and import of chats as one `.creative-agent-archive` file (storage-layout phase E). The
 // archive is itself a SQLite database: the chats' records, their chat logs, the images those logs
 // use (each once), and every file in the chats' folders (journal, references, reviews…). Paths in
@@ -37,7 +38,7 @@ async function chatFiles(directory, base = directory) {
 }
 
 /** Write chats (default: every chat of the store's project) to an archive file. */
-export async function exportChats(store, destination, { ids } = {}) {
+export async function exportChats(store, destination, { ids } = /** @type {{ids?: string[]}} */ ({})) {
   await store.initialize();
   const chosen = ids ?? store.db.all('SELECT id FROM chats WHERE project_id = ?', store.projectId).map(row => row.id);
   if (!chosen.length) throw new Error('There are no chats to export.');
@@ -99,7 +100,7 @@ export async function importArchive(store, source, { replace = false } = {}) {
       if (existing) await store.delete(chat.id).catch(error => { throw new Error('Could not replace ' + chat.title + ': ' + error.message); });
       const directory = store.studyDirectory(chat.id);
       await rm(directory, { recursive: true, force: true });
-      for (const file of archive.all('SELECT path, bytes FROM files WHERE chat_id = ?', chat.id)) {
+      for (const file of /** @type {{path: string, bytes: Uint8Array}[]} */ (archive.all('SELECT path, bytes FROM files WHERE chat_id = ?', chat.id))) {
         const path = join(directory, ...file.path.split('/'));
         if (!path.startsWith(directory + sep)) throw new Error('The archive has a file outside its chat folder.');
         await mkdir(dirname(path), { recursive: true });

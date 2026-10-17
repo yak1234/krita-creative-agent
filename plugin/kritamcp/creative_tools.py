@@ -7,7 +7,7 @@ import time
 import uuid
 from krita import Krita, Selection
 from PyQt5.QtCore import Qt, QCoreApplication
-from .creative_validation import fields, numeric, text, color, validate_pass
+from .creative_validation import fields, numeric, text, color, validate_pass, painted_share
 from .creative_document_identity import document_id, open_documents
 from .layer_craft import LayerCraft
 from .region_craft import RegionCraft
@@ -1378,6 +1378,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         if not image.save(filename, 'JPEG' if jpeg else 'PNG', VIEW_JPEG_QUALITY if jpeg else -1):
             raise RuntimeError('Could not save the canvas observation')
         layers = self._creative_layer_list(doc)
+        # Whole-canvas views say how much of the canvas is painted, so a blank document is not taken for a painting.
+        painted = None if region else self._creative_painted_share(projection)
         with open(filename, 'rb') as stream:
             content_id = hashlib.sha256(stream.read()).hexdigest()
         captured_at = time.time()
@@ -1386,7 +1388,15 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 'path': filename, 'revision': revision, 'content_id': content_id, 'captured_at': captured_at, 'region': region,
                 'image_width': image.width(), 'image_height': image.height(), 'scale': scale,
                 'layers': layers, 'filename': doc.fileName(), 'modified': doc.modified(),
+                **({'painted_share': painted} if painted is not None else {}),
                 'observed_at': captured_at, 'artist_focus': self._view_artist_focus(doc), 'comic': self._comic_model(session)}
+
+    def _creative_painted_share(self, projection):
+        from PyQt5.QtGui import QImage
+        thumb = projection.scaled(96, 96, Qt.KeepAspectRatio, Qt.SmoothTransformation).convertToFormat(QImage.Format_RGBA8888)
+        line, width = thumb.bytesPerLine(), thumb.width() * 4
+        raw = thumb.constBits().asstring(thumb.byteCount())
+        return painted_share(b''.join(raw[row * line:row * line + width] for row in range(thumb.height())))
 
     def _creative_has_transparency(self, image):
         if not image.hasAlphaChannel():

@@ -1,3 +1,4 @@
+// @ts-check
 import { LiveDiagnostics } from './live-diagnostics.mjs';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -9,6 +10,7 @@ import { splitJsonLines } from './files.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const configPath = process.env.KRITA_CREATIVE_CONFIG || resolve(root, '.local-config.json');
 const emit = event => process.stdout.write(JSON.stringify(event) + '\n');
+/** @type {any} */   // StudioRuntime; typed once studio.mjs and runtime.mjs are checked
 let runtime;
 let buffer = '';
 let shuttingDown = false;

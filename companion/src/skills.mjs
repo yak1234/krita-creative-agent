@@ -1,3 +1,4 @@
+// @ts-check
 // Agent Skills bundled with the companion (krita-creative-agent/skills/<name>/SKILL.md). Pi lists
 // them in the painter's system prompt when a tool named `read` exists, and the artist can type
 // /skill:name in the panel. Only these skills load: the user's coding-agent skills are noise here.

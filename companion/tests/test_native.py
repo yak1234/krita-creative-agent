@@ -469,4 +469,17 @@ class NativePolicyTests(unittest.TestCase):
         self.assertFalse(h._creative_session['operations'])
 
 
+class PaintedShareTests(unittest.TestCase):
+    def test_blank_canvases_score_zero_whatever_their_colour(self):
+        from importlib import util
+        spec = util.spec_from_file_location('creative_validation_share', SOURCE / 'creative_validation.py')
+        module = util.module_from_spec(spec); spec.loader.exec_module(module)
+        white, red, grey = bytes([255, 255, 255, 255]), bytes([200, 20, 20, 255]), bytes([250, 250, 250, 255])
+        self.assertEqual(module.painted_share(white * 100), 0.0)
+        self.assertEqual(module.painted_share(red * 100), 0.0, 'a coloured ground is still blank')
+        self.assertEqual(module.painted_share(white * 90 + grey * 10), 0.0, 'JPEG-level noise is within tolerance')
+        self.assertEqual(module.painted_share(white * 75 + red * 25), 0.25)
+        self.assertEqual(module.painted_share(b''), 0.0)
+
+
 if __name__ == '__main__': unittest.main()

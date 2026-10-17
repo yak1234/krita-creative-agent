@@ -8,7 +8,7 @@ import { deflateSync } from 'node:zlib';
 
 export class DecisionClient {
   constructor({ endpoint = BUILT_IN_ENDPOINTS.openrouter, model, apiKey, fetch = globalThis.fetch, timeout = 4000,
-    images = undefined, tracing = null, context = () => ({}) } = {}) {
+    images = undefined, tracing = null, context = () => ({}) } = /** @type {{endpoint?: any, model?: string, apiKey?: string, fetch?: typeof globalThis.fetch, timeout?: number, images?: boolean, tracing?: any, context?: () => any}} */ ({})) {
     const protocol = PROTOCOLS[endpoint.protocol];
     if (!protocol) throw new Error('Unknown decision protocol: ' + endpoint.protocol);
     Object.assign(this, { endpoint, protocol, model: model ?? endpoint.defaultModel, apiKey, fetchImpl: fetch, timeout, tracing, context,

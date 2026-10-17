@@ -1,3 +1,4 @@
+// @ts-check
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, relative, sep } from 'node:path';
 

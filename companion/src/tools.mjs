@@ -1,3 +1,4 @@
+// @ts-check
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 import { createHash } from 'node:crypto';
@@ -50,7 +51,7 @@ const stroke = object({
 const LAYER_INDEX_LIMIT = 8000;
 const HOST_ONLY = ['passes','image_path','path','checkpoint','painting_path','before_path','after_path','document_id',
   'captured_at','content_id','save_number','checkpoint_deferred','unsaved_operations','source_prior','source_after','prior','after'];
-export function modelResultText(result, {compactLayers=false,focusLayerIds=[],limit=compactLayers?2000:6000}={}) {
+export function modelResultText(result, {compactLayers=false,focusLayerIds=[],limit=compactLayers?2000:6000}=/** @type {{compactLayers?: boolean, focusLayerIds?: any[], limit?: number}} */ ({})) {
   let model=Object.fromEntries(Object.entries(result ?? {}).filter(([key,value])=>!HOST_ONLY.includes(key) && value!==undefined));
   if (compactLayers && Array.isArray(result?.layers)) {
     const focus=new Set([result.layer_id,...focusLayerIds].filter(Boolean));
@@ -68,7 +69,8 @@ export function modelResultText(result, {compactLayers=false,focusLayerIds=[],li
   if (size(model)>limit) model={status:model.status,error:model.error,error_code:model.error_code,layer_id:model.layer_id,layer_count:model.layer_count,result_truncated:'Observe the canvas for details.'};
   return JSON.stringify({...model,...(index?{layer_index:index}:{})});
 }
-export async function resultContent(runtime, result, {compactLayers=false,focusLayerIds=[],limit}={}) {
+export async function resultContent(runtime, result, {compactLayers=false,focusLayerIds=[],limit=undefined}={}) {
+  /** @type {any[]} */
   const content = [{ type: 'text', text: modelResultText(result,{compactLayers,focusLayerIds,limit}) }];
   if (result.image_path) {
     const image = await imageContent(runtime.study.directory, result.image_path);
@@ -246,7 +248,7 @@ export function batchReferences(args, ran, index) {
   return resolved;
 }
 
-export function batchTool(tools, offered = () => true) {
+export function batchTool(tools, offered = /** @type {(name: string) => boolean} */ (() => true)) {
   const byName = Object.fromEntries(tools.filter(t => BATCH_TOOLS.includes(t.name)).map(t => [t.name, t]));
   // The original executes, captured now: wrappers added later (pacing) apply once per batch, not per action.
   const run = Object.fromEntries(Object.entries(byName).map(([name, t]) => [name, t.execute]));

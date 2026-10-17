@@ -1,3 +1,4 @@
+// @ts-check
 /** Local, serialized HTTP transport to Krita. No Python helper is required. */
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, LONG_OPERATIONS } from './craft.mjs';
 
@@ -28,12 +29,12 @@ export class PaintingBridge {
       // delivered results, not a transport loss. Preserve their recovery code.
       if (!response.ok && !result.error) throw new Error('Painting bridge returned HTTP '+response.status);
     } catch (cause) {
-      const error = new Error(mutating ? 'Lost the painting operation result. Inspect the canvas before continuing; the operation will not be repeated.' : 'Could not reach Krita. Open Krita and reconnect the assistant.', { cause });
+      const error = /** @type {Error & {code?: string, result?: any}} */ (new Error(mutating ? 'Lost the painting operation result. Inspect the canvas before continuing; the operation will not be repeated.' : 'Could not reach Krita. Open Krita and reconnect the assistant.', { cause }));
       error.code = mutating ? 'outcome_unknown' : 'unavailable';
       throw error;
     }
     if (result.error) {
-      const error = new Error(result.error);
+      const error = /** @type {Error & {code?: string, result?: any}} */ (new Error(result.error));
       error.code = result.error_code || (String(result.error).includes('Timeout waiting for command') ? (mutating ? 'outcome_unknown':'capture_failed') : undefined);
       if (error.code === 'internal' && String(result.error).startsWith('ValueError:')) error.code = 'validation_rejected';
       else if (mutating && ['internal','timeout'].includes(error.code)) error.code = 'outcome_unknown';

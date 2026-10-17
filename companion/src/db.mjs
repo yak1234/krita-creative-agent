@@ -1,3 +1,4 @@
+// @ts-check
 // The companion's only SQLite module. Node's built-in node:sqlite is still marked experimental in
 // the bundled Node 22 runtime; that is accepted (storage-layout design 7), and only its warning is
 // silenced. Everything else uses this small interface, so an API change touches one file.
@@ -18,7 +19,7 @@ export function openDatabase(path, { migrations = [], synchronous = 'NORMAL' } =
   db.exec(`PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA synchronous = ${synchronous};`);
   const check = db.prepare('PRAGMA quick_check').get();
   if (check?.quick_check !== 'ok') { db.close(); throw Object.assign(new Error('The agent records database is damaged: ' + check?.quick_check), { code: 'DB_CORRUPT' }); }
-  const version = db.prepare('PRAGMA user_version').get().user_version;
+  const version = /** @type {number} */ (db.prepare('PRAGMA user_version').get().user_version);
   if (version > migrations.length) {
     db.close();
     throw Object.assign(new Error('These agent records were written by a newer Creative Agent. Update the agent to open them.'), { code: 'DB_NEWER' });
@@ -50,6 +51,7 @@ export function openDatabase(path, { migrations = [], synchronous = 'NORMAL' } =
 }
 
 /** Rows from a database another process owns (the plugin's journal), opened read-only; [] if absent. */
+/** Rows of a read-only query; [] when the database cannot be opened. @returns {any[]} */
 export function readRows(path, sql, ...params) {
   let db;
   try { db = new DatabaseSync(path, { readOnly: true }); }

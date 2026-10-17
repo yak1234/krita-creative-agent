@@ -1,3 +1,4 @@
+// @ts-check
 // Where the agent keeps records and caches. Artwork stays in the project folder; records go to the
 // platform's application-data directory and caches to its cache directory (storage-layout design 1).
 import { readFile } from 'node:fs/promises';

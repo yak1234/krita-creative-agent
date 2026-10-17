@@ -1,3 +1,4 @@
+// @ts-check
 /** A single local report. Never calls Krita, the model, or a network service. */
 import {mkdir,open,readdir,readFile,rename,writeFile} from 'node:fs/promises';
 import {join,basename} from 'node:path';

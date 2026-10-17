@@ -1,3 +1,4 @@
+// @ts-check
 // Image assets for the painter: generate or edit an image, prepare it in the Python sandbox (PNG under
 // 5 MB, optional cut-out), and attach it as a reference the painter then repaints with
 // paint_from_reference. Assets are never pasted into the painting.
@@ -177,7 +178,7 @@ function skillScript(skill, script) {
   return { folder, file: join(folder, script) };
 }
 
-async function prepare(runtime, folder, raw, { cutout, tolerance, fit, anchor, signal }) {
+async function prepare(runtime, folder, raw, { cutout, tolerance, fit, anchor, signal } = /** @type {{cutout?: boolean, tolerance?: number, fit?: number[] | null, anchor?: string, signal?: AbortSignal}} */ ({})) {
   const id = 'asset-' + randomUUID().slice(0, 8);
   const { folder: scripts, file } = skillScript('image-asset', 'prepare.py');
   const { result } = await runPython({ work: folder, mounts: [{ root: scripts, at: '/skill' }], signal, code: await readFile(file, 'utf8'),
@@ -228,7 +229,7 @@ async function answer(runtime, reference, preview, extra, target) {
   return { content: [{ type: 'text', text }, image.content], details: { reference_id: reference.id, ...extra } };
 }
 
-export function assetTools(runtime, { fetchImpl } = {}) {
+export function assetTools(runtime, { fetchImpl } = /** @type {{fetchImpl?: typeof fetch}} */ ({})) {
   const makeAsset = {
     name: 'make_asset', label: 'Making an image asset', executionMode: 'sequential',
     description: 'Generate or edit an image with an image model and attach it as a reference (an asset) for paint_from_reference. Never pastes into the painting. ' +

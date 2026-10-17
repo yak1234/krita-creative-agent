@@ -1,3 +1,4 @@
+// @ts-check
 // Every execution setting, declared once: the companion validates and defaults from here, and the panel
 // builds its controls from the `generic` ones (sent as a settings_schema event). Adding a setting is one
 // entry here, with no panel change. panel: generic (a combo box built from options), custom (the panel

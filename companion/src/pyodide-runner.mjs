@@ -1,3 +1,4 @@
+// @ts-check
 // Runs one Python job in Pyodide inside a Node process started with --permission (see python-sandbox.mjs).
 // Python sees an empty `js` module (no process, no fetch) and a WebAssembly filesystem; only the job's
 // work folder is mounted, at /work. Node's permission model limits even this process to Pyodide's files,
@@ -9,7 +10,7 @@ import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
 // Pyodide's NODEFS reads the fs flag constants through process.binding, which --permission refuses.
-process.binding = name => { if (name === 'constants') return { fs: constants }; throw new Error('process.binding is not available'); };
+/** @type {any} */ (process).binding = name => { if (name === 'constants') return { fs: constants }; throw new Error('process.binding is not available'); };
 
 let input = '';
 for await (const chunk of process.stdin) input += chunk;

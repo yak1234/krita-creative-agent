@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import {generateReferencePlan,generateEdgePlan,generateSurfacePlan,EDGE_LIMIT,SURFACE_LIMIT} from '../src/reference-generator.mjs';
-import {referenceTools,transferRefusal} from '../src/reference-tool.mjs';
+import {referenceTools,transferRefusal,existingPainting,PAINTED_SHARE} from '../src/reference-tool.mjs';
 const recipe={name:'Portrait',reference_id:'ref',preset:'Basic',source:[0,0,24,24],target:[2,2,48,48],steps:[6,3,1.5],focal_regions:[[6,6,12,12]],seed:42};
 const canvas={width:64,height:64,revision:'r0'};
 const image={width:24,height:24,data:Buffer.alloc(24*24*4)};
@@ -214,4 +214,15 @@ test('busy areas (windows, reflections, fur) are not smudged',()=>{
  const plan=generateSurfacePlan({...surface,edges:false},{width:W,height:H,data},{width:240,height:160});
  const xs=plan.passes[0].strokes.flatMap(s=>[s.start[0],...s.segments.map(g=>g[4])]);
  assert.ok(xs.length&&xs.every(x=>x<30*4),'only the smooth half');
+});
+
+test('a blank saved document is not an existing painting; what is visible decides',()=>{
+ const current={study:{canvas:{mode:'current'}}};
+ // Krita's new document, saved: Background plus an empty Paint Layer 1 (the live blood-moon run).
+ const blank={layers:[{name:'Background'},{name:'Paint Layer 1'}],filename:'/art/Creative painting 31.kra',painted_share:0};
+ assert.equal(existingPainting(current,blank),false);
+ assert.equal(existingPainting(current,{...blank,painted_share:PAINTED_SHARE/2}),false,'a few marks on a blank canvas');
+ assert.equal(existingPainting(current,{layers:[{name:'Background'}],painted_share:0.6}),true,'one flattened painting');
+ assert.equal(existingPainting({study:{canvas:{mode:'new'}}},{...blank,painted_share:0.9}),false,'a new canvas the agent made');
+ assert.equal(existingPainting(current,{layers:blank.layers,filename:blank.filename}),true,'an older plugin without painted_share keeps the old rule');
 });

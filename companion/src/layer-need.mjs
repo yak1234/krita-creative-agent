@@ -1,3 +1,4 @@
+// @ts-check
 // Which layer does an area need next? A Luna choice from the canvas (and reference), mapped by
 // the host to the craft that makes it. Luna picks the layer's job; the host picks sensible tools
 // and blend modes, and the painter may override them. Evaluate records only; Guide advises.

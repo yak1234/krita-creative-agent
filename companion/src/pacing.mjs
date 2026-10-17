@@ -1,3 +1,4 @@
+// @ts-check
 // Run pacing by a decision model (Luna today; an Unsloth decision model later, behind
 // the same Decisions API). After each painting call the host sends ONE request about the
 // canvas: is each visible check of the current and next plan steps true, does the whole
@@ -67,7 +68,7 @@ export const stepProgress = checks => checks?.length ? 3 * checks.reduce((sum, c
 // The host's action for a decision. The current step is the first one whose checks are not
 // all visible, so a canvas that already shows a step (an existing painting) skips it.
 // handPainted(step): false when the step's checks may only be met by a reference transfer (see stepWork).
-export function paceAction(answer, { currentStep, stepCount, actionsSinceReview, unchangedSinceReview, handPainted = () => true }) {
+export function paceAction(answer, { currentStep, stepCount, actionsSinceReview, unchangedSinceReview, handPainted = /** @type {(step: number) => boolean} */ (() => true) }) {
   if (!answer || answer.fallback) return { action: 'none', reason: answer?.fallback ?? 'no_decision' };
   const progress = stepProgress(answer.checks[currentStep]);
   const reviewable = actionsSinceReview >= MIN_ACTIONS_BEFORE_REVIEW && !unchangedSinceReview;

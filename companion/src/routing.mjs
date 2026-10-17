@@ -1,3 +1,4 @@
+// @ts-check
 import {LunaClient} from './luna-decisions.mjs';
 import {createHash} from 'node:crypto';
 
@@ -75,9 +76,9 @@ export const ROUTING_QUESTIONS=Object.freeze({
  brush:choice('Independently select the brush behavior requested, if any. Do not guess a preset or infer unseen image details.',BRUSHES)
 });
 export class LunaRouter {
- constructor({client,apiKey,fetch,timeout=4000}={}) {this.client=client ?? new LunaClient({apiKey,fetch,timeout});}
+ constructor({client,apiKey,fetch,timeout=4000}=/** @type {{client?: any, apiKey?: string, fetch?: typeof globalThis.fetch, timeout?: number}} */ ({})) {this.client=client ?? new LunaClient({apiKey,fetch,timeout});}
  // image: optional Pi image content of the attached canvas belonging to this state.
- async evaluate(state,{signal,identity,image}={}) {
+ async evaluate(state,{signal,identity,image}=/** @type {{signal?: AbortSignal, identity?: any, image?: any}} */ ({})) {
   const base={context_identity:identity,status:'fallback'};
   const parts=[JSON.stringify(state),...(image ? ['ATTACHED CANVAS (current painting):',image]:[])];
   const result=await this.client.decide({parts,questions:ROUTING_QUESTIONS,signal,purpose:'route-request'});
@@ -92,7 +93,7 @@ export class LunaRouter {
  }
 }
 // offered: whether the painter has a tool now (native_craft off hides the craft tools and their hints).
-export function routingAdvice(decision,{phase,offered=()=>true}={}) {
+export function routingAdvice(decision,{phase,offered=/** @type {(name: string) => boolean} */ (()=>true)}=/** @type {{phase?: string, offered?: (name: string) => boolean}} */ ({})) {
  if(decision?.status!=='recommended')return null;
  const agentInspection=phase==='agent' && decision.operation.choice==='inspect';
  const tools=routes[decision.operation.choice].filter(offered), hint=HINTS[decision.operation.choice];

@@ -1,3 +1,4 @@
+// @ts-check
 // Image-based checks answered by Luna Decisions. Question texts are shared with
 // the internal evaluation script, so the evaluation measures what ships.
 import {readFileSync} from 'node:fs';

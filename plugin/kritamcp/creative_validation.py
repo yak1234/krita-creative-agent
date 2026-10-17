@@ -86,3 +86,21 @@ def validate_pass(params, width, height, presets):
         for index, value in enumerate(coordinates):
             numeric(value, 'coordinate', 0, width if index % 2 == 0 else height)
     return params
+
+
+def painted_share(pixels, tolerance=12):
+    """The share of pixels that differ from the canvas's dominant colour (0 for a blank canvas).
+
+    pixels: 4-byte pixels of a small thumbnail of the whole canvas. Whether a canvas is already a
+    painting is a question about what is visible, not about how many layers or whether it was
+    saved: Krita's new document has a Background and an empty Paint Layer 1.
+    """
+    count = len(pixels) // 4
+    if not count:
+        return 0.0
+    quads = [pixels[i:i + 4] for i in range(0, count * 4, 4)]
+    from collections import Counter
+    dominant = Counter(quads).most_common(1)[0][0]
+    differing = sum(1 for quad in quads if max(abs(a - b) for a, b in zip(quad, dominant)) > tolerance)
+    return round(differing / count, 4)
+

@@ -1,3 +1,4 @@
+// @ts-check
 // Comic pages: a setting that works with every mode, not a mode. The artist picks a layout in the
 // panel; the host builds the page (comic_page) when painting starts; the painter scopes work to
 // panels and letters with `letter`; plans carry a story with one beat per panel.

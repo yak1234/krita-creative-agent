@@ -1,3 +1,4 @@
+// @ts-check
 import { isPaintingMode } from './modes.mjs';
 import {createHash} from 'node:crypto';
 import {mkdir,readFile,writeFile,rename,readdir,stat} from 'node:fs/promises';
@@ -29,7 +30,13 @@ export const FOCAL_SHARE=0.03;
 export const MAX_PATCH_SCALE=2;
 // A painting the chat started on counts as existing unless it is an unsaved one-layer document (File > New).
 // An opened JPEG of a finished painting is one layer too, so the layer count alone let a full transfer through.
-const existingPainting=(runtime,observation)=>runtime.study?.canvas?.mode==='current'&&((observation.layers?.length??0)>1||!!observation.filename);
+// Judged by what is visible: the plugin reports painted_share, the part of the canvas that differs from its
+// dominant colour. A live run took a blank, saved new document (Background plus an empty Paint Layer 1)
+// for a painting and refused the whole-canvas transfer of its sky asset. An older plugin without
+// painted_share falls back to the layer count and filename.
+export const PAINTED_SHARE=0.05;
+export const existingPainting=(runtime,observation)=>runtime.study?.canvas?.mode==='current'&&
+ (Number.isFinite(observation.painted_share)?observation.painted_share>=PAINTED_SHARE:((observation.layers?.length??0)>1||!!observation.filename));
 export function transferRefusal(goal,recipe,canvas,paintedJobs,{established=false}={}){
  const steps=goal?.brief?.steps?.length??0,step=goal?.current_step??0;
  const instead='Paint it yourself: paint_contours for silhouettes and overlaps, paint_pass with small brushes and long directed strokes for edges and detail, clipped create_layer for light and shadow.';
@@ -46,7 +53,7 @@ async function reference(runtime,id){const ref=runtime.study.references.find(r=>
 export function referenceTools(runtime,executePass){
  const folder=()=>join(runtime.study.directory,'reference-paintings');
  const path=id=>{if(!/^[a-f0-9]{32}$/.test(id))throw new Error('Invalid reference painting ID.');return join(folder(),id+'.json');};
- async function jobs(){let names;try{names=await readdir(folder());}catch(e){if(e.code!=='ENOENT')throw e;names=[];}const all=[];for(const name of names.filter(n=>/^[a-f0-9]{32}\.json$/.test(n)))all.push(JSON.parse(await readFile(join(folder(),name))));return all;}
+ async function jobs(){let names;try{names=await readdir(folder());}catch(e){if(e.code!=='ENOENT')throw e;names=[];}const all=[];for(const name of names.filter(n=>/^[a-f0-9]{32}\.json$/.test(n)))all.push(JSON.parse(await readFile(join(folder(),name),'utf8')));return all;}
  async function response(job,result){let images=[];if(result?.image_path){const im=await imageContent(runtime.study.directory,result.image_path);images=[im.content];}return {content:[{type:'text',text:JSON.stringify(summary(job))},...images],details:{...summary(job),...(result?.image_path?{image_path:result.image_path}:{})}};}
  // image_path lets Guide pacing check progress after a reference job (a traced finishing run had one pace check in 20 minutes).
  // The stroke plan is never stored: it follows from the recipe, the reference pixels and the canvas
@@ -58,7 +65,7 @@ export function referenceTools(runtime,executePass){
   return ({edges:generateEdgePlan,surface:generateSurfacePlan}[recipe.mode]??generateReferencePlan)(recipe,pixels,{width:canvas.width,height:canvas.height});
  }
  async function start(id,recipe,signal){
-  signal?.throwIfAborted();allowed(runtime);await mkdir(folder(),{recursive:true});const identifier=hash(id).slice(0,32);let old;try{old=JSON.parse(await readFile(path(identifier)));}catch(e){if(e.code!=='ENOENT')throw e;}
+  signal?.throwIfAborted();allowed(runtime);await mkdir(folder(),{recursive:true});const identifier=hash(id).slice(0,32);let old;try{old=JSON.parse(await readFile(path(identifier),'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
   if(old){if(JSON.stringify(old.recipe)!==JSON.stringify(recipe))throw new Error('Operation ID reused with different reference instructions.');return response(old,await runtime.callNative('observe'));}
   const source=await reference(runtime,recipe.reference_id);
   const observation=await runtime.callNative('observe');runtime.decisionObservation=observation;
@@ -115,7 +122,7 @@ export function referenceTools(runtime,executePass){
    execute:(id,recipe,signal)=>start(id,recipe,signal)},
   {name:'continue_reference_painting',label:'Continuing reference painting',executionMode:'sequential',parameters:Type.Object({job_id:Type.String({pattern:'^[a-f0-9]{32}$'})},{additionalProperties:false}),
    description:'Resume a saved reference job in its original stage. Reconciles a pending chunk against Krita receipts before painting, checks reference/plan identity and canvas revision, and preserves one layer per refinement pass. Paints all remaining passes (coarse, fine, focal) in one call; it returns early only if painting was stopped. Unknown/partial native outcomes require recovery and are never blindly repainted.',
-   execute:async(_id,{job_id},signal)=>{signal?.throwIfAborted();allowed(runtime);return run(JSON.parse(await readFile(path(job_id))),signal);}},
+   execute:async(_id,{job_id},signal)=>{signal?.throwIfAborted();allowed(runtime);return run(JSON.parse(await readFile(path(job_id),'utf8')),signal);}},
   {name:'list_reference_paintings',label:'Finding saved reference painting jobs',executionMode:'sequential',parameters:Type.Object({},{additionalProperties:false}),description:'List saved reference jobs and their completion counts for this study. Read-only; use their IDs to resume after a restart.',
    execute:async()=>{const list=(await jobs()).map(summary);return {content:[{type:'text',text:JSON.stringify(list)}],details:{jobs:list}};}},
   {name:'paint_reference_edges',label:'Sharpening edges from the reference',executionMode:'sequential',parameters:edgeSchema,

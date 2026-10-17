@@ -1,3 +1,4 @@
+// @ts-check
 /** Inherit Pi's cached route catalog without modifying Pi's files. */
 import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';

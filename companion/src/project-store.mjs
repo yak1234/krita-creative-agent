@@ -1,3 +1,4 @@
+// @ts-check
 /** Agent records for one project, in SQLite. Artwork is never moved, opened, or saved here.
  *
  * The project folder holds only `.creative-agent/project.json` (its id). Records live in the data
@@ -83,6 +84,7 @@ export class ProjectStore {
     this.studiesDirectory = this.chatsDirectory;               // the name earlier modules use
     this.oldStudiesDirectory = join(this.projectStateDirectory, 'studies');
     this.legacyRoots = [...new Set(legacyRoots.map(root => resolve(root)))];
+    /** @type {Promise<unknown>} */
     this.writeQueue = Promise.resolve();
   }
   studyDirectory(id) {
@@ -356,7 +358,7 @@ export class ProjectStore {
     return found;
   }
   /** Import every chat's JSONL logs into the database (phase B); see SessionStore.importChat. */
-  async importSessionLogs({ onProgress } = {}) {
+  async importSessionLogs({ onProgress } = /** @type {{onProgress?: (...progress: any[]) => void}} */ ({})) {
     await this.initialize();
     const totals = { chats: 0, files: 0, entries: 0, bytes: 0, errors: [] };
     const chats = this.db.all('SELECT id FROM chats WHERE project_id = ? ORDER BY id', this.projectId).map(row => row.id);
@@ -375,7 +377,7 @@ export class ProjectStore {
    * transaction. Resumable: a folder that moved before an interruption still carries its
    * record.json. Artwork never moves. `onProgress(done, total, id)` reports each chat.
    */
-  async migrateProjectFolder({ id, onProgress } = {}) {
+  async migrateProjectFolder({ id, onProgress } = /** @type {{id?: string, onProgress?: (...progress: any[]) => void}} */ ({})) {
     await this.initialize();
     const report = { imported: [], skipped: [], errors: [] };
     const pending = new Set();
@@ -476,7 +478,7 @@ export class ProjectStore {
     delete info.migrated_at; await atomicJson(manifest, info);
     return report;
   }
-  async migrateLegacy(root, { id } = {}) {
+  async migrateLegacy(root, { id } = /** @type {{id?: string}} */ ({})) {
     await this.initialize();
     root = resolve(root);
     if (!this.legacyRoots.includes(root)) this.legacyRoots.push(root);

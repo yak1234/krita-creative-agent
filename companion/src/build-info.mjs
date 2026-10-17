@@ -1,3 +1,4 @@
+// @ts-check
 import { readFileSync } from 'node:fs';
 
 // Release/install staging writes the same manifest beside all components.

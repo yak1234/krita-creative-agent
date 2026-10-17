@@ -1,3 +1,4 @@
+// @ts-check
 // What each installed Krita preset actually paints, measured by one probe stroke per preset
 // (brush-catalog.json). Without it the painter chose presets by name: a traced run guessed "Wet
 // Paint" for a reference transfer and got a washed-out, grainy canvas.

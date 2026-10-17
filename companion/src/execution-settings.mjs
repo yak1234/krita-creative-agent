@@ -1,3 +1,4 @@
+// @ts-check
 import { SETTINGS, SETTING_DEFAULTS, validSetting } from './settings-schema.mjs';
 // The decision endpoint and model default to GPT-6 Luna Decisions on OpenRouter.
 export const DEFAULT_DECISIONS = Object.freeze({endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'});

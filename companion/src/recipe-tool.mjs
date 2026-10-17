@@ -1,3 +1,4 @@
+// @ts-check
 import { isPaintingMode } from './modes.mjs';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';

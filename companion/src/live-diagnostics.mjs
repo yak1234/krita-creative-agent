@@ -1,3 +1,4 @@
+// @ts-check
 import {createServer} from 'node:http';
 import {mkdtemp, chmod, writeFile, appendFile, rename, rm} from 'node:fs/promises';
 import {basename, join} from 'node:path';
@@ -9,6 +10,7 @@ import {sanitize, exportDiagnostics} from './diagnostics.mjs';
 /** Observes the existing runtime. Never dispatches painting or model requests. */
 export class LiveDiagnostics {
   constructor(runtime) {
+    this.ui = null;   // the panel's last reported state
     this.runtime=runtime; this.events=[]; this.sequence=0; this.pending=new Map();
     this.instance=randomUUID(); this.startedAt=new Date().toISOString(); this.writes=Promise.resolve();
   }
@@ -107,7 +109,7 @@ export class LiveDiagnostics {
       } catch(error) {res.statusCode=500;res.end(JSON.stringify(this.clean({error:error.message})));}
     });
     try {
-      await new Promise((resolve,reject)=>{this.server.once('error',reject);this.server.listen(this.socket,resolve);});
+      await new Promise((resolve,reject)=>{this.server.once('error',reject);this.server.listen(this.socket,()=>resolve(undefined));});
       if (process.platform!=='win32') await chmod(this.socket,0o600);   // a named pipe has no file mode
       const temporary=this.descriptor+'.'+this.instance;
       await writeFile(temporary,JSON.stringify({socket:this.socket,pid:process.pid,instance:this.instance}),{mode:0o600});

@@ -1,3 +1,4 @@
+// @ts-check
 import { isPaintingMode } from './modes.mjs';
 import {Type} from 'typebox';
 import {Value} from 'typebox/value';
@@ -23,7 +24,7 @@ export function contourCommands(value,canvas) {
   const command=(tool,parameters)=>({tool,parameters_json:JSON.stringify(parameters)});
   const commands=[command('set_brush',{preset:value.preset,opacity:1,flow:1})];
   // Validate every contour before returning any commands to the bridge.
-  for(const {color,points} of value.shapes) {
+  for(const {color,points} of /** @type {{color: string, points: number[][]}[]} */ (value.shapes)) {
     if(points.some(([x,y])=>x>canvas.width || y>canvas.height))throw new Error('Contour points must lie inside the observed canvas.');
     const area=Math.abs(points.reduce((sum,[x,y],i)=>{const next=points[(i+1)%points.length];return sum+x*next[1]-next[0]*y;},0))/2;
     if(area<1)throw new Error('Contour must enclose at least one square pixel; use a brush curve for lines.');

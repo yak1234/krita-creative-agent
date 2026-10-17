@@ -1,3 +1,4 @@
+// @ts-check
 // Canvas previews: the plugin writes a 1024-px view (JPEG, PNG for crops) to <chat>/.previews for every
 // observation, so each painting action leaves a before and an after picture. They are scratch: the
 // picture the model saw is already in the chat database (phase B), and pass review needs them only
@@ -70,7 +71,7 @@ export async function removeRebuildable(directory, { dryRun = false, files = [] 
 }
 
 /** Prune every study under studiesDirectory except `active`; recordText(id) returns a chat's stored record. */
-export async function pruneAllPreviews(studiesDirectory, { active, recordText, rebuildable, ...options } = {}) {
+export async function pruneAllPreviews(studiesDirectory, { active, recordText, rebuildable, ...options } = /** @type {{active?: Set<string>, recordText?: (id: string) => any, rebuildable?: (id: string) => any, [key: string]: any}} */ ({})) {
   const totals = { studies: 0, kept: 0, removed: 0, bytes: 0 };
   for (const id of await readdir(studiesDirectory).catch(() => [])) {
     if (id === active) continue;

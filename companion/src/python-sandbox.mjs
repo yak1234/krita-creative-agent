@@ -1,3 +1,4 @@
+// @ts-check
 // Python for image work (crop, resize, cut-outs, colour matching) that runs the same on every
 // platform: Pyodide in a child Node process locked down with Node's permission model. The child gets
 // no environment (no keys), may read only Pyodide, the package cache and one work folder, and may

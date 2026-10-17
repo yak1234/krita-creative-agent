@@ -1,3 +1,4 @@
+// @ts-check
 // Decision API wire protocols. Callers always use the System One question form
 // (`noul` / `choice` with `criteria` / `score` with a level list) and receive
 // answers keyed by question name in that form; each protocol translates both ways.

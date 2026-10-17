@@ -1,9 +1,10 @@
+// @ts-check
 import { spawn } from 'node:child_process';
 
 /** Hold macOS awake while an Agent direction is running, never while paused. */
 export class IdleSleepGuard {
-  constructor({enabled=process.platform==='darwin',spawnProcess=spawn,pid=process.pid,onError=()=>{}}={}) {
-    Object.assign(this,{enabled,spawnProcess,pid,onError});
+  constructor({enabled=process.platform==='darwin',spawnProcess=spawn,pid=process.pid,onError=/** @type {(error: any) => void} */ (()=>{})}={}) {
+    this.enabled=enabled; this.spawnProcess=spawnProcess; this.pid=pid; this.onError=onError;
     this.child=null;
   }
   start() {

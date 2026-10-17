@@ -1,3 +1,4 @@
+// @ts-check
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 
@@ -27,7 +28,7 @@ export function generateStrokes(recipe, canvas) {
   if(!canvas || !Number.isFinite(canvas.width) || !Number.isFinite(canvas.height) || w<1 || h<1 || x+w>canvas.width || y+h>canvas.height) throw new Error('Recipe region must fit the observed canvas.');
   let state=recipe.seed>>>0;
   const random=()=>{state=(state+0x6D2B79F5)>>>0;let t=state;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return ((t^(t>>>14))>>>0)/4294967296;};
-  const between=([a,b])=>a+(b-a)*random();
+  const between=(/** @type {number[]} */ [a,b])=>a+(b-a)*random();
   const n=recipe.stroke_count,cols=Math.min(n,Math.ceil(Math.sqrt(n*w/h))),rows=Math.ceil(n/cols),j=recipe.irregularity;
   const clusters=Array.from({length:Math.max(1,Math.ceil(Math.sqrt(n)/2))},()=>[random(),random()]);
   const result=[];

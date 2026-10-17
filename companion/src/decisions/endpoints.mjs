@@ -1,3 +1,4 @@
+// @ts-check
 // Decision endpoints: where decisions are sent, how they authenticate, and how to
 // list their current models. Built-ins cover OpenRouter (every decision model it
 // serves), OpenAI's Decisions API and TypeSafe; artists can add any System One

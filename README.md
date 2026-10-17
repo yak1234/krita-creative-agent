@@ -78,7 +78,7 @@ uv run --with pyqt5 python companion/tests/ui_smoke.py     # Qt panel, offscreen
 node companion/scripts/setup-local.mjs                      # point Krita at this checkout
 ```
 
-Behaviour changes go through [OpenSpec](openspec/): each change has a proposal, a spec with scenarios, a design and tasks. See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to propose and test changes.
 
 ## Repository layout
 
@@ -87,8 +87,7 @@ Behaviour changes go through [OpenSpec](openspec/): each change has a proposal, 
 | `plugin/kritamcp/` | Krita Python plugin: HTTP bridge, native painting tools, Creative Agent panel |
 | `companion/` | Node companion: agent runtime, tools, batching, pacing, review, tracing, scripts, tests |
 | `mcp-server/` | FastMCP server exposing the bridge to MCP clients |
-| `openspec/` | Specs and change history |
-| `docs/` | Architecture, decision models, tracing, safety, release notes, benchmarks |
+| `docs/` | Architecture, decision models, tracing, safety, release notes |
 
 ## Privacy and safety
 

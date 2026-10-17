@@ -9,12 +9,11 @@
   },
   "scripts": {
     "start": "node src/main.mjs",
-    "test": "node scripts/live-acceptance.mjs",
+    "test": "node scripts/run-unit-tests.mjs",
     "setup:local": "node scripts/setup-local.mjs",
     "build:release": "python3 scripts/build-release.py",
     "test:packaging": "python3 -m unittest discover -s tests -p test_packaging.py",
-    "test:unit": "node scripts/run-unit-tests.mjs",
-    "test:live": "node scripts/live-acceptance.mjs"
+    "test:unit": "node scripts/run-unit-tests.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.84.3",

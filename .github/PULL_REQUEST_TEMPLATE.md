@@ -2,9 +2,9 @@
 
 <!-- One or two sentences. -->
 
-## OpenSpec change
+## Issue
 
-<!-- Link openspec/changes/<name>, or "not needed" for refactors and docs. -->
+<!-- Link the issue, or "not needed" for refactors and docs. -->
 
 ## Tests
 

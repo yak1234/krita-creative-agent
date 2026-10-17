@@ -46,9 +46,3 @@ The setting **Luna decisions** has three values:
 - **Guide agent:** act on the decisions.
 
 Every decision has a 4-second timeout and falls back to "change nothing".
-
-## Training your own
-
-Decisions are recorded in Langfuse as `decide-*` traces, with their images. The artist confirms or corrects them in an annotation queue (`artist-verdict`), and `companion/scripts/langfuse-annotation.mjs` fills that queue. When several sources label one question, gold labels come first from the artist, then the reviewer, then outcomes, then Luna. Rows are exported in Unsloth's typed-decisions format: `state`, `questions`, `gold`, plus `images`, split by chat so no painting is in both train and test.
-
-Training runs in Unsloth (for example a Clef head on `unsloth/Qwen3.5-0.8B`, which has a vision tower). At the time of writing, Unsloth's NVIDIA path trains on the text state only; its Apple-silicon path also reads row images. A trained model is served behind the same Decisions API, so switching from Luna is a configuration change. The plan for the dataset lives in `openspec/changes/krita-decision-dataset/`.

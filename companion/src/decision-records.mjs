@@ -1,4 +1,4 @@
-// Typed Krita decisions for the decision-model dataset (openspec krita-decision-dataset).
+// Typed Krita decisions for the decision-model dataset.
 // A decision is {decision_id, kind, state, questions, images, answers, answered_by}, in the
 // Decisions API form (noul / choice / score), recorded as one small Langfuse trace each.
 import { createHash } from 'node:crypto';

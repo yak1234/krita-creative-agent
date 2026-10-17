@@ -35,4 +35,3 @@ API keys are masked before export. Environment comes from `LANGFUSE_TRACING_ENVI
 
 - `companion/scripts/langfuse-smoke.mjs <provider/model>`: one small traced run without Krita (environment `smoke-test`).
 - `companion/scripts/benchmark-run.mjs <chat-id>`: speed report for a chat (minutes per category, painter calls, tokens, review results).
-- `companion/scripts/langfuse-annotation.mjs`: fills the "confirm decisions" annotation queue.

@@ -70,16 +70,6 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: uv run --python 3.12 --with pyqt5 python companion/tests/ui_smoke.py
 
-  openspec:
-    name: OpenSpec specs
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npx -y @fission-ai/openspec@1.12.0 validate --all --strict
-
   secrets:
     name: Secret scan
     runs-on: ubuntu-latest

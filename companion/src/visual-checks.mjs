@@ -1,5 +1,5 @@
 // Image-based checks answered by Luna Decisions. Question texts are shared with
-// scripts/evaluate-visual-checks.py so the evaluation measures what ships.
+// the internal evaluation script, so the evaluation measures what ships.
 import {readFileSync} from 'node:fs';
 export const QUESTIONS=JSON.parse(readFileSync(new URL('./visual-check-questions.json',import.meta.url),'utf8'));
 const noul=({instructions,criteria})=>({type:'noul',instructions,criteria});

@@ -44,7 +44,7 @@ test('graphical installer engine verifies content and installs without touching 
     assert.equal(settings.project_root,f.project);
     assert.equal(settings.paintings_dir,f.project);
     assert.equal(settings.data_dir,join(f.root,'Creative Agent/data')); assert.equal(settings.output,settings.data_dir);
-    assert.ok(settings.cache_dir.endsWith('Creative Agent'));
+    assert.equal(settings.cache_dir,defaultLocations().cacheDestination,'the cache defaults to this OS’s cache folder');
     assert.equal(settings.build_id,f.manifest.build_id);
     assert.equal(await readFile(join(f.project,'painting.kra'),'utf8'),'original artwork');
     assert.deepEqual(await readdir(f.project),['painting.kra']);

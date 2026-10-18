@@ -83,8 +83,10 @@ def validate_pass(params, width, height, presets):
             if not isinstance(segment, list) or len(segment) != 6:
                 raise ValueError('Each segment needs c1x,c1y,c2x,c2y,endx,endy')
             coordinates.extend(segment)
+        # Up to one brush size past the edge, so a stroke can run edge to edge without tapering inside; Krita clips it.
+        margin = stroke['size']
         for index, value in enumerate(coordinates):
-            numeric(value, 'coordinate', 0, width if index % 2 == 0 else height)
+            numeric(value, 'coordinate', -margin, (width if index % 2 == 0 else height) + margin)
     return params
 
 

@@ -19,6 +19,17 @@ test('Agent idle-sleep hold exists only during an active run',()=>{
   guard.stop();assert.equal(children[1].killed,true);
 });
 
+test('with "Keep the screen awake", the hold also keeps the display on, and each hold is reported for the panel',()=>{
+  let display=false; const calls=[], states=[];
+  const guard=new IdleSleepGuard({enabled:true,pid:7,display:()=>display,onChange:state=>states.push(state),spawnProcess:(path,args)=>{
+    calls.push(args); const child=new EventEmitter(); child.exitCode=null; child.killed=false; child.kill=()=>{child.killed=true;return true;}; return child;
+  }});
+  guard.start(); guard.stop();
+  display=true; guard.start(); guard.stop();
+  assert.deepEqual(calls,[['-i','-w','7'],['-d','-i','-w','7']],'the display is held only when the artist turned it on');
+  assert.deepEqual(states,[{active:true,display:false},{active:false,display:false},{active:true,display:true},{active:false,display:false}]);
+});
+
 test('stage context sends a large observed layer tree once while preserving document revision',()=>{
   const layers=Array.from({length:158},(_,i)=>({id:'unique-layer-'+i,name:'Layer '+i,depth:0,visible:true,opacity:255,editable_by_agent:true,type:'paintlayer'}));
   const runtime=new StudioRuntime({config:{output:'/tmp/creative-performance-test',prevent_idle_sleep:false},tracing:recordingTracing(),emit:()=>{},models:{getModel:()=>({input:['image']})}});

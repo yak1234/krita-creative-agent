@@ -1,5 +1,7 @@
+// @ts-check
 import {Type} from 'typebox';
 import {Value} from 'typebox/value';
+/** @template {import('typebox').TProperties} T @param {T} p */
 const object=p=>Type.Object(p,{additionalProperties:false});
 const rect=()=>Type.Array(Type.Integer({minimum:0,maximum:8192}),{minItems:4,maxItems:4,description:'[x,y,width,height], in source pixels for source/focal regions and canvas pixels for target.'});
 // 2: transfer patches fade out toward the sides that meet existing paint.
@@ -14,6 +16,15 @@ export const referenceSchema=object({
  steps:Type.Optional(Type.Array(Type.Number({minimum:.75,maximum:64}),{minItems:3,maxItems:3,description:'Source-pixel sampling steps: coarse, fine, focal. Default [6,2.5,1.2]. Must decrease.'})),
  seed:Type.Optional(Type.Integer({minimum:0,maximum:4294967295})),
 });
+export const DEFAULT_STEPS=[6,2.5,1.2];
+// Integer rectangles rarely share an exact ratio: the whole of a 1920x1291 reference over a 1520x1022 canvas
+// is off by a fraction of a pixel. Within one target pixel the stretch cannot be seen.
+const sameAspect=(sw,sh,tw,th)=>Math.abs(sh*tw/sw-th)<=1;
+/** Strokes a dab transfer plans (an upper bound: transparent samples are skipped), from the recipe alone. */
+export function estimateReferenceStrokes(recipe){
+ const steps=recipe.steps??DEFAULT_STEPS,[,,sw,sh]=recipe.source;
+ return steps.slice(0,2).reduce((n,s)=>n+Math.ceil(sw/s)*Math.ceil(sh/s),0)+(recipe.focal_regions??[]).reduce((n,r)=>n+Math.ceil(r[2]/steps[2])*Math.ceil(r[3]/steps[2]),0);
+}
 const rectInside=(r,w,h)=>r[2]>0&&r[3]>0&&r[0]+r[2]<=w&&r[1]+r[3]<=h;
 const inside=(x,y,r)=>x>=r[0]&&y>=r[1]&&x<r[0]+r[2]&&y<r[1]+r[3];
 function random(seed){let a=seed>>>0;return()=>{a+=0x6D2B79F5;let t=a;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296;};}
@@ -23,13 +34,12 @@ export function generateReferencePlan(recipe,image,canvas){
  if(!Number.isInteger(image.width)||!Number.isInteger(image.height)||image.width*image.height>4_000_000||image.data.length!==image.width*image.height*4)throw new Error('Invalid decoded reference.');
  if(!rectInside(recipe.source,image.width,image.height))throw new Error('Source crop must fit the reference.');
  const [sx,sy,sw,sh]=recipe.source,[tx,ty,tw,th]=recipe.target,scale=tw/sw;
- if(Math.abs(scale-th/sh)>1e-6)throw new Error('Source and target must have matching aspect ratios; crop instead of stretching.');
- const steps=recipe.steps??[6,2.5,1.2];
+ if(!sameAspect(sw,sh,tw,th))throw new Error('Source and target must have matching aspect ratios; crop instead of stretching.');
+ const steps=recipe.steps??DEFAULT_STEPS;
  if(!(steps[0]>steps[1]&&steps[1]>steps[2]))throw new Error('Sampling steps must decrease from coarse to fine to focal.');
  for(const r of recipe.focal_regions??[])if(!rectInside(r,image.width,image.height)||r[0]<sx||r[1]<sy||r[0]+r[2]>sx+sw||r[1]+r[3]>sy+sh)throw new Error('Focal regions must fit the source crop.');
  // Bound work before allocating or scanning potentially enormous grids.
- const estimate=steps.slice(0,2).reduce((n,s)=>n+Math.ceil(sw/s)*Math.ceil(sh/s),0)+(recipe.focal_regions??[]).reduce((n,r)=>n+Math.ceil(r[2]/steps[2])*Math.ceil(r[3]/steps[2]),0);
- if(estimate>200000)throw new Error('Recipe exceeds 200,000 samples. Increase steps or reduce the crop.');
+ if(estimateReferenceStrokes(recipe)>200000)throw new Error('Recipe exceeds 200,000 samples. Increase steps or reduce the crop.');
  const sample=(x,y,r)=>{let sum=[0,0,0],alpha=0,n=0;for(let yy=Math.max(sy,Math.floor(y)-r);yy<=Math.min(sy+sh-1,Math.floor(y)+r);yy++)for(let xx=Math.max(sx,Math.floor(x)-r);xx<=Math.min(sx+sw-1,Math.floor(x)+r);xx++){const i=(yy*image.width+xx)*4,a=image.data[i+3]/255;alpha+=a;n++;for(let k=0;k<3;k++)sum[k]+=image.data[i+k]*a;}return {rgb:sum.map(v=>alpha?v/alpha:0),alpha:n?alpha/n:0};};
  const luminance=(x,y)=>{const {rgb,alpha}=sample(Math.max(sx,Math.min(sx+sw-1,x)),Math.max(sy,Math.min(sy+sh-1,y)),0);return(rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722)*alpha;};
  const inner=[tx>0,ty>0,tx+tw<canvas.width,ty+th<canvas.height],band=PATCH_FEATHER*Math.min(tw,th);
@@ -82,7 +92,7 @@ function cropGradient(recipe,image,canvas){
  if(!Number.isInteger(image.width)||!Number.isInteger(image.height)||image.width*image.height>4_000_000||image.data.length!==image.width*image.height*4)throw new Error('Invalid decoded reference.');
  if(!rectInside(recipe.source,image.width,image.height))throw new Error('Source crop must fit the reference.');
  const [sx,sy,sw,sh]=recipe.source,[tx,ty,tw,th]=recipe.target,scale=tw/sw;
- if(Math.abs(scale-th/sh)>1e-6)throw new Error('Source and target must have matching aspect ratios; crop instead of stretching.');
+ if(!sameAspect(sw,sh,tw,th))throw new Error('Source and target must have matching aspect ratios; crop instead of stretching.');
  const L=new Float32Array(sw*sh);
  for(let y=0;y<sh;y++)for(let x=0;x<sw;x++){const i=((sy+y)*image.width+sx+x)*4;L[y*sw+x]=(image.data[i]*.2126+image.data[i+1]*.7152+image.data[i+2]*.0722)*image.data[i+3]/65025;}
  const GX=new Float32Array(sw*sh),GY=new Float32Array(sw*sh),M=new Float32Array(sw*sh);
@@ -186,10 +196,10 @@ export function generateSurfacePlan(recipe,image,canvas){
  const [A,B,C]=[XX,XY,YY].map(v=>smooth(v,sw,sh,r));
  // Edges, grown by the brush radius (one spacing), are off limits.
  const near=new Uint8Array(sw*sh),rows=new Uint8Array(sw*sh),grow=Math.ceil(s);
- for(let y=0;y<sh;y++){let count=0;for(let x=0;x<Math.min(sw,grow);x++)count+=M[y*sw+x]>=edge;
-  for(let x=0;x<sw;x++){if(x+grow<sw)count+=M[y*sw+x+grow]>=edge;rows[y*sw+x]=count>0;if(x-grow>=0)count-=M[y*sw+x-grow]>=edge;}}
+ for(let y=0;y<sh;y++){let count=0;for(let x=0;x<Math.min(sw,grow);x++)count+=+(M[y*sw+x]>=edge);
+  for(let x=0;x<sw;x++){if(x+grow<sw)count+=+(M[y*sw+x+grow]>=edge);rows[y*sw+x]=+(count>0);if(x-grow>=0)count-=+(M[y*sw+x-grow]>=edge);}}
  for(let x=0;x<sw;x++){let count=0;for(let y=0;y<Math.min(sh,grow);y++)count+=rows[y*sw+x];
-  for(let y=0;y<sh;y++){if(y+grow<sh)count+=rows[(y+grow)*sw+x];near[y*sw+x]=count>0;if(y-grow>=0)count-=rows[(y-grow)*sw+x];}}
+  for(let y=0;y<sh;y++){if(y+grow<sh)count+=rows[(y+grow)*sw+x];near[y*sw+x]=+(count>0);if(y-grow>=0)count-=rows[(y-grow)*sw+x];}}
  // Busy areas: the mean edge strength around each pixel, over about four spacings.
  const detail=smooth(M,sw,sh,Math.max(2,Math.round(s)));
  for(let k=0;k<near.length;k++)if(detail[k]>busy)near[k]=1;

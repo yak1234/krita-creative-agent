@@ -4,8 +4,8 @@ import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
-import {generateReferencePlan,generateEdgePlan,generateSurfacePlan,EDGE_LIMIT,SURFACE_LIMIT} from '../src/reference-generator.mjs';
-import {referenceTools,transferRefusal,existingPainting,PAINTED_SHARE} from '../src/reference-tool.mjs';
+import {generateReferencePlan,generateEdgePlan,generateSurfacePlan,estimateReferenceStrokes,EDGE_LIMIT,SURFACE_LIMIT} from '../src/reference-generator.mjs';
+import {referenceTools,transferRefusal,partShare,existingPainting,PAINTED_SHARE,fitStepsToTime,wholeReferenceRefusal,groundStops,STROKES_PER_SECOND,TRANSFER_TIME_SHARE} from '../src/reference-tool.mjs';
 const recipe={name:'Portrait',reference_id:'ref',preset:'Basic',source:[0,0,24,24],target:[2,2,48,48],steps:[6,3,1.5],focal_regions:[[6,6,12,12]],seed:42};
 const canvas={width:64,height:64,revision:'r0'};
 const image={width:24,height:24,data:Buffer.alloc(24*24*4)};
@@ -25,7 +25,9 @@ async function harness(){const directory=await mkdtemp(join(tmpdir(),'reference-
  async callNative(op,p){if(op==='decode_reference')return {...image,data:undefined,rgba_base64:image.data.toString('base64'),sha256:p.sha256};if(op==='observe')return {...canvas,revision};if(op==='operation_status')return {found:receipts.has(p.id),result:receipts.get(p.id)};throw new Error(op);}};
  let after=()=>{};
  const execute=async(id,args)=>{calls.push({id,args});const result={status:'ok',revision:'r'+calls.length,layer_id:args.continue_layer_id??'layer-'+(++layer)};revision=result.revision;receipts.set(id,result);await after(runtime,result);return {details:result};};
- const tools=referenceTools(runtime,execute);return {runtime,calls,receipts,tools,ref,setAfter:f=>after=f,setRevision:r=>revision=r,close:()=>rm(directory,{recursive:true,force:true})};}
+ const fills=[];
+ const fill=async(id,args)=>{if(!receipts.has(id)){fills.push({id,args});const result={status:'ok',revision:'g'+fills.length,layer_id:'ground-'+fills.length};revision=result.revision;receipts.set(id,result);}return {details:receipts.get(id)};};
+ const tools=referenceTools(runtime,execute,fill);return {runtime,calls,fills,receipts,tools,ref,setAfter:f=>after=f,setRevision:r=>revision=r,close:()=>rm(directory,{recursive:true,force:true})};}
 test('a job stores no stroke plan; a resume rebuilds it and refuses one that differs',async()=>{
  const h=await harness();try{
   const big={...recipe,steps:[2,1.5,1]};h.setAfter(r=>r.cancelRequested=true);
@@ -225,4 +227,116 @@ test('a blank saved document is not an existing painting; what is visible decide
  assert.equal(existingPainting(current,{layers:[{name:'Background'}],painted_share:0.6}),true,'one flattened painting');
  assert.equal(existingPainting({study:{canvas:{mode:'new'}}},{...blank,painted_share:0.9}),false,'a new canvas the agent made');
  assert.equal(existingPainting(current,{layers:blank.layers,filename:blank.filename}),true,'an older plugin without painted_share keeps the old rule');
+});
+
+test('under a time allowance a transfer widens its steps to fit; without one, or when it fits, it is left alone',()=>{
+ // The traced 20-minute Starry Night: 184,000 planned strokes, 24,576 painted when time ran out.
+ const starry={...recipe,source:[10,10,1900,1500],target:[0,0,1520,1200],steps:[10,5,2.5],focal_regions:[[600,100,400,300],[1500,300,300,700]]};
+ const left=18*60,fit=fitStepsToTime(starry,left);
+ assert.ok(fit.strokes>180000);
+ assert.ok(estimateReferenceStrokes(fit.recipe)<=left*TRANSFER_TIME_SHARE*STROKES_PER_SECOND*1.1,'about half the time left at the slow rate');
+ assert.deepEqual(fit.from,[10,5,2.5]);
+ const [a,b,c]=fit.recipe.steps;assert.ok(a>b&&b>c&&c>2.5,'still coarse to fine, every step wider');
+ assert.equal(fitStepsToTime(starry,10*3600),null,'ten hours is enough');
+ assert.ok(estimateReferenceStrokes(fitStepsToTime(starry,left,40).recipe)>estimateReferenceStrokes(fit.recipe),'a faster measured rate keeps finer steps');
+ const capped=fitStepsToTime({...starry,steps:[40,20,10]},5).recipe.steps;
+ assert.ok(capped[0]<=64&&capped[0]>capped[1]&&capped[1]>capped[2],'the 64 px cap keeps the order');
+});
+test('a job sized to the time left records what was asked, tells the painter, and replays under the same ID',async()=>{
+ const h=await harness();try{
+  h.runtime.goal={revision:1,current_step:0,brief:{steps:[{},{},{}]}};h.runtime.timeLeftMs=()=>3000;
+  const asked={...recipe,source:[0,0,24,24],target:[0,0,64,64],steps:[2,1.5,1]};
+  const first=await h.tools[0].execute('sized',asked);
+  assert.match(first.details.fitted,/Steps widened from \[2,1.5,1\]/);
+  const job=JSON.parse(await readFile(join(h.runtime.study.directory,'reference-paintings',first.details.job_id+'.json')));
+  assert.deepEqual(job.requested.steps,[2,1.5,1]);assert.ok(job.recipe.steps[0]>2);
+  const n=h.calls.length;assert.equal((await h.tools[0].execute('sized',asked)).details.job_id,first.details.job_id);assert.equal(h.calls.length,n,'the same call replays');
+ }finally{await h.close();}
+});
+test('on a fresh canvas the first transfer from a reference with the canvas\u2019s proportions covers all of it',()=>{
+ // The traced Great Wave: the wave alone first, then only 20% patches, so the sky, boats and Fuji never came.
+ const wave={...recipe,source:[152,60,864,840],target:[119,48,684,665]},canvas={width:1520,height:1022},ref={width:1920,height:1291,role:'reference'};
+ const refusal=wholeReferenceRefusal(wave,ref,canvas);
+ assert.match(refusal,/source \[0,0,1920,1291\], target \[0,0,1520,1022\]/);
+ const big={width:1920,height:1291,data:Buffer.alloc(1920*1291*4,255)};
+ assert.equal(generateReferencePlan({...wave,source:[0,0,1920,1291],target:[0,0,1520,1022],steps:[60,30,15]},big,canvas).canvas.width,1520,'the suggested rectangles are accepted');
+ assert.equal(wholeReferenceRefusal({...wave,source:[10,10,1900,1278],target:[0,0,1520,1022]},ref,canvas),null,'nearly all of it');
+ assert.match(wholeReferenceRefusal({...wave,source:[600,300,760,511],target:[0,0,1520,1022]},ref,canvas),/all of it/,'a zoomed crop over the whole canvas');
+ assert.equal(wholeReferenceRefusal(wave,{...ref,width:800,height:1200},canvas),null,'a part (a figure for a landscape) may go anywhere');
+ assert.equal(wholeReferenceRefusal(wave,{...ref,role:'asset'},canvas),null,'an AI image asset is a part');
+ assert.equal(wholeReferenceRefusal({...wave,target:[100,100,150,100]},ref,canvas),null,'a focal patch');
+ // Starry Night and Pearl Earring, as the painter mapped them.
+ assert.equal(wholeReferenceRefusal({...recipe,source:[10,10,1900,1500],target:[0,0,1520,1200]},{width:1920,height:1520},{width:1520,height:1200}),null);
+ assert.match(wholeReferenceRefusal({...recipe,source:[4,0,1144,1352],target:[0,0,1100,1300]},{width:1920,height:2274},{width:1100,height:1300}),/all of it/,'a quarter of the Vermeer');
+});
+test('the toned ground grades through the reference\u2019s colours top to bottom, and none goes under a cut-out',()=>{
+ const W=30,H=60,data=Buffer.alloc(W*H*4);
+ for(let y=0;y<H;y++)for(let x=0;x<W;x++)data.set(y<H/2?[20,30,120,255]:[200,150,40,255],(y*W+x)*4);
+ const stops=groundStops({width:W,height:H,data},[0,0,W,H]);
+ assert.equal(stops[0].offset,0);assert.equal(stops.at(-1).offset,1);
+ assert.equal(stops[0].color,'#141e78');assert.equal(stops.at(-1).color,'#c89628');
+ assert.ok(stops.every((s,i)=>!i||s.offset>stops[i-1].offset));
+ const cut=Buffer.from(data);for(let i=3;i<cut.length;i+=8)cut[i]=0;
+ assert.equal(groundStops({width:W,height:H,data:cut},[0,0,W,H]),null);
+});
+test('the first full transfer lays the ground once, before any dab; patches and resumes do not',async()=>{
+ const h=await harness();try{
+  h.runtime.goal={revision:1,current_step:0,brief:{steps:[{},{},{},{},{},{}]}};
+  const full={...recipe,target:[0,0,64,64],steps:[2,1.5,1]};h.setAfter(r=>r.cancelRequested=true);
+  const first=await h.tools[0].execute('full',full);assert.equal(first.details.status,'paused');
+  assert.equal(h.fills.length,1);assert.equal(h.fills[0].id,'reference-'+first.details.job_id+'-ground');
+  assert.deepEqual(h.fills[0].args.area,[{shape:'rectangle',bounds:[0,0,64,64]}]);
+  assert.equal(h.fills[0].args.gradient.stops[0].color,'#691469','the left red and right blue average in each band');
+  assert.match(first.details.ground,/toned ground/);
+  h.runtime.cancelRequested=false;h.setAfter(()=>{});
+  assert.equal((await h.tools[1].execute('resume',{job_id:first.details.job_id})).details.status,'complete');
+  assert.equal(h.fills.length,1,'a resume does not fill again');
+  await h.tools[0].execute('patch',{...recipe,target:[0,0,24,24]});assert.equal(h.fills.length,1,'a patch goes over paint');
+ }finally{await h.close();}
+ const s=await harness();try{
+  s.runtime.goal={revision:1,current_step:0,brief:{steps:[{},{}]}};s.runtime.cancelRequested=true;
+  await assert.rejects(s.tools[0].execute('stopped',{...recipe,target:[0,0,64,64]}),/requires active Agent/);assert.equal(s.fills.length,0,'after Stop nothing is filled');
+ }finally{await s.close();}
+});
+
+test('an active protected area lifts the transfer size caps; without one they hold',()=>{
+ // New Moscow: a sky a third of a 6000x4500 canvas, on the existing painting.
+ const goal={revision:1,current_step:0,brief:{steps:[{},{},{},{}]}},canvas={width:6000,height:4500};
+ const sky={...recipe,source:[0,0,3000,750],target:[0,0,6000,1500]};          // 2x: sharp enough
+ assert.match(transferRefusal(goal,sky,canvas,0,{established:true}),/already exists/);
+ assert.equal(transferRefusal(goal,sky,canvas,0,{established:true,protectedAreas:1}),null,'the artist protected what matters');
+ assert.equal(transferRefusal(goal,sky,canvas,1,{protectedAreas:2}),null,'a second transfer too');
+ assert.match(transferRefusal({...goal,current_step:3},sky,canvas,0,{protectedAreas:1}),/off from step/,'the late-plan rule still holds');
+});
+test('a transfer passes the painting\u2019s active protected areas to the size rule',async()=>{
+ const h=await harness();try{
+  h.runtime.goal={revision:1,current_step:0,brief:{steps:[{},{},{},{},{},{}]}};h.runtime.study.canvas={mode:'current'};
+  const observe=h.runtime.callNative;
+  h.runtime.callNative=async(op,p)=>op==='observe'?{...await observe(op,p),painted_share:.9,protected_areas:[{id:'m',name:'Car',bounds:[0,0,8,8]}]}:observe(op,p);
+  assert.equal((await h.tools[0].execute('protected',{...recipe,target:[0,0,48,48]})).details.status,'complete');   // 56%, at 2x
+ }finally{await h.close();}
+});
+
+test('a transfer from a reference part is the artist\u2019s choice of area: measured by the part, not refused for its size',()=>{
+ const goal={revision:1,current_step:0,brief:{steps:[{},{},{},{}]}},canvas={width:6000,height:4500};
+ const sky={...recipe,source:[0,0,3000,2250],target:[0,0,6000,4500]},part={part_kind:'part',bounds:[0,0,3000,560]};
+ assert.match(transferRefusal(goal,sky,canvas,0,{established:true}),/already exists/,'a whole-canvas transfer from the full reference');
+ assert.equal(transferRefusal(goal,sky,canvas,0,{established:true,part}),null,'from the sky part: only the sky is painted');
+ assert.equal(transferRefusal(goal,sky,canvas,1,{part}),null,'after an earlier transfer too');
+ assert.ok(Math.abs(partShare(sky,part)-560/2250)<1e-9,'the share is the part\u2019s area within the source');
+ assert.match(transferRefusal({...goal,current_step:3},sky,canvas,0,{part}),/off from step/,'late in an Autopilot plan a large part is still refused');
+ assert.equal(wholeReferenceRefusal(sky,{width:3000,height:2250,role:'reference',part_kind:'part'},canvas),null,'a part is not the whole picture');
+});
+test('the painter is told what a reference part and a crop are',async()=>{
+ const {PAINTING_INSTRUCTIONS}=await import('../src/prompt.mjs');
+ assert.match(PAINTING_INSTRUCTIONS,/A part reference \(part_of\) is see-through outside the one area to follow; a transfer from it paints only that area, in the place it has in the original\. A crop is a close-up of bounds of the original\./);
+});
+
+test('a reference part may be larger than 5 MB, up to the 12 MB a reference may be; others stay at 5 MB',async()=>{
+ const h=await harness();try{
+  const big=join(h.runtime.study.directory,'big.png');await writeFile(big,Buffer.alloc(6*1024*1024));
+  h.runtime.study.references.push({id:'part',path:big,part_kind:'part',bounds:[0,0,24,24]},{id:'plain',path:big});
+  assert.equal((await h.tools[0].execute('part',{...recipe,reference_id:'part'})).details.status,'complete');
+  await assert.rejects(h.tools[0].execute('plain',{...recipe,reference_id:'plain'}),/smaller than 5 MB/);
+ }finally{await h.close();}
 });

@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ElementTree
 from .creative_validation import fields, numeric, text
 
 TRANSFORM_FIELDS = ('layer_id', 'move', 'scale', 'rotate', 'pivot', 'name', 'stage_id', 'region', 'expected_revision')
-MOVABLE = ('paintlayer', 'grouplayer', 'filllayer', 'vectorlayer')
+MOVABLE = ('paintlayer', 'grouplayer', 'filllayer', 'vectorlayer', 'clonelayer')
 FREE_TRANSFORM = '''<!DOCTYPE transform_params>
 <transform_params>
  <main id="tooltransformparams"/>
@@ -69,7 +69,7 @@ class TransformCraft:
         if not self._craft_owned(session, params['layer_id']):
             raise ValueError("The artist's layers are never moved. Transform one of your own layers.")
         if node.type() not in MOVABLE:
-            raise ValueError('A transform goes on a paint, group, fill or vector layer.')
+            raise ValueError('A transform goes on a paint, group, fill, vector or clone layer.')
         if node.locked():
             raise ValueError('The layer is locked.')
         if not any(key in params for key in ('move', 'scale', 'rotate')):
@@ -77,10 +77,13 @@ class TransformCraft:
         if 'move' in params:
             self._transform_pair(params['move'], 'move', -100000, 100000)
         if 'scale' in params:
+            # A negative factor flips (a reflection); its size is still 0.02-50.
+            for factor in (params['scale'] if isinstance(params['scale'], list) else [params['scale']]):
+                numeric(factor, 'scale', -50, 50)
+                if abs(factor) < 0.02:
+                    raise ValueError('scale must be between 0.02 and 50 in size (negative flips)')
             if isinstance(params['scale'], list):
-                self._transform_pair(params['scale'], 'scale', 0.02, 50)
-            else:
-                numeric(params['scale'], 'scale', 0.02, 50)
+                self._transform_pair(params['scale'], 'scale', -50, 50)
         if 'rotate' in params:
             numeric(params['rotate'], 'rotate', -360, 360)
         if 'pivot' in params:

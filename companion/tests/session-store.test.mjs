@@ -8,7 +8,7 @@ import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { ProjectStore } from '../src/project-store.mjs';
 import { SDK_INTERNALS } from '../src/session-store.mjs';
 
-const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZ9kAAAAASUVORK5CYII=';
+const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
 const image = { type: 'image', data: png, mimeType: 'image/png' };
 const user = (text, extra = []) => ({ role: 'user', content: [{ type: 'text', text }, ...extra], timestamp: 1 });
 const reply = text => ({ role: 'assistant', content: [{ type: 'text', text }], api: 'openai-completions', provider: 't', model: 'm',

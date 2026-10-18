@@ -7,6 +7,7 @@ import { Value } from 'typebox/value';
 import { containedFile, imageInfo, splitJsonLines } from '../src/files.mjs';
 import { paintingTools } from '../src/tools.mjs';
 import { PaintingRuntime } from '../src/runtime.mjs';
+import { CRAFT_TOOLS, CRAFT_OPERATIONS } from '../src/craft.mjs';
 
 test('JSON protocol preserves Unicode separators inside a message', () => {
   const text = '{"text":"one\u2028two"}\n{"type":"stop"}\npartial';
@@ -37,6 +38,78 @@ test('painting schemas reject misspelled fields and oversized batches', () => {
   assert.equal(Value.Check(schema, { ...pass, brush: 'Basic' }), false);
   assert.equal(Value.Check(schema, { ...pass, strokes: Array(257).fill(stroke) }), false);
   assert.equal(Value.Check(schema, { ...pass, strokes: [{ ...stroke, pressure: 1 }] }), false);
+  assert.equal(Value.Check(schema, { ...pass, strokes: [{ ...stroke, start: [-150, -60] }] }), true, 'an edge-to-edge stroke starts off the canvas; the plugin allows one brush size');
+});
+
+test('a selection step can be a seed, as a magic wand', () => {
+  const schema = paintingTools({}).find(t => t.name === 'select').parameters;
+  assert.equal(Value.Check(schema, { name: 'Sky', steps: [{ seed: [3000, 20], tolerance: 30, bounds: [0, 0, 6000, 1400] }] }), true);
+  assert.equal(Value.Check(schema, { name: 'Sky', steps: [{ seed: [3000.5, 20] }] }), false, 'whole pixels');
+  assert.match(schema.properties.steps.description, /seed/);
+});
+
+test('krita_action runs a vetted Krita menu command on a layer', () => {
+  const tool = paintingTools({}).find(t => t.name === 'krita_action');
+  assert.equal(Value.Check(tool.parameters, { action: 'mirrorNodeX', target: 'L1' }), true);
+  assert.equal(Value.Check(tool.parameters, { action: 'selectopaque', target: 'L1', save_as: 'Car', selection: 'Street' }), true);
+  assert.equal(Value.Check(tool.parameters, { action: 'mirrorNodeX' }), false, 'a target layer');
+  assert.match(tool.description, /krita_capabilities/);
+  assert.ok(CRAFT_TOOLS.includes('krita_action') && CRAFT_OPERATIONS.includes('krita_action'));
+});
+
+test('clone_layer makes a live copy of any layer, optionally offset', () => {
+  const tool = paintingTools({}).find(t => t.name === 'clone_layer');
+  assert.equal(Value.Check(tool.parameters, { source: 'L1', name: 'Lamp post 2', offset: [400, 0], blend_mode: 'multiply', opacity: 0.5 }), true);
+  assert.equal(Value.Check(tool.parameters, { source: 'L1' }), false, 'a name');
+  assert.equal(Value.Check(tool.parameters, { source: 'L1', name: 'X', offset: [400] }), false, '[dx, dy]');
+  assert.match(tool.description, /follows/);
+  assert.ok(CRAFT_TOOLS.includes('clone_layer') && CRAFT_OPERATIONS.includes('clone_layer'));
+});
+
+test('split_by_color finds the painting\u2019s colour regions as saved selections', () => {
+  const tool = paintingTools({}).find(t => t.name === 'split_by_color');
+  assert.equal(Value.Check(tool.parameters, { source: 'visible', colors: 8, region: [0, 0, 6000, 1400], min_area: 5000 }), true);
+  assert.equal(Value.Check(tool.parameters, { source: 'L1', as_layers: true, name_prefix: 'Street' }), true);
+  assert.equal(Value.Check(tool.parameters, { source: 'visible', colors: 30 }), false, '2-24 colours');
+  assert.match(tool.description, /not objects/);
+  assert.ok(CRAFT_TOOLS.includes('split_by_color'));
+});
+
+test('apply_filter describes colour to alpha', () => {
+  const { description } = paintingTools({}).find(t => t.name === 'apply_filter');
+  assert.match(description, /colortoalpha/);
+  assert.match(description, /targetcolor/);
+  assert.match(description, /threshold/);
+  assert.match(description, /clone_layer/, 'the route for the artist\u2019s sketch');
+});
+
+test('krita_action is offered only when this Krita has vetted actions', async () => {
+  const { StudioRuntime } = await import('../src/studio.mjs');
+  const offered = (count, settings = {}) => StudioRuntime.prototype.toolOffered.call({ executionSettings: settings, kritaActions: count, goal: null }, 'krita_action');
+  assert.equal(offered(0), false, 'an unaudited Krita: the tool would always refuse');
+  assert.equal(offered(13), true);
+  assert.equal(offered(13, { native_craft: false }), false);
+  const runtime = { emit() {}, listModels: () => [], listProviders: () => [] };
+  PaintingRuntime.prototype.acceptBridgeHealth.call(runtime, { protocol_version: 2, krita_actions: 5, capabilities: {} });
+  assert.equal(runtime.kritaActions, 5, 'the count comes from Krita\u2019s health check');
+});
+
+test('step timings stay out of what the model reads', async () => {
+  const { resultContent } = await import('../src/tools.mjs');
+  const { content } = await resultContent({}, { status: 'ok', layer_id: 'L1', timings_ms: { apply: 350000, total: 414000 } });
+  assert.doesNotMatch(content[0].text, /timings_ms/);
+});
+
+test('the action audit keeps only commands that opened no dialog and were undone', async () => {
+  const { vetted, CANDIDATES } = await import('../scripts/audit-krita-actions.mjs');
+  const kept = vetted([{ id: 'mirrorNodeX', status: 'ok', changed: true, undone: true },
+    { id: 'mirrorNodeY', status: 'dialog', changed: false, undone: true },
+    { id: 'clear', status: 'ok', changed: true, undone: false },
+    { id: 'selectopaque', status: 'missing', changed: false, undone: false },
+    { id: 'rotateLayer180', status: 'ok', changed: false, undone: true }]);
+  assert.deepEqual(kept.map(e => e.id), ['mirrorNodeX']);
+  assert.deepEqual(Object.keys(kept[0]).sort(), ['id', 'kind', 'label', 'needs']);
+  assert.ok(!CANDIDATES.some(c => /crop|trim|resize|scale/i.test(c.id)), 'nothing that changes the canvas size');
 });
 
 test('a second companion cannot acquire a live owner’s lock', async () => {

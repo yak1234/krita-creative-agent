@@ -179,6 +179,33 @@ class RegionTests(RegionSetup, unittest.TestCase):
         result = run(self.h, 'select', {'name': 'Blue', 'steps': [{'color': '#1e140a', 'tolerance': 0, 'bounds': [0, 0, 4, 2]}]})
         self.assertEqual((result['bounds'], result['selected_pixels']), ([0, 0, 3, 2], 4))
 
+    def test_connected_mask_keeps_only_what_touches_the_seed(self):
+        # 6x3: a sky across the top that runs down the left edge, a separate patch of the same colour at the right
+        # (a lit window), joined to the sky only diagonally, which does not count.
+        mask = bytes([255, 255, 255, 255, 0,   0,
+                      255, 0,   0,   0,   255, 0,
+                      255, 0,   0,   0,   0,   255])
+        self.assertEqual(region.connected_mask(mask, 6, 3, 2, 0), bytes([255, 255, 255, 255, 0, 0,
+                                                                         255, 0, 0, 0, 0, 0,
+                                                                         255, 0, 0, 0, 0, 0]))
+        self.assertEqual(region.connected_mask(mask, 6, 3, 1, 1), bytes(18), 'a seed on an unmatched pixel selects nothing')
+        self.assertEqual(region.connected_mask(mask, 6, 3, 5, 2), bytes(17) + b'\xff', 'the window alone')
+
+    def test_seed_selects_the_connected_area_of_the_seed_colour(self):
+        # The visible image: row 0 sky blue, row 1 sky at the left two pixels; the rest is a building of another colour,
+        # except one sky-coloured pixel cut off at the bottom right.
+        sky, wall = bytes([60, 20, 10, 255]), bytes([20, 20, 20, 255])
+        rows = [sky * 4, sky * 2 + wall * 2, wall * 4, wall * 3 + sky]
+        self.h.doc.root.pixels = bytearray(b''.join(rows))
+        result = run(self.h, 'select', {'name': 'Sky', 'steps': [{'seed': [3, 0], 'tolerance': 10}]})
+        self.assertEqual((result['bounds'], result['selected_pixels']), ([0, 0, 4, 2], 6), 'the cut-off pixel stays out')
+        result = run(self.h, 'select', {'name': 'Top', 'steps': [{'seed': [0, 0], 'bounds': [0, 0, 4, 1]}]})
+        self.assertEqual((result['bounds'], result['selected_pixels']), ([0, 0, 4, 1], 4), 'bounds limits the search')
+        for step, message in (({'seed': [4, 0]}, 'seed'), ({'seed': [0, 2], 'bounds': [0, 0, 4, 1]}, 'inside its bounds'),
+                              ({'seed': [0, 0], 'color': '#000000'}, 'one source')):
+            with self.assertRaisesRegex(ValueError, message):
+                run(self.h, 'select', {'name': 'Bad', 'steps': [step]})
+
     def test_steps_are_validated_before_anything_is_saved(self):
         figure = self.artist_layer()
         for steps, message in (([{'mode': 'add', 'grow': 2}], 'first step needs a source'),

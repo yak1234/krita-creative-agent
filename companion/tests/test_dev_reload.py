@@ -43,6 +43,34 @@ class DevReloadTests(unittest.TestCase):
         Plugin.__module__ = 'reloadpkg'
         self.plugin = Plugin()
 
+    def test_every_plugin_module_reloads_dependencies_first_not_only_a_list(self):
+        write(self.folder, 'native_craft', '''
+            from .layer_craft import LayerCraft
+            class NativeCraft:
+                def act(self): return 'old act'
+            ''')
+        write(self.folder, 'creative_tools', '''
+            from .layer_craft import LayerCraft
+            from .native_craft import NativeCraft
+            CREATIVE_BUILD = {'build_id': 'old'}
+            class CreativeTools(LayerCraft, NativeCraft):
+                def dispatch(self): return 'old dispatch ' + self.craft()
+            ''')
+        importlib.reload(sys.modules['reloadpkg.creative_tools'])
+        class Plugin(sys.modules['reloadpkg.creative_tools'].CreativeTools): pass
+        Plugin.__module__ = 'reloadpkg'
+        plugin = Plugin()
+        write(self.folder, 'native_craft', '''
+            class NativeCraft:
+                def act(self): return 'new act'
+            ''')
+        result = self.reload.reload(plugin, companion=False)
+        self.assertEqual(plugin.act(), 'new act', 'a module no list names still reloads')
+        order = result['reloaded']
+        self.assertLess(order.index('layer_craft'), order.index('native_craft'))
+        self.assertLess(order.index('native_craft'), order.index('creative_tools'))
+        self.assertNotIn('dev_reload', order)
+
     def test_a_live_object_gets_fresh_methods_and_new_mixins(self):
         self.assertEqual(self.plugin.dispatch(), 'old dispatch old craft')
         write(self.folder, 'layer_craft', '''

@@ -13,6 +13,13 @@ export function executionSettings(value={}) {
     throw new Error('Choose a decision endpoint and model.');
   return {...result,decisions:{endpoint:decisions.endpoint,model:decisions.model}};
 }
-export function thinkingLevel(settings,model) {
-  return model.reasoning ? (settings?.reasoning==='auto' || !settings?.reasoning ? 'low':settings.reasoning):'off';
+// Auto spends reasoning where calls are few and judgement decides the outcome: the plan and the visual review
+// (a handful of calls a chat) think at medium. Painting turns (dozens to hundreds) think at low: on the same
+// build, Rothko and Mondrian painted in half the time at low as at medium, with every review check met.
+export const AUTO_REASONING = Object.freeze({ ask:'low', plan:'medium', agent:'low', review:'medium', preparation:'low' });
+export const AUTO_REASONING_NOTE = 'Auto thinks at medium for the plan and the visual review, and at low while painting.';
+/** The level for a session in this phase (ask, plan, agent, review or preparation): the artist's choice, or Auto's. */
+export function thinkingLevel(settings,model,phase='agent') {
+  if (!model.reasoning) return 'off';
+  return settings?.reasoning==='auto' || !settings?.reasoning ? AUTO_REASONING[phase] ?? 'low' : settings.reasoning;
 }

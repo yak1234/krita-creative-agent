@@ -25,7 +25,7 @@ from . import capabilities
 
 FILTER_FIELDS = ('target', 'filter', 'config', 'mode', 'name', 'selection', 'area', 'stage_id', 'region', 'expected_revision', 'panel')
 MODES = ('mask', 'layer', 'copy')
-MASK_TARGETS = ('paintlayer', 'grouplayer', 'filllayer')
+MASK_TARGETS = ('paintlayer', 'grouplayer', 'filllayer', 'clonelayer')
 
 
 class FilterCraft:
@@ -43,7 +43,7 @@ class FilterCraft:
             raise ValueError('The target layer is locked.')
         kind = target.type()
         if mode == 'mask' and kind not in MASK_TARGETS:
-            raise ValueError('A filter mask goes on a paint, fill or group layer.')
+            raise ValueError('A filter mask goes on a paint, fill, clone or group layer.')
         if mode == 'copy' and kind != 'paintlayer':
             raise ValueError('copy filters the pixels of a paint layer. Use mask for other layers.')
         if mode == 'layer' and self._filter_layer_group(session, target) is None:

@@ -21,6 +21,7 @@ module_path = root.parent / 'plugin/kritamcp/creative_docker.py'
 stub = types.ModuleType('krita'); stub.DockWidget = QDockWidget
 stub.DockWidgetFactory = object; stub.DockWidgetFactoryBase = types.SimpleNamespace(DockRight=0)
 stub.Krita = types.SimpleNamespace(instance=lambda: types.SimpleNamespace(activeDocument=lambda: None))
+stub.Selection = object                             # protection.py imports it; the panel checks use a fake
 sys.modules['krita'] = stub
 package = types.ModuleType('creative_ui_test'); package.__path__ = [str(module_path.parent)]; sys.modules['creative_ui_test'] = package
 spec = importlib.util.spec_from_file_location('creative_ui_test.creative_docker', module_path)
@@ -127,6 +128,73 @@ legacy_goal = json.loads(json.dumps(goal)); legacy_goal['brief']['steps'] = [{'t
 legacy_dialog = module.PlanDialog(panel, legacy_goal)
 assert 'scope' not in legacy_dialog.brief()['steps'][0], 'optional blank scope must not invalidate a legacy plan'
 legacy_dialog.close()
+# The open chat's AI image allowance: shown and changed in the panel in every mode, and in the plan dialog.
+assert panel.ai_images_selector.isVisible() and panel.ai_images_selector.currentData() == 0, 'a chat saved without an allowance shows none'
+panel.ai_images_selector.setCurrentIndex(panel.ai_images_selector.findData(1))
+assert commands[-1] == {'type':'set_limits','limits':{'minutes':20,'passes':30,'ai_images':1}}, commands[-1]
+agent_goal = dict(goal, brief=None, question=None, limits={'minutes':0,'passes':0,'ai_images':3}, ai_images_used=1)
+panel.handle_event({'type':'goal','goal':agent_goal,'mode':'agent','references':[]})
+assert not panel.plan_bar.isVisible() and panel.ai_images_selector.isVisible(), 'an Agent chat with no plan still shows it'
+assert panel.ai_images_selector.currentData() == 3 and panel.ai_images_used.text() == '1 used'
+panel.ai_images_selector.setCurrentIndex(panel.ai_images_selector.findData(-1))
+assert commands[-1]['type'] == 'set_limits' and commands[-1]['limits']['ai_images'] is None, 'no limit is sent as null'
+panel.handle_event({'type':'goal','goal':dict(agent_goal, limits={'minutes':0,'passes':0,'ai_images':7}),'mode':'agent','references':[]})
+assert panel.ai_images_selector.currentData() == 7, 'a value set in the plan dialog is shown'
+panel.handle_event({'type':'busy','busy':True})
+assert not panel.ai_images_selector.isEnabled() and 'Pause' in panel.ai_images_selector.toolTip(), 'disabled while painting'
+panel.handle_event({'type':'busy','busy':False})
+# Protected areas: a button opens the panel; the agent's proposal waits for Keep, Adjust or Discard; hits are chat lines.
+class FakeProtection:
+    def __init__(self):
+        self.calls = []
+        self.areas = [{'id': 'm1', 'name': 'Woman and car', 'state': 'active', 'by': 'agent', 'bounds': [0, 0, 10, 10]},
+                      {'id': 'locked-layers', 'name': 'Locked layers', 'state': 'active', 'by': 'automatic', 'count': 2}]
+    def _protect_list(self, doc): return list(self.areas)
+    def _protect_set_state(self, doc, area_id, state): self.calls.append(('state', area_id, state))
+    def _protect_remove(self, doc, area_id): self.calls.append(('remove', area_id))
+protection = FakeProtection(); panel.protection = protection; panel.protection_document = lambda: object()
+assert panel.protect_button.isVisible() and panel.protect_button.accessibleName() == 'Protected areas'
+areas = panel.open_protection(modal=False)
+assert [row['name'] for row in areas.rows] == ['Woman and car', 'Locked layers']
+assert areas.rows[0]['detail'] == 'made by the agent · you approved' and areas.rows[1]['detail'] == '2 layers · never edited by the agent, but it may paint over them'
+assert areas.rows[1]['remove'] is None, 'locked layers are unlocked in Krita, not removed here'
+assert [b.text() for b in areas.actions] == ['Ask the agent…', 'Paint over it', 'Use my selection']
+areas.rows[0]['remove'].click(); assert protection.calls[-1] == ('remove', 'm1')
+areas.close()
+panel.handle_event({'type':'protection_proposed','area':{'id':'m2','name':'Sky','state':'pending','by':'agent','bounds':[0,0,5,5]}})
+assert "I marked 'Sky' in red. Keep this protection?" in panel.transcript.toPlainText()
+assert [b.text() for b in panel.protection_controls] == ['Keep', 'Adjust', 'Discard']
+panel.protection_controls[0].click(); assert protection.calls[-1] == ('state', 'm2', 'active')
+assert not any(b.isEnabled() for b in panel.protection_controls), 'answered once'
+panel.handle_event({'type':'protection_proposed','area':{'id':'m3','name':'River','state':'pending','by':'agent','bounds':[0,0,5,5]}})
+panel.protection_controls[2].click(); assert protection.calls[-1] == ('remove', 'm3')
+panel.handle_event({'type':'protection_hit','message':"Move 1 reached into 'Sky'. I kept it untouched (about 40% of it was in the way)."})
+assert "Move 1 reached into 'Sky'" in panel.transcript.toPlainText()
+panel.handle_event({'type':'busy','busy':True})
+assert not panel.protect_button.isEnabled() and panel.protect_button.toolTip() == 'Pause to change protection'
+panel.handle_event({'type':'busy','busy':False}); assert panel.protect_button.isEnabled()
+# Paint over it unlocks the protection group while it lasts (Krita will not paint a mask in a locked group).
+class EditDocument:
+    def __init__(self): self.active = 'painting-layer'
+    def activeNode(self): return self.active
+    def setActiveNode(self, node): self.active = node
+class EditMask:
+    def selection(self): return types.SimpleNamespace(duplicate=lambda: 'saved')
+    def setSelection(self, value): self.restored = value
+edit_mask, edit_document = EditMask(), EditDocument()
+protection._protect_mask_node = lambda doc, area_id: edit_mask
+protection._protect_editing = lambda doc, on: protection.calls.append(('editing', on))
+panel.protection_document = lambda: edit_document
+before_edit_krita = module.Krita
+module.Krita = types.SimpleNamespace(instance=lambda: types.SimpleNamespace(action=lambda name: None, activeDocument=lambda: edit_document))
+panel.paint_protection({'id': 'm1', 'name': 'Woman and car'})
+assert protection.calls[-1] == ('editing', True) and edit_document.active is edit_mask and panel.protection_bar.isVisible()
+panel.finish_protection(False)
+assert protection.calls[-1] == ('editing', False) and edit_mask.restored == 'saved' and edit_document.active == 'painting-layer'
+module.Krita = before_edit_krita
+unlimited = module.PlanDialog(panel, dict(goal, limits={'minutes':20,'passes':30,'ai_images':None}))
+assert unlimited.ai_images.value() == -1 and unlimited.ai_images.text() == 'No AI image limit'; unlimited.close()
+panel.handle_event({'type':'goal','goal':goal,'mode':'plan','references':[]})
 assert not panel.execute_button.isVisible(), 'answer required before starting a pending plan'
 goal['question'] = None
 panel.handle_event({'type':'goal','goal':goal,'mode':'plan','references':[]})
@@ -328,6 +396,83 @@ for button in panel.reference_remove_buttons:
     assert button.mapTo(panel,button.rect().bottomRight()).x() <= panel.width()
 panel.grab().save(str(output/'context-four-reference-purposes.png'))
 panel.pending_references=[]; panel.attached_references=[]; panel.show_references()
+# Reference parts: the preview opens the reference in Krita; the selection there becomes its own reference.
+class PartSelection:
+    def __init__(self, width, height, rect=None):
+        self.w, self.h, self.mask = width, height, bytearray(width * height)
+        if rect:
+            for row in range(rect[1], rect[1] + rect[3]): self.mask[row * width + rect[0]:row * width + rect[0] + rect[2]] = b'\xff' * rect[2]
+    def _box(self):
+        cells = [(i % self.w, i // self.w) for i, v in enumerate(self.mask) if v]
+        if not cells: return 0, 0, 0, 0
+        xs, ys = [c[0] for c in cells], [c[1] for c in cells]
+        return min(xs), min(ys), max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
+    def x(self): return self._box()[0]
+    def y(self): return self._box()[1]
+    def width(self): return self._box()[2]
+    def height(self): return self._box()[3]
+    def pixelData(self, x, y, w, h): return b''.join(bytes(self.mask[r * self.w + x:r * self.w + x + w]) for r in range(y, y + h))
+class PartDocument:
+    def __init__(self, path):
+        image = QImage(path).convertToFormat(QImage.Format_ARGB32)
+        self.path, self.W, self.H = path, image.width(), image.height()
+        bits = image.constBits(); bits.setsize(image.byteCount()); self.data = bytes(bits); self.sel = None
+    depth = 'U8'
+    def width(self): return self.W
+    def height(self): return self.H
+    def colorModel(self): return 'RGBA'
+    def colorDepth(self): return self.depth
+    def setColorSpace(self, model, depth, profile): self.converted = (model, depth); self.depth = depth; return True
+    def pixelData(self, x, y, w, h): return self.data
+    def selection(self): return self.sel
+    def setModified(self, value): self.modified = value
+    def close(self):
+        if self in part_documents: part_documents.remove(self)
+        return True
+part_documents, shown_views = [], []
+def open_part_document(path):
+    document = PartDocument(path); part_documents.append(document); return document
+part_window = types.SimpleNamespace(addView=lambda document: None, activeView=lambda: 'painting-view', showView=shown_views.append)
+before_parts_krita = module.Krita
+module.Krita = types.SimpleNamespace(instance=lambda: types.SimpleNamespace(openDocument=open_part_document, activeWindow=lambda: part_window,
+    documents=lambda: list(part_documents), action=lambda name: None, activeDocument=lambda: None))
+moscow = {'id': 'ref-moscow', 'name': 'New Moscow', 'path': image_path, 'purpose': 'general', 'notes': '', 'role': 'reference'}
+panel.attached_references = [moscow]; panel.show_references()
+preview = module.ReferencePreview(panel, moscow)
+assert [b.text() for b in preview.part_buttons] == ['Select a part in Krita…', 'Crop in Krita…'] and all(b.isEnabled() for b in preview.part_buttons)
+preview.close(); busy_preview = module.ReferencePreview(panel, moscow, readonly=True)
+assert not any(b.isEnabled() for b in busy_preview.part_buttons) and busy_preview.part_buttons[0].toolTip() == 'Pause the agent to select a part'
+busy_preview.close()
+panel.start_part(moscow, 'part')
+assert panel.part_bar.isVisible() and panel.part_bar_label.text() == 'Selecting a part of New Moscow' and len(part_documents) == 1
+temporary = part_documents[0].path; assert temporary != image_path and os.path.exists(temporary), 'a copy is opened, never the reference'
+panel.use_part()
+assert panel.status.text() == 'Select the part first.' and len(part_documents) == 1, 'nothing selected: the document stays open'
+W, H = part_documents[0].W, part_documents[0].H
+part_documents[0].sel = PartSelection(W, H, [0, 0, W, H // 2])
+names = []; panel.part_name = lambda default: names.append(default) or 'Sky'
+panel.use_part()
+assert names == ['Part of New Moscow'] and not part_documents and not panel.part_bar.isVisible() and shown_views == ['painting-view']
+assert not os.path.exists(temporary), 'the temporary copy is removed'
+part = panel.pending_references[-1]
+assert (part['name'], part['part_of'], part['part_kind'], part['bounds'], part['role']) == ('Sky (part)', image_path, 'part', [0, 0, W, H // 2], 'reference')
+assert QImage(part['path']).size() == QImage(image_path).size(), 'a part keeps the size of the original'
+os.remove(part['path']); panel.pending_references = []
+PartDocument.depth = 'U16'; panel.start_part(moscow, 'part')
+assert part_documents[0].converted == ('RGBA', 'U8'), 'a 16-bit reference is read as 8-bit RGBA'
+panel.close_part(); PartDocument.depth = 'U8'
+panel.start_part(moscow, 'crop'); part_documents.clear(); panel.check_part_session()
+assert not panel.part_bar.isVisible(), 'closing the temporary document yourself cancels'
+pending = {'path': image_path, 'role': 'reference', 'name': 'Pending.png', 'purpose': 'general', 'notes': ''}
+panel.attached_references = []; panel.pending_references = [pending]
+panel.start_part(pending, 'crop'); part_documents[0].sel = PartSelection(W, H, [1, 1, 2, 2]); panel.part_name = lambda default: 'Detail'
+panel.use_part(); crop = panel.pending_references[-1]
+assert (crop['name'], crop['part_kind'], crop['bounds']) == ('Detail (crop)', 'crop', [1, 1, 2, 2]) and QImage(crop['path']).width() == 2, 'a pending reference can be split'
+os.remove(crop['path'])
+panel.pending_references = [dict(pending, name='R%d' % i) for i in range(4)]; panel.start_part(panel.pending_references[0], 'part')
+assert panel.status.text() == 'Remove a reference to add a part.' and not part_documents
+module.Krita = before_parts_krita
+panel.pending_references=[]; panel.attached_references=[]; panel.show_references()
 # A catalog refresh must not hide model verification or switch an existing session.
 model_a={'provider':'openrouter','id':'deepseek/deepseek-v4.1-flash','name':'DeepSeek V4.1 Flash','configured':True}
 model_b={'provider':'other','id':'candidate','name':'Candidate model','configured':True}
@@ -392,11 +537,23 @@ SCHEMA=json.loads(subprocess.run(['node','-e',"import('./src/settings-schema.mjs
   cwd=str(Path(__file__).resolve().parents[1]),capture_output=True,text=True,check=True,env={**os.environ,'NODE_OPTIONS':''}).stdout)
 panel.handle_event({'type':'settings_schema','fields':SCHEMA})
 W=panel.setting_widgets
-assert list(W)==['concurrency','move_size','merge_kept','assets','routing'], 'one control per generic setting, in declaration order'
+assert list(W)==['concurrency','move_size','merge_kept','assets','ai_images','keep_screen_awake','routing'], 'one control per generic setting, in declaration order'
 W['concurrency'].setCurrentIndex(W['concurrency'].findData(2))
-assert commands[-1]=={'type':'set_execution_settings','settings':{'concurrency':2,'reasoning':'auto','routing':'off','native_craft':True,'move_size':'subject','merge_kept':True,'assets':'codex'}}
+assert commands[-1]=={'type':'set_execution_settings','settings':{'concurrency':2,'reasoning':'auto','routing':'off','native_craft':True,'move_size':'subject','merge_kept':True,'assets':'codex','ai_images':0,'keep_screen_awake':False}}
+from PyQt5.QtWidgets import QCheckBox as _QCheckBox
+assert isinstance(W['keep_screen_awake'], _QCheckBox) and not W['keep_screen_awake'].isChecked(), 'the screen setting is a checkbox, off'
+assert W['keep_screen_awake'].accessibleName() == 'Keep the screen awake while painting'
+W['keep_screen_awake'].setChecked(True); assert commands[-1]['settings']['keep_screen_awake'] is True
+W['keep_screen_awake'].setChecked(False); assert commands[-1]['settings']['keep_screen_awake'] is False
+panel.handle_event({'type':'execution_settings','settings':{**commands[-1]['settings'],'keep_screen_awake':True}})
+assert W['keep_screen_awake'].isChecked() and commands[-1]['settings']['keep_screen_awake'] is False, 'restoring sends nothing back'
+assert not panel.awake_indicator.isVisible()
+panel.handle_event({'type':'keep_awake','active':True,'display':False}); assert panel.awake_indicator.isHidden(), 'system-only hold: no indicator'
+panel.handle_event({'type':'keep_awake','active':True,'display':True}); assert not panel.awake_indicator.isHidden(), 'the screen hold is visible'
+panel.handle_event({'type':'keep_awake','active':False,'display':False}); assert panel.awake_indicator.isHidden()
+panel.handle_event({'type':'execution_settings','settings':{**commands[-1]['settings'],'keep_screen_awake':False}})   # back to off for the checks below
 panel.reasoning_selector.setCurrentIndex(panel.reasoning_selector.findData('high'))
-assert commands[-1]['settings']=={'concurrency':2,'reasoning':'high','routing':'off','native_craft':True,'move_size':'subject','merge_kept':True,'assets':'codex'}
+assert commands[-1]['settings']=={'concurrency':2,'reasoning':'high','routing':'off','native_craft':True,'move_size':'subject','merge_kept':True,'assets':'codex','ai_images':0,'keep_screen_awake':False}
 W['move_size'].setCurrentIndex(W['move_size'].findData('large'))
 assert commands[-1]['settings']['move_size']=='large' and W['move_size'].accessibleName()=='Agent move size'
 panel.handle_event({'type':'execution_settings','settings':{'concurrency':1,'reasoning':'auto','routing':'off','native_craft':True,'move_size':'quick'}})
@@ -440,7 +597,10 @@ panel.handle_event({'type':'review_progress','mode':'guide','mean':0.4,'scores':
 assert 'no real improvement (0.4 of 3)' in panel.transcript.toPlainText()
 count=len(commands)
 panel.handle_event({'type':'execution_settings','settings':{'concurrency':2,'reasoning':'high'},'effective_reasoning':'off','available_reasoning':['off']})
-assert len(commands)==count and 'Active model: off' in panel.reasoning_note.text()
+assert len(commands)==count and 'Now: off' in panel.reasoning_note.text() and 'Auto thinks' not in panel.reasoning_note.text()
+panel.handle_event({'type':'execution_settings','settings':{'concurrency':2,'reasoning':'auto'},'effective_reasoning':'medium','available_reasoning':['low','medium'],
+                    'reasoning_note':'Auto thinks at medium for the plan and the visual review, and at low while painting.'})
+assert panel.reasoning_note.text().startswith('Auto thinks at medium') and 'Now: medium' in panel.reasoning_note.text(), 'the companion describes its Auto policy'
 panel.handle_event({'type':'busy','busy':True})
 assert not W['concurrency'].isEnabled() and not panel.reasoning_selector.isEnabled() and not panel.provider_filter.isEnabled()
 panel.handle_event({'type':'busy','busy':False})

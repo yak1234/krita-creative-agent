@@ -36,7 +36,7 @@ export async function imageContent(root, filename) {
   if ((await stat(path)).size > 12 * 1024 * 1024) throw new Error('Use a reference smaller than 12 MB.');
   const data = await readFile(path);
   const info = imageInfo(data);
-  return { info, content: { type: 'image', data: data.toString('base64'), mimeType: info.mimeType } };
+  return { info, content: { type: /** @type {const} */ ('image'), data: data.toString('base64'), mimeType: info.mimeType } };
 }
 
 export function splitJsonLines(buffer) {

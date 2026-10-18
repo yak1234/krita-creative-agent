@@ -27,7 +27,7 @@ export class LiveDiagnostics {
       try {
         const result=await call(operation,params,sessionId,operationId);
         this.record({type:'native_result',...context,elapsed_ms:Date.now()-started,
-          checkpoint:result?.checkpoint,replayed:result?.replayed,error_code:result?.error_code});
+          checkpoint:result?.checkpoint,replayed:result?.replayed,error_code:result?.error_code,timings_ms:result?.timings_ms});
         if(result?.checkpoint)this.record({type:'save_receipt',...context,path:result.checkpoint,
           note:'Checkpoint returned by bridge; may be an existing checkpoint on observation or replay.'});
         return result;
@@ -78,6 +78,16 @@ export class LiveDiagnostics {
         .map(key=>({label:key,entries:this.runtime.store.sessions.stored({chat:this.runtime.study.id,key})})) : [],
       snapshot:{...this.snapshot(),timeline:this.timeline(0,500)},redact:text=>this.runtime.redact(text)});
   }
+  /** End the current chat as the panel's End does, so a local agent can free Krita for a check; never while it paints. */
+  async endChat() {
+    const runtime=this.runtime;
+    if(runtime.busy)return {error_code:'busy',error:'The agent is painting. Stop it or wait until the move is done, then end the chat.'};
+    const id=runtime.study?.id ?? null;
+    if(!id)return {status:'ok',ended:null};
+    this.record({type:'chat_ended_by_agent',study_id:id});
+    await runtime.end();
+    return {status:'ok',ended:id};
+  }
   async start() {
     // Unix socket paths are length-limited and macOS temp folders are long, so macOS and Linux use a short
     // /tmp folder; Windows has no /tmp and local sockets there are named pipes.
@@ -101,6 +111,9 @@ export class LiveDiagnostics {
           if(!Number.isSafeInteger(after)||after<0||!Number.isInteger(limit)||limit<1||limit>500) {
             res.statusCode=400;result={error:'after must be nonnegative; limit must be 1–500'};
           } else result=this.timeline(after,limit);
+        } else if(req.method==='POST' && url.pathname==='/end') {
+          result=await this.endChat();
+          if(result.error_code==='busy')res.statusCode=409;
         } else if(req.method==='POST' && url.pathname==='/report') {
           this.reportPending ??= this.report().finally(()=>{this.reportPending=null;});
           result=await this.reportPending;

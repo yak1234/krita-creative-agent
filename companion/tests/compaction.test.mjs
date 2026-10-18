@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { StudioRuntime } from '../src/studio.mjs';
 
-const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZ9kAAAAASUVORK5CYII=', 'base64');
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64');
 const brief = {
   title: 'Two characters by the studio window', objective: 'A quiet seated portrait with consistent character identities.',
   requirements: ['Mara keeps her crimson coat and remains seated on the left.', 'Ivo keeps green eyes and looks toward Mara.'],

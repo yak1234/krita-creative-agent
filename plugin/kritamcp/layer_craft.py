@@ -118,6 +118,9 @@ class LayerCraft:
             x, y, w, h = params.get('region') or [0, 0, doc.width(), doc.height()]
             area.select(x, y, w, h, 255)
             node = doc.createFillLayer(name, generator, config, area)
+        elif kind == 'clone':
+            # Internal kind (clone_layer, native_craft.py): a live copy that follows its source, read only.
+            node = doc.createCloneLayer(name, self._creative_node(doc, params['source']))
         else:
             node = doc.createNode(name, NODE_TYPES[kind])
         if node is None:

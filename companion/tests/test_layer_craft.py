@@ -205,6 +205,14 @@ class LayerCraftTests(unittest.TestCase):
         self.assertIn(layer.id, h._creative_session['layers'])
         self.assertEqual([p['kind'] for p in h._creative_session['passes']], ['create_layer'])
 
+    def test_a_canvas_operation_reports_how_long_each_step_took(self):
+        h = Harness()
+        result = run(h, 'create_layer', {'name': 'Shadow', 'type': 'paint'}, 'timed')
+        steps = result['timings_ms']
+        for step in ('validate', 'before', 'protect_capture', 'apply', 'protect_enforce', 'checkpoint', 'record', 'total'):
+            self.assertIsInstance(steps[step], int, step)
+        self.assertGreaterEqual(steps['total'], max(v for k, v in steps.items() if k != 'total'))
+
     def test_fill_layer_uses_a_validated_generator_and_region(self):
         h = Harness()
         run(h, 'create_layer', {'name': 'Sky', 'type': 'fill', 'generator': 'color', 'generator_config': {'color': '#3a6ea5'}, 'region': [0, 0, 4, 2]}, 'sky')

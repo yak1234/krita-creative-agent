@@ -17,6 +17,8 @@ from .transform_craft import TransformCraft
 from .canvas_view import CanvasView
 from .comic import ComicCraft
 from .merge_craft import MergeCraft
+from .native_craft import NativeCraft, compact_actions
+from .protection import ProtectionCraft, PANEL_ONLY as PROTECTION_PANEL_ONLY
 from .journal_store import Journal
 import importlib
 import threading
@@ -26,13 +28,24 @@ stop_requested = getattr(importlib.import_module('.command_queue', __package__),
 
 # During a stroke pass, Krita handles clicks this often (Stop, the window) instead of freezing for the whole pass.
 RESPONSIVE_SECONDS = 0.2
+# Krita refuses a save while it is already saving (its autosave of a large painting can take minutes): wait this long
+# between tries, letting Krita run, before a checkpoint fails.
+SAVE_RETRY_SECONDS = (10, 20, 30)
+
+
+def wait_for_krita(seconds):
+    """Let Krita run its own events (a save in progress) for `seconds`, without returning to the caller."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        QCoreApplication.processEvents()
+        time.sleep(0.05)
 
 # A full .kra save after every action dominated small actions. Painting actions save
 # every CHECKPOINT_EVERY actions or CHECKPOINT_SECONDS, and always on `checkpoint`,
 # `end` and pass review; in between they only re-read the canvas.
 CHECKPOINT_EVERY = 8
 # Pass kinds that add a new agent layer or mask.
-NEW_CONTRIBUTIONS = ('paint_pass', 'create_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes')
+NEW_CONTRIBUTIONS = ('paint_pass', 'create_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color')
 CHECKPOINT_SECONDS = 300
 VIEW_JPEG_QUALITY = 90
 # Long side of every image the models see: Claude and GPT downscale larger images to about this,
@@ -54,7 +67,7 @@ def merge_pass_record_error(result, error):
             'error': result['error'] + ' (' + note + ')' if result.get('error') else note}
 
 
-class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft):
+class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, ProtectionCraft, NativeCraft):
     def cmd_creative(self, request):
         fields(request, ('operation', 'session_id', 'operation_id', 'params'), ('operation', 'params'))
         operation = request['operation']
@@ -63,7 +76,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             raise ValueError('params must be an object')
         if operation == 'health':
             return {'status': 'ok', 'creative_version': '1.0.0', 'protocol_version': 2, 'build': CREATIVE_BUILD, 'krita_version': Krita.instance().version(),
-                    'capabilities': self._creative_adapter_capabilities(), 'native_paths': True, 'session_active': bool(getattr(self, '_creative_session', None))}
+                    'capabilities': self._creative_adapter_capabilities(), 'native_paths': True, 'session_active': bool(getattr(self, '_creative_session', None)),
+                    'krita_actions': len(self._native_actions(Krita.instance().version()))}
         if operation == 'context':
             fields(params, ('document_id',))
             doc = self._creative_document(params.get('document_id'))
@@ -84,6 +98,27 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             return jpeg_copy(params)
         if operation == 'begin':
             return self._creative_begin(request)
+        if operation == 'close_benchmark_copy':
+            # Development (scripts/evaluate-tool-choice.ts): close, unsaved, the painting copy a tool-choice run
+            # opened. Never during a chat, and only a file inside a "-tool-choice" run folder.
+            fields(params, ('path',), ('path',))
+            if getattr(self, '_creative_session', None):
+                raise ValueError('A painting session is open: end it before closing the benchmark copy.')
+            path = os.path.realpath(text(params['path'], 'path', 2000))
+            # benchmark-runs/<stamp>-tool-choice[-no-guards]/<scenario>-<run>/…/<painting>.kra: the copy, or a file a
+            # session saved deeper in that run folder.
+            if not re.search(r'[/\\]benchmark-runs[/\\]\d{12}-tool-choice(-no-guards)?[/\\][a-z0-9-]+-\d+[/\\](?:[^/\\]+[/\\])*[^/\\]+\.kra$', path):
+                raise ValueError('Only a painting copy inside a -tool-choice benchmark run folder can be closed.')
+            for doc in open_documents():
+                if doc.fileName() and os.path.realpath(doc.fileName()) == path:
+                    doc.setModified(False)
+                    return {'status': 'ok', 'closed': bool(doc.close())}
+            return {'status': 'ok', 'closed': False}
+        if operation == 'krita_actions_audit':
+            # Throwaway document, Krita's own undo stack: never while the agent holds a painting.
+            if getattr(self, '_creative_session', None):
+                raise ValueError('The action audit runs only with no painting session open.')
+            return self._native_audit(params)
         if operation == 'import_journal':
             # One chat's JSON journal into its journal database, outside a painting session.
             fields(params, ('output_dir',), ('output_dir',))
@@ -163,6 +198,11 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                     self._guides_restore(self._creative_document(session['document_id']), session)
                 except ValueError:
                     pass                                 # the painting was closed; its guides went with it
+            if session.get('autosave_prior') is not None:
+                try:
+                    self._creative_document(session['document_id']).setAutosave(session['autosave_prior'])
+                except (ValueError, AttributeError):
+                    pass                                 # the painting was closed: a reopened one autosaves as usual
             if session.get('journal'):
                 session['journal'].close()
             self._creative_session = None
@@ -174,7 +214,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             return {'error': 'Canvas dimensions changed. Review the plan before continuing.', 'error_code': 'canvas_changed'}
         if operation == 'checkpoint':
             fields(params, ())
-            return dict(self._creative_checkpoint(doc, session), status='ok')
+            return dict(self._creative_checkpoint(doc, session, changed=bool(session.get('unsaved_operations'))), status='ok')
         if operation == 'operation_status':
             fields(params, ('id',), ('id',))
             previous = session['operations'].get(text(params['id'], 'id', 100))
@@ -192,6 +232,15 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         if operation == 'select':
             # Saved to the study folder; not a canvas change, so no pass or checkpoint.
             return self._region_select(doc, session, params)
+        if operation == 'krita_action' and self._native_action_kind(params) == 'selection':
+            # A selection action saves a named selection: no pass or checkpoint, like select.
+            return self._native_select_action(doc, session, params)
+        if operation == 'split_by_color' and not params.get('as_layers'):
+            # Saved selections only: no pass or checkpoint, like select.
+            return self._native_split(doc, session, params)
+        if operation in ('propose_protection', 'protection_list') + PROTECTION_PANEL_ONLY:
+            # A mask in the painting, not paint: no pass or checkpoint. Keeping and removing are panel-only.
+            return self._protect_operation(doc, session, operation, params)
         if operation == 'guides':
             # A view aid, not paint: no pass or checkpoint; restored when the chat ends.
             return self._guides_set(doc, session, params)
@@ -201,7 +250,9 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             result = self.cmd_list_brushes({'filter': params.get('filter', ''), 'limit': 500})
             return result
         if operation == 'capabilities':
-            return self._craft_capabilities(doc, params)
+            result = self._craft_capabilities(doc, params)
+            result['capabilities']['krita_actions'] = compact_actions(self._native_actions(result['capabilities'].get('krita_version')))
+            return result
         if operation == 'painting_tool_help':
             fields(params, ())
             return self._creative_tool_help()
@@ -214,7 +265,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             self._creative_store_operations(session)
             return dict(self._creative_observe(doc, session), unresolved_operations=[],
                         committed_operation_count=self._creative_committed_count(session))
-        if operation not in ('paint_pass', 'adjust_layer', 'painting_toolbox', 'review_pass', 'create_layer', 'set_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes'):
+        if operation not in ('paint_pass', 'adjust_layer', 'painting_toolbox', 'review_pass', 'create_layer', 'set_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color'):
             raise ValueError('Unsupported creative operation')
         operation_id = text(request.get('operation_id'), 'operation_id', 100)
         fingerprint = hashlib.sha256(json.dumps([operation, {k: v for k, v in params.items() if k != 'expected_revision'}], sort_keys=True).encode()).hexdigest()
@@ -236,6 +287,10 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         if expected and expected != self._creative_revision(doc):
             return {'error': 'The painting changed since the last observation. Inspect the fresh canvas before continuing.',
                     'error_code': 'canvas_changed'}
+        # How long each step takes, in the result (not shown to the model): finds what is slow on a large painting.
+        timings, clock = {}, [time.monotonic()]
+        def lap(step):
+            now = time.monotonic(); timings[step] = int((now - clock[0]) * 1000); clock[0] = now
         # Validate the whole pass before any layer or brush changes.
         if operation == 'paint_pass':
             validate_pass(params, doc.width(), doc.height(), Krita.instance().resources('preset'))
@@ -276,16 +331,27 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             self._comic_validate_letter(doc, session, params)
         elif operation == 'merge_passes':
             self._merge_validate(doc, session, params)
+        elif operation == 'krita_action':
+            self._native_validate_action(doc, session, params)
+        elif operation == 'clone_layer':
+            self._native_validate_clone(doc, session, params)
+        elif operation == 'split_by_color':
+            self._native_validate_split(doc, session, params)
         else:
-            return self._creative_review(doc, session, params, operation_id, fingerprint)
+            return self._protect_review(doc, session, params, lambda: self._creative_review(doc, session, params, operation_id, fingerprint))
         if operation in ('paint_pass', 'create_layer', 'fill_region', 'apply_filter'):
             self._comic_validate_scope(doc, session, operation, params)
+        self._protect_refuse(doc, session, operation, params)
+        lap('validate')
         # A continuation batch starts where the last one on its layer ended: reuse that image
         # instead of re-rendering the whole canvas (reference jobs send hundreds of batches).
         continued = operation == 'paint_pass' and params.get('continue_layer_id')
         before = ({'image_path': next((e.get('after_path') for e in reversed(session['passes'])
                                        if e.get('layer_id') == params['continue_layer_id']), None)}
                   if continued else self._creative_observe(doc, session))
+        lap('before')
+        protected = self._protect_capture(doc, session, operation, params)
+        lap('protect_capture')
         prior_node = doc.activeNode() if hasattr(doc, 'activeNode') else None
         prior = None
         if operation == 'adjust_layer':
@@ -322,6 +388,12 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 result.update(self._comic_letter(doc, session, params))
             elif operation == 'merge_passes':
                 result.update(self._merge_apply(doc, session, params))
+            elif operation == 'krita_action':
+                result.update(self._native_action(doc, session, params))
+            elif operation == 'clone_layer':
+                result.update(self._native_clone(doc, session, params))
+            elif operation == 'split_by_color':
+                result.update(self._native_split(doc, session, params))
             elif operation == 'paint_pass':
                 brush = self.cmd_set_brush({'preset': params['preset']})
                 if brush.get('error'):
@@ -398,6 +470,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 self.cmd_restore_brush({})           # the artist's preset never keeps overlay mode
             if prior_node is not None:
                 doc.setActiveNode(prior_node)
+        lap('apply')
         if operation == 'merge_passes' and result.get('status') == 'ok' and not result.get('merged_layers'):
             session['operations'][operation_id] = (fingerprint, result)     # nothing merged: no canvas change, no checkpoint
             self._creative_store_operations(session, operation_id)
@@ -407,11 +480,15 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             session['operations'][operation_id] = (fingerprint, result)
             self._creative_store_operations(session, operation_id)
             return result
+        # Nothing the agent does may change a visible pixel inside a protected area.
+        result.update(self._protect_enforce(doc, session, operation, params, result, protected, prior))
+        lap('protect_enforce')
         try:
             checkpoint = self._creative_commit_view(doc, session)
             result.update({key: value for key, value in checkpoint.items() if key != 'status'})
         except Exception as error:
             result.update(status='partial', error='Checkpoint failed: ' + str(error), error_code='checkpoint_failed')
+        lap('checkpoint')
         layer_id = result.get('layer_id', params.get('layer_id'))
         if result.get('contribution_removed'): layer_id = None
         try:
@@ -419,7 +496,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 self._creative_settle_containers(doc, session, self._creative_node(doc, layer_id))
             if layer_id:
                 state = self._creative_layer_state(self._creative_node(doc, layer_id), doc)
-                entry = dict(id=operation_id, title=params.get('name') or {'fill_region': 'Region fill', 'apply_filter': params.get('filter'), 'colorize_flats': 'Colorized flats', 'transform_layer': 'Transform', 'comic_page': 'Comic page', 'letter': 'Lettering', 'merge_passes': 'Merged passes'}.get(operation) or 'Layer adjustment', kind=operation,
+                entry = dict(id=operation_id, title=params.get('name') or {'fill_region': 'Region fill', 'apply_filter': params.get('filter'), 'colorize_flats': 'Colorized flats', 'transform_layer': 'Transform', 'comic_page': 'Comic page', 'letter': 'Lettering', 'merge_passes': 'Merged passes', 'krita_action': result.get('action_label'), 'clone_layer': 'Clone', 'split_by_color': 'Split by colour'}.get(operation) or 'Layer adjustment', kind=operation,
                              stage_id=params.get('stage_id'), region=params.get('region'), layer_id=layer_id,
                              continuation_of=params.get('continue_layer_id'),
                              group_id=result.get('group_id'),
@@ -447,6 +524,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             result.update(status='partial', error='The recovery record could not be saved: ' + str(error), error_code='partial_change')
         self._creative_progress(session, 'saved' if result['status'] == 'ok' else 'error',
                                 'Painting saved' if result['status'] == 'ok' else result.get('error', 'Painting paused'))
+        lap('record')
+        result['timings_ms'] = dict(timings, total=sum(timings.values()))
         return result
 
     def _creative_begin(self, request):
@@ -524,6 +603,11 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         # Clip groups the agent made stay live clip targets after a resume.
         session['clip_groups'] = {e['clip_group_id'] for e in session['passes'] if e.get('clip_group_id') and not e.get('rejected')}
         session['layers'].update(session['clip_groups'])
+        # Krita's autosave of a large painting holds the image for minutes and stalls the agent, which saves its own
+        # checkpoint after every operation: pause it on this painting only, and restore the artist's state at the end.
+        if hasattr(doc, 'setAutosave'):
+            session['autosave_prior'] = bool(doc.autosave())
+            doc.setAutosave(False)
         self._creative_session = session
         try:
             if p['mode'] == 'resume':
@@ -531,18 +615,23 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 return dict(self._creative_observe(doc, session), status='ok', session_id=identifier,
                             passes=self._creative_passes(session), unresolved_operations=self._creative_unresolved(session),
                             committed_operation_count=self._creative_committed_count(session))
-            return dict(self._creative_checkpoint(doc, session), status='ok', session_id=identifier)
+            return dict(self._creative_checkpoint(doc, session, changed=False), status='ok', session_id=identifier)
         except Exception as error:
             if p['mode'] == 'resume':
                 if session.get('journal'):
                     session['journal'].close()
+                if session.get('autosave_prior') is not None:
+                    doc.setAutosave(session['autosave_prior'])     # no session: the artist's autosave comes back
                 self._creative_session = None
                 return {'error': 'Could not inspect this painting: ' + str(error),
                         'error_code': 'observation_failed', 'session_id': identifier}
             return {'error': 'The study was created but its checkpoint failed: ' + str(error),
                     'error_code': 'checkpoint_failed', 'session_id': identifier}
 
-    def _creative_checkpoint(self, doc, session):
+    def _creative_checkpoint(self, doc, session, changed=True):
+        """Save the painting to its working file and observe it. changed=False is a checkpoint that follows no agent
+        change (starting a run, an explicit checkpoint): when Krita says the document is unmodified and it is already
+        that file on disk, the save is skipped. On a large painting a save takes 15-20 seconds."""
         self._creative_validate_save_target(doc, session)
         session['checkpoint'] += 1
         path = session.get('painting_path', os.path.join(session['output'], 'painting.kra'))
@@ -551,16 +640,29 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         if session['checkpoint'] > 1 and current.lower().endswith('.kra'):
             path = os.path.realpath(current)
         session['painting_path'] = path
-        self._creative_progress(session, 'saving', 'Saving ' + os.path.basename(path))
-        doc.waitForDone()
-        result = self.cmd_save_native({'path': path})
-        if result.get('error'):
-            raise RuntimeError(result['error'])
+        skipped = not changed and not doc.modified() and current and os.path.realpath(current) == os.path.realpath(path) \
+            and os.path.isfile(path)
+        if skipped:
+            path = os.path.realpath(path); session['painting_path'] = path
+        else:
+            self._creative_progress(session, 'saving', 'Saving ' + os.path.basename(path))
+            doc.waitForDone()
+            result = self.cmd_save_native({'path': path})
+            for pause in SAVE_RETRY_SECONDS:
+                if 'saveAs failed' not in str(result.get('error', '')):
+                    break
+                self._creative_progress(session, 'saving', 'Krita is still saving; trying again')
+                wait_for_krita(pause)
+                doc.waitForDone()
+                result = self.cmd_save_native({'path': path})
+            if result.get('error'):
+                raise RuntimeError(result['error'])
         session['saved_once'] = True
         session['unsaved_operations'] = 0
         session['last_saved_at'] = time.monotonic()
         self._creative_progress(session, 'observing', 'Reading the updated canvas')
-        return dict(self._creative_observe(doc, session), checkpoint=path, save_number=session['checkpoint'])
+        return dict(self._creative_observe(doc, session), checkpoint=path, save_number=session['checkpoint'],
+                    **({'save_skipped': True} if skipped else {}))
 
     def _creative_commit_view(self, doc, session):
         # Save when due; otherwise only re-read the canvas and count the unsaved action.
@@ -1329,7 +1431,11 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         the active layer of the active document, so a click elsewhere is undone or ends the pass."""
         QCoreApplication.processEvents()
         active = self.get_active_document()
-        if active is None or document_id(active) != document_id(doc):
+        if active is None:
+            # No active window: the screen slept or locked, not an artist's choice of another document.
+            return ('Krita lost its active window (the screen may be asleep or locked); the pass stopped there. '
+                    'Turn on Settings: Screen, "Keep the screen awake while painting", to paint unattended.')
+        if document_id(active) != document_id(doc):
             return 'The artist switched to another document; the pass stopped there.'
         current = doc.activeNode()
         if node is not None and (current is None or current.uniqueId().toString() != node.uniqueId().toString()):
@@ -1389,7 +1495,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 'image_width': image.width(), 'image_height': image.height(), 'scale': scale,
                 'layers': layers, 'filename': doc.fileName(), 'modified': doc.modified(),
                 **({'painted_share': painted} if painted is not None else {}),
-                'observed_at': captured_at, 'artist_focus': self._view_artist_focus(doc), 'comic': self._comic_model(session)}
+                'observed_at': captured_at, 'artist_focus': self._view_artist_focus(doc), 'comic': self._comic_model(session),
+                'protected_areas': self._protect_active(doc)}
 
     def _creative_painted_share(self, projection):
         from PyQt5.QtGui import QImage

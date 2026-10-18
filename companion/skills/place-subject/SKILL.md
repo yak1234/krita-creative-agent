@@ -5,7 +5,22 @@ description: Add one subject to a painting (a tree, figure, animal, lamp post, c
 
 # Place a subject
 
-Tool details are in the `image-asset` skill.
+**Which route:** your instructions say how many AI images this chat allows. With one available, use the
+**AI image route**; with AI images off or used up, use the **hand-painted route** and do not call `make_asset`.
+Tool details for the AI image route are in the `image-asset` skill.
+
+## Hand-painted route
+
+1. **Look and decide**, as in step 1 below: the target [x,y,w,h] on the ground line, and the light direction.
+2. **Silhouette:** `paint_contours` with the subject's big shapes back to front (trunk then foliage masses; body
+   then head and limbs), one new layer, inside the target. Mid-tone local colours, no detail yet.
+3. **Form:** `create_layer` `clip_to` the silhouette layer, `blend_mode: multiply`, for the shadow side
+   (`fill_region` a gradient away from the light), and another with `blend_mode: screen` for the lit side.
+4. **Detail:** `paint_batch` strokes for the features that make it read (branches, folds, windows), small
+   brushes, only where the eye goes. Sample neighbouring colours (`sample_canvas_colors`) so it belongs.
+5. **Ground it and crisp the edges**, as in steps 6 and 7 below.
+
+## AI image route
 
 1. **Look and decide** (`observe_canvas`): where it stands, the ground line, its height in the scene
    (perspective: smaller further away), and where the light comes from. Write the target [x,y,w,h] so its

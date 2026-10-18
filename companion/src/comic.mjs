@@ -4,6 +4,7 @@
 // panels and letters with `letter`; plans carry a story with one beat per panel.
 import { Type } from 'typebox';
 
+/** @template {import('typebox').TProperties} T @param {T} fields */
 const object = fields => Type.Object(fields, { additionalProperties: false });
 const line = Type.String({ minLength: 1, maxLength: 2000 });
 export const panelId = Type.String({ pattern: '^P[0-9]{1,2}$' });

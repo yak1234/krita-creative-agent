@@ -30,7 +30,7 @@ test('one OpenRouter Decisions request yields gated advice without executable ar
  assert.deepEqual(Object.keys(requests[0].body.questions),['operation','brush']);
  assert.deepEqual(requests[0].body.questions.operation.criteria,OPERATIONS);
  assert.deepEqual(requests[0].body.state.map(p=>p.type),['text']);
- assert.deepEqual(routingAdvice(d).tools,['transform_layer','painting_toolbox']);assert.equal(routingAdvice(d).arguments,undefined);
+ assert.deepEqual(routingAdvice(d).tools,['transform_layer','krita_action','painting_toolbox']);assert.equal(routingAdvice(d).arguments,undefined);
 });
 test('the attached canvas is sent as a chat-style image_url data URL after the text state',async()=>{
  const {fetch,requests}=fakeFetch(()=>json(200,body()));
@@ -44,7 +44,7 @@ test('the attached canvas is sent as a chat-style image_url data URL after the t
 test('Agent inspection advice is a preliminary check, not a stop',()=>{
  const decision={status:'recommended',operation:{choice:'inspect'},brush:{choice:'none',confidence:1}};
  const advice=routingAdvice(decision,{phase:'agent'});
- assert.deepEqual(advice.tools,['observe_canvas']);
+ assert.deepEqual(advice.tools,['observe_canvas','split_by_color']);
  assert.match(advice.instruction,/continue painting in this turn/);
  assert.match(advice.instruction,/not a stop/);
 });
@@ -85,9 +85,9 @@ test('state is bounded, omits pixels and paths, and identities track target chan
  assert.equal(executionSettings().routing,'off');assert.throws(()=>executionSettings({routing:'execute'}),/decisions mode/);
 });
 test('craft intents route to the native craft tools with a how-to hint',async()=>{
- const expected={fill:['fill_region','colorize_flats','painting_toolbox'],gradient:['fill_region','painting_toolbox'],shade:['create_layer','fill_region'],
+ const expected={fill:['fill_region','split_by_color','colorize_flats','painting_toolbox'],gradient:['fill_region','painting_toolbox'],shade:['create_layer','fill_region'],
   light:['create_layer','fill_region'],grade:['apply_filter'],soften:['apply_filter','painting_toolbox'],
-  move:['transform_layer','painting_toolbox'],transform:['transform_layer','painting_toolbox']};
+  move:['transform_layer','krita_action','painting_toolbox'],transform:['transform_layer','krita_action','painting_toolbox']};
  for(const [op,tools] of Object.entries(expected)) {
   const {fetch}=fakeFetch(()=>json(200,body(op)));
   const d=await new LunaRouter({apiKey:'k',fetch}).evaluate({...state(),capabilities:{}});

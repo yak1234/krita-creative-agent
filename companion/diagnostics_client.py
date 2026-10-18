@@ -27,6 +27,8 @@ def diagnostic_request(route, state_directory_path="", method="GET", params=None
         transport = httpx.HTTPTransport(uds=endpoint["socket"])
         with httpx.Client(transport=transport, timeout=30, trust_env=False) as client:
             response = client.request(method, "http://localhost" + route, params=params)
+            if response.status_code == 409:                  # a refusal (the agent is painting), not a lost companion
+                return response.json()
             response.raise_for_status()
             return response.json()
     except (OSError, ValueError, KeyError, httpx.HTTPError):
@@ -76,3 +78,13 @@ def register_diagnostic_tools(mcp):
         If the companion is unavailable, returns available previous evidence paths as stale.
         """
         return diagnostic_request("/report", state_directory, method="POST")
+
+    @mcp.tool()
+    def creative_end_chat(state_directory: str = "") -> dict:
+        """End the companion's current chat, as the panel's End button does, so Krita is free for a check.
+
+        Refused (error_code busy) while the agent is painting: nothing is stopped or ended then.
+        The painting and the chat's record are kept; the artist can reopen the chat from the panel.
+        Returns ended: the chat id, or null when no chat was open.
+        """
+        return diagnostic_request("/end", state_directory, method="POST")

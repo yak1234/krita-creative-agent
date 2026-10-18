@@ -3,10 +3,11 @@ import { isPaintingMode } from './modes.mjs';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
+import { defineTool } from '@earendil-works/pi-coding-agent';
 import { generateStrokes, GENERATOR_VERSION, recipeSchema } from './stroke-generator.mjs';
 
 export function recipeTool(runtime,executePass) {
-  return {name:'paint_recipe',label:'Painting generated strokes',executionMode:'sequential',parameters:recipeSchema,
+  return defineTool({name:'paint_recipe',label:'Painting generated strokes',executionMode:'sequential',parameters:recipeSchema,
     description:'Generate native brush curves locally from a compact recipe. Use for broad coverage, irregular scumbling and overlapping texture instead of writing hundreds of coordinates. Region is a rectangular clip (brush marks cannot cross it); irregularity 0 is ordered placement, 1 adds jitter, clumps, wander and cross-strokes. Direction is horizontal/vertical/diagonal/random. Size, opacity and optional length are [min,max]; palette uses exactly the supplied colours. Seed makes the command plan repeatable. Runs saved, reversible paint_pass chunks of up to 256 curves; each chunk is a named layer, not an independent stage review. Stop prevents the next chunk. Returns the last canvas image and execution counts. Does not sample references automatically or guarantee a material effect; inspect the result.',
     execute:async(id,recipe,signal)=>{
       signal?.throwIfAborted();
@@ -49,5 +50,5 @@ export function recipeTool(runtime,executePass) {
         throw error;
       }
       return {content:[{type:'text',text:JSON.stringify(record.summary)},...(last?.content??[]).filter(c=>c.type==='image')],details:record.summary};
-    }};
+    }});
 }

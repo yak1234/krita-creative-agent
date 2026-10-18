@@ -8,6 +8,7 @@
 //   cut-outs come back truly transparent. The request follows pi-codex-image-gen (Apache-2.0).
 // - openrouter: Seedream painted the most painterly new images but reframes edits; Muse kept an
 //   edit's framing (SSIM 0.69); FLUX 3 Klein is the cheap draft. 1-2 cents an image.
+import { defineTool } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { randomUUID } from 'node:crypto';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -73,14 +74,24 @@ export async function assetCheck({ client, asset, before, kind, signal }) {
 }
 
 const rect = Type.Array(Type.Integer({ minimum: 0, maximum: 100000 }), { minItems: 4, maxItems: 4 });
+/** @template {import('typebox').TProperties} T @param {T} properties */
 const object = properties => Type.Object(properties, { additionalProperties: false });
 
 const dataUrl = (data, mimeType) => 'data:' + mimeType + ';base64,' + data.toString('base64');
 const gcd = (a, b) => b ? gcd(b, a % b) : a;
 
+// The artist sets how many AI images a chat may use (goal.limits.ai_images, null = no limit); no chat means none.
+// Checked before any image model is called, so a refusal costs nothing. Only the allowance grants permission.
+export function assertAiImageAllowed(goal) {
+  const allowance = goal?.limits && 'ai_images' in goal.limits ? goal.limits.ai_images : 0;
+  if (allowance === null || (goal?.ai_images_used ?? 0) < allowance) return;
+  throw new Error((allowance === 0 ? 'AI images are off for this chat (allowance 0).' : `This chat's AI image allowance (${allowance}) is used up.`) +
+    ' Paint this by hand. The artist can raise AI images for this chat in the panel.');
+}
+
 // The asset size for one canvas target: exactly the target's aspect ratio (paint_from_reference
 // requires it to 1e-6), as large as fits in 2560 px, never larger than the target itself.
-export function fitSize([, , width, height], maxSide = 2560) {
+export function fitSize(/** @type {number[]} */ [, , width, height], maxSide = 2560) {
   const g = gcd(width, height), unit = [width / g, height / g];
   const m = Math.min(g, Math.floor(maxSide / Math.max(...unit)));
   if (m < 1) throw new Error('fit_to ' + width + 'x' + height + ' has no exact smaller size; round the target to multiples of 8.');
@@ -204,10 +215,14 @@ async function checked(runtime, prepared, kind, before, signal) {
   return run();
 }
 
-async function attach(runtime, { id, file, name, notes, source }) {
-  const assets = runtime.study.references.filter(r => r.role === 'asset');
+// The ceiling on stored assets per conversation (any source), apart from the artist's AI image allowance.
+function assertAssetRoom(runtime) {
   const limit = runtime.executionSettings?.assets === 'openrouter' ? ASSET_LIMIT : CODEX_ASSET_LIMIT;
-  if (assets.length >= limit) throw new Error('This conversation already has ' + limit + ' assets. Reuse one of them.');
+  if (runtime.study.references.filter(r => r.role === 'asset').length >= limit) throw new Error('This conversation already has ' + limit + ' assets. Reuse one of them.');
+}
+
+async function attach(runtime, { id, file, name, notes, source }) {
+  assertAssetRoom(runtime);
   const info = imageInfo(await readFile(file));
   const reference = { id, path: file, source_path: file, role: 'asset', purpose: 'material', name: String(name).slice(0, 200), notes: String(notes ?? '').slice(0, 2000), source, ...info };
   runtime.study.references.push(reference);
@@ -226,11 +241,11 @@ async function answer(runtime, reference, preview, extra, target) {
       (ready ? 'Then call paint_from_reference with exactly the paint_from_reference arguments above (add name and preset).'
         : 'Then call paint_from_reference with reference_id ' + reference.id + ', source [0,0,' + reference.width + ',' + reference.height + '], steps ' + JSON.stringify(steps) +
           ' and a canvas target with exactly the same aspect ratio (or make the asset with fit_to the target).') });
-  return { content: [{ type: 'text', text }, image.content], details: { reference_id: reference.id, ...extra } };
+  return { content: [{ type: /** @type {const} */ ('text'), text }, image.content], details: { reference_id: reference.id, ...extra } };
 }
 
 export function assetTools(runtime, { fetchImpl } = /** @type {{fetchImpl?: typeof fetch}} */ ({})) {
-  const makeAsset = {
+  const makeAsset = defineTool({
     name: 'make_asset', label: 'Making an image asset', executionMode: 'sequential',
     description: 'Generate or edit an image with an image model and attach it as a reference (an asset) for paint_from_reference. Never pastes into the painting. ' +
       'mode generate: a new image from the prompt (painterly, best quality). mode draft: the same, cheaper and smaller, for trying an idea. ' +
@@ -249,6 +264,8 @@ export function assetTools(runtime, { fetchImpl } = /** @type {{fetchImpl?: type
     }),
     execute: async (callId, params, signal) => {
       signal?.throwIfAborted();
+      assertAiImageAllowed(runtime.goal);
+      assertAssetRoom(runtime);   // before generating: a refused image is never paid for
       const folder = await assetsFolder(runtime);
       const inputs = [];
       if (params.mode === 'edit') {
@@ -281,14 +298,16 @@ export function assetTools(runtime, { fetchImpl } = /** @type {{fetchImpl?: type
         verdict = await checked(runtime, prepared, kind, inputs[0], signal);
         if (verdict) verdict.retried_tolerance = tolerance;
       }
+      // The image exists (and may have cost money), so it counts; attach saves the chat with the new count.
+      if (runtime.goal) runtime.goal.ai_images_used = (runtime.goal.ai_images_used ?? 0) + 1;
       const reference = await attach(runtime, { id: prepared.id, file: prepared.file, name: params.name, notes: params.prompt, source: { mode: params.mode, model: image.model } });
       const note = verdict && !verdict.fallback ? { asset_check: { findings: verdict.findings.map(id => ADVICE[id]),
         probabilities: Object.fromEntries(Object.entries(verdict.probabilities).map(([k, v]) => [k, Math.round(v * 100) / 100])),
         ...(verdict.retried_tolerance ? { cutout_retried_at_tolerance: verdict.retried_tolerance } : {}) } } : {};
       return answer(runtime, reference, prepared.preview, { model: image.model, cost_usd: image.cost, transparent_share: prepared.result.transparent_share, ...note }, params.fit_to);
     },
-  };
-  const runSkillScript = {
+  });
+  const runSkillScript = defineTool({
     name: 'run_skill_script', label: 'Running a skill script', executionMode: 'sequential',
     description: 'Run one of a bundled skill\'s Python scripts (listed in its SKILL.md) on attached images, in a sandbox that can only see this conversation\'s assets. ' +
       'inputs maps a script argument to a reference_id (the file is passed in); args are the other arguments; region_inputs maps an argument to a canvas region [x,y,w,h] to pass a crop of the painting. ' +
@@ -333,7 +352,7 @@ export function assetTools(runtime, { fetchImpl } = /** @type {{fetchImpl?: type
         args: { input: basename(made[0].path), preview: previewName } });
       return answer(runtime, made[0], join(folder, previewName), { outputs: made.map(r => r.id), result: { ...result, outputs: undefined } });
     },
-  };
+  });
   return [makeAsset, runSkillScript];
 }
 

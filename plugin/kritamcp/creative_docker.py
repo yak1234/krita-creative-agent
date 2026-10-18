@@ -7,10 +7,12 @@ import time
 import threading
 import uuid
 from PyQt5 import sip
-from krita import DockWidget, DockWidgetFactory, DockWidgetFactoryBase, Krita
+from krita import DockWidget, DockWidgetFactory, DockWidgetFactoryBase, Krita, Selection
 from .creative_document_identity import document_id, open_documents
 from . import node_runtime
 from .command_queue import stop_requested
+from .protection import ProtectionCraft
+from .reference_parts import part_image, crop_image, opaque_bounds
 from PyQt5.QtCore import Qt, QProcess, QProcessEnvironment, QUrl, QTimer, pyqtSignal, QEvent, QSize, QRectF
 from PyQt5.QtGui import QDesktopServices, QPixmap, QTextCursor, QTextDocument, QTextBlockFormat, QTextCharFormat, QFont, QIcon, QKeySequence, QPalette, QColor, QPainter, QPen
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QInputDialog,
@@ -360,9 +362,18 @@ class ReferencePreview(ImagePreview):
         self.layout().insertLayout(self.layout().count() - 1, form)
         note = QLabel('This changes how the reference guides future messages. Earlier messages keep their original reference details.'); note.setWordWrap(True); note.setObjectName('muted')
         self.layout().insertWidget(self.layout().count() - 1, note)
+        # A part or a crop of this reference, made with Krita's selection tools: the agent follows only that.
+        parts = QHBoxLayout(); self.part_buttons = []
+        for text, kind in (('Select a part in Krita…', 'part'), ('Crop in Krita…', 'crop')):
+            button = QPushButton(text); button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            button.setToolTip('Opens a copy in Krita; select with any selection tool, then Use this part.')
+            button.clicked.connect(lambda _checked=False, value=kind: (self.reject(), parent.start_part(reference, value)))
+            parts.addWidget(button); self.part_buttons.append(button)
+        self.layout().insertLayout(self.layout().count() - 1, parts)
         buttons = self.findChild(QDialogButtonBox)
         if readonly:
             self.purpose.setEnabled(False); self.notes.setEnabled(False)
+            for button in self.part_buttons: button.setEnabled(False); button.setToolTip('Pause the agent to select a part')
             note.setText('Pause the agent to change this reference’s purpose. You can still inspect the image.')
         else:
             buttons.setStandardButtons(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -372,6 +383,51 @@ class ReferencePreview(ImagePreview):
         if len(self.notes.toPlainText()) > 2000:
             self.setWindowTitle('Keep reference directions under 2,000 characters.'); return
         super().accept()
+
+
+class ProtectionDialog(QDialog):
+    """Protected areas: what the agent must never change. One row per area, with Show and Remove; locked layers are
+    listed and changed in Krita. Three ways to add one, easiest first."""
+    DETAILS = {'agent': 'made by the agent · you approved', 'artist': 'made by you'}
+
+    def __init__(self, panel, areas):
+        super().__init__(panel)
+        self.setWindowTitle('Protected areas'); self.setMinimumWidth(320)
+        layout = QVBoxLayout(self)
+        intro = QLabel('The agent never changes these. Anything it paints into them is removed, and it tells you.')
+        intro.setWordWrap(True); intro.setObjectName('muted'); layout.addWidget(intro)
+        self.rows = []
+        for area in areas:
+            row = QHBoxLayout()
+            swatch = QLabel('◆'); swatch.setStyleSheet('color:#e5484d'); row.addWidget(swatch)
+            automatic = area.get('by') == 'automatic'
+            # A lock keeps a layer's own pixels and settings; the agent may still paint on new layers above it.
+            detail = ('%d layers · never edited by the agent, but it may paint over them' % area.get('count', 0)) if automatic else self.DETAILS.get(area.get('by'), '')
+            if area.get('state') == 'pending': detail = 'proposed by the agent · not active until you keep it'
+            label = QLabel('%s\n%s' % (area['name'], detail)); label.setWordWrap(True); row.addWidget(label, 1)
+            show = remove = None
+            if not automatic:
+                show = QPushButton('👁'); show.setCheckable(True); show.setAccessibleName('Show %s in red' % area['name'])
+                show.toggled.connect(lambda on, entry=area: panel.show_protection(entry, on)); row.addWidget(show)
+                remove = QPushButton('✕'); remove.setAccessibleName('Remove protection %s' % area['name'])
+                remove.clicked.connect(lambda _checked=False, entry=area: (panel.remove_protection(entry), self.close())); row.addWidget(remove)
+            layout.addLayout(row)
+            self.rows.append({'name': area['name'], 'detail': detail, 'show': show, 'remove': remove})
+        if not areas:
+            empty = QLabel('Nothing is protected yet.'); empty.setObjectName('muted'); layout.addWidget(empty)
+        actions = QHBoxLayout(); self.actions = []
+        for text, slot, tip in (('Ask the agent…', panel.ask_to_protect, 'Describe what to protect; the agent marks it for you to keep.'),
+                                ('Paint over it', panel.paint_protection, 'Paint red over what to protect; the eraser takes it away.'),
+                                ('Use my selection', panel.protect_selection, 'Protect what is selected in Krita now.')):
+            button = QPushButton(text); button.setToolTip(tip); button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            button.clicked.connect(lambda _checked=False, act=slot: (self.close(), act())); actions.addWidget(button); self.actions.append(button)
+        layout.addLayout(actions)
+        close = QDialogButtonBox(QDialogButtonBox.Close); close.rejected.connect(self.close); layout.addWidget(close)
+
+    def closeEvent(self, event):
+        for row in self.rows:
+            if row['show'] is not None and row['show'].isChecked(): row['show'].setChecked(False)
+        super().closeEvent(event)
 
 
 class CharacterDelegate(QStyledItemDelegate):
@@ -385,6 +441,10 @@ class CharacterDelegate(QStyledItemDelegate):
     def setModelData(self, editor, model, index):
         if isinstance(editor, QPlainTextEdit): model.setData(index, editor.toPlainText(), Qt.EditRole)
         else: super().setModelData(editor, model, index)
+
+
+# The AI image allowance choices for the open chat; -1 is no limit (null for the companion).
+AI_IMAGE_CHOICES = ((0, 'No AI images'), (1, '1 AI image'), (3, '3 AI images'), (5, '5 AI images'), (-1, 'AI images: no limit'))
 
 
 class PlanDialog(QDialog):
@@ -484,8 +544,13 @@ class PlanDialog(QDialog):
         self.minutes = QSpinBox(); self.minutes.setRange(0, 120); self.minutes.setSpecialValueText('No time limit'); self.minutes.setValue(goal['limits']['minutes']); self.minutes.setSuffix(' min')
         self.passes = QSpinBox(); self.passes.setRange(0, 150); self.passes.setSpecialValueText('No pass limit'); self.passes.setValue(goal['limits']['passes']); self.passes.setSuffix(' passes')
         self.minutes.setAccessibleName('Time allowance'); self.passes.setAccessibleName('Pass allowance')
-        allowance.addWidget(self.minutes); allowance.addWidget(self.passes); allowance.addStretch(); layout.addLayout(allowance)
-        used = QLabel('%d passes · %.1f minutes used. Paused time does not count.' % (goal.get('passes', 0), goal.get('used_ms', 0) / 60000))
+        ai_images = goal['limits'].get('ai_images', 0)
+        self.ai_images = QSpinBox(); self.ai_images.setRange(-1, 20); self.ai_images.setSpecialValueText('No AI image limit')
+        self.ai_images.setSuffix(' AI images'); self.ai_images.setValue(-1 if ai_images is None else ai_images)
+        self.ai_images.setAccessibleName('AI image allowance')
+        self.ai_images.setToolTip('How many AI-generated images the painter may use in this chat. 0 paints everything by hand.')
+        allowance.addWidget(self.minutes); allowance.addWidget(self.passes); allowance.addWidget(self.ai_images); allowance.addStretch(); layout.addLayout(allowance)
+        used = QLabel('%d passes · %.1f minutes · %d AI images used. Paused time does not count.' % (goal.get('passes', 0), goal.get('used_ms', 0) / 60000, goal.get('ai_images_used', 0)))
         layout.addWidget(used)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         export = buttons.addButton('Export plan…', QDialogButtonBox.ActionRole); export.clicked.connect(self.export_plan)
@@ -1101,7 +1166,7 @@ class CreativeAgentDocker(DockWidget):
         for label, value in [('Auto', 'auto'), ('Off', 'off'), ('Minimal', 'minimal'), ('Low', 'low'), ('Medium', 'medium'), ('High', 'high'), ('Extra high', 'xhigh'), ('Maximum', 'max')]:
             self.reasoning_selector.addItem(label, value)
         execution.addRow('Reasoning', self.reasoning_selector)
-        self.reasoning_note = QLabel('Auto uses low reasoning when the model supports it.'); self.reasoning_note.setWordWrap(True)
+        self.reasoning_note = QLabel('Auto adjusts reasoning to the task when the model supports it.'); self.reasoning_note.setWordWrap(True)
         self.reasoning_note.setObjectName('muted'); execution.addRow(self.reasoning_note)
         # Generic settings (move size, merging, image assets, decision checks…) are built from the companion's
         # declarations (settings_schema), so a new setting needs no code here.
@@ -1223,6 +1288,12 @@ class CreativeAgentDocker(DockWidget):
         self.recovery_action = None
         self.recovery_button.clicked.connect(lambda: self.recovery_action() if self.recovery_action else None)
         activity.addWidget(self.recovery_button)
+        # Shown only while the companion keeps the screen awake for a painting run (Settings: Screen).
+        self.awake_indicator = QLabel('☕ Screen awake'); self.awake_indicator.setObjectName('muted')
+        self.awake_indicator.setAccessibleName('Keeping the screen awake while painting')
+        self.awake_indicator.setToolTip('Keeping the screen awake while this run paints: Krita can only paint while its window is active. '
+                                        'It stops when the run pauses or ends. Turn it off in Settings: Screen.')
+        self.awake_indicator.hide(); activity.addWidget(self.awake_indicator)
         self.elapsed = QLabel(''); self.elapsed.setObjectName('muted'); self.elapsed.setAccessibleDescription('Activity elapsed time'); activity.addWidget(self.elapsed)
         layout.addLayout(activity)
         self.composer = QFrame(); self.composer.setObjectName('composer')
@@ -1261,6 +1332,18 @@ class CreativeAgentDocker(DockWidget):
         self.attachments = QWidget(); self.attachment_row = QHBoxLayout(self.attachments)
         self.attachment_row.setContentsMargins(0, 0, 0, 0); self.attachment_row.setSpacing(5)
         compose.addWidget(self.attachments); self.attachments.hide()
+        self.protection_bar = QWidget(); bar = QHBoxLayout(self.protection_bar); bar.setContentsMargins(0, 0, 0, 0)
+        self.protection_bar_label = QLabel('Painting protection'); bar.addWidget(self.protection_bar_label, 1)
+        done = QPushButton('Done'); done.clicked.connect(lambda: self.finish_protection(True)); bar.addWidget(done)
+        cancel = QPushButton('Cancel'); cancel.clicked.connect(lambda: self.finish_protection(False)); bar.addWidget(cancel)
+        compose.addWidget(self.protection_bar); self.protection_bar.hide()
+        self.part_session = None
+        self.part_bar = QWidget(); part_bar = QHBoxLayout(self.part_bar); part_bar.setContentsMargins(0, 0, 0, 0)
+        self.part_bar_label = QLabel(''); self.part_bar_label.setWordWrap(True); part_bar.addWidget(self.part_bar_label, 1)
+        use = QPushButton('Use this part'); use.clicked.connect(self.use_part); part_bar.addWidget(use)
+        cancel_part = QPushButton('Cancel'); cancel_part.clicked.connect(self.close_part); part_bar.addWidget(cancel_part)
+        compose.addWidget(self.part_bar); self.part_bar.hide()
+        self.part_timer = QTimer(self); self.part_timer.setInterval(1000); self.part_timer.timeout.connect(self.check_part_session)
         # Slash commands: typing "/" lists the agent's skills; choosing one inserts "/name ".
         self.skills = []
         self.slash_menu = QListWidget(); self.slash_menu.setAccessibleName('Skills'); self.slash_menu.setMaximumHeight(150)
@@ -1290,6 +1373,16 @@ class CreativeAgentDocker(DockWidget):
         self.mode_selector.setToolTip('Ask and Plan never paint. Agent paints one move at a time for you to keep, undo or refine. Autopilot paints the plan until the review passes.')
         self.mode_selector.setToolTip('Ask and Plan inspect your canvas. Agent can paint.')
         self.mode_selector.currentIndexChanged.connect(self.change_mode); buttons.addWidget(self.mode_selector)
+        self.ai_images_selector = QComboBox(); self.ai_images_selector.setAccessibleName('AI images for this chat')
+        for value, text in AI_IMAGE_CHOICES: self.ai_images_selector.addItem(text, value)
+        self.ai_images_selector.setToolTip('How many AI-generated images the painter may use in this chat. 0 paints everything by hand.')
+        self.ai_images_selector.currentIndexChanged.connect(self.change_ai_images); buttons.addWidget(self.ai_images_selector)
+        self.ai_images_used = QLabel(''); self.ai_images_used.setAccessibleName('AI images used'); buttons.addWidget(self.ai_images_used)
+        # Protected areas: what the agent must never change. The panel changes them here, in Krita's own process.
+        self.protection = ProtectionCraft(); self.protection_controls = []; self.protection_editing = None; self.protection_shown = None
+        self.protect_button = QPushButton('🛡'); self.protect_button.setObjectName('contextAction')
+        self.protect_button.setAccessibleName('Protected areas'); self.protect_button.setToolTip('Protected areas: what the agent must never change')
+        self.protect_button.clicked.connect(lambda: self.open_protection()); buttons.addWidget(self.protect_button)
         buttons.addStretch(1)
         self.stop_button = QPushButton('■'); self.stop_button.setObjectName('stopAction')
         self.stop_button.setAccessibleName('Stop generating and pause agent'); self.stop_button.setToolTip('Stop · in-progress paint settles safely')
@@ -1733,6 +1826,19 @@ class CreativeAgentDocker(DockWidget):
         while self.generic_settings.rowCount(): self.generic_settings.removeRow(0)
         self.setting_widgets = {}
         for field in fields:
+            if field.get('control') == 'checkbox':
+                # A boolean shown as one checkbox: options are [off, on] and the "on" label is its text.
+                # The text is a wrapping label beside a bare box (a checkbox's own text cannot wrap at narrow widths).
+                options = {option['value']: option['label'] for option in field.get('options', [])}
+                box = QCheckBox(); box.setAccessibleName(field.get('accessible') or field['label'])
+                text = QLabel(options.get(True, field['label'])); text.setWordWrap(True)
+                text.mousePressEvent = lambda _event, box=box: box.toggle()
+                row = QWidget(); row_layout = QHBoxLayout(row); row_layout.setContentsMargins(0, 0, 0, 0); row_layout.setSpacing(6)
+                row_layout.addWidget(box, 0, Qt.AlignTop); row_layout.addWidget(text, 1)
+                if field.get('tooltip'): box.setToolTip(field['tooltip']); text.setToolTip(field['tooltip'])
+                box.toggled.connect(self.change_execution_settings)
+                self.generic_settings.addRow(field['label'], row); self.setting_widgets[field['key']] = box
+                continue
             combo = QComboBox(); combo.setAccessibleName(field.get('accessible') or field['label'])
             combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon); combo.setMinimumContentsLength(8)
             for option in field.get('options', []): combo.addItem(option['label'], option['value'])
@@ -1747,12 +1853,15 @@ class CreativeAgentDocker(DockWidget):
         """Show saved settings without sending them back."""
         controls = [(widget, settings.get(key)) for key, widget in self.setting_widgets.items()] + [(self.reasoning_selector, settings.get('reasoning'))]
         for control, value in controls:
+            if isinstance(control, QCheckBox):
+                if isinstance(value, bool): control.blockSignals(True); control.setChecked(value); control.blockSignals(False)
+                continue
             index = control.findData(value)
             if index >= 0: control.blockSignals(True); control.setCurrentIndex(index); control.blockSignals(False)
 
     def change_execution_settings(self, *_args):
         if self.busy: return
-        settings = {key: widget.currentData() for key, widget in self.setting_widgets.items()}
+        settings = {key: widget.isChecked() if isinstance(widget, QCheckBox) else widget.currentData() for key, widget in self.setting_widgets.items()}
         settings.update({'reasoning': self.reasoning_selector.currentData(), 'native_craft': True})
         self.send({'type': 'set_execution_settings', 'settings': settings})
 
@@ -1816,18 +1925,23 @@ class CreativeAgentDocker(DockWidget):
                 self.pending_references.append({'path': path, 'role': role, 'name': os.path.basename(path), 'purpose': 'composition' if role == 'construction-map' else 'general', 'notes': ''})
         self.show_references()
 
-    def attach_pasted_image(self, image):
-        # Temporary attachment only; runtime copies it into portable study state on send.
-        # Pastes live in one folder, and any older than a day are removed here.
+    @staticmethod
+    def pasted_folder():
+        """Where pasted references and reference parts wait until they are sent; files older than a day go."""
         import tempfile, time
-        from PyQt5.QtGui import QImage
         folder = os.path.join(tempfile.gettempdir(), 'creative-agent-pasted')
         os.makedirs(folder, exist_ok=True)
         for name in os.listdir(folder):
             try:
                 if time.time() - os.path.getmtime(os.path.join(folder, name)) > 86400: os.remove(os.path.join(folder, name))
             except OSError: pass
-        path = os.path.join(folder, 'creative-reference-' + uuid.uuid4().hex + '.png')
+        return folder
+
+    def attach_pasted_image(self, image):
+        # Temporary attachment only; runtime copies it into portable study state on send.
+        # Pastes live in one folder, and any older than a day are removed here.
+        from PyQt5.QtGui import QImage
+        path = os.path.join(self.pasted_folder(), 'creative-reference-' + uuid.uuid4().hex + '.png')
         if QImage(image).save(path):
             self.attach_paths([path])
             for reference in self.pending_references:
@@ -1940,7 +2054,9 @@ class CreativeAgentDocker(DockWidget):
                 if save: save.setEnabled(False)
         if dialog.exec_() == QDialog.Accepted and not self.busy:
             self.send({'type': 'edit_plan', 'brief': dialog.brief()})
-            self.send({'type': 'set_limits', 'limits': {'minutes': dialog.minutes.value(), 'passes': dialog.passes.value()}})
+            ai_images = dialog.ai_images.value()
+            self.send({'type': 'set_limits', 'limits': {'minutes': dialog.minutes.value(), 'passes': dialog.passes.value(),
+                                                        'ai_images': None if ai_images < 0 else ai_images}})
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -2159,10 +2275,12 @@ class CreativeAgentDocker(DockWidget):
             if settings.get('native_craft') is False and not self.busy: self.change_execution_settings()
             effective = event.get('effective_reasoning')
             available = event.get('available_reasoning') or []
+            # The companion describes its Auto policy; an older companion sends none.
+            auto = event.get('reasoning_note') if settings.get('reasoning') == 'auto' else None
             if effective is not None:
-                self.reasoning_note.setText('Active model: ' + effective + '. Supported levels: ' + ', '.join(available) + '. Your preference applies to the painter and preparation workers.')
+                self.reasoning_note.setText((auto + ' ' if auto else '') + 'Now: ' + effective + '. Supported levels: ' + ', '.join(available) + '. Your preference applies to the painter, the reviewer and preparation workers.')
             else:
-                self.reasoning_note.setText('Applies when the conversation starts. Auto uses low reasoning when supported; other levels adapt to the selected model.')
+                self.reasoning_note.setText('Applies when the conversation starts. ' + (auto or 'Auto uses low reasoning when supported.') + ' Other levels adapt to the selected model.')
         elif kind == 'model':
             value = event['model']; self.accepted_model = {'provider': value['provider'], 'id': value['id']}; self.pending_model_change = False
             self.select_provider(value['provider']); self.filter_models(); self.model.blockSignals(True)
@@ -2290,6 +2408,8 @@ class CreativeAgentDocker(DockWidget):
                 if message.get('region'): self.transcript.add_region_receipt(item, message['region'], canvas)
                 if message.get('references'): self.transcript.add_reference_receipts(item, message['references'])
                 if message['role'] == 'user': self.last_user_item = item
+        elif kind == 'keep_awake':
+            self.awake_indicator.setVisible(bool(event.get('active') and event.get('display')))
         elif kind == 'goal':
             self.goal = event['goal']
             if 'painting_target' in event:
@@ -2304,6 +2424,7 @@ class CreativeAgentDocker(DockWidget):
             self.pending_references = [r for r in self.pending_references if r['path'] not in copied]
             self.attached_references = references; self.show_references()
             brief = self.goal.get('brief')
+            self.render_ai_images()
             self.plan_bar.setVisible(bool(brief))
             if brief:
                 states = {'draft': 'Plan draft', 'ready': 'Plan ready', 'active': 'Painting', 'paused': 'Paused', 'reviewing': 'Visual review',
@@ -2332,6 +2453,20 @@ class CreativeAgentDocker(DockWidget):
             if review.get('issues'): text += '\n\n' + '\n'.join('- ' + issue for issue in review['issues'])
             self.empty_state.hide()
             self.transcript.add_message('Visual review', text, True)
+        elif kind == 'protection_proposed':
+            self.flush_stream(); self.reply_open = False; self.empty_state.hide()
+            area = event['area']
+            item = self.transcript.add_message('Protected area', "I marked '%s' in red. Keep this protection?" % area['name'], True)
+            self.protection_controls = []
+            for text, choice in (('Keep', 'keep'), ('Adjust', 'adjust'), ('Discard', 'discard')):
+                button = QPushButton(text); button.setObjectName('questionChoice')
+                button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+                button.clicked.connect(lambda _checked=False, entry=area, value=choice: self.answer_protection(entry, value))
+                item['layout'].addWidget(button); self.protection_controls.append(button)
+            self.show_protection(area, True)
+        elif kind == 'protection_hit':
+            self.flush_stream(); self.reply_open = False; self.empty_state.hide()
+            self.transcript.add_message('Protected area', event['message'], True)
         elif kind == 'visual_check':
             self.flush_stream(); self.reply_open = False; self.empty_state.hide()
             found = ', '.join('%s (%s, %d%%)' % (f['label'], (f.get('location') or 'location unknown').replace('_', ' '), round(f['probability'] * 100))
@@ -2451,8 +2586,205 @@ class CreativeAgentDocker(DockWidget):
                            height=self.canvas_height.value(), experiment=self.experiment.currentData()))
         self.prompt.clear(); self.status.setText('Preparing your message…')
 
+    def render_ai_images(self):
+        """Show the open chat's AI image allowance (-1 in the selector is no limit) and how many it used."""
+        goal = self.goal or {}
+        value = (goal.get('limits') or {}).get('ai_images', 0)
+        key = -1 if value is None else value
+        selector = self.ai_images_selector
+        selector.blockSignals(True)
+        if selector.findData(key) < 0: selector.addItem('%d AI images' % key, key)
+        selector.setCurrentIndex(selector.findData(key)); selector.blockSignals(False)
+        used = goal.get('ai_images_used', 0)
+        self.ai_images_used.setText('%d used' % used if used else '')
+        self.ai_images_used.setToolTip('%d AI images made in this chat' % used)
+
+    def change_ai_images(self, _index):
+        if not self.goal or self.busy: return
+        value = self.ai_images_selector.currentData()
+        limits = self.goal.get('limits') or {}
+        self.send({'type': 'set_limits', 'limits': {'minutes': limits.get('minutes', 0), 'passes': limits.get('passes', 0),
+                                                    'ai_images': None if value < 0 else value}})
+
+    # ----- reference parts -----------------------------------------------------------
+    def start_part(self, reference, kind):
+        """Open a copy of the reference in Krita for the artist to select a part (or a crop) with Krita's tools."""
+        import shutil
+        if self.part_session: return
+        if len(self.pending_references) + len(self.attached_references) >= 4:
+            self.status.setText('Remove a reference to add a part.'); return
+        copy = os.path.join(self.pasted_folder(), 'creative-part-source-' + uuid.uuid4().hex + os.path.splitext(reference['path'])[1])
+        shutil.copyfile(reference['path'], copy)
+        app = Krita.instance(); window = app.activeWindow()
+        previous = window.activeView() if window else None
+        doc = app.openDocument(copy)
+        if doc is None:
+            os.remove(copy); self.status.setText('Krita could not open this reference.'); return
+        if (doc.colorModel(), doc.colorDepth()) != ('RGBA', 'U8'):             # a part is cut from 8-bit RGBA pixels
+            doc.setColorSpace('RGBA', 'U8', 'sRGB-elle-V2-srgbtrc.icc')
+        if window: window.addView(doc)
+        tool = app.action('KisToolSelectSimilar' if kind == 'part' else 'KisToolSelectRectangular')
+        if tool is not None: tool.trigger()
+        name = reference.get('name') or os.path.basename(reference['path'])
+        self.part_session = {'reference': reference, 'kind': kind, 'doc': doc, 'copy': copy, 'view': previous, 'window': window, 'name': name}
+        self.part_bar_label.setText('Selecting a part of ' + name); self.part_bar.show(); self.part_timer.start()
+
+    def part_name(self, default):
+        name, ok = QInputDialog.getText(self, 'Name this part', 'Name', QLineEdit.Normal, default)
+        return name.strip()[:60] if ok and name.strip() else None
+
+    def use_part(self):
+        session = self.part_session
+        if not session: return
+        doc, kind = session['doc'], session['kind']
+        width, height = doc.width(), doc.height()
+        selection = doc.selection()
+        bounds = self.selection_bounds(selection, doc)
+        if bounds is None:
+            self.status.setText('Select the part first.'); return
+        pixels = bytes(doc.pixelData(0, 0, width, height))
+        if kind == 'part':
+            image = part_image(pixels, bytes(selection.pixelData(0, 0, width, height)), width, height)
+            bounds, size = opaque_bounds(image, width, height), (width, height)
+            if bounds is None:
+                self.status.setText('Select the part first.'); return
+        else:
+            image, bounds = crop_image(pixels, width, height, bounds); size = (bounds[2], bounds[3])
+        name = self.part_name('Part of ' + session['name'])
+        if not name: return
+        from PyQt5.QtGui import QImage
+        path = os.path.join(self.pasted_folder(), 'creative-reference-' + uuid.uuid4().hex + '.png')
+        if not QImage(image, size[0], size[1], size[0] * 4, QImage.Format_ARGB32).save(path):
+            self.status.setText('Could not save the part.'); return
+        original = session['reference']
+        self.close_part()
+        self.pending_references.append({'path': path, 'role': 'reference', 'name': '%s (%s)' % (name, kind), 'purpose': original.get('purpose') or 'general',
+                                        'notes': '', 'part_of': original['path'], 'part_kind': kind, 'bounds': bounds})
+        self.show_references(); self.status.setText("'%s (%s)' is attached. Ask the agent to paint from it." % (name, kind))
+
+    def close_part(self, closed_by_artist=False):
+        session, self.part_session = self.part_session, None
+        self.part_timer.stop(); self.part_bar.hide()
+        if not session: return
+        if not closed_by_artist:
+            session['doc'].setModified(False); session['doc'].close()
+        if session['window'] is not None and session['view'] is not None: session['window'].showView(session['view'])
+        try: os.remove(session['copy'])
+        except OSError: pass
+
+    def check_part_session(self):
+        """The artist closed the temporary document themselves: as if Cancel was pressed."""
+        if self.part_session and self.part_session['doc'] not in Krita.instance().documents():
+            self.close_part(closed_by_artist=True)
+
+    # ----- protected areas ---------------------------------------------------------
+    def protection_document(self):
+        return Krita.instance().activeDocument()
+
+    def open_protection(self, modal=True):
+        doc = self.protection_document()
+        if doc is None:
+            self.status.setText('Open your painting to protect parts of it.'); return None
+        dialog = ProtectionDialog(self, self.protection._protect_list(doc))
+        if modal: dialog.exec_()
+        else: dialog.show()
+        return dialog
+
+    def answer_protection(self, area, choice):
+        for button in self.protection_controls: button.setEnabled(False)
+        self.show_protection(area, False)
+        doc = self.protection_document()
+        if choice == 'keep':
+            self.protection._protect_set_state(doc, area['id'], 'active'); self.status.setText("'%s' is protected." % area['name'])
+        elif choice == 'discard':
+            self.protection._protect_remove(doc, area['id'])
+        else:
+            self.paint_protection(area)
+
+    def remove_protection(self, area):
+        self.protection._protect_remove(self.protection_document(), area['id'])
+        self.status.setText("'%s' is no longer protected." % area['name'])
+
+    def show_protection(self, area, on):
+        """Krita shows the active selection mask's area over the painting; Show makes the area's mask active."""
+        doc = self.protection_document()
+        mask = doc is not None and hasattr(self.protection, '_protect_mask_node') and self.protection._protect_mask_node(doc, area['id'])
+        if not mask: return
+        if on:
+            self.protection_shown = self.protection_shown or doc.activeNode(); doc.setActiveNode(mask)
+        elif self.protection_shown is not None:
+            doc.setActiveNode(self.protection_shown); self.protection_shown = None
+
+    def ask_to_protect(self):
+        if self.mode_selector.currentData() != 'agent':
+            self.mode_selector.setCurrentIndex(self.mode_selector.findData('agent'))
+        self.prompt.setPlainText('Protect '); self.prompt.moveCursor(QTextCursor.End); self.prompt.setFocus()
+
+    @staticmethod
+    def selection_bounds(selection, doc):
+        if selection is None: return None
+        left, top = max(0, selection.x()), max(0, selection.y())
+        right, bottom = min(doc.width(), selection.x() + selection.width()), min(doc.height(), selection.y() + selection.height())
+        return None if right <= left or bottom <= top else [left, top, right - left, bottom - top]
+
+    def protect_selection(self):
+        doc = self.protection_document()
+        selection = doc.selection() if doc is not None else None
+        bounds = self.selection_bounds(selection, doc) if doc is not None else None
+        if bounds is None:
+            self.status.setText('Select an area first.'); return
+        count = len([a for a in self.protection._protect_list(doc) if a.get('by') != 'automatic']) + 1
+        name, ok = QInputDialog.getText(self, 'Protect this area', 'Name', QLineEdit.Normal, 'Protected %d' % count)
+        if not ok or not name.strip(): return
+        self.protection._protect_add(doc, selection.duplicate(), name.strip()[:60], 'artist', 'active', bounds)
+        self.status.setText("'%s' is protected." % name.strip()[:60])
+
+    def paint_protection(self, area=None):
+        """Paint over it: the area's mask becomes the active node and the brush paints protection, the eraser
+        removes it. Done keeps it; Cancel restores it (or drops a new one)."""
+        doc = self.protection_document()
+        if doc is None:
+            self.status.setText('Open your painting to protect parts of it.'); return
+        if area is None:
+            count = len([a for a in self.protection._protect_list(doc) if a.get('by') != 'automatic']) + 1
+            name, ok = QInputDialog.getText(self, 'Paint protection', 'Name', QLineEdit.Normal, 'Protected %d' % count)
+            if not ok or not name.strip(): return
+            area = self.protection._protect_add(doc, Selection(), name.strip()[:60], 'artist', 'active', [0, 0, 0, 0]); saved = None
+        else:
+            saved = self.protection._protect_mask_node(doc, area['id']).selection().duplicate()
+        self.protection_editing = {'area': area, 'saved': saved, 'node': doc.activeNode()}
+        self.protection._protect_editing(doc, True)              # Krita will not paint a mask in a locked group
+        doc.setActiveNode(self.protection._protect_mask_node(doc, area['id']))
+        brush = Krita.instance().action('KritaShape/KisToolBrush')
+        if brush is not None: brush.trigger()
+        self.protection_bar_label.setText("Painting protection: '%s'" % area['name']); self.protection_bar.show(); self.update_controls()
+
+    def finish_protection(self, keep):
+        editing, self.protection_editing = self.protection_editing, None
+        self.protection_bar.hide()
+        if editing is None: return
+        doc, area = self.protection_document(), editing['area']
+        self.protection._protect_editing(doc, False)
+        mask = self.protection._protect_mask_node(doc, area['id'])
+        bounds = self.selection_bounds(mask.selection(), doc) if mask is not None and keep else None
+        if keep and bounds:
+            self.protection._protect_set_bounds(doc, area['id'], bounds)
+            self.protection._protect_set_state(doc, area['id'], 'active'); self.status.setText("'%s' is protected." % area['name'])
+        elif editing['saved'] is None or (keep and not bounds):
+            self.protection._protect_remove(doc, area['id']); self.status.setText('Nothing was protected.')
+        else:
+            mask.setSelection(editing['saved'])
+        if editing['node'] is not None: doc.setActiveNode(editing['node'])
+        self.update_controls()
+
     def update_controls(self):
         running = bool(self.process and self.process.state() == QProcess.Running)
+        self.ai_images_selector.setVisible(bool(self.goal)); self.ai_images_used.setVisible(bool(self.goal))
+        self.ai_images_selector.setEnabled(running and bool(self.goal) and not self.busy)
+        self.ai_images_selector.setToolTip('Pause to change AI images for this chat.' if self.busy else
+                                           'How many AI-generated images the painter may use in this chat. 0 paints everything by hand.')
+        self.protect_button.setEnabled(not self.busy and self.protection_editing is None)
+        self.protect_button.setToolTip('Pause to change protection' if self.busy else 'Protected areas: what the agent must never change')
         for control in (self.source, self.name, self.experiment): control.setEnabled(not self.study_active and not self.busy)
         self.model.setEnabled(not self.busy and not self.pending_model_change)
         self.provider_filter.setEnabled(not self.busy and not self.pending_model_change)

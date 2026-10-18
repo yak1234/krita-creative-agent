@@ -1,8 +1,10 @@
 // @ts-check
 import { isPaintingMode } from './modes.mjs';
+import { defineTool } from '@earendil-works/pi-coding-agent';
 import {Type} from 'typebox';
 import {Value} from 'typebox/value';
 
+/** @template {import('typebox').TProperties} T @param {T} properties */
 const object=properties=>Type.Object(properties,{additionalProperties:false});
 const point=Type.Array(Type.Number({minimum:0,maximum:8192}),{minItems:2,maxItems:2});
 export const contourSchema=object({
@@ -51,12 +53,12 @@ export function contourCommands(value,canvas) {
 }
 
 export function contourTool(runtime,executeToolbox) {
-  return {name:'paint_contours',label:'Painting drawn contours',executionMode:'sequential',parameters:contourSchema,
+  return defineTool({name:'paint_contours',label:'Painting drawn contours',executionMode:'sequential',parameters:contourSchema,
     description:'Paint 1–32 deliberately drawn closed outlines in back-to-front order on one new editable layer. Supply each outline as ordered canvas-pixel points and a color. Uses native polygon selections and brush fills, not raster imports. Choose an opaque pigment-depositing installed preset. Draw actual silhouette changes (forehead, nose, lips, chin, collar, hand overlap); an ellipse or bounding box does not establish likeness. No automatic smoothing or reference tracing: add contour points where needed. No holes or crossing edges. Preserves prior canvas selection through the native toolbox transaction, obeys stage region restrictions, saves and returns the resulting image.',
     execute:async(id,value,signal)=>{
       signal?.throwIfAborted();
       if(runtime.mode!==undefined && (!isPaintingMode(runtime.mode)||runtime.executionPhase!=='agent'))throw new Error('Contours are only available in active Agent execution.');
       if(runtime.cancelRequested||runtime.faulted)throw new Error('Painting is stopped or needs recovery.');
       return executeToolbox(id,contourCommands(value,runtime.decisionObservation),signal);
-    }};
+    }});
 }

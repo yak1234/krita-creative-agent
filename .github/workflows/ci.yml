@@ -25,8 +25,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: Syntax check
         run: for f in src/*.mjs scripts/*.mjs; do node --check "$f"; done
-      - name: Type check (files marked // @ts-check, against Pi's own types)
-        run: npx tsc -p .
+      - name: Type check (the .mjs marked // @ts-check, and the TypeScript strictly, against Pi's own types)
+        run: npm run typecheck
       - name: Unit and integration tests (in-memory Langfuse, local model stub)
         run: node --test --test-timeout=120000 tests/*.test.mjs
 

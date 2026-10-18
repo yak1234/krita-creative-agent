@@ -126,6 +126,16 @@ class FilterTests(region_tests.RegionSetup, unittest.TestCase):
         self.assertEqual([entry[0] for entry in self.log], ['apply', 'blend'])
         self.assertEqual((self.log[0][2], self.log[1][1]), ((1, 1, 2, 2), (2, 2)))
 
+    def test_a_filter_mask_goes_on_a_clone_of_the_artists_sketch(self):
+        sketch = self.artist_layer('Sketch')
+        clone = region_tests.Layer(self.h.doc, 'Sketch lifted', 'clonelayer')
+        self.h.doc.createCloneLayer = lambda name, source: clone
+        result = run(self.h, 'clone_layer', {'source': sketch.id, 'name': 'Sketch lifted'}, 'lift')
+        self.assertEqual(result['status'], 'ok', result.get('error'))
+        run(self.h, 'apply_filter', {'target': clone.id, 'filter': 'gaussian blur'}, 'lift-blur')
+        self.assertEqual([m.kind for m in clone.childNodes()], ['filtermask'])
+        self.assertEqual(sketch.childNodes(), [], "the artist's sketch has no mask")
+
     def test_refusals_change_nothing(self):
         figure = self.artist_layer()
         layer = self.agent_layer()

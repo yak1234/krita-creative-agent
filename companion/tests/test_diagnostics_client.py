@@ -26,11 +26,11 @@ class DiagnosticsClientTest(unittest.TestCase):
     def test_three_tools_against_running_companion_socket_and_offline_evidence(self):
         registry = Registry()
         client.register_diagnostic_tools(registry)
-        self.assertEqual(set(registry.tools), {'creative_inspect_state', 'creative_recent_events', 'creative_collect_report'})
+        self.assertEqual(set(registry.tools), {'creative_inspect_state', 'creative_recent_events', 'creative_collect_report', 'creative_end_chat'})
         with tempfile.TemporaryDirectory() as directory:
             script = """
 import {LiveDiagnostics} from './src/live-diagnostics.mjs';
-const runtime={config:{output:process.argv[1]},pendingTools:new Map(),redact:s=>s,mode:'ask',busy:false};
+const runtime={config:{output:process.argv[1]},pendingTools:new Map(),redact:s=>s,mode:'ask',busy:false,study:{id:'12345678-1234-1234-1234-123456789abc'},async end(){this.study=null;}};
 const diagnostics=new LiveDiagnostics(runtime);await diagnostics.start();
 console.log('ready');process.stdin.resume();
 process.stdin.on('end',async()=>{await diagnostics.close();process.exit(0);});
@@ -47,6 +47,7 @@ process.stdin.on('end',async()=>{await diagnostics.close();process.exit(0);});
                 report = registry.tools['creative_collect_report'](directory)
                 self.assertEqual(json.loads(Path(report['path']).read_text())['live']['pid'], process.pid)
                 self.assertEqual(registry.tools['creative_recent_events'](directory, limit=501)['error_code'], 'invalid_arguments')
+                self.assertEqual(registry.tools['creative_end_chat'](directory), {'status': 'ok', 'ended': '12345678-1234-1234-1234-123456789abc'})
             finally:
                 process.communicate(timeout=10)
             stale = registry.tools['creative_inspect_state'](directory)

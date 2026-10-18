@@ -1,5 +1,7 @@
+// @ts-check
 import { thinkingLevel } from './execution-settings.mjs';
-import { createAgentSession, DefaultResourceLoader, getAgentDir, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
+import { stopAfterTurn } from './turn-control.mjs';
+import { createAgentSession, createEventBus, DefaultResourceLoader, getAgentDir, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { copyFile, mkdir, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -10,6 +12,7 @@ import { COMIC_OPERATIONS, CRAFT_OPERATIONS } from './craft.mjs';
 import { BUILD_INFO, PROTOCOL_VERSION } from './build-info.mjs';
 import { inheritPiCatalog } from './model-catalog.mjs';
 import { SKILLS_DIR } from './skills.mjs';
+import { GUARDS_CHANNEL, LOOP_GUARDS } from './extensions.mjs';
 
 const SIGN_IN_NAMES = { 'openai-codex': 'ChatGPT (Codex)', 'anthropic': 'Claude', 'google-gemini-cli': 'Gemini CLI', 'google-antigravity': 'Google Antigravity' };
 /** How to restore a lapsed or missing OAuth sign-in. The chat keeps its model. */
@@ -19,9 +22,23 @@ export function signInMessage(provider, lapsed = false) {
     + 'Sign in again in Pi (run pi in a terminal, then /login), then send a message or press Resume to continue on the same model.';
 }
 
+/**
+ * What a subclass (StudioRuntime) may add. The base runtime works without them, so they are read
+ * through hooks(this) and never declared here: a field set in this constructor would shadow the
+ * subclass's methods, and `sessionManagers` is a getter there, so assigning it would throw.
+ * @typedef {{
+ *   buildTools?: () => any[], traceSession?: (session: any, role: string) => (() => void) | undefined,
+ *   applyExecutionSettings?: () => void, systemInstructions?: string, sessionManagers?: any,
+ *   paintingsDirectory?: string, executionSettings?: any, executionPhase?: string, transition?: {kind?: string} | null,
+ *   diagnostics?: {record: (event: object) => void},
+ * }} RuntimeHooks
+ */
+const hooks = runtime => /** @type {RuntimeHooks} */ (/** @type {unknown} */ (runtime));
+
 export class PaintingRuntime {
+  /** @param {{root?: string, config?: any, bridge?: any, emit?: (event: object) => void, models?: any}} options */
   constructor({ root, config, bridge, emit, models }) {
-    Object.assign(this, { root, config, bridge, emit });
+    this.root = root; this.config = config; this.bridge = bridge; this.emit = emit;
     this.busy = false;
     this.faulted = false;
     this.cancelRequested = false;
@@ -64,6 +81,7 @@ export class PaintingRuntime {
   }
   acceptBridgeHealth(bridgeStatus) {
     this.routingCapabilities=bridgeStatus.capabilities ?? {};
+    this.kritaActions=bridgeStatus.krita_actions ?? 0;          // vetted Krita actions; none: krita_action is not offered
     this.bridgeCompatible = bridgeStatus.protocol_version === PROTOCOL_VERSION &&
       (BUILD_INFO.build_id === 'development-unverified' || bridgeStatus.build?.build_id === BUILD_INFO.build_id);
     this.emit({ type: 'ready', models: this.listModels(),providers:this.listProviders(), bridge: bridgeStatus, build:BUILD_INFO, compatible:this.bridgeCompatible });
@@ -143,7 +161,7 @@ export class PaintingRuntime {
     return result;
   }
   async configureProvider(p) {
-    if (this.busy && this.transition?.kind!=='configure_provider') throw new Error('Pause before changing model connections.');
+    if (this.busy && hooks(this).transition?.kind!=='configure_provider') throw new Error('Pause before changing model connections.');
     if (/\bbatch\b/i.test(p.model ?? '')) throw new Error('Choose an interactive model instead of a batch route.');
     if (!p.provider || !p.model || !p.base_url || !p.api_key) throw new Error('Provider, model ID, endpoint and API key are required.');
     const endpoint = new URL(p.base_url);
@@ -239,28 +257,34 @@ export class PaintingRuntime {
         packages: [], extensions: [], skills: [], enableAnalytics: false, enableInstallTelemetry: false,
         images: { autoResize: true, blockImages: false },
       });
+      // The loop guards' settings travel on this bus (studio.mjs applyExecutionSettings).
+      this.guardEvents = createEventBus();
       const loader = new DefaultResourceLoader({ cwd: directory, agentDir: join(directory, 'agent'), settingsManager: settings,
         // Only the bundled skills: Pi lists them while the painter's skill-only `read` tool is active.
-        noExtensions: true, noSkills: true, additionalSkillPaths: [SKILLS_DIR], noContextFiles: true, noPromptTemplates: true, noThemes: true,
-        systemPromptOverride: () => this.systemInstructions ?? PAINTING_INSTRUCTIONS,
+        // Only the shipped extensions, inline: discovery stays off. loopGuards: false leaves them out (benchmarks).
+        noExtensions: true, extensionFactories: this.config?.loopGuards === false ? [] : [LOOP_GUARDS], eventBus: this.guardEvents,
+        noSkills: true, additionalSkillPaths: [SKILLS_DIR], noContextFiles: true, noPromptTemplates: true, noThemes: true,
+        systemPromptOverride: () => hooks(this).systemInstructions ?? PAINTING_INSTRUCTIONS,
       });
       await loader.reload();
-      const tools = this.buildTools ? this.buildTools() : paintingTools(this);
+      const tools = hooks(this).buildTools ? hooks(this).buildTools() : paintingTools(this);
       const result = await createAgentSession({ cwd: directory, agentDir: join(directory, 'agent'),
-        modelRuntime: this.models, model, thinkingLevel: thinkingLevel(this.executionSettings,model),
+        modelRuntime: this.models, model, thinkingLevel: thinkingLevel(hooks(this).executionSettings,model,hooks(this).executionPhase),
         resourceLoader: loader, settingsManager: settings, customTools: tools, tools: tools.map(t => t.name),
-        sessionManager: (managers => sessionFile ? managers.open(sessionFile, join(directory, 'sessions'), directory) : managers.create(directory, join(directory, 'sessions')))(this.sessionManagers ?? SessionManager) });
+        sessionManager: (managers => sessionFile ? managers.open(sessionFile, join(directory, 'sessions'), directory) : managers.create(directory, join(directory, 'sessions')))(hooks(this).sessionManagers ?? SessionManager) });
       this.session = result.session;
       this.session.agent.toolExecution = 'sequential';
       // Send only the newest canvas images to the model; Pi's own transform runs first.
       const transform = this.session.agent.transformContext;
       this.session.agent.transformContext = async (messages, signal) => keepRecentImages(transform ? await transform(messages, signal) : messages);
-      this.session.agent.shouldStopAfterTurn = () => this.cancelRequested || this.faulted || this.turns >= 24;
+      stopAfterTurn(this.session.agent, () => this.turns, turns => this.cancelRequested || this.faulted || turns >= 24);
       this.session.subscribe(event => this.onEvent(event));
-      this.untrace?.(); this.untrace = this.traceSession?.(this.session, 'painter');
+      this.untrace?.(); this.untrace = hooks(this).traceSession?.(this.session, 'painter');
       this.emit({ type: 'study', id, directory, session_file: this.session.sessionFile, model: { provider: model.provider, id: model.id } });
       this.study.session_file = this.session.sessionFile;
-      this.applyExecutionSettings?.();
+      hooks(this).applyExecutionSettings?.();
+      // A new session has a new bus: the loop guards learn the settings now, not at the next settings change.
+      this.guardEvents.emit(GUARDS_CHANNEL, { native_craft: hooks(this).executionSettings?.native_craft !== false });
       await writeFile(join(directory, 'resume.json'), JSON.stringify(this.study, null, 2));
   }
   async resume(id) {
@@ -289,11 +313,11 @@ export class PaintingRuntime {
     try {
       this.setActivity('preparing', 'Reopening your conversation…');
       const observation = await this.callNative('begin', { mode: 'resume', name: info.name ?? 'Creative study', output_dir: directory,
-        ...(info.painting_file ? { painting_path: resolve(this.paintingsDirectory ?? directory, info.painting_file) } : {}),
+        ...(info.painting_file ? { painting_path: resolve(hooks(this).paintingsDirectory ?? directory, info.painting_file) } : {}),
         editable_layers: layers.filter(layer => layer.editable_by_agent).map(layer => layer.id) });
       await writeFile(join(this.config.output, 'active-session.json'), JSON.stringify({ id }), { mode: 0o600 });
       await this.openSession(model, sessionFile);
-      const messages = this.session.messages.filter(m => ['user', 'assistant'].includes(m.role)).map(m => ({
+      const messages = this.session.messages.filter(m => m.role === 'user' || m.role === 'assistant').map(m => ({
         role: m.role, text: typeof m.content === 'string' ? m.content : m.content.filter(c => c.type === 'text').map(c => c.text).join('\n'),
       })).filter(m => m.text.trim()).map(m => ({ ...m, text: m.role === 'user' && m.text.includes('\n\nUser request:\n') ? m.text.split('\n\nUser request:\n').slice(1).join('\n\nUser request:\n') : m.text }));
       for (const message of messages) {
@@ -327,7 +351,7 @@ export class PaintingRuntime {
         const progress = JSON.parse(await readFile(join(this.study.directory, '.progress.json'), 'utf8'));
         if (!closed && progress.operation_id === expected && progress.at !== last) {
           last = progress.at;
-          this.diagnostics?.record({type:'native_progress',operation_id:expected,phase:progress.phase,message:progress.message});
+          hooks(this).diagnostics?.record({type:'native_progress',operation_id:expected,phase:progress.phase,message:progress.message});
           if (!this.cancelRequested) this.setActivity(progress.phase, progress.message);
         }
       } catch { /* A progress file is optional on older bridges. */ }
@@ -343,11 +367,15 @@ export class PaintingRuntime {
       this.stop();
     }
   }
+  /** @param {import('@earendil-works/pi-coding-agent').AgentSessionEvent} event */
   onEvent(event) {
     if(event.type==='turn_start')this.diagnosticRequestId=randomUUID();
-    if (['turn_start','turn_end','message_start','message_end','tool_execution_start','tool_execution_end','auto_retry_start','auto_retry_end'].includes(event.type))
-      this.diagnostics?.record({type:'model_'+event.type,tool_call_id:event.toolCallId,tool:event.toolName,
-        model_request_id:this.diagnosticRequestId,role:event.message?.role,error:!!event.isError,stop_reason:event.message?.stopReason});
+    if (['turn_start','turn_end','message_start','message_end','tool_execution_start','tool_execution_end','auto_retry_start','auto_retry_end'].includes(event.type)) {
+      // One record shape for several event kinds: each field is present only on some of them.
+      const fields = /** @type {{toolCallId?: string, toolName?: string, isError?: boolean, message?: {role?: string, stopReason?: string}}} */ (event);
+      hooks(this).diagnostics?.record({type:'model_'+event.type,tool_call_id:fields.toolCallId,tool:fields.toolName,
+        model_request_id:this.diagnosticRequestId,role:fields.message?.role,error:!!fields.isError,stop_reason:fields.message?.stopReason});
+    }
     if (event.type === 'auto_retry_start') {
       this.runError = undefined;
       this.setActivity('retrying','Temporary model connection problem. Retrying automatically ('+event.attempt+'/'+event.maxAttempts+')…');

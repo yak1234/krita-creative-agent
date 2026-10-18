@@ -9,6 +9,7 @@ takes that name or the same steps inline. Neither touches the artist's selection
 the creative operation journal (creative_tools.py) and fills a new layer, or a copy
 of an agent layer with the original hidden, so reject restores the original.
 """
+import bisect
 import hashlib
 import json
 import os
@@ -18,9 +19,10 @@ from krita import Krita, Selection
 from .creative_validation import color as hex_colour, fields, numeric, text
 from .geometry_data import bounds as checked_bounds, polygon
 
-STEP_FIELDS = ('shape', 'bounds', 'points', 'layer_id', 'color', 'tolerance', 'saved', 'mode',
+STEP_FIELDS = ('shape', 'bounds', 'points', 'layer_id', 'color', 'seed', 'tolerance', 'saved', 'mode',
                'grow', 'shrink', 'border', 'feather', 'smooth', 'invert')
-SOURCES = ('shape', 'layer_id', 'color', 'saved')
+SOURCES = ('shape', 'layer_id', 'color', 'seed', 'saved')
+RUN = re.compile(rb'[^\x00]+')
 MODES = ('replace', 'add', 'subtract', 'intersect')
 REFINEMENTS = ('grow', 'shrink', 'border', 'feather')     # applied in this order, then smooth, then invert
 SELECT_FIELDS = ('name', 'steps')
@@ -43,6 +45,33 @@ def colour_mask(bgra, rgb, tolerance):
     return result.to_bytes(count, 'big')
 
 
+def connected_mask(mask, width, height, x, y):
+    """The set pixels of `mask` joined to (x, y) through edge neighbours, as a magic wand selects. Works on runs of set
+    pixels per row (found by a regex in C), so its cost follows the number of runs, not of pixels."""
+    starts, ends = [], []
+    for row in range(height):
+        spans = [match.span() for match in RUN.finditer(mask, row * width, (row + 1) * width)]
+        starts.append([a - row * width for a, _ in spans]); ends.append([b - row * width for _, b in spans])
+    out = bytearray(width * height)
+    first = bisect.bisect_right(ends[y], x)
+    if first == len(ends[y]) or starts[y][first] > x:
+        return bytes(out)
+    seen, todo = {(y, first)}, [(y, first)]
+    while todo:
+        row, index = todo.pop()
+        a, b = starts[row][index], ends[row][index]
+        out[row * width + a:row * width + b] = b'\xff' * (b - a)
+        for near in (row - 1, row + 1):
+            if 0 <= near < height:
+                # The runs in the next row that overlap [a, b): they end after a and start before b.
+                other = bisect.bisect_right(ends[near], a)
+                while other < len(starts[near]) and starts[near][other] < b:
+                    if (near, other) not in seen:
+                        seen.add((near, other)); todo.append((near, other))
+                    other += 1
+    return bytes(out)
+
+
 class RegionCraft:
     # ----- steps ---------------------------------------------------------------
     def _region_validate_steps(self, doc, session, steps):
@@ -54,9 +83,9 @@ class RegionCraft:
                 fields(step, STEP_FIELDS)
                 sources = [key for key in SOURCES if key in step]
                 if len(sources) > 1:
-                    raise ValueError('choose one source: shape, layer_id, color or saved')
+                    raise ValueError('choose one source: shape, layer_id, color, seed or saved')
                 if index == 0 and not sources:
-                    raise ValueError('the first step needs a source: shape, layer_id, color or saved')
+                    raise ValueError('the first step needs a source: shape, layer_id, color, seed or saved')
                 if 'mode' in step:
                     if step['mode'] not in MODES:
                         raise ValueError('mode must be one of ' + ', '.join(MODES))
@@ -75,10 +104,10 @@ class RegionCraft:
                 raise ValueError(label + str(error)) from None
 
     def _region_validate_source(self, doc, session, step, source):
-        if source != 'shape' and ('points' in step or ('bounds' in step and source != 'color')):
-            raise ValueError('bounds and points belong to a shape (bounds also limits a colour range)')
-        if source != 'color' and 'tolerance' in step:
-            raise ValueError('tolerance belongs to a colour range')
+        if source != 'shape' and ('points' in step or ('bounds' in step and source not in ('color', 'seed'))):
+            raise ValueError('bounds and points belong to a shape (bounds also limits a colour range or a seed)')
+        if source not in ('color', 'seed') and 'tolerance' in step:
+            raise ValueError('tolerance belongs to a colour range or a seed')
         if source == 'shape':
             shape = step['shape']
             if shape not in ('rectangle', 'ellipse', 'polygon'):
@@ -94,9 +123,12 @@ class RegionCraft:
         elif source == 'layer_id':
             self._craft_check_rgba(doc, 'A selection from layer alpha')
             self._creative_node(doc, text(step['layer_id'], 'layer_id', 200))
-        elif source == 'color':
-            self._craft_check_rgba(doc, 'A colour-range selection')
-            hex_colour(step['color'])
+        elif source in ('color', 'seed'):
+            self._craft_check_rgba(doc, 'A colour-range selection' if source == 'color' else 'A seed selection')
+            if source == 'color':
+                hex_colour(step['color'])
+            else:
+                self._region_seed(doc, step)
             if 'tolerance' in step and (isinstance(step['tolerance'], bool) or not isinstance(step['tolerance'], int)
                                         or not 0 <= step['tolerance'] <= 255):
                 raise ValueError('tolerance must be an integer from 0 to 255')
@@ -154,17 +186,39 @@ class RegionCraft:
             return self._craft_alpha_selection(doc, self._creative_node(doc, step['layer_id']))[0]
         if source == 'saved':
             return self._region_load(session, step['saved'])
-        # A colour range on the visible image, read in strips.
+        # A colour range on the visible image, read in strips; a seed keeps the part of it joined to the seed.
         x, y, w, h = checked_bounds(step['bounds'], doc.width(), doc.height()) if 'bounds' in step else \
             (0, 0, doc.width(), doc.height())
-        wanted = bytes.fromhex(step['color'][1:])
         root = doc.rootNode()
         doc.waitForDone()
+        if source == 'seed':
+            seed_x, seed_y = self._region_seed(doc, step)
+            pixel = bytes(root.projectionPixelData(seed_x, seed_y, 1, 1))
+            wanted = bytes((pixel[2], pixel[1], pixel[0]))
+        else:
+            wanted = bytes.fromhex(step['color'][1:])
+        strips = []
         for top in range(y, y + h, STRIP):
             rows = min(STRIP, y + h - top)
-            selection.setPixelData(colour_mask(bytes(root.projectionPixelData(x, top, w, rows)), wanted,
-                                               step.get('tolerance', 24)), x, top, w, rows)
+            strips.append(colour_mask(bytes(root.projectionPixelData(x, top, w, rows)), wanted, step.get('tolerance', 24)))
+        if source == 'seed':
+            strips = [connected_mask(b''.join(strips), w, h, seed_x - x, seed_y - y)]
+        selection.setPixelData(b''.join(strips), x, y, w, h)
         return selection
+
+    def _region_seed(self, doc, step):
+        """The seed's (x, y), checked to lie on the canvas and inside the step's bounds."""
+        seed = step['seed']
+        if not isinstance(seed, list) or len(seed) != 2 or any(isinstance(v, bool) or not isinstance(v, int) for v in seed):
+            raise ValueError('seed must be [x, y] in whole canvas pixels')
+        x, y = seed
+        if not (0 <= x < doc.width() and 0 <= y < doc.height()):
+            raise ValueError('seed must lie on the canvas (%d x %d)' % (doc.width(), doc.height()))
+        if 'bounds' in step:
+            left, top, w, h = checked_bounds(step['bounds'], doc.width(), doc.height())
+            if not (left <= x < left + w and top <= y < top + h):
+                raise ValueError('the seed must lie inside its bounds')
+        return x, y
 
     def _region_bounds(self, doc, selection):
         """The selection's extent inside the canvas, or None when nothing is selected there."""

@@ -24,6 +24,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'companion'))
 from diagnostics_client import register_diagnostic_tools
 register_diagnostic_tools(mcp)
+# Test chats in a separate test companion, for refining Agent mode (development only; not in artist_server.py).
+from test_driver_client import register_test_tools
+register_test_tools(mcp)
 
 # Queue timeouts sent to the plugin. The HTTP wait adds HTTP_MARGIN so the
 # plugin always answers first (same pattern as krita-creative-agent/bridge.mjs).

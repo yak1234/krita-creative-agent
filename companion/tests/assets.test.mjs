@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile, readFile, stat } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { deflateSync, crc32 } from 'node:zlib';
+import { readFileSync } from 'node:fs';
 import { listSkills, expandSkillCommand, skillReadTool, SKILLS_DIR } from '../src/skills.mjs';
 import { runPython } from '../src/python-sandbox.mjs';
 import { assetTools, ASSET_MODELS, fitSize, transferSteps, ASSET_QUESTIONS, CODEX_MODEL, codexSize } from '../src/assets.mjs';
@@ -24,7 +25,8 @@ function subjectPng(w = 240, h = 320) {
 async function studyRuntime() {
   const directory = await mkdtemp(join(tmpdir(), 'assets-test-'));
   const events = [];
-  const runtime = { study: { directory, references: [] }, executionSettings: { assets: 'openrouter' }, emit: e => events.push(e), persist: async () => {}, publish: () => {},
+  // The asset pipeline is tested with no AI image limit; the allowance has its own test.
+  const runtime = { study: { directory, references: [] }, executionSettings: { assets: 'openrouter' }, goal: { limits: { ai_images: null }, ai_images_used: 0 }, emit: e => events.push(e), persist: async () => {}, publish: () => {},
     imageKey: async () => 'test-key', callNative: async () => { throw new Error('no canvas in this test'); } };
   return { runtime, events, directory, close: () => rm(directory, { recursive: true, force: true }) };
 }
@@ -247,7 +249,7 @@ test('Codex is the default image backend: the sign-in, a transparent cut-out fro
 
 test('workflow skills are reusable slash commands: /name and /skill:name both expand; other /words stay as typed', async () => {
   const names = listSkills().map(s => s.name).sort();
-  assert.deepEqual(names, ['fix-region', 'image-asset', 'paint-scene', 'paint-sky', 'place-subject']);
+  assert.deepEqual(names, ['fix-region', 'image-asset', 'paint-scene', 'paint-sky', 'place-subject', 'reference-transfer', 'repaint-area', 'repeat-motif']);
   for (const skill of listSkills()) assert.ok(skill.description.length >= 60 && skill.description.length <= 1024, skill.name + ' has a usable description');
   const sky = expandSkillCommand('/paint-sky a stormy dusk');
   assert.match(sky, /^<skill name="paint-sky"/);
@@ -262,14 +264,24 @@ test('workflow skills are reusable slash commands: /name and /skill:name both ex
     for (const tool of text.match(/\b(make_asset|run_skill_script|paint_from_reference|paint_reference_surface|paint_reference_edges|observe_canvas|create_layer|paint_pass|paint_recipe|set_layer)\b/g) ?? [])
       assert.ok(tools.has(tool), name + ' names ' + tool);
   }
+  for (const name of ['repaint-area', 'repeat-motif', 'reference-transfer']) {
+    const text = await readFile(join(SKILLS_DIR, name, 'SKILL.md'), 'utf8');
+    for (const tool of text.match(/\b(select|split_by_color|fill_region|apply_filter|clone_layer|transform_layer|krita_action|krita_capabilities|sample_canvas_colors|observe_canvas|set_layer|paint_recipe|create_layer|paint_from_reference|paint_reference_edges|paint_reference_surface|continue_reference_painting|list_reference_paintings|paint_contours|paint_pass)\b/g) ?? [])
+      assert.ok(tools.has(tool), name + ' names ' + tool);
+  }
 });
 
-test('Agent mode uses assets freely only on the Codex plan; the per-chat cap follows the backend', async () => {
-  const { assetGuidance } = await import('../src/studio.mjs');
-  assert.match(assetGuidance('codex'), /included in the artist's ChatGPT plan: use make_asset freely/);
-  assert.match(assetGuidance('codex'), /paint-sky, place-subject, fix-region, paint-scene/);
-  assert.match(assetGuidance('openrouter'), /cost the artist money/);
-  assert.doesNotMatch(assetGuidance('openrouter'), /freely/);
+test('the painter is told its AI image allowance; with no limit, assets are free only on the Codex plan', async () => {
+  const { aiImageGuidance } = await import('../src/studio.mjs');
+  assert.match(aiImageGuidance(null, 0, 'codex'), /included in the artist's ChatGPT plan: use make_asset freely/);
+  assert.match(aiImageGuidance(null, 0, 'codex'), /paint-sky, place-subject, fix-region, paint-scene/);
+  assert.match(aiImageGuidance(null, 0, 'openrouter'), /cost the artist money/);
+  assert.doesNotMatch(aiImageGuidance(null, 0, 'openrouter'), /freely/);
+  assert.match(aiImageGuidance(0, 0, 'codex'), /AI images are off for this chat \(allowance 0\).*do not call make_asset.*raise AI images for this chat in the panel/);
+  assert.doesNotMatch(aiImageGuidance(0, 0, 'codex'), /freely/);
+  assert.match(aiImageGuidance(3, 1, 'codex'), /up to 2 more AI images.*a sky, a colour field or a background is usually better painted by hand/);
+  assert.match(aiImageGuidance(1, 0, 'openrouter'), /up to 1 more AI image .*costs the artist money/);
+  assert.match(aiImageGuidance(2, 2, 'codex'), /allowance \(2\) is used up.*do not call make_asset/);
   const { ASSET_LIMIT, CODEX_ASSET_LIMIT } = await import('../src/assets.mjs');
   assert.ok(CODEX_ASSET_LIMIT > ASSET_LIMIT);
 });
@@ -283,4 +295,42 @@ test('the sandbox runner refuses to run when its permission lock is not active',
   const reply = JSON.parse(run.stdout.trim().split('\n').at(-1));
   assert.equal(reply.ok, false);
   assert.match(reply.error, /not locked.*nothing was run/);
+});
+
+test('make_asset keeps to the chat\'s AI image allowance: refused before any image request, counted only when made', async () => {
+  const h = await studyRuntime();
+  let requests = 0, fail = false;
+  const fetchImpl = async () => { requests++;
+    if (fail) return { ok: false, status: 500, json: async () => ({ error: { message: 'model down' } }), text: async () => 'model down' };
+    return { ok: true, json: async () => ({ choices: [{ message: { images: [{ image_url: { url: 'data:image/png;base64,' + subjectPng().toString('base64') } }] } }], usage: { cost: 0.018 } }) };
+  };
+  const ask = { name: 'Sky', prompt: 'a night sky with a red moon', mode: 'generate', aspect_ratio: '4:3' };
+  try {
+    const [makeAsset] = assetTools(h.runtime, { fetchImpl });
+    h.runtime.goal = { limits: { ai_images: 0 }, ai_images_used: 0 };
+    await assert.rejects(makeAsset.execute('a0', ask), /AI images are off for this chat \(allowance 0\)[\s\S]*raise AI images for this chat in the panel/);
+    assert.equal(requests, 0, 'at 0 no image model is called');
+    h.runtime.goal = { limits: { ai_images: 1 }, ai_images_used: 0 };
+    fail = true; await assert.rejects(makeAsset.execute('a1', ask));
+    assert.equal(h.runtime.goal.ai_images_used, 0, 'a failed generation does not count');
+    fail = false; await makeAsset.execute('a2', ask);
+    assert.equal(h.runtime.goal.ai_images_used, 1);
+    const before = requests;
+    await assert.rejects(makeAsset.execute('a3', ask), /allowance \(1\) is used up/);
+    assert.equal(requests, before, 'used up: no image request');
+    h.runtime.goal = undefined;
+    await assert.rejects(makeAsset.execute('a4', ask), /allowance 0/, 'no chat means no AI images');
+  } finally { await h.close(); }
+});
+
+test('every bundled skill that makes AI images keeps to the allowance, and those that need one have a hand-painted route', () => {
+  const skills = listSkills().map(s => ({ ...s, text: readFileSync(s.filePath, 'utf8') }));
+  const makers = skills.filter(s => s.text.includes('make_asset'));
+  assert.ok(makers.length >= 4, 'paint-sky, place-subject, fix-region, paint-scene and image-asset make assets');
+  for (const skill of makers) {
+    assert.match(skill.text, /how many (AI images )?this chat allows/, skill.name + ' reads the allowance');
+    assert.match(skill.text, /do not call `make_asset`|Never call `make_asset` with none left/, skill.name + ' stops at 0');
+  }
+  for (const name of ['paint-sky', 'place-subject', 'fix-region'])
+    assert.match(skills.find(s => s.name === name).text, /## Hand-painted route/, name + ' has a hand-painted route');
 });

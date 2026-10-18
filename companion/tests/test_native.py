@@ -1,5 +1,6 @@
 """Exercise native dispatch policies without launching or modifying Krita."""
 import importlib.util
+import os
 import pathlib
 import sys
 import types
@@ -95,7 +96,7 @@ class Harness(module.CreativeTools):
         self.paints += 1
         if self.fail: raise RuntimeError('Brush failed after partial work')
         return {'status': 'ok'}
-    def _creative_checkpoint(self, doc, session): return {'status': 'ok', 'checkpoint': 'saved.kra'}
+    def _creative_checkpoint(self, doc, session, changed=True): return {'status': 'ok', 'checkpoint': 'saved.kra'}
     def _creative_observe(self, doc, session, region=None): return {'status':'ok', 'document_id':module.document_id(doc), 'image_path':'/tmp/before.png'}
     def _creative_revision(self, doc, projection=None): return 'current-revision'
 
@@ -107,6 +108,16 @@ def request():
 
 
 class NativePolicyTests(unittest.TestCase):
+    def test_a_pass_tells_a_sleeping_screen_apart_from_switching_documents(self):
+        harness = Harness(); doc = harness.doc
+        self.assertIsNone(harness._creative_let_krita_respond(doc, None), 'same document: the pass continues')
+        harness.get_active_document = lambda: None
+        stopped = harness._creative_let_krita_respond(doc, None)
+        self.assertIn('lost its active window', stopped); self.assertIn('Keep the screen awake while painting', stopped)
+        self.assertNotIn('switched', stopped)
+        other = Document(); harness.get_active_document = lambda: other
+        self.assertIn('switched to another document', harness._creative_let_krita_respond(doc, None))
+
     def test_live_document_id_survives_wrappers_save_as_and_cloned_layer_ids(self):
         class Wrapper(Document):
             def __init__(self, native): super().__init__(); self.native = native
@@ -186,6 +197,44 @@ class NativePolicyTests(unittest.TestCase):
             self.assertEqual(paths, [str(pathlib.Path(folder) / 'painting.kra')] * 2)
         self.assertEqual(second['save_number'], 2)
         self.assertEqual(first['checkpoint'], second['checkpoint'])
+
+    def test_a_checkpoint_skips_the_save_when_the_file_already_holds_the_painting(self):
+        h = Harness(); paths = []
+        h.cmd_save_native = lambda p: paths.append(p['path']) or {'status': 'ok'}
+        h._creative_observe = lambda doc, session: {'status': 'ok'}
+        with tempfile.TemporaryDirectory() as folder:
+            saved = pathlib.Path(folder) / 'painting.kra'; saved.touch()
+            h.doc.fileName = lambda: str(saved); h.doc.modified = lambda: False
+            session = {'output': folder, 'painting_path': str(saved), 'checkpoint': 0}
+            result = module.CreativeTools._creative_checkpoint(h, h.doc, session, changed=False)
+            self.assertEqual(paths, [], 'an unmodified document already on disk is not written again')
+            self.assertEqual((result['checkpoint'], result['save_skipped']), (str(saved.resolve()), True))
+            self.assertTrue(session['saved_once']); self.assertEqual(session['unsaved_operations'], 0)
+            module.CreativeTools._creative_checkpoint(h, h.doc, session)
+            self.assertEqual(len(paths), 1, 'after an agent change it always saves, whatever Krita’s modified flag says')
+            h.doc.modified = lambda: True
+            module.CreativeTools._creative_checkpoint(h, h.doc, session, changed=False)
+            self.assertEqual(len(paths), 2, 'the artist changed it: save')
+
+    def test_a_checkpoint_waits_out_a_save_krita_is_already_making(self):
+        h = Harness(); attempts = []
+        busy = iter([True, True, False])                       # Krita's autosave holds the file for two tries
+        h.cmd_save_native = lambda p: attempts.append(p['path']) or ({'error': 'saveAs failed: ' + p['path']} if next(busy) else {'status': 'ok'})
+        h._creative_observe = lambda doc, session: {'status': 'ok'}
+        waited = []
+        previous = module.SAVE_RETRY_SECONDS, module.wait_for_krita
+        module.SAVE_RETRY_SECONDS, module.wait_for_krita = (0, 0, 0), waited.append
+        self.addCleanup(lambda: (setattr(module, 'SAVE_RETRY_SECONDS', previous[0]), setattr(module, 'wait_for_krita', previous[1])))
+        with tempfile.TemporaryDirectory() as folder:
+            session = {'output': folder, 'painting_path': os.path.join(folder, 'painting.kra'), 'checkpoint': 0}
+            pathlib.Path(session['painting_path']).touch()        # the fake save writes nothing
+            result = module.CreativeTools._creative_checkpoint(h, h.doc, session)
+            self.assertEqual(len(attempts), 3, 'two refusals while Krita saves, then the save')
+            self.assertEqual(waited, [0, 0], 'Krita runs its own events between tries, so its save can finish')
+            self.assertEqual(result['checkpoint'], session['painting_path'])
+            busy = iter([True] * 10)
+            with self.assertRaisesRegex(RuntimeError, 'saveAs failed'):
+                module.CreativeTools._creative_checkpoint(h, h.doc, session)
 
     def test_a_pass_waits_and_redraws_once_not_after_every_stroke(self):
         h = Harness(); events = []
@@ -311,6 +360,22 @@ class NativePolicyTests(unittest.TestCase):
                 self.assertEqual(h.created_layers,0)
                 self.assertEqual(h._creative_session['painting_path'],str(painting.resolve()))
 
+    def test_a_session_pauses_krita_autosave_on_its_painting_and_restores_it(self):
+        for before in (True, False):
+            h=Harness(); h._creative_session=None; states=[]
+            h.doc.autosave=lambda: before
+            h.doc.setAutosave=states.append
+            h._creative_document=lambda identifier=None: h.doc
+            with tempfile.TemporaryDirectory() as folder:
+                identifier=str(uuid.uuid4()); destination=pathlib.Path(folder)/identifier; destination.mkdir()
+                painting=pathlib.Path(folder)/'painting.kra'; painting.touch(); h.doc.fileName=lambda: str(painting)
+                h.cmd_creative({'operation':'begin','session_id':identifier,'params':{
+                    'mode':'current','name':'Current','output_dir':str(destination),'painting_path':str(painting),
+                    'source_document_id':module.document_id(h.doc)}})
+                self.assertEqual(states,[False],'the agent checkpoints every operation; Krita\u2019s autosave would stall it')
+                h.cmd_creative({'operation':'end','session_id':identifier,'params':{}})
+                self.assertEqual(states,[False,before],'the artist\u2019s own state comes back')
+
     def test_manual_change_rejected_before_mutation(self):
         h=Harness(); p=request(); p['params']['expected_revision']='stale'
         result=h.cmd_creative(p)
@@ -427,6 +492,15 @@ class NativePolicyTests(unittest.TestCase):
             **other['params']['strokes'][0], 'start': [9999, 20]})
         with self.assertRaises(ValueError): h.cmd_creative(other)
         self.assertEqual(h.paints, 0); self.assertEqual(h.created_layers, 0)
+
+    def test_strokes_may_start_up_to_one_brush_size_off_the_canvas(self):
+        validation = sys.modules['creative_test_package.creative_validation']
+        stroke = {'start': [-150, -60], 'segments': [[2000, -60, 4000, 0, 6150, 70]], 'size': 560, 'opacity': 1, 'flow': 1, 'color': '#0a1026'}
+        params = {'name': 'Sky', 'preset': 'b) Basic-1', 'strokes': [stroke]}
+        self.assertIs(validation.validate_pass(params, 6000, 4500, ['b) Basic-1']), params, 'edge-to-edge strokes start off the canvas')
+        for start in ([-561, 0], [0, 4500 + 561]):
+            with self.assertRaisesRegex(ValueError, 'coordinate'):
+                validation.validate_pass({**params, 'strokes': [{**stroke, 'start': start}]}, 6000, 4500, ['b) Basic-1'])
 
     def test_partial_failure_is_checkpointed_and_never_retried(self):
         h = Harness(); h.fail = True; first = h.cmd_creative(request()); second = h.cmd_creative(request())

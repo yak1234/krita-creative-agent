@@ -5,6 +5,7 @@
     "allowJs": true,
     "checkJs": false,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "target": "es2023",
     "module": "nodenext",
     "moduleResolution": "nodenext",

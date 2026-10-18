@@ -9,7 +9,7 @@ import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Value } from 'typebox/value';
 import { StudioRuntime, freshGoal, validateReview, normalizeBrief, repeatedReviewFailures, progressStalled, approvedReviewScope, restoredReviewStart } from '../src/studio.mjs';
 
-const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZ9kAAAAASUVORK5CYII=', 'base64');
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64');
 const brief = { title:'Two characters', objective:'A quiet portrait of two people.', requirements:['Mara wears a red coat.','Ivo has green eyes.'],
   freedom:['Choose the background.'], steps:[{title:'Establish figures',done_when:'Two correctly placed silhouettes.'}], completion:['Both people are visible.'] };
 const pass = {name:'Figure silhouettes',preset:'Test brush',strokes:[{start:[20,20],segments:[[30,30,40,40,50,50]],size:70,opacity:0.2,flow:0.5,color:'#c0422a'}]};
@@ -538,6 +538,8 @@ test('exact global paint ceiling still permits the final review and cannot allow
     try{
       await h.start('plan');await h.runtime.setLimits({minutes:8,passes:2});await h.runtime.setMode('autopilot');
       await h.runtime.prompt('',{start_plan:true});
+      const autopilot=h.requests.map(r=>JSON.stringify(r.messages)).filter(m=>m.includes('HOST MODE: AUTOPILOT. CURRENT PHASE: AGENT'));
+      assert.ok(autopilot.length && autopilot.every(m=>m.includes('AI images are off for this chat (allowance 0)') && m.includes('do not call make_asset')),'Autopilot is told its AI image allowance');
       assert.equal(h.calls.filter(c=>c.operation==='paint_pass').length,2);
       assert.equal(h.runtime.goal.passes,2);assert.equal(reviewed,1,'the final allowed brush pass is always visually reviewed');
       assert.equal(h.runtime.goal.reviews.length,1);
@@ -973,7 +975,7 @@ test('parallel preparation runs two isolated model requests beside one painter t
     assert.equal(peak,2);assert.equal(proposals,2);assert.equal(h.runtime.goal.status,'complete');
     assert.equal(h.calls.filter(c=>c.operation==='paint_pass').length,1);
     const id=h.runtime.study.id;await h.runtime.end();await h.runtime.resume(id);
-    assert.deepEqual(h.runtime.executionSettings,{concurrency:2,reasoning:'high',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,assets:'codex',decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
+    assert.deepEqual(h.runtime.executionSettings,{concurrency:2,reasoning:'high',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,assets:'codex',ai_images:0,keep_screen_awake:false,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
     assert.equal(h.runtime.session.thinkingLevel,'off');
     assert.equal(h.runtime.goal.status,'paused');
   } finally {await h.close();}
@@ -1435,6 +1437,37 @@ test('Resume acknowledges a leftover uncertain action instead of requiring inspe
  } finally {await h.close();}
 });
 
+test('In Agent mode the artist\u2019s next message acknowledges a leftover uncertain action, as Resume does',{timeout:20000},async()=>{
+ let h, painted=0;
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(names.includes('paint_batch'))painted++;               // a move asks the model with the painting tools
+  return {content:'ok'};
+ },uncertainBridge(()=>h));
+ try {
+  await h.start('ask','Hi');await h.runtime.setMode('agent');
+  h.runtime.study.bound=true;h.runtime.study.target_document_id='doc';h.runtime.faulted=true;h.runtime.study.unresolved_operations=[{error:'timed out'}];
+  await h.runtime.prompt('Go on, fix the seam.');
+  assert.equal(h.runtime.faulted,false,'the message is the go-ahead, not refused');
+  assert.ok(h.calls.some(c=>c.operation==='reconcile'),'the canvas is confirmed first');
+  assert.ok(painted>=1,'and the move runs');
+ } finally {await h.close();}
+});
+
+test('Keep and Undo also acknowledge a leftover uncertain action, as a typed message does',{timeout:20000},async()=>{
+ let h;
+ const uncertain=uncertainBridge(()=>h);
+ h=await harness(()=>({content:'ok'}),async(operation,params,study,id)=>operation==='review_pass'?{status:'ok',layers:[]}:uncertain(operation,params,study,id));
+ try {
+  await h.start('ask','Hi');await h.runtime.setMode('agent');
+  h.runtime.goal.moves=[{number:1,status:'ready',title:'Clouds'}];
+  h.runtime.study.bound=true;h.runtime.study.target_document_id='doc';h.runtime.faulted=true;h.runtime.study.unresolved_operations=[{error:'checkpoint failed'}];
+  await h.runtime.moveAction({action:'undo',move:1}).catch(error=>assert.doesNotMatch(error.message,/Inspect and acknowledge/));
+  assert.equal(h.runtime.faulted,false,'the artist\u2019s Undo is the go-ahead');
+  assert.ok(h.calls.some(c=>c.operation==='reconcile'));
+ } finally {await h.close();}
+});
+
 test('tracing is optional: without Langfuse a chat runs untraced; with it one session runs until New chat', {timeout:20000}, async()=>{
   const h=await harness(()=>({content:'Happy to discuss it.'}));
   try {
@@ -1680,6 +1713,102 @@ test('a Subject Agent move works the subject through several batches, then one c
  } finally {await h.close();}
 });
 
+test('Keep after a move that finished the whole request ends it instead of asking for another move',{timeout:30000},async()=>{
+ let painterCalls=0; let h;
+ h=await harness(req=>{
+  if(!req.tools.some(t=>t.function.name==='paint_batch')) return {content:'Hello.'};
+  painterCalls++;
+  if(painterCalls===1) return call('paint_batch',{summary:'Fields',actions:[{tool:'paint_pass',arguments:{...pass,name:'Fields'}}]});
+  if(painterCalls===2) return call('finish_move',{summary:'Rothko: yellow over red-orange on an orange ground',request_done:true});
+  return call('paint_batch',{summary:'Polish',actions:[{tool:'paint_pass',arguments:{...pass,name:'Polish'}}]});
+ },async(operation,params,_study,id)=>{
+  if(!['paint_pass','review_pass'].includes(operation))return undefined;
+  const dir=h.runtime.study.directory; await writeFile(join(dir,'view.png'),png);
+  return {status:'ok',document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,image_path:join(dir,'view.png'),layers:[],revision:'r-'+id,content_id:'c-'+id,passes:[]};
+ });
+ try {
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  await h.runtime.prompt('Paint the Rothko.');
+  const [move]=h.runtime.goal.moves;
+  assert.equal(move.request_done,true);
+  await h.runtime.moveAction({action:'keep',move:1});
+  assert.equal(painterCalls,2,'no further move was asked for');
+  assert.equal(h.runtime.goal.moves.length,1); assert.equal(h.runtime.goal.moves[0].status,'kept');
+  assert.equal(h.runtime.goal.status,'complete','the panel shows Finished');
+  assert.ok(h.events.some(e=>e.type==='status' && /finished your request/.test(e.message ?? '')));
+  await h.runtime.prompt('Now add a thin dark frame.');
+  assert.equal(h.runtime.goal.moves.length,2,'a new message starts the next request');
+ } finally {await h.close();}
+});
+
+test('the painter can propose a protected area while painting; the proposal reaches the panel and waits',{timeout:30000},async()=>{
+ const area={id:'mask-1',name:'Woman and car',state:'pending',by:'agent',bounds:[0,500,400,500]};
+ let calls=0, offered=[]; let h;
+ h=await harness(req=>{
+  if(!req.tools.some(t=>t.function.name==='paint_batch')) { offered.push(req.tools.map(t=>t.function.name)); return {content:'Hello.'}; }
+  offered.push(req.tools.map(t=>t.function.name)); calls++;
+  if(calls===1) return call('propose_protection',{name:'Woman and car',area:[{shape:'polygon',points:[[0,500],[400,500],[400,1000]]}]});
+  return {content:'Marked. Keep it if it looks right.'};
+ },async(operation)=>operation==='propose_protection' ? {status:'ok',area,message:'Shown in red. It protects nothing until the artist keeps it.'} : undefined);
+ try {
+  await h.start('ask','Hello');
+  assert.ok(!offered[0].includes('propose_protection'),'not in Ask: there is no painting session');
+  await h.runtime.setMode('agent');
+  await h.runtime.prompt('Protect the woman and the car.');
+  assert.ok(offered.at(-1).includes('propose_protection'),'offered while painting');
+  assert.deepEqual(h.calls.filter(c=>c.operation==='propose_protection').map(c=>c.params.name),['Woman and car']);
+  assert.deepEqual(h.events.find(e=>e.type==='protection_proposed')?.area,area);
+ } finally {await h.close();}
+});
+
+test('a protected-area hit reaches the chat right away and the painter; the third one tells it to leave the area alone',{timeout:30000},async()=>{
+ let calls=0, results=[]; let h;
+ h=await harness(req=>{
+  if(!req.tools.some(t=>t.function.name==='paint_batch')) return {content:'Hello.'};
+  const last=req.messages.findLast(m=>m.role==='tool'); if(last) results.push(typeof last.content==='string'?last.content:JSON.stringify(last.content));
+  calls++;
+  if(calls<=3) return call('paint_pass',{...pass,name:'Street '+calls});
+  return call('finish_move',{summary:'Street'});
+ },async(operation,params,_study,id)=>{
+  if(operation!=='paint_pass')return undefined;
+  const dir=h.runtime.study.directory; await writeFile(join(dir,'view.png'),png);
+  return {status:'ok',document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,image_path:join(dir,'view.png'),layers:[],revision:'r-'+id,content_id:'c-'+id,passes:[],
+   protected:[{name:'Woman and car',pixels:900,share:0.4}]};
+ });
+ try {
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  await h.runtime.prompt('Repaint the street.');
+  const hits=h.events.filter(e=>e.type==='protection_hit');
+  assert.equal(hits.length,3,'one line per hit, as it happens');
+  assert.equal(hits[0].message,"Move 1 reached into 'Woman and car'. I kept it untouched (about 40% of it was in the way).");
+  assert.match(results[0],/Woman and car/,'the painter is told in the result');
+  assert.doesNotMatch(results[1],/Leave it alone/);
+  assert.match(results[2],/You keep painting into 'Woman and car'. Leave it alone./);
+ } finally {await h.close();}
+});
+
+test('a reference part reaches the painter as a part of its original, with where it sits; a crop of a part names the part',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}));
+ try {
+  await h.start('ask','Hello');
+  const dir=h.runtime.study.directory, original=join(dir,'moscow-source.png'), sky=join(dir,'sky-source.png'), cloud=join(dir,'cloud-source.png');
+  for (const file of [original,sky,cloud]) await writeFile(file,png);
+  await h.runtime.addReferences([{path:original,name:'New Moscow',role:'reference'},
+   {path:sky,name:'Sky (part)',role:'reference',part_of:original,part_kind:'part',bounds:[0,0,1448,362]}]);
+  await h.runtime.addReferences([{path:cloud,name:'Cloud (crop)',role:'reference',part_of:sky,part_kind:'crop',bounds:[600,40,200,120]}]);
+  const [moscow,part,crop]=h.runtime.study.references;
+  assert.deepEqual([part.part_of,part.part_kind,part.bounds],[moscow.id,'part',[0,0,1448,362]]);
+  assert.equal(crop.part_of,part.id,'a crop of a part names the part');
+  assert.equal(moscow.part_of,undefined);
+  const lone=join(dir,'lone-source.png'); await writeFile(lone,png);
+  await h.runtime.addReferences([{path:lone,name:'Lone (part)',role:'reference',part_of:join(dir,'removed.png'),part_kind:'part',bounds:[0,0,10,10]}]);
+  const orphan=h.runtime.study.references.at(-1);
+  assert.deepEqual([orphan.part_of,orphan.part_kind,orphan.bounds],[null,'part',[0,0,10,10]],'a part whose original is gone is still a part');
+  const context=h.runtime.context('agent');
+  assert.match(context,new RegExp('"id":"'+part.id+'"[^}]*"part_of":"'+moscow.id+'","part_kind":"part","bounds":\\[0,0,1448,362\\]'));
+ } finally {await h.close();}
+});
+
 test('masses painted with plain strokes get a craft hint in the result; clipped texture strokes do not',{timeout:30000},async()=>{
  const big={name:'Coat mass',preset:'b) Basic-1',strokes:[{start:[50,100],segments:[[200,150,400,500,700,900]],size:40,opacity:1,flow:1,color:'#302018'}]};
  const texture={...big,name:'Coat fur',clip_to:'$1',blend_mode:'overlay',layer_opacity:0.4};
@@ -1703,20 +1832,6 @@ test('masses painted with plain strokes get a craft hint in the result; clipped 
   const fur=h.calls.find(c=>c.operation==='paint_pass' && c.params.name==='Coat fur');
   assert.equal(fur.params.blend_mode,'overlay','texture strokes keep their blend mode');
   assert.match(fur.params.clip_to,/^fill_region-/,'"$1" became the flat');
- } finally {await h.close();}
-});
-
-test('a streak of plain stroke calls gets a reminder to use the layers; Strokes only gets none',async()=>{
- const h=await harness(()=>({content:'ok'}));
- try {
-  await h.start('ask','Hi'); h.runtime.lastObservation={width:1000,height:1000};
-  const small={tool:'paint_pass',args:{name:'Accent',strokes:[{start:[10,10],segments:[[12,12,14,14,20,20]]}]}};
-  const hints=[1,2,3,4].map(()=>h.runtime.craftNudge(small));
-  assert.deepEqual(hints.slice(0,3),[null,null,null]); assert.match(hints[3],/last 4 painting calls were plain strokes/);
-  assert.equal(h.runtime.craftNudge({tool:'fill_region',args:{name:'Sky'}}),null); assert.equal(h.runtime.strokeStreak,0,'craft resets the streak');
-  assert.match(h.runtime.craftNudge({tool:'paint_recipe',args:{name:'Sky scumble',region:[0,0,800,400]}}),/32% of the canvas/);
-  await h.runtime.setExecutionSettings({native_craft:false});
-  assert.equal(h.runtime.craftNudge({tool:'paint_recipe',args:{name:'Sky scumble',region:[0,0,800,400]}}),null);
  } finally {await h.close();}
 });
 
@@ -1981,4 +2096,32 @@ test('pacing close-up: an actual-pixel crop of where the call painted, only of t
     host.bridge.call=async()=>{throw new Error('Krita went away');};
     assert.equal(await closeUp(surface,{...details,revision:'r2'}),null,'a failed crop never stops pacing');
   } finally { await rm(directory,{recursive:true,force:true}); }
+});
+
+test('a chat\'s AI image allowance starts from Settings, survives an older saved chat, and is validated', {timeout:20000}, async()=>{
+  const h=await harness(()=>({content:'Noted.'}));
+  try {
+    assert.deepEqual(freshGoal('ask').limits,{minutes:0,passes:0,ai_images:0});
+    await h.start('ask','Hello');
+    assert.equal(h.runtime.goal.limits.ai_images,0,'a new install starts with no AI images');
+    assert.equal(h.runtime.goal.ai_images_used,0);
+    await h.runtime.setLimits({minutes:5,passes:3,ai_images:2});
+    assert.deepEqual(h.runtime.goal.limits,{minutes:5,passes:3,ai_images:2});
+    await h.runtime.setLimits({minutes:5,passes:4});
+    assert.equal(h.runtime.goal.limits.ai_images,2,'leaving ai_images out keeps the chat\'s allowance');
+    await h.runtime.setLimits({minutes:0,passes:0,ai_images:null});
+    await h.runtime.setLimits({minutes:0,passes:0});
+    assert.equal(h.runtime.goal.limits.ai_images,null,'no limit survives a change to the other allowances');
+    for (const bad of [-1,21,1.5,'3']) await assert.rejects(h.runtime.setLimits({minutes:0,passes:0,ai_images:bad}),/AI images/);
+    // A chat saved before allowances existed takes the Settings default when it is restored.
+    delete h.runtime.goal.limits.ai_images; await h.runtime.persist();
+    const id=h.runtime.study.id; await h.runtime.end();
+    await h.runtime.setExecutionSettings({ai_images:'unlimited'});
+    await h.runtime.resume(id);
+    assert.equal(h.runtime.goal.limits.ai_images,null,'Settings "No limit" becomes no limit');
+    await h.runtime.end();
+    await h.runtime.setExecutionSettings({ai_images:3});
+    await h.start('ask','A new chat');
+    assert.equal(h.runtime.goal.limits.ai_images,3,'a new chat takes the current default');
+  } finally { await h.close(); }
 });

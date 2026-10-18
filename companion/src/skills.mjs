@@ -3,6 +3,7 @@
 // them in the painter's system prompt when a tool named `read` exists, and the artist can type
 // /skill:name in the panel. Only these skills load: the user's coding-agent skills are noise here.
 // The painter's `read` opens skill files and nothing else; it has no general file access.
+import { defineTool } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { readFileSync, readdirSync, existsSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
@@ -54,7 +55,7 @@ export function skillFile(path, directory = SKILLS_DIR) {
 }
 
 export function skillReadTool(directory = SKILLS_DIR) {
-  return {
+  return defineTool({
     name: 'read', label: 'Reading a skill', executionMode: 'sequential',
     description: 'Read a skill file: a SKILL.md listed in available_skills, or a file it references (relative paths resolve against the skill folder). Opens skill files only.',
     parameters: Type.Object({ path: Type.String({ minLength: 1, maxLength: 1000 }) }, { additionalProperties: false }),
@@ -63,5 +64,5 @@ export function skillReadTool(directory = SKILLS_DIR) {
       const text = readFileSync(file, 'utf8');
       return { content: [{ type: 'text', text: text.length > READ_LIMIT ? text.slice(0, READ_LIMIT) + '\n[truncated]' : text }], details: { path: file } };
     },
-  };
+  });
 }

@@ -1,3 +1,4 @@
+// @ts-check
 /** Verify a model route with disposable visual/tool work, never artist content. */
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -5,10 +6,12 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { deflateSync } from 'node:zlib';
 import { setTimeout as wait } from 'node:timers/promises';
-import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
+import { createAgentSession, defineTool, DefaultResourceLoader, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
+import { stopAfterTurn } from './turn-control.mjs';
 import { Type } from 'typebox';
 
 const MAX_AGE = 24 * 60 * 60 * 1000;
+/** @type {[string, number[]][]} */
 const PALETTE = [ ['red', [235, 35, 45]], ['green', [25, 175, 70]], ['blue', [30, 65, 230]],
   ['yellow', [250, 220, 30]], ['black', [15, 15, 15]], ['white', [245, 245, 245]] ];
 const MESSAGES = {
@@ -26,7 +29,11 @@ const MESSAGES = {
 };
 
 export class CapabilityError extends Error {
-  constructor(code) { super(MESSAGES[code] ?? MESSAGES.provider_error); this.name = 'CapabilityError'; this.code = code; }
+  constructor(code) {
+    super(MESSAGES[code] ?? MESSAGES.provider_error); this.name = 'CapabilityError'; this.code = code;
+    /** @type {Record<string, number> | undefined} */ this.usage = undefined;   // tokens spent before the failure
+    /** @type {{expected: string[], reported: string[]} | undefined} */ this.diagnostic = undefined;
+  }
 }
 export const isInteractiveModel = model => !!model && !/\bbatch\b/i.test((model.id ?? '') + ' ' + (model.name ?? ''));
 export function modelRouteKey(model, configVersion = 2) {
@@ -52,9 +59,10 @@ function classify(error) {
 }
 
 export class ModelCapabilities {
-  constructor({ models, cacheDirectory, configVersion = 2, timeoutMs = 30000, ttlMs = MAX_AGE, retryDelayMs = 1000, onStatus = () => {} }) {
+  constructor({ models, cacheDirectory, configVersion = 2, timeoutMs = 30000, ttlMs = MAX_AGE, retryDelayMs = 1000, onStatus = /** @type {(status: any) => void} */ (() => {}) }) {
     if (!models || !cacheDirectory) throw new Error('Model runtime and capability cache directory are required.');
-    Object.assign(this, { models, cacheDirectory, configVersion, timeoutMs, retryDelayMs, onStatus });
+    this.models = models; this.cacheDirectory = cacheDirectory; this.configVersion = configVersion;
+    this.timeoutMs = timeoutMs; this.retryDelayMs = retryDelayMs; this.onStatus = onStatus;
     this.ttlMs = Math.max(1, Math.min(MAX_AGE, ttlMs));
     this.entries = {}; this.pending = new Map(); this.writeQueue = Promise.resolve();
   }
@@ -99,7 +107,7 @@ export class ModelCapabilities {
     this.writeQueue = task; await task;
   }
   async invalidate(model) { delete this.entries[modelRouteKey(model, this.configVersion)]; await this.persist(); }
-  async verify(model, { signal, force = false } = {}) {
+  async verify(model, { signal, force = false } = /** @type {{signal?: AbortSignal, force?: boolean}} */ ({})) {
     if (signal?.aborted) throw new CapabilityError('cancelled');
     if (!isInteractiveModel(model)) throw new CapabilityError('batch_only');
     if (!model.input?.includes('image')) throw new CapabilityError('unsupported_image');
@@ -149,7 +157,9 @@ export class ModelCapabilities {
     const directory = await mkdtemp(join(tmpdir(), 'creative-model-probe-'));
     const testImage = visionSample();
     const confirmation = randomBytes(12).toString('hex');
-    let session, reportReceived = false, failure = null, lastProviderError, timer, cancelled;
+    /** @type {import('@earendil-works/pi-coding-agent').AgentSession | undefined} */
+    let session;
+    let reportReceived = false, failure = null, lastProviderError, timer, cancelled;
     const onAbort = () => { failure = new CapabilityError('cancelled'); session?.agent.abort(); cancelled?.(failure); };
     const deadline = new Promise((_, reject) => {
       cancelled = reject;
@@ -166,7 +176,7 @@ export class ModelCapabilities {
         systemPromptOverride: () => 'You are testing an image-and-tool connection. Read the supplied image, report its four quadrant colors through the provided tool, then reply READY followed by the confirmation_code returned by that tool. Do no other work.' });
       await loader.reload();
       if (failure) throw failure;
-      const tool = { name: 'report_visual_readiness', label: 'Report test image', executionMode: 'sequential',
+      const tool = defineTool({ name: 'report_visual_readiness', label: 'Report test image', executionMode: 'sequential',
         description: 'Report the colors actually visible in the test image: top-left, top-right, bottom-left, bottom-right.',
         parameters: Type.Object({ colors: Type.Array(Type.Union(PALETTE.map(([name]) => Type.Literal(name))), { minItems: 4, maxItems: 4 }) }, { additionalProperties: false }),
         execute: async (_id, args) => {
@@ -176,13 +186,13 @@ export class ModelCapabilities {
           }
           reportReceived = true;
           return { content: [{ type: 'text', text: JSON.stringify({ confirmation_code: confirmation }) }], details: { reported: true } };
-        } };
+        } });
       ({ session } = await createAgentSession({ cwd: directory, agentDir: join(directory, 'agent'), modelRuntime: this.models,
         model, thinkingLevel: 'off', settingsManager: settings, resourceLoader: loader,
         sessionManager: SessionManager.inMemory(directory), customTools: [tool], tools: [tool.name] }));
       if (failure) { session.dispose(); throw failure; }
       let turns = 0;
-      session.agent.shouldStopAfterTurn = () => !!failure || turns >= 3;
+      stopAfterTurn(session.agent, () => turns, done => !!failure || done >= 3);
       session.subscribe(event => {
         if (event.type === 'turn_end') turns++;
         if (event.type === 'message_end' && event.message.role === 'assistant' && event.message.stopReason === 'error')

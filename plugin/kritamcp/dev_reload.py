@@ -10,13 +10,41 @@ The companion restart ends the companion's process, which ends its chat, so it i
 deferred while a painting session is active; the plugin code reloads either way.
 """
 import importlib
+import os
+import re
 import sys
 
 PACKAGE = __name__.rsplit('.', 1)[0]
-# Dependencies before the modules that import from them.
-MODULES = ('creative_validation', 'creative_reference', 'journal_store', 'geometry_data', 'stroke_data', 'brush_controls', 'capabilities', 'region_raster',
-           'creative_native_adapters', 'precision_tools', 'layer_style', 'layer_craft', 'region_craft', 'filters', 'colorize', 'transform_craft', 'canvas_view', 'comic_layout', 'lettering', 'comic', 'merge_craft', 'creative_tools')
-NOT_RELOADED = ('__init__', 'creative_docker', 'command_queue', 'creative_document_identity')
+# The bridge, the panel and process-wide state (crash hooks, the managed Node, the command queue, document identities).
+NOT_RELOADED = ('__init__', 'creative_docker', 'command_queue', 'creative_document_identity', 'crash_diagnostics', 'node_runtime')
+IMPORT = re.compile(r'^\s*from \.(\w*) import ([\w, ()]+)', re.M)
+
+
+def modules(folder=None):
+    """Every plugin module this reload may refresh, each after the modules it imports from: read from the files,
+    so a new module (a new mixin, a helper) is never left behind by a hand-written list."""
+    folder = folder or os.path.dirname(os.path.abspath(__file__))
+    names = sorted(f[:-3] for f in os.listdir(folder) if f.endswith('.py'))
+    names = [n for n in names if n not in NOT_RELOADED and n != __name__.rsplit('.', 1)[-1]]
+    imports = {}
+    for name in names:
+        with open(os.path.join(folder, name + '.py'), encoding='utf-8') as stream:
+            found = set()
+            for module, imported in IMPORT.findall(stream.read()):
+                found.update([module] if module else [part.strip(' ()') for part in imported.split(',')])
+            imports[name] = sorted(found & set(names))
+    ordered, visiting = [], set()
+    def visit(name):
+        if name in ordered or name in visiting:
+            return
+        visiting.add(name)
+        for dependency in imports[name]:
+            visit(dependency)
+        visiting.discard(name)
+        ordered.append(name)
+    for name in names:
+        visit(name)
+    return tuple(ordered)
 
 
 def _fresh_attributes(fresh):
@@ -76,7 +104,7 @@ def reload(instance, companion=True):
 def _reload(instance, companion):
     reloaded = []
     importlib.invalidate_caches()                # new module files, such as a new mixin, are found
-    for short in MODULES:
+    for short in modules():
         module = sys.modules.get(PACKAGE + '.' + short)
         if module is not None:
             importlib.reload(module)

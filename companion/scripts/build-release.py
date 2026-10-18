@@ -50,8 +50,29 @@ def verify_node(node):
 
 BANNER = ("import { createRequire as __cr } from 'node:module'; import { fileURLToPath as __fu } from 'node:url'; "
           "import { dirname as __dn, join as __jn } from 'node:path'; const require = __cr(import.meta.url); "
+          # CommonJS code in the bundle reads __dirname, which ES modules lack: Photon loads photon_rs_bg.wasm
+          # from it, so without it every prompt image fails to resize and is dropped.
+          "const __dirname = __dn(__fu(import.meta.url)); "
           # Pi finds its package.json (version, templates) through this override when bundled.
           "process.env.PI_PACKAGE_DIR ??= __jn(__dn(__fu(import.meta.url)), '..', 'pi-package');")
+
+
+def bundle_image_resizing(dependency_root, companion, esbuild, root, pi_ai):
+    """Pi decodes and resizes every prompt image (canvas, references, reviews) with Photon, in a worker it
+    finds beside the module (./image-resize-worker.js) or in process. A bundle has neither the worker nor
+    photon_rs_bg.wasm, so every image would be dropped as "could not be resized": ship both. Pi looks for the
+    wasm in the working directory, which the panel sets to companion/src."""
+    pi = next((folder / '@earendil-works/pi-coding-agent' for folder in (dependency_root,)
+               if (folder / '@earendil-works/pi-coding-agent/dist/utils/image-resize-worker.js').exists()), None)
+    wasm = next(iter(sorted(dependency_root.glob('**/@silvia-odwyer/photon-node/photon_rs_bg.wasm'))), None)
+    if pi is None or wasm is None: raise ValueError("Pi's image resize worker or Photon's wasm is missing; run npm ci.")
+    result = subprocess.run([str(esbuild), str(pi / 'dist/utils/image-resize-worker.js'), '--bundle', '--platform=node', '--format=esm',
+                             '--target=node22', '--outfile=' + str(companion / 'src/image-resize-worker.js'), '--log-level=warning',
+                             '--legal-comments=none', '--banner:js=' + BANNER],
+                            cwd=root, text=True, capture_output=True, env={**os.environ, 'NODE_PATH': str(pi_ai)})
+    if result.returncode or 'warning' in result.stderr.lower():
+        raise ValueError('Bundling the image resize worker failed or warned: ' + (result.stderr or result.stdout)[-2000:])
+    shutil.copy2(wasm, companion / 'src/photon_rs_bg.wasm')
 
 
 def bundle_companion(root, dependency_root, companion, lock):
@@ -67,6 +88,7 @@ def bundle_companion(root, dependency_root, companion, lock):
                             cwd=root, text=True, capture_output=True, env={**os.environ, 'NODE_PATH': str(pi_ai)})
     if result.returncode or 'warning' in result.stderr.lower():
         raise ValueError('Bundling the companion failed or warned: ' + (result.stderr or result.stdout)[-2000:])
+    bundle_image_resizing(dependency_root, companion, esbuild, root, pi_ai)
     shutil.copy2(root / 'src/visual-check-questions.json', companion / 'src/visual-check-questions.json')
     shutil.copy2(root / 'src/brush-catalog.json', companion / 'src/brush-catalog.json')
     # Python for image assets: the sandbox runner beside main.mjs, Pyodide itself, the bundled skills

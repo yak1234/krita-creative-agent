@@ -72,6 +72,15 @@ class TransformTests(region_tests.RegionSetup, unittest.TestCase):
         self.assertIn('Lanczos3', mask.xml, "Krita's other settings are kept")
         self.assertEqual((values(mask.xml)['original'], values(mask.xml)['scale']), ((0, 0), (2, 0.5)))
 
+    def test_a_negative_scale_flips_for_a_reflection(self):
+        layer = self.agent_layer()
+        region_tests.run(self.h, 'transform_layer', {'layer_id': layer.id, 'scale': [1, -1], 'move': [0, 3]}, 'reflect')
+        mask, = layer.childNodes()
+        self.assertEqual(values(mask.xml)['scale'], (1, -1))
+        for scale in (0.01, -0.01, [1, -0.001], -60):
+            with self.assertRaisesRegex(ValueError, 'scale must be between'):
+                region_tests.run(self.h, 'transform_layer', {'layer_id': layer.id, 'scale': scale}, 'tiny')
+
     def test_refusals_change_nothing(self):
         layer = self.agent_layer()
         figure = self.artist_layer()

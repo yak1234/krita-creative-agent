@@ -1,0 +1,7 @@
+{
+  // The companion's TypeScript (Pi extensions and new modules, see AGENTS.md), checked strictly against Pi's own
+  // types; Node runs it in a checkout and esbuild bundles it. The .mjs companion is checked by tsconfig.json.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "strict": true, "allowJs": false, "verbatimModuleSyntax": true, "erasableSyntaxOnly": true },
+  "include": ["extensions/**/*.ts", "src/**/*.ts", "scripts/**/*.ts"]
+}

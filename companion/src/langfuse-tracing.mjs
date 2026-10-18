@@ -1,3 +1,4 @@
+// @ts-check
 // Langfuse tracing for Agent Pi sessions and Luna decisions.
 // One trace per agent run (session.prompt → agent_end): an `agent` root with a
 // `generation` per model call and a `tool` per tool execution, as siblings.
@@ -38,6 +39,7 @@ async function readDotEnv(path) {
 // A key pair always comes whole from one source, never mixed across sources.
 export async function langfuseCredentials(env = process.env, keychain = readKeychain, dotEnvPath = null) {
   const fromKeychain = async () => Object.fromEntries(await Promise.all(KEYS.map(async key => [key, await keychain(key)])));
+  /** @type {[string, () => Promise<any>][]} */
   const sources = [['.env', async () => readDotEnv(dotEnvPath)], ['environment', async () => env], ['Keychain', fromKeychain]];
   for (const [source, load] of sources) {
     const values = await load();
@@ -86,19 +88,22 @@ const usageDetails = u => u && { input: u.input ?? 0, output: u.output ?? 0, cac
 const costDetails = u => u?.cost && { input: u.cost.input, output: u.cost.output, cache_read_input_tokens: u.cost.cacheRead, cache_creation_input_tokens: u.cost.cacheWrite, total: u.cost.total };
 
 export class LangfuseTracing {
+  /** @param {{tracing?: any, propagateAttributes?: any, provider?: any, processor?: any, client?: any, projectId?: string, projectName?: string, organizationName?: string, credentialSource?: string, baseUrl?: string, environment?: string, release?: string}} options */
   constructor({ tracing, propagateAttributes, provider, processor, client, projectId, projectName, organizationName, credentialSource, baseUrl, environment, release }) {
-    Object.assign(this, { tracing, propagateAttributes, provider, processor, client, projectId, projectName, organizationName, credentialSource, baseUrl, environment, release });
+    this.tracing = tracing; this.propagateAttributes = propagateAttributes; this.provider = provider; this.processor = processor; this.client = client;
+    this.projectId = projectId; this.projectName = projectName; this.organizationName = organizationName; this.credentialSource = credentialSource;
+    this.baseUrl = baseUrl; this.environment = environment; this.release = release;
   }
   describe() { return [this.organizationName, this.projectName].filter(Boolean).join(' / ') + ' · ' + this.environment + (this.credentialSource ? ', keys from ' + this.credentialSource : ''); }
   sessionUrl(sessionId) { return `${this.baseUrl}/project/${this.projectId}/sessions/${encodeURIComponent(sessionId)}`; }
   // Scores (e.g. the reviewer's verdict) make traces filterable as training data.
   // Langfuse takes exactly one target: a trace (already in its chat session) or a session.
-  score({ traceId, sessionId, ...body }) {
+  score(/** @type {{traceId?: string, sessionId?: string, [key: string]: any}} */ { traceId, sessionId, ...body }) {
     try { this.client.score.create({ environment: this.environment, ...body, ...(traceId ? { traceId } : { sessionId }) }); }
     catch { /* Tracing never interrupts painting. */ }
   }
   // New chat closes the session: a final `end-chat` event, then everything is sent.
-  async endSession(sessionId, { reason = 'new_chat', metadata } = {}) {
+  async endSession(sessionId, { reason = 'new_chat', metadata } = /** @type {{reason?: string, metadata?: object}} */ ({})) {
     if (!sessionId) return;
     try { this.start(null, 'end-chat', { metadata: { reason, ...metadata } }, { asType: 'event' }, { traceName: 'end-chat', sessionId, version: this.release }); }
     catch { /* Tracing never interrupts painting. */ }
@@ -113,7 +118,7 @@ export class LangfuseTracing {
   // Follows one Pi session. `describe()` is read per run so the study and plan
   // step are current. Returns an unsubscribe function.
   // onRun({traceId, observationId}) fires when a run starts, for scores.
-  watchSession(session, { traceName, generationName, describe = () => ({}), onRun }) {
+  watchSession(session, { traceName, generationName, describe = /** @type {() => any} */ (() => ({})), onRun }) {
     let run = null;
     const tools = new Map();
     const begin = () => {
@@ -183,7 +188,7 @@ export class LangfuseTracing {
   // A typed decision as its own trace (one `decide-<kind>` event) in its chat session.
   // The trace id derives from the decision id, so later evidence can find it without a lookup.
   async decisionTraceId(decisionId) { return this.tracing.createTraceId(decisionId); }
-  async recordDecision(decision, { sessionId, metadata } = {}) {
+  async recordDecision(decision, { sessionId, metadata } = /** @type {{sessionId?: string, metadata?: object}} */ ({})) {
     const traceId = await this.decisionTraceId(decision.decision_id);
     const spanId = (await this.tracing.createTraceId(decision.decision_id + ':span')).slice(0, 16);
     const name = 'decide-' + decision.kind;
@@ -209,7 +214,7 @@ export class LangfuseConnectionError extends Error {}
 
 // Connects to Langfuse or throws LangfuseConnectionError. The credentials are
 // checked against the project (LangfuseClient) before any chat can start.
-export async function connectLangfuse({ secrets = () => [], release, env = process.env, keychain = readKeychain, dotEnvPath = null, timeout = 10000 } = {}) {
+export async function connectLangfuse({ secrets = () => [], release, env = process.env, keychain = readKeychain, dotEnvPath = null, timeout = 10000 } = /** @type {{secrets?: () => any[], release?: string, env?: NodeJS.ProcessEnv, keychain?: (account: string) => Promise<string>, dotEnvPath?: string | null, timeout?: number}} */ ({})) {
   const credentials = await langfuseCredentials(env, keychain, dotEnvPath);
   if (!credentials) throw new LangfuseConnectionError('No Langfuse keys. Add LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY and LANGFUSE_BASE_URL to ' + (dotEnvPath ?? 'the project .env') + '.');
   const baseUrl = (credentials.LANGFUSE_BASE_URL || 'https://cloud.langfuse.com').replace(/\/+$/, '');
@@ -220,7 +225,7 @@ export async function connectLangfuse({ secrets = () => [], release, env = proce
   let projectId, projectName, organizationName;
   try {
     const projects = await Promise.race([client.api.projects.get(), new Promise((_, reject) => setTimeout(() => reject(new Error('timed out')), timeout))]);
-    ({ id: projectId, name: projectName, organization: { name: organizationName } = {} } = projects?.data?.[0] ?? {});
+    ({ id: projectId, name: projectName, organization: { name: organizationName } = /** @type {{name?: string}} */ ({}) } = /** @type {any} */ (projects?.data?.[0] ?? {}));
   } catch (error) {
     await client.shutdown().catch(() => {});
     const status = error?.statusCode ?? error?.status;

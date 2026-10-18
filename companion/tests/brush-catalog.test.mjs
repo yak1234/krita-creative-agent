@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { CATALOG, brushCards, brushGuide } from '../src/brush-catalog.mjs';
 import { PAINTING_INSTRUCTIONS } from '../src/prompt.mjs';
 import { paintingTools } from '../src/tools.mjs';
+import { agentMoveInstructions } from '../src/studio.mjs';
+import { readdirSync, readFileSync } from 'node:fs';
 
 test('every recommended or avoided preset was probed, and none is both', () => {
   const recommended = Object.values(CATALOG.jobs).flat(), avoided = Object.values(CATALOG.avoid).flat();
@@ -30,4 +32,77 @@ test('list_brushes returns the whole library with a card per preset, within the 
   assert.match(listed[0].card, /washed out and grainy/);
   assert.equal(listed[1].card, null, 'an unprobed preset says so');
   assert.deepEqual(brushCards(['b) Basic-1']), [{ name: 'b) Basic-1', card: CATALOG.cards['b) Basic-1'] }]);
+});
+
+test('the painter finds an existing area with a seed instead of measuring it', () => {
+  assert.match(PAINTING_INSTRUCTIONS, /seed step/);
+});
+
+// The painter prompt in sections, with a job → Krita feature guide; worked examples live in skills.
+const PROMPT_BASELINE = 13330;          // PAINTING_INSTRUCTIONS.length before the sections (krita-native-tools Task 5)
+const section = name => {
+  const start = PAINTING_INSTRUCTIONS.indexOf(`<${name}>`), end = PAINTING_INSTRUCTIONS.indexOf(`</${name}>`);
+  assert.ok(start >= 0 && end > start, `section ${name}`);
+  return PAINTING_INSTRUCTIONS.slice(start, end);
+};
+
+test('the painter prompt is organised in named sections and does not grow', () => {
+  const order = ['role', 'choosing_a_tool', 'tool_calling', 'protection'].map(name => PAINTING_INSTRUCTIONS.indexOf(`<${name}>`));
+  assert.ok(order.every(i => i >= 0), 'every section present');
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'in this order');
+  assert.ok(PAINTING_INSTRUCTIONS.length <= PROMPT_BASELINE, `${PAINTING_INSTRUCTIONS.length} > ${PROMPT_BASELINE}`);
+});
+
+test('choosing a tool puts Krita’s features before strokes', () => {
+  const guide = section('choosing_a_tool');
+  for (const name of ['seed', 'split_by_color', 'fill_region', 'create_layer', 'apply_filter', 'clone_layer', 'krita_action', 'colortoalpha'])
+    assert.ok(guide.includes(name), name);
+  assert.match(guide, /mask/);
+  assert.match(guide, /strokes for marks, edges, texture and detail/);
+  assert.match(guide, /Flips: transform_layer with a negative scale/, 'flips work on any Krita, with or without vetted actions');
+});
+
+test('tool calling: name the Krita method first, and do not look again without a change', () => {
+  const rules = section('tool_calling');
+  assert.match(rules, /name the Krita method/i);
+  assert.match(rules, /without a change/);
+});
+
+test('every bundled skill has a trigger line in the prompt', () => {
+  const skills = readdirSync(new URL('../skills/', import.meta.url), { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name);
+  assert.ok(skills.includes('repaint-area') && skills.includes('repeat-motif'));
+  for (const name of skills) assert.ok(PAINTING_INSTRUCTIONS.includes(`load the \`${name}\` skill`), name);
+});
+
+test('the worked examples are skills with their trigger in the description', () => {
+  const read = name => readFileSync(new URL(`../skills/${name}/SKILL.md`, import.meta.url), 'utf8');
+  for (const name of ['repaint-area', 'repeat-motif']) {
+    const text = read(name);
+    assert.match(text, new RegExp(`^---\\nname: ${name}\\ndescription: .*Use (when|for) `, 'm'), name);
+  }
+  const repaint = read('repaint-area');
+  for (const step of ['seed', 'split_by_color', 'fill_region', 'apply_filter', 'clip_to', 'sky', 'windows', 'street']) assert.ok(repaint.includes(step), step);
+  const repeat = read('repeat-motif');
+  for (const step of ['clone_layer', 'offset', 'krita_action', 'mirrorNodeX', 'transform_layer']) assert.ok(repeat.includes(step), step);
+  assert.match(read('paint-sky'), /seed|split_by_color/);
+  assert.match(read('fix-region'), /seed|split_by_color/);
+});
+
+test('batch guidance no longer sends a sky or mass to stroke recipes', () => {
+  const text = agentMoveInstructions('subject');
+  assert.doesNotMatch(text, /For a sky, background or large mass, use paint_recipe/);
+  assert.match(text, /fill_region/);
+});
+
+test('guidance moved out of the prompt was moved, not dropped', () => {
+  const painting = section('painting');
+  for (const kept of [/not facial anatomy/, /opaque/, /forehead, nose, lips and chin/, /shoulder slope and hand contact/, /cubic curves or pressure strokes/])
+    assert.match(painting, kept);
+});
+
+test('a hard-edged patch is repaired from its own edge, never through a rectangle on clouds', () => {
+  const fix = readFileSync(new URL('../skills/fix-region/SKILL.md', import.meta.url), 'utf8');
+  assert.match(fix, /seed step inside the patch/);
+  assert.match(fix, /grow/);
+  assert.match(fix, /never a rectangle/i);
 });

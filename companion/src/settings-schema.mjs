@@ -20,6 +20,15 @@ export const SETTINGS = Object.freeze([
   { key: 'assets', type: 'choice', default: 'codex', panel: 'generic', label: 'Image assets', accessible: 'Image assets',
     error: 'Choose image assets from codex or openrouter.', options: [['codex', 'ChatGPT (Codex sign-in)'], ['openrouter', 'OpenRouter image models']],
     tooltip: 'Where the painter makes image assets (a tree, a sky) that it then repaints with brush strokes. ChatGPT uses your Codex sign-in and is included in your ChatGPT plan; OpenRouter costs about 1-2 cents an image.' },
+  // The starting AI image allowance of a new chat; each chat keeps its own (goal.limits.ai_images), changed in the panel.
+  { key: 'ai_images', type: 'choice', default: 0, panel: 'generic', label: 'AI images per chat', accessible: 'AI images per chat',
+    error: 'Choose how many AI images a new chat may use: 0, 1, 3, 5 or unlimited.',
+    options: [[0, 'None: paint by hand'], [1, '1 image'], [3, '3 images'], [5, '5 images'], ['unlimited', 'No limit']],
+    tooltip: 'How many AI-generated images (a sky, a tree) the painter may make in a new chat before repainting them with brushes. Change it for the open chat in the panel.' },
+  // Off by default: a screen that never sleeps must be the artist's choice. The panel shows when it holds.
+  { key: 'keep_screen_awake', type: 'boolean', default: false, panel: 'generic', control: 'checkbox', label: 'Screen', accessible: 'Keep the screen awake while painting',
+    error: 'keep_screen_awake must be true or false.', options: [[false, 'Let the screen sleep'], [true, 'Keep the screen awake while painting']],
+    tooltip: 'Krita can only paint while its window is active, so Autopilot pauses when the screen sleeps. With this on, the screen stays awake only while a run is painting, and the panel shows it.' },
   { key: 'routing', type: 'choice', default: 'off', panel: 'generic', label: 'Decision checks', accessible: 'Decision checks',
     error: 'Unknown decisions mode.', options: [['off', 'Off'], ['evaluate', 'Evaluate only'], ['guide', 'Guide agent']],
     note: 'Fast typed decisions: request routing, artifacts a pass introduced, progress between reviews and run pacing. When on, the canvas, pass images and your direction go to the decision endpoint below. Evaluate only records results; Guide agent also acts on them. The painter still decides and edits the image.' },
@@ -38,6 +47,6 @@ export function validSetting(setting, value) {
 
 /** What the panel needs to build the generic controls, in display order. */
 export function panelSchema() {
-  return SETTINGS.filter(s => s.panel === 'generic').map(({ key, label, accessible, options, tooltip, note }) =>
-    ({ key, label, accessible, tooltip: tooltip ?? '', note: note ?? '', options: options.map(([value, text]) => ({ value, label: text })) }));
+  return SETTINGS.filter(s => s.panel === 'generic').map(({ key, label, accessible, options, tooltip, note, control }) =>
+    ({ key, label, accessible, tooltip: tooltip ?? '', note: note ?? '', control: control ?? 'combo', options: options.map(([value, text]) => ({ value, label: text })) }));
 }

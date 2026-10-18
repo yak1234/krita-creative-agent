@@ -1,4 +1,5 @@
 // @ts-check
+import { defineTool } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 import { createHash } from 'node:crypto';
@@ -11,9 +12,12 @@ import { COMIC_OPERATIONS, CRAFT_OPERATIONS } from './craft.mjs';
 import { assetTools } from './assets.mjs';
 import { skillReadTool } from './skills.mjs';
 
+/** @template {import('typebox').TProperties} T @param {T} properties */
 const object = properties => Type.Object(properties, { additionalProperties: false });
 const unit = Type.Number({ minimum: 0.01, maximum: 1 });
 const coordinate = Type.Number({ minimum: 0, maximum: 8192 });
+// Stroke points may lie up to one brush size off the canvas (the plugin checks that), so a stroke runs edge to edge.
+const strokeCoordinate = Type.Number({ minimum: -10000, maximum: 18192 });
 const hex = Type.String({ pattern: '^#[0-9a-fA-F]{6}$' });
 const rect = Type.Array(Type.Integer({ minimum: 0, maximum: 100000 }), { minItems: 4, maxItems: 4 });
 const point = Type.Array(Type.Number({ minimum: -100000, maximum: 100000 }), { minItems: 2, maxItems: 2 });
@@ -24,12 +28,13 @@ const panel = Type.Optional(Type.String({ pattern: '^P[0-9]{1,2}$', description:
 const selectionStep = object({
   shape: Type.Optional(Type.Union([Type.Literal('rectangle'), Type.Literal('ellipse'), Type.Literal('polygon')])),
   bounds: Type.Optional(rect), points: Type.Optional(Type.Array(point, { minItems: 3, maxItems: 1000 })),
-  layer_id: Type.Optional(Type.String()), color: Type.Optional(hex), tolerance: Type.Optional(Type.Integer({ minimum: 0, maximum: 255 })),
+  layer_id: Type.Optional(Type.String()), color: Type.Optional(hex),
+  seed: Type.Optional(Type.Array(Type.Integer({ minimum: 0, maximum: 100000 }), { minItems: 2, maxItems: 2 })), tolerance: Type.Optional(Type.Integer({ minimum: 0, maximum: 255 })),
   saved: Type.Optional(Type.String({ maxLength: 40 })),
   mode: Type.Optional(Type.Union([Type.Literal('replace'), Type.Literal('add'), Type.Literal('subtract'), Type.Literal('intersect')])),
   grow: amount, shrink: amount, border: amount, feather: amount, smooth: Type.Optional(Type.Boolean()), invert: Type.Optional(Type.Boolean()),
 });
-const selectionSteps = Type.Array(selectionStep, { minItems: 1, maxItems: 16, description: 'Steps in order. Each has at most one source: shape (rectangle/ellipse with bounds [x,y,w,h], polygon with points), layer_id (that layer\u2019s alpha, read only), color (+tolerance 0-255, optional bounds) on the visible image, or saved (a selection name). Later sources combine by mode (default add). Then grow, shrink, border, feather (pixels), smooth, invert.' });
+const selectionSteps = Type.Array(selectionStep, { minItems: 1, maxItems: 16, description: 'Steps in order. Each has at most one source: shape (rectangle/ellipse with bounds [x,y,w,h], polygon with points), layer_id (that layer\u2019s alpha, read only), color (+tolerance 0-255, optional bounds) on the visible image, seed [x,y] (a magic wand: the area joined to that pixel whose colour is within tolerance of it, default 24, optional bounds; e.g. the whole sky from one point in it, stopping at every roof and spire, without measuring the outline), or saved (a selection name). Later sources combine by mode (default add). Then grow, shrink, border, feather (pixels), smooth, invert.' });
 const styleBlend = Type.Optional(Type.Union(['normal','multiply','screen','overlay','color_dodge','linear_dodge'].map(m => Type.Literal(m))));
 const effect = extra => Type.Union([Type.Null(), object({ color: Type.Optional(hex), opacity: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
   size: Type.Optional(Type.Number({ minimum: 0, maximum: 250 })), blend_mode: styleBlend, ...extra })]);
@@ -40,8 +45,8 @@ const layerStyle = object({ drop_shadow: Type.Optional(effect(shadow)), inner_sh
   outer_glow: Type.Optional(effect({ spread: Type.Optional(Type.Number({ minimum: 0, maximum: 100 })) })),
   outline: Type.Optional(effect({ position: Type.Optional(Type.Union([Type.Literal('outside'), Type.Literal('inside'), Type.Literal('center')])) })) });
 const stroke = object({
-  start: Type.Array(coordinate, { minItems: 2, maxItems: 2 }),
-  segments: Type.Array(Type.Array(coordinate, { minItems: 6, maxItems: 6 }), { minItems: 1, maxItems: 1000 }),
+  start: Type.Array(strokeCoordinate, { minItems: 2, maxItems: 2, description: 'Canvas pixels; a point may lie up to one brush size off the canvas, so a stroke can run edge to edge.' }),
+  segments: Type.Array(Type.Array(strokeCoordinate, { minItems: 6, maxItems: 6 }), { minItems: 1, maxItems: 1000 }),
   size: Type.Number({ minimum: 1, maximum: 10000 }), opacity: unit, flow: unit,
   color: Type.String({ pattern: '^#[0-9a-fA-F]{6}$' }),
 });
@@ -50,7 +55,7 @@ const stroke = object({
 // panel gets it from `details`). One painting result used to carry ~59k characters.
 const LAYER_INDEX_LIMIT = 8000;
 const HOST_ONLY = ['passes','image_path','path','checkpoint','painting_path','before_path','after_path','document_id',
-  'captured_at','content_id','save_number','checkpoint_deferred','unsaved_operations','source_prior','source_after','prior','after'];
+  'captured_at','content_id','save_number','checkpoint_deferred','unsaved_operations','source_prior','source_after','prior','after','timings_ms'];
 export function modelResultText(result, {compactLayers=false,focusLayerIds=[],limit=compactLayers?2000:6000}=/** @type {{compactLayers?: boolean, focusLayerIds?: any[], limit?: number}} */ ({})) {
   let model=Object.fromEntries(Object.entries(result ?? {}).filter(([key,value])=>!HOST_ONLY.includes(key) && value!==undefined));
   if (compactLayers && Array.isArray(result?.layers)) {
@@ -83,7 +88,7 @@ export async function resultContent(runtime, result, {compactLayers=false,focusL
 
 export function paintingTools(runtime) {
   const tool = (name, label, description, parameters, operation) => ({
-    name, label, description, parameters, executionMode: 'sequential',
+    name, label, description, parameters, executionMode: /** @type {const} */ ('sequential'),
     execute: async (id, params, signal) => {
       signal?.throwIfAborted();
       if (runtime.faulted && !['observe','sample_colors'].includes(operation)) throw new Error('The last operation needs reconciliation. Observe, then end this study before making a new working copy.');
@@ -109,6 +114,7 @@ export function paintingTools(runtime) {
       }
     },
   });
+  /** @type {import('@earendil-works/pi-coding-agent').ToolDefinition<any, any>[]} */
   const tools = [
     tool('observe_canvas', 'Looking at the painting',
       'See the current canvas image, document dimensions and layer IDs. Canvas coordinates use width/height, not the resized preview. Inspect before deciding on a change. Optional region [x,y,width,height] returns actual-resolution material detail up to 1568 px on its long side; a larger region comes back shrunk, and scale in the result says by how much (1 = actual pixels).', object({region:Type.Optional(Type.Array(Type.Integer({minimum:0,maximum:8192}),{minItems:4,maxItems:4}))}), 'observe'),
@@ -158,6 +164,9 @@ export function paintingTools(runtime) {
     tool('select', 'Selecting a region',
       'Build a selection from steps and save it under a name for fill_region and later turns. Example: the figure\u2019s alpha, grown 4 px and feathered 2. The artist\u2019s selection is never changed; not a canvas change. Returns bounds and selected_pixels.',
       object({ name: Type.String({ minLength: 1, maxLength: 40 }), steps: selectionSteps }), 'select'),
+    tool('propose_protection', 'Marking an area to protect',
+      'Mark an area of the painting the artist asked to protect ("protect the woman and the car"), from selection steps like select: polygons around what you see, a layer\u2019s alpha, a colour range, a seed (magic wand). It is shown in red and protects nothing until the artist keeps it. You cannot remove or change protection. Not a canvas change.',
+      object({ name: Type.String({ minLength: 1, maxLength: 60 }), area: selectionSteps }), 'propose_protection'),
     tool('fill_region', 'Filling a region',
       'Fill an area in one call, without strokes: flats, sky, a shadow shape, a gradient. Area: selection (a saved name) or area (selection steps). Paint: color, gradient {type linear|radial, start, end, stops [{offset 0-1, color}]} or pattern (a krita_capabilities name). Fills a NEW layer named name (with blend_mode, opacity, clip_base, clip_to as in create_layer), or layer_id: an agent paint layer, honouring its alpha lock (fill_region onto a clip_base layer extends the flats and keeps its clipped layers). One reversible pass; returns the canvas image.',
       object({ name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })), layer_id: Type.Optional(Type.String()),
@@ -168,7 +177,7 @@ export function paintingTools(runtime) {
         blend_mode: Type.Optional(Type.String({ maxLength: 40 })), opacity: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
         clip_base: Type.Optional(Type.Boolean()), clip_to: Type.Optional(Type.String()), panel }), 'fill_region'),
     tool('apply_filter', 'Applying a filter',
-      'Apply a Krita filter (krita_capabilities lists them with their settings) to one of your layers or groups; config holds only the settings to change. mode mask (default): a non-destructive filter mask on the target, for colour balance, curves, HSV or blur without repainting. layer: a filter layer inside your group, grading everything below it there (target the group to grade all of it). copy: filters the pixels of a copy, original hidden, when later strokes need the result. selection (a saved name) or area (selection steps) limits it. The artist\u2019s layers are never filtered. One reversible pass: reject removes the effect, fade changes its strength. Returns the canvas image.',
+      'Apply a Krita filter (krita_capabilities lists them with their settings) to one of your layers or groups; config holds only the settings to change. mode mask (default): a non-destructive filter mask on the target, for colour balance, curves, HSV or blur without repainting. layer: a filter layer inside your group, grading everything below it there (target the group to grade all of it). copy: filters the pixels of a copy, original hidden, when later strokes need the result. selection (a saved name) or area (selection steps) limits it. Colour to alpha is the colortoalpha filter, config {targetcolor: \u0027#RRGGBB\u0027, threshold: 0-255}: it makes that colour transparent, to lift line art off white paper or a glow off black (a mask, or copy on your layer). The artist\u2019s layers are never filtered: to lift the artist\u2019s sketch, clone_layer it and put the filter on the clone as a mask. One reversible pass: reject removes the effect, fade changes its strength. Returns the canvas image.',
       object({ target: Type.String(), filter: Type.String({ minLength: 1, maxLength: 80 }),
         config: Type.Optional(Type.Record(Type.String(), Type.Union([Type.String(), Type.Number(), Type.Boolean()]))),
         mode: Type.Optional(Type.Union([Type.Literal('mask'), Type.Literal('layer'), Type.Literal('copy')])),
@@ -182,12 +191,29 @@ export function paintingTools(runtime) {
         clip_base: Type.Optional(Type.Boolean()), edge_detection: Type.Optional(Type.Boolean()),
         cleanup: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })) }), 'colorize_flats'),
     tool('transform_layer', 'Transforming a layer',
-      'Move, scale or rotate one of your layers without repainting it: a live transform mask, so the pixels stay intact and reject puts the layer back. move [dx, dy] in pixels, scale (one factor or [x, y]), rotate in degrees, about pivot [x, y] (default the layer\u2019s centre). Use it to fix placement or proportion of a finished part, such as a moon placed too low or a figure too small. The artist\u2019s layers are never moved. One reversible pass; returns the canvas image.',
+      'Move, scale or rotate one of your layers without repainting it: a live transform mask, so the pixels stay intact and reject puts the layer back. move [dx, dy] in pixels, scale (one factor or [x, y]; a negative factor flips, as [1, -1] for a reflection), rotate in degrees, about pivot [x, y] (default the layer\u2019s centre). Use it to fix placement or proportion of a finished part, such as a moon placed too low or a figure too small. The artist\u2019s layers are never moved. One reversible pass; returns the canvas image.',
       object({ layer_id: Type.String(), name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
         move: Type.Optional(Type.Array(Type.Number({ minimum: -100000, maximum: 100000 }), { minItems: 2, maxItems: 2 })),
-        scale: Type.Optional(Type.Union([Type.Number({ minimum: 0.02, maximum: 50 }), Type.Array(Type.Number({ minimum: 0.02, maximum: 50 }), { minItems: 2, maxItems: 2 })])),
+        scale: Type.Optional(Type.Union([Type.Number({ minimum: -50, maximum: 50 }), Type.Array(Type.Number({ minimum: -50, maximum: 50 }), { minItems: 2, maxItems: 2 })])),
         rotate: Type.Optional(Type.Number({ minimum: -360, maximum: 360 })),
         pivot: Type.Optional(Type.Array(Type.Number({ minimum: -100000, maximum: 100000 }), { minItems: 2, maxItems: 2 })) }), 'transform_layer'),
+    tool('split_by_color', 'Splitting by colour',
+      'Split the visible painting (source "visible") or one layer into its main colour regions, each saved as a named selection ("Split 1 1a2440") with its colour, share of the canvas and bounds, largest first, for fill_region, apply_filter or select steps (saved, add). It finds areas of one colour (a sky, a road, a coat), not objects: an object of several colours is several regions combined with select. colors 2-24 (default 8); region [x,y,w,h] limits it; min_area (pixels) drops specks (default 0.2% of the area split). as_layers: true also copies each region to its own layer in one group, one reversible pass; without it nothing on the canvas changes.',
+      object({ source: Type.String(), colors: Type.Optional(Type.Integer({ minimum: 2, maximum: 24 })),
+        region: Type.Optional(Type.Array(Type.Integer({ minimum: 0, maximum: 100000 }), { minItems: 4, maxItems: 4 })),
+        min_area: Type.Optional(Type.Integer({ minimum: 0 })), as_layers: Type.Optional(Type.Boolean()),
+        name_prefix: Type.Optional(Type.String({ minLength: 1, maxLength: 30, pattern: '^[A-Za-z0-9][A-Za-z0-9 _-]*$' })) }), 'split_by_color'),
+    tool('clone_layer', 'Cloning a layer',
+      'A live copy of any layer (Krita\u2019s clone layer) that follows later edits to the original: a repeated motif (lamp posts, windows, trees) with offset [dx, dy] in pixels, or a reflection (clone, then transform_layer to flip and place it, then apply_filter blur as a mask). The source, even an artist\u2019s layer, is only read. Placed like create_layer, with blend_mode, opacity and clip_to. One reversible pass: reject removes only the clone. Returns the canvas image.',
+      object({ source: Type.String(), name: Type.String({ minLength: 1, maxLength: 120 }),
+        offset: Type.Optional(Type.Array(Type.Number({ minimum: -100000, maximum: 100000 }), { minItems: 2, maxItems: 2 })),
+        blend_mode: Type.Optional(Type.String({ maxLength: 40 })), opacity: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
+        clip_to: Type.Optional(Type.String()) }), 'clone_layer'),
+    tool('krita_action', 'Running a Krita command',
+      'Run one of Krita\u2019s own menu commands by id, from the vetted list in krita_capabilities (krita_actions: id, what it does, kind, needs); only commands checked on this Krita to open no dialog are offered. Pixel actions (mirror, rotate, clear inside a selection) change a copy of one of your paint layers, original hidden, so reject restores it. Selection actions (select opaque and its add/subtract/intersect forms, invert) read any layer, start from selection (a saved name) when given, and save the result as save_as; the artist\u2019s own selection is never changed. One reversible pass for pixel actions; returns the canvas image.',
+      object({ action: Type.String({ minLength: 1, maxLength: 80 }), target: Type.String(),
+        selection: Type.Optional(Type.String({ maxLength: 40 })), save_as: Type.Optional(Type.String({ minLength: 1, maxLength: 40 })),
+        name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })) }), 'krita_action'),
     tool('composition_guides', 'Setting composition guides',
       'Show Krita guides to plan placement: preset thirds or center, horizon (y in pixels), or exact horizontal/vertical positions; clear removes them. A view aid, not paint: no pass, and the artist\u2019s own guides return when the chat ends.',
       object({ preset: Type.Optional(Type.Union([Type.Literal('thirds'), Type.Literal('center'), Type.Literal('horizon')])),
@@ -223,7 +249,7 @@ export function paintingTools(runtime) {
   ];
   tools.push(recipeTool(runtime, tools.find(t=>t.name==='paint_pass').execute));
   tools.push(contourTool(runtime, tools.find(t=>t.name==='painting_toolbox').execute));
-  tools.push(...referenceTools(runtime,tools.find(t=>t.name==='paint_pass').execute));
+  tools.push(...referenceTools(runtime,tools.find(t=>t.name==='paint_pass').execute,tools.find(t=>t.name==='fill_region').execute));
   tools.push(batchTool(tools, name => runtime.toolOffered?.(name) ?? true));
   tools.push(...assetTools(runtime), skillReadTool());
   return tools;
@@ -252,7 +278,7 @@ export function batchTool(tools, offered = /** @type {(name: string) => boolean}
   const byName = Object.fromEntries(tools.filter(t => BATCH_TOOLS.includes(t.name)).map(t => [t.name, t]));
   // The original executes, captured now: wrappers added later (pacing) apply once per batch, not per action.
   const run = Object.fromEntries(Object.entries(byName).map(([name, t]) => [name, t.execute]));
-  return {
+  return defineTool({
     name: 'paint_batch', label: 'Painting a batch', executionMode: 'sequential',
     description: 'Run 1-'+BATCH_LIMIT+' painting actions in order in ONE call: '+BATCH_TOOLS.join(', ')+'. Each action takes exactly the arguments of that tool. '
       +'Plan several complementary moves (for example block-in, then texture, then edge accents), send them together, then judge the single returned canvas image before the next batch. '
@@ -297,7 +323,7 @@ export function batchTool(tools, offered = /** @type {(name: string) => boolean}
         canvas: last?.details ? JSON.parse(modelResultText(last.details, { compactLayers: true })) : undefined };
       return { content: [{ type: 'text', text: JSON.stringify(summary) }, ...(image ? [image] : [])], details: { ...last?.details, batch: ran } };
     },
-  };
+  });
 }
 
 /** Operation ids of a paint_batch call are `${batchPrefix(id)}-${index}`. */

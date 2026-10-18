@@ -1,3 +1,4 @@
+// @ts-check
 // Chat logs in SQLite (storage-layout phase B). The Pi SDK's SessionManager keeps a session as a
 // JSONL file; this adapter keeps the same entries as rows and every image once, by content hash.
 // The session's "file" path stays its identity (chats/<id>/sessions/<name>.jsonl) but no file is
@@ -190,7 +191,11 @@ export class SessionStore {
   /** SessionManager factory with the SDK's create/open shape, storing in this database. */
   managers() {
     const store = this;
-    class DbSessionManager extends SessionManager {
+    // Overrides SessionManager's private storage (_setSessionFile, _persist, _rewriteFile and the
+    // fields they use), which Pi's .d.ts hides, so the base is untyped here. Check these internals
+    // whenever Pi is updated: a renamed one would silently send chats back to JSONL files.
+    const Base = /** @type {new (...args: any[]) => any} */ (/** @type {unknown} */ (SessionManager));
+    class DbSessionManager extends Base {
       _setSessionFile(sessionFile) {
         this.sessionFile = resolve(sessionFile);
         const where = store.locate(this.sessionFile);

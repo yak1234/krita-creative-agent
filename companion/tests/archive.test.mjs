@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { ProjectStore } from '../src/project-store.mjs';
 import { exportChats, importArchive } from '../src/archive.mjs';
 
-const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jZ9kAAAAASUVORK5CYII=';
+const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
 const user = (text, extra = []) => ({ role: 'user', content: [{ type: 'text', text }, ...extra], timestamp: 1 });
 const reply = text => ({ role: 'assistant', content: [{ type: 'text', text }], api: 'openai-completions', provider: 't', model: 'm',
   usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: 'stop', timestamp: 2 });

@@ -1,0 +1,292 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ActionCollection version="2" name="SVG Tools">
+  <Actions category="Text Tool">
+    <text>SVG Text Tool</text>
+    <Action name="SvgTextTool">
+      <icon>draw-text</icon>
+      <text>Text Tool</text>
+      <whatsThis></whatsThis>
+      <toolTip>Text Tool</toolTip>
+      <iconText>Text Tool</iconText>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip/>
+    </Action>
+    <Action name="svg_insert_special_character">
+      <iconText>Glyph Palette...</iconText>
+      <shortcut>Alt+Shift+G</shortcut>
+      <toolTip>Insert one or more symbols or characters not found on the keyboard</toolTip>
+      <icon>character-set</icon>
+      <whatsThis>Insert one or more symbols or characters not found on the keyboard.</whatsThis>
+      <statusTip/>
+      <isCheckable>false</isCheckable>
+      <text>Glyph Palette...</text>
+    </Action>
+    <Action name="svg_align_right">
+      <iconText>Align Right</iconText>
+      <shortcut>Ctrl+Alt+R</shortcut>
+      <toolTip>Align Right</toolTip>
+      <icon>format-justify-right</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>false</isCheckable>
+      <text>Align Right</text>
+    </Action>
+    <Action name="svg_align_left">
+      <iconText>Align Left</iconText>
+      <shortcut/>
+      <toolTip>Align Left</toolTip>
+      <icon>format-justify-left</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>false</isCheckable>
+      <text>Align Left</text>
+    </Action>
+    <Action name="svg_align_justified">
+      <iconText>Align Block</iconText>
+      <shortcut>Ctrl+Alt+R</shortcut>
+      <toolTip>Align Block</toolTip>
+      <icon>format-justify-fill</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>false</isCheckable>
+      <text>Align Block</text>
+    </Action>
+    <Action name="svg_align_center">
+      <iconText>Align Center</iconText>
+      <shortcut>Ctrl+Alt+C</shortcut>
+      <toolTip>Align Center</toolTip>
+      <icon>format-justify-center</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>false</isCheckable>
+      <text>Align Center</text>
+    </Action>
+    <Action name="svg_decrease_font_size">
+      <iconText>Decrease Font Size</iconText>
+      <shortcut>Ctrl+&lt;</shortcut>
+      <toolTip>Decrease Font Size</toolTip>
+      <icon>font-decrease</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>false</isCheckable>
+      <text>Decrease Font Size</text>
+    </Action>
+    <Action name="svg_increase_font_size">
+      <iconText>Increase Font Size</iconText>
+      <shortcut>Ctrl+&gt;</shortcut>
+      <toolTip>Increase Font Size</toolTip>
+      <icon>font-increase</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>false</isCheckable>
+      <text>Increase Font Size</text>
+    </Action>
+    <Action name="svg_format_subscript">
+      <iconText>Subscript</iconText>
+      <shortcut>Ctrl+Shift+B</shortcut>
+      <toolTip>Subscript</toolTip>
+      <icon>format-text-subscript</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>true</isCheckable>
+      <text>Subscript</text>
+    </Action>
+    <Action name="svg_format_superscript">
+      <iconText>Superscript</iconText>
+      <shortcut>Ctrl+Shift+P</shortcut>
+      <toolTip>Superscript</toolTip>
+      <icon>format-text-superscript</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>true</isCheckable>
+      <text>Superscript</text>
+    </Action>
+    <Action name="svg_format_underline">
+      <iconText>Underline</iconText>
+      <shortcut>Ctrl+U</shortcut>
+      <toolTip>Underline</toolTip>
+      <icon>format-text-underline</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>true</isCheckable>
+      <text>Underline</text>
+    </Action>
+    <Action name="svg_format_strike_through">
+      <iconText>Strikethrough</iconText>
+      <shortcut/>
+      <toolTip>Strikethrough</toolTip>
+      <icon>format-text-strikethrough</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>true</isCheckable>
+      <text>Strikethrough</text>
+    </Action>
+    <Action name="svg_weight_bold">
+      <iconText>Bold</iconText>
+      <shortcut>Ctrl+B</shortcut>
+      <toolTip>Bold</toolTip>
+      <icon>format-text-bold</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>true</isCheckable>
+      <text>Bold</text>
+    </Action>
+    <Action name="svg_format_italic">
+      <iconText>Italic</iconText>
+      <shortcut>Ctrl+I</shortcut>
+      <toolTip>Italic</toolTip>
+      <icon>format-text-italic</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>true</isCheckable>
+      <text>Italic</text>
+    </Action>
+    <Action name="svg_weight_normal">
+      <iconText>Normal</iconText>
+      <shortcut></shortcut>
+      <toolTip>Normal</toolTip>
+      <icon>format-text-normal</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>true</isCheckable>
+      <text>Normal</text>
+    </Action>
+    <Action name="svg_weight_demi">
+      <iconText>Demi</iconText>
+      <shortcut/>
+      <toolTip>Demi</toolTip>
+      <icon>format-text-demi</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>true</isCheckable>
+      <text>Demi</text>
+    </Action>
+    <Action name="svg_weight_black">
+      <iconText>Black</iconText>
+      <shortcut/>
+      <toolTip>Black</toolTip>
+      <icon>format-text-black</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>true</isCheckable>
+      <text>Black</text>
+    </Action>
+    <Action name="svg_weight_light">
+      <iconText>Light</iconText>
+      <shortcut>Ctrl+L</shortcut>
+      <toolTip>Light</toolTip>
+      <icon>format-text-light</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>true</isCheckable>
+      <text>Light</text>
+    </Action>
+    <Action name="svg_settings">
+      <iconText>Settings</iconText>
+      <shortcut></shortcut>
+      <toolTip>Text Editor Settings</toolTip>
+      <icon></icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>false</isCheckable>
+      <text context="Text Editor Settings label">Settings...</text>
+    </Action>
+    <Action name="svg_font_kerning">
+      <iconText>Kerning</iconText>
+      <shortcut></shortcut>
+      <toolTip>Kerning</toolTip>
+      <icon>kerning</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>true</isCheckable>
+      <text>Kerning</text>
+    </Action>
+    <Action name="svg_paste_rich_text">
+      <iconText>Paste Rich Text</iconText>
+      <shortcut></shortcut>
+      <toolTip>Try to paste styled text if possible.</toolTip>
+      <icon>edit-paste</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>false</isCheckable>
+      <text>Paste Rich Text</text>
+      </Action>
+      <Action name="svg_paste_plain_text">
+      <iconText>Paste Plain Text</iconText>
+      <shortcut></shortcut>
+      <toolTip>Paste text without styling.</toolTip>
+      <icon>edit-paste</icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>false</isCheckable>
+      <text>Paste Plain Text</text>
+      </Action>
+
+      <Action name="svg_type_setting_move_selection_start_down_1_px">
+      <iconText>Move Text Selection Down</iconText>
+      <text>Move Text Selection Down By 1 Pixel</text>
+      <shortcut></shortcut>
+      <toolTip>When type setting mode is active, move the start of the selection down by one pixel.</toolTip>
+      <icon></icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>false</isCheckable>
+      </Action>
+
+      <Action name="svg_type_setting_move_selection_start_up_1_px">
+      <iconText>Move Text Selection Up</iconText>
+      <text>Move Text Selection Up By 1 Pixel</text>
+      <shortcut></shortcut>
+      <toolTip>When type setting mode is active, move the start of the selection up by one pixel.</toolTip>
+      <icon></icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>false</isCheckable>
+      </Action>
+
+      <Action name="svg_type_setting_move_selection_start_left_1_px">
+      <iconText>Move Text Selection Left</iconText>
+      <text>Move Text Selection Left By 1 Pixel</text>
+      <shortcut></shortcut>
+      <toolTip>When type setting mode is active, move the start of the selection left by one pixel.</toolTip>
+      <icon></icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>false</isCheckable>
+      </Action>
+
+      <Action name="svg_type_setting_move_selection_start_right_1_px">
+      <iconText>Move Text Selection Right</iconText>
+      <text>Move Text Selection Right By 1 Pixel</text>
+      <shortcut></shortcut>
+      <toolTip>When type setting mode is active, move the start of the selection right by one pixel.</toolTip>
+      <icon></icon>
+      <whatsThis/>
+      <statusTip/>
+      <isCheckable>false</isCheckable>
+      </Action>
+
+      <Action name="svg_remove_transforms_from_range">
+        <iconText>Remove Character Transforms</iconText>
+        <text>Remove Character Transforms</text>
+        <shortcut></shortcut>
+        <toolTip>Remove Character Transforms from the selection.</toolTip>
+        <icon></icon>
+        <whatsThis/>
+        <statusTip/>
+        <isCheckable>false</isCheckable>
+      </Action>
+
+<Action name="svg_clear_formatting">
+  <iconText>Clear Formatting</iconText>
+  <text>Clear Formatting</text>
+  <shortcut>edit-clear</shortcut>
+  <toolTip>Remove all set text properties from the selection.</toolTip>
+  <icon></icon>
+  <whatsThis/>
+  <statusTip/>
+  <isCheckable>false</isCheckable>
+</Action>
+    </Actions>
+</ActionCollection>

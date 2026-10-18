@@ -1,0 +1,539 @@
+/*
+ * This file is part of the KDE project
+ * SPDX-FileCopyrightText: 2013 Arjen Hiemstra <ahiemstra@heimr.nl>
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#include "kis_shortcut_configuration.h"
+
+#include <QDebug>
+#include <QStringList>
+#include <QKeySequence>
+#include <KLocalizedString>
+
+#include <boost/preprocessor/repeat_from_to.hpp>
+
+class KisShortcutConfiguration::Private
+{
+public:
+    Private()
+        : action(0),
+          type(UnknownType),
+          mode(0),
+          wheel(NoMovement),
+          touchGesture(NoGesture),
+          nativeGesture(NoNativeGesture)
+    { }
+
+    KisAbstractInputAction *action;
+    ShortcutType type;
+    uint mode;
+
+    QList<Qt::Key> keys;
+    Qt::MouseButtons buttons;
+    MouseWheelMovement wheel;
+    TouchGestureAction touchGesture;
+    NativeGestureAction nativeGesture;
+};
+
+KisShortcutConfiguration::KisShortcutConfiguration()
+    : d(new Private)
+{
+
+}
+
+KisShortcutConfiguration::KisShortcutConfiguration(const KisShortcutConfiguration &other)
+    : d(new Private)
+{
+    d->action = other.action();
+    d->type = other.type();
+    d->mode = other.mode();
+    d->keys = other.keys();
+    d->buttons = other.buttons();
+    d->wheel = other.wheel();
+    d->touchGesture = other.touchGesture();
+    d->nativeGesture = other.nativeGesture();
+}
+
+KisShortcutConfiguration &KisShortcutConfiguration::operator=(const KisShortcutConfiguration &other)
+{
+    d->action = other.action();
+    d->type = other.type();
+    d->mode = other.mode();
+    d->keys = other.keys();
+    d->buttons = other.buttons();
+    d->wheel = other.wheel();
+    d->touchGesture = other.touchGesture();
+    d->nativeGesture = other.nativeGesture();
+
+    return *this;
+}
+
+bool KisShortcutConfiguration::operator==(const KisShortcutConfiguration &other) const
+{
+    return d->type == other.d->type && d->keys == other.d->keys && d->buttons == other.d->buttons
+        && d->wheel == other.d->wheel && d->touchGesture == other.d->touchGesture && d->nativeGesture == other.d->nativeGesture;
+}
+
+KisShortcutConfiguration::~KisShortcutConfiguration()
+{
+    delete d;
+}
+
+QString KisShortcutConfiguration::serialize()
+{
+    QString serialized("{");
+
+    serialized.append(QString::number(d->mode, 16));
+    serialized.append(';');
+    serialized.append(QString::number(d->type, 16));
+    serialized.append(";[");
+
+    for (QList<Qt::Key>::iterator itr = d->keys.begin(); itr != d->keys.end(); ++itr) {
+        serialized.append(QString::number(*itr, 16));
+
+        if (itr + 1 != d->keys.end()) {
+            serialized.append(',');
+        }
+    }
+
+    serialized.append("];");
+
+    serialized.append(QString::number(d->buttons, 16));
+    serialized.append(';');
+    serialized.append(QString::number(d->wheel, 16));
+    serialized.append(';');
+    if (d->type == NativeGestureType) {
+        serialized.append(QString::number(d->nativeGesture, 16));
+    } else {
+        serialized.append(QString::number(d->touchGesture, 16));
+    }
+    serialized.append('}');
+
+    return serialized;
+}
+
+bool KisShortcutConfiguration::unserialize(const QString &serialized)
+{
+    if (!serialized.startsWith('{'))
+        return false;
+
+    //Parse the serialized data and apply it to the current shortcut
+    QString remainder = serialized;
+
+    //Remove brackets
+    remainder.remove('{').remove('}');
+
+    //Split the remainder by ;
+    QStringList parts = remainder.split(';');
+
+    if (parts.size() < 6)
+        return false; //Invalid input, abort
+
+    //First entry in the list is the mode
+    d->mode = parts.at(0).toUInt(nullptr, 16);
+
+    //Second entry is the shortcut type
+    d->type = static_cast<ShortcutType>(parts.at(1).toInt(nullptr, 16));
+
+    if (d->type == UnknownType) {
+        //Reject input that would set this shortcut to "Unknown"
+        return false;
+    }
+
+    //Third entry is the list of keys
+    QString serializedKeys = parts.at(2);
+    //Remove brackets
+    serializedKeys.remove('[').remove(']');
+    //Split by , and add each entry as a key
+    QStringList keylist = serializedKeys.split(',');
+    Q_FOREACH(QString key, keylist) {
+        if (!key.isEmpty()) {
+            d->keys.append(static_cast<Qt::Key>(key.toUInt(nullptr, 16)));
+        }
+    }
+
+    //Fourth entry is the button mask
+    d->buttons = static_cast<Qt::MouseButtons>(parts.at(3).toInt(nullptr, 16));
+    d->wheel = static_cast<MouseWheelMovement>(parts.at(4).toUInt(nullptr, 16));
+
+    if (d->type == MouseWheelType && d->wheel == WheelReserved_0) {
+        qWarning() << "WARNING: input profile contains deprecated Mouse Wheel shortcut (WheelReserved_0), skipping...";
+        return false;
+    }
+
+    if (d->type == NativeGestureType) {
+        d->nativeGesture = static_cast<NativeGestureAction>(parts.at(5).toUInt(nullptr, 16));
+    } else {
+        d->touchGesture = static_cast<TouchGestureAction>(parts.at(5).toUInt(nullptr, 16));
+    }
+
+    return true;
+}
+
+KisAbstractInputAction *KisShortcutConfiguration::action() const
+{
+    return d->action;
+}
+
+void KisShortcutConfiguration::setAction(KisAbstractInputAction *newAction)
+{
+    if (d->action != newAction) {
+        d->action = newAction;
+    }
+}
+
+KisShortcutConfiguration::ShortcutType KisShortcutConfiguration::type() const
+{
+    return d->type;
+}
+
+void KisShortcutConfiguration::setType(KisShortcutConfiguration::ShortcutType newType)
+{
+    if (d->type != newType) {
+        d->type = newType;
+    }
+}
+
+uint KisShortcutConfiguration::mode() const
+{
+    return d->mode;
+}
+
+void KisShortcutConfiguration::setMode(uint newMode)
+{
+    if (d->mode != newMode) {
+        d->mode = newMode;
+    }
+}
+
+QList< Qt::Key > KisShortcutConfiguration::keys() const
+{
+    return d->keys;
+}
+
+void KisShortcutConfiguration::setKeys(const QList< Qt::Key > &newKeys)
+{
+    if (d->keys != newKeys) {
+        d->keys = newKeys;
+    }
+}
+
+Qt::MouseButtons KisShortcutConfiguration::buttons() const
+{
+    return d->buttons;
+}
+
+void KisShortcutConfiguration::setButtons(Qt::MouseButtons newButtons)
+{
+    if (d->buttons != newButtons) {
+        d->buttons = newButtons;
+    }
+}
+
+KisShortcutConfiguration::MouseWheelMovement KisShortcutConfiguration::wheel() const
+{
+    return d->wheel;
+}
+
+void KisShortcutConfiguration::setWheel(KisShortcutConfiguration::MouseWheelMovement type)
+{
+    if (d->wheel != type) {
+        d->wheel = type;
+    }
+}
+
+KisShortcutConfiguration::TouchGestureAction KisShortcutConfiguration::touchGesture() const
+{
+    return d->touchGesture;
+}
+
+void KisShortcutConfiguration::setTouchGesture(KisShortcutConfiguration::TouchGestureAction type)
+{
+    d->touchGesture = type;
+}
+
+KisShortcutConfiguration::NativeGestureAction KisShortcutConfiguration::nativeGesture() const
+{
+    return d->nativeGesture;
+}
+
+void KisShortcutConfiguration::setNativeGesture(NativeGestureAction type)
+{
+    d->nativeGesture = type;
+}
+
+bool KisShortcutConfiguration::isNoOp() const
+{
+    return d->type == UnknownType || (d->type == KeyCombinationType && d->keys.isEmpty())
+        || (d->type == MouseButtonType && d->buttons.testFlag(Qt::NoButton))
+        || (d->type == MouseWheelType && d->wheel == NoMovement)
+        || (d->type == TouchGestureType
+            && (d->touchGesture == NoGesture || d->touchGesture == MaxGesture))
+        || (d->type == NativeGestureType
+            && (d->nativeGesture == NoNativeGesture || d->nativeGesture == MaxNativeGesture));
+
+}
+
+QString KisShortcutConfiguration::getInputText() const
+{
+    switch (d->type) {
+        case KeyCombinationType:
+            return keysToText(d->keys);
+        case MouseButtonType:
+            return buttonsInputToText(d->keys, d->buttons);
+        case MouseWheelType:
+            return wheelInputToText(d->keys, d->wheel);
+        case TouchGestureType:
+            return touchGestureToText(d->touchGesture);
+        case NativeGestureType:
+            return nativeGestureToText(d->nativeGesture);
+        default:
+            return QString();
+    }
+}
+
+QString KisShortcutConfiguration::buttonsToText(Qt::MouseButtons buttons)
+{
+    QString text;
+    QString sep = i18nc("Separator in the list of mouse buttons for shortcut", " + ");
+
+    int buttonCount = 0;
+
+    if (buttons & Qt::LeftButton) {
+        text.append(i18nc("Left Mouse Button", "Left"));
+        buttonCount++;
+    }
+
+    if (buttons & Qt::RightButton) {
+        if (buttonCount++ > 0) {
+            text.append(sep);
+        }
+
+        text.append(i18nc("Right Mouse Button", "Right"));
+    }
+
+    if (buttons & Qt::MiddleButton) {
+        if (buttonCount++ > 0) {
+            text.append(sep);
+        }
+
+        text.append(i18nc("Middle Mouse Button", "Middle"));
+    }
+
+    if (buttons & Qt::BackButton) {
+        if (buttonCount++ > 0) {
+            text.append(sep);
+        }
+
+        text.append(i18nc("Mouse Back Button", "Back"));
+    }
+
+    if (buttons & Qt::ForwardButton) {
+        if (buttonCount++ > 0) {
+            text.append(sep);
+        }
+
+        text.append(i18nc("Mouse Forward Button", "Forward"));
+    }
+
+    if (buttons & Qt::TaskButton) {
+        if (buttonCount++ > 0) {
+            text.append(sep);
+        }
+
+        text.append(i18nc("Mouse Task Button", "Task"));
+    }
+
+// Qt supports up to ExtraButton24 so include those
+#define EXTRA_BUTTON(z, n, _)\
+    if (buttons & Qt::ExtraButton##n) { \
+        if (buttonCount++ > 0) { text.append(sep); } \
+        text.append(i18nc("Mouse Button", "Mouse %1", n + 3)); \
+    }
+BOOST_PP_REPEAT_FROM_TO(4, 25, EXTRA_BUTTON, _)
+#undef EXTRA_BUTTON
+
+    if (buttonCount == 0) {
+        text.append(i18nc("No mouse buttons for shortcut", "None"));
+    }
+    else {
+        text = i18ncp(
+            "%1 = List of mouse buttons for shortcut. "
+            "Plural form is chosen upon the number of buttons in that list.",
+            "%1 Button", "%1 Buttons", text, buttonCount);
+    }
+
+    return text;
+}
+
+QString KisShortcutConfiguration::keysToText(const QList<Qt::Key> &keys)
+{
+    QString output;
+
+    Q_FOREACH (Qt::Key key, keys) {
+#if defined(Q_OS_MAC)
+        // This works for modifier keys on macOS but not other platforms.
+        // They are shown with symbols, so no translation or separators needed.
+        output.append(QKeySequence(key).toString(QKeySequence::NativeText));
+#else
+        if (output.size() > 0) {
+            output.append(i18nc("Separator in the list of keys for shortcut", " + "));
+        }
+
+        switch (key) { //Because QKeySequence fails for Ctrl, Alt, Shift and Meta
+        case Qt::Key_Control:
+            output.append(i18nc("Ctrl key", "Ctrl"));
+            break;
+
+        case Qt::Key_Meta:
+            output.append(i18nc("Meta key", "Meta"));
+            break;
+
+        case Qt::Key_Alt:
+            output.append(i18nc("Alt key", "Alt"));
+            break;
+
+        case Qt::Key_Shift:
+            output.append(i18nc("Shift key", "Shift"));
+            break;
+
+        default:
+            QKeySequence s(key);
+            output.append(s.toString(QKeySequence::NativeText));
+            break;
+        }
+#endif
+    }
+
+    if (output.size() == 0) {
+        output = i18nc("No keys for shortcut", "None");
+    }
+
+    return output;
+}
+
+QString KisShortcutConfiguration::wheelToText(KisShortcutConfiguration::MouseWheelMovement wheel)
+{
+    switch (wheel) {
+    case KisShortcutConfiguration::WheelUp:
+        return i18n("Mouse Wheel Up");
+        break;
+
+    case KisShortcutConfiguration::WheelDown:
+        return i18n("Mouse Wheel Down");
+        break;
+
+    case KisShortcutConfiguration::WheelLeft:
+        return i18n("Mouse Wheel Left");
+        break;
+
+    case KisShortcutConfiguration::WheelRight:
+        return i18n("Mouse Wheel Right");
+        break;
+
+    default:
+        return i18nc("No mouse wheel buttons for shortcut", "None");
+        break;
+    }
+}
+
+QString KisShortcutConfiguration::buttonsInputToText(const QList<Qt::Key> &keys, Qt::MouseButtons buttons)
+{
+    QString buttonsText = KisShortcutConfiguration::buttonsToText(buttons);
+
+    if (keys.size() > 0) {
+        return i18nc(
+            "%1 = modifier keys in shortcut; %2 = mouse buttons in shortcut",
+            "%1 + %2",
+            KisShortcutConfiguration::keysToText(keys),
+            buttonsText);
+    }
+    else {
+        return buttonsText;
+    }
+}
+
+QString KisShortcutConfiguration::wheelInputToText(const QList<Qt::Key> &keys, KisShortcutConfiguration::MouseWheelMovement wheel)
+{
+    QString wheelText = KisShortcutConfiguration::wheelToText(wheel);
+
+    if (keys.size() > 0) {
+        return i18nc(
+            "%1 = modifier keys in shortcut; %2 = mouse wheel buttons in shortcut",
+            "%1 + %2",
+            KisShortcutConfiguration::keysToText(keys),
+            wheelText);
+    }
+    else {
+        return wheelText;
+    }
+}
+
+QString KisShortcutConfiguration::nativeGestureToText(NativeGestureAction action)
+{
+    switch (action) {
+    case PinchGesture:
+        return i18n("Pinch Gesture");
+    case SmartZoomGesture:
+        return i18n("Smart Zoom Gesture");
+    case TouchpadScroll:
+        return i18n("Touchpad Scroll Gesture");
+    default:
+        return i18n("No Gesture");
+    }
+}
+
+QString KisShortcutConfiguration::touchGestureToText(TouchGestureAction action)
+{
+    switch (action) {
+    case OneFingerTap:
+        return i18n("One Finger Tap");
+    case TwoFingerTap:
+        return i18n("Two Finger Tap");
+    case ThreeFingerTap:
+        return i18n("Three Finger Tap");
+    case FourFingerTap:
+        return i18n("Four Finger Tap");
+    case FiveFingerTap:
+        return i18n("Five Finger Tap");
+    case OneFingerDrag:
+        return i18n("One Finger Drag");
+    case TwoFingerDrag:
+        return i18n("Two Finger Drag");
+    case ThreeFingerDrag:
+        return i18n("Three Finger Drag");
+    case FourFingerDrag:
+        return i18n("Four Finger Drag");
+    case FiveFingerDrag:
+        return i18n("Five Finger Drag");
+    case OneFingerHold:
+        return i18n("One Finger Hold");
+    default:
+        return i18n("No Gesture");
+    }
+}
+
+QString KisShortcutConfiguration::shortcutTypeToText(ShortcutType type)
+{
+    switch (type) {
+    case KisShortcutConfiguration::KeyCombinationType:
+        return i18nc("Shortcut type", "Key Combination");
+
+    case KisShortcutConfiguration::MouseButtonType:
+        return i18nc("Shortcut type", "Mouse Button");
+
+    case KisShortcutConfiguration::MouseWheelType:
+        return i18nc("Shortcut type", "Mouse Wheel");
+
+    case KisShortcutConfiguration::TouchGestureType:
+        return i18nc("Shortcut type", "Touch Gesture");
+
+    case KisShortcutConfiguration::NativeGestureType:
+        return i18nc("Shortcut type", "Touchpad Gesture");
+
+    default:
+        return i18n("Unknown Input");
+    }
+}

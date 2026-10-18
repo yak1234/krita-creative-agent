@@ -1,0 +1,19 @@
+<RCC>
+    <qresource prefix="/kxmlgui5">
+        <file alias="svgtexttool.xmlgui">svgtexttool.xmlgui</file>
+    </qresource>
+    <qresource prefix="/">
+        <file>tool_text_basic.svg</file>
+        <file>tool_text_inline_horizontal.svg</file>
+        <file>tool_text_inline_vertical.svg</file>
+        <file>tool_text_on_path.svg</file>
+        <file>tool_text_in_shape.svg</file>
+        <file>tool_text_i_beam_horizontal.svg</file>
+        <file>tool_text_i_beam_vertical.svg</file>
+        <file>tool_text_i_beam_horizontal_done.svg</file>
+        <file alias="GlyphPalette.qml">glyphpalette/GlyphPalette.qml</file>
+        <file alias="GlyphDelegate.qml">glyphpalette/GlyphDelegate.qml</file>
+        <file alias="GlyphPaletteAlts.qml">glyphpalette/GlyphPaletteAlts.qml</file>
+        <file>SvgTextToolOptions.qml</file>
+    </qresource>
+</RCC>

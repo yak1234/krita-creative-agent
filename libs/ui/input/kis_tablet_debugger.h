@@ -1,0 +1,40 @@
+/*
+ *  SPDX-FileCopyrightText: 2014 Dmitry Kazakov <dimula73@gmail.com>
+ *
+ *  SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#ifndef __KIS_TABLET_DEBUGGER_H
+#define __KIS_TABLET_DEBUGGER_H
+
+#include <QTabletEvent>
+#include <QLoggingCategory>
+
+class KisTabletDebugger
+{
+public:
+    KisTabletDebugger();
+    static KisTabletDebugger* instance();
+
+    void toggleDebugging();
+    bool debugEnabled() const;
+
+    QString eventToString(const QMouseEvent &ev, const QString &prefix);
+    QString eventToString(const QKeyEvent &ev, const QString &prefix);
+    QString eventToString(const QWheelEvent &ev, const QString &prefix);
+    QString eventToString(const QTouchEvent &ev, const QString &prefix);
+    QString eventToString(const QTabletEvent &ev, const QString &prefix);
+    QString eventToString(const QNativeGestureEvent &ev, const QString &prefix);
+    QString eventToString(const QEvent &ev, const QString &prefix);
+
+    static QString tabletDeviceToString(const QTabletEvent &event);
+    static QString pointerTypeToString(const QTabletEvent &event);
+    static QString exTypeToString(QEvent::Type type);
+
+
+private:
+    bool m_debugEnabled;
+    bool m_shouldEatDriverShortcuts;
+};
+
+#endif /* __KIS_TABLET_DEBUGGER_H */

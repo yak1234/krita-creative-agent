@@ -1,0 +1,35 @@
+<!DOCTYPE RCC>
+<!--
+  SPDX-FileCopyrightText: none
+  SPDX-License-Identifier: CC0-1.0
+-->
+<RCC version="1.0">
+    <qresource>
+        <file>color-sampler_image_background.svg</file>
+        <file>color-sampler_image_foreground.svg</file>
+        <file>color-sampler_layer_background.svg</file>
+        <file>color-sampler_layer_foreground.svg</file>
+        <file>cursor-cross.svg</file>
+        <file>cursor-cross-full.svg</file>
+        <file>cursor-pixel-white.xpm</file>
+        <file>cursor-pixel-black.xpm</file>
+        <file>cursor-round.svg</file>
+        <file>cursor-triangle_lefthanded.svg</file>
+        <file>cursor-triangle_righthanded.svg</file>
+        <file>cursor-eraser.svg</file>
+        <file>exposure-cursor-gesture.svg</file>
+        <file>gamma-cursor-gesture.svg</file>
+        <file>precise-pick-layer-icon.svg</file>
+        <file>rotate_discrete.svg</file>
+        <file>rotate_smooth.svg</file>
+        <file>move-tool.svg</file>
+        <file>move-selection.svg</file>
+        <file>shear_x.xpm</file>
+        <file>shear_y.xpm</file>
+        <file>zoom_discrete.svg</file>
+        <file>zoom_smooth.svg</file>
+        <file>tool_freehand_cursor.svg</file>
+        <file>tool_color_sampler_cursor.svg</file>
+        <file>rotate_cursor.svg</file>
+    </qresource>
+</RCC>

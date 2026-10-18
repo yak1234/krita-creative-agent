@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=Krita/PythonPlugin
+Name=Foo

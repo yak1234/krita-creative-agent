@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<kpartgui xmlns="http://www.kde.org/standards/kxmlgui/1.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="svg_SvgTextTool" version="1" xsi:schemaLocation="http://www.kde.org/standards/kxmlgui/1.0  http://www.kde.org/standards/kxmlgui/1.0/kxmlgui.xsd">
+  <MenuBar>
+    <Menu name="file">
+      <text>&amp;File</text>
+      <Action name="file_save"/>
+      <Separator/>
+      <Action name="file_close"/>
+    </Menu>
+    <Menu name="edit">
+      <text>&amp;Edit</text>
+      <Action name="edit_undo"/>
+      <Action name="edit_redo"/>
+      <Separator/>
+      <Action name="edit_cut"/>
+      <Action name="edit_copy"/>
+      <Action name="edit_paste"/>
+      <Separator/>
+      <Action name="edit_select_all"/>
+      <Action name="edit_deselect"/>
+      <Separator/>
+      <Action name="edit_find"/>
+      <Action name="edit_find_next"/>
+      <Action name="edit_find_prev"/>
+      <Action name="edit_replace"/>
+    </Menu>
+    <Menu name="view">
+      <text>&amp;View</text>
+      <Action name="view_zoom_out"/>
+      <Action name="view_zoom_in"/>
+    </Menu>
+    <Menu name="settings">
+      <text>Setti&amp;ngs</text>
+      <Action name="svg_settings"/>
+      <Merge name="StandardToolBarMenuHandler"/>
+      <Separator/>
+    </Menu>
+  </MenuBar>
+  <ToolBar name="mainToolBar" fullWidth="false" noMerge="1">
+    <Text>File</Text>
+    <Action name="edit_undo"/>
+    <Action name="edit_redo"/>
+    <Separator/>
+    <Action name="edit_cut"/>
+    <Action name="edit_copy"/>
+    <Action name="edit_paste"/>
+  </ToolBar>
+</kpartgui>

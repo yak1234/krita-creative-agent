@@ -1,0 +1,10 @@
+{
+    "Id": "Karbon Tools",
+    "Type": "Service",
+    "X-Krita-Version": "28",
+    "X-KDE-Library": "krita_karbon_tools",
+    "X-KDE-PluginInfo-Name": "krita_karbontools",
+    "X-KDE-ServiceTypes": [
+        "Krita/Tool"
+    ]
+}

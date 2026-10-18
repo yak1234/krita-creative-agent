@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ActionCollection version="2" name="Tools">
+  <Actions category="tool-shortcuts">
+  <text>Tool Shortcuts</text>
+    <Action name="KisToolTransform">
+      <icon>krita_tool_transform</icon>
+      <text>Transform Tool</text>
+      <whatsThis></whatsThis>
+      <toolTip>Transform a layer or a selection</toolTip>
+      <iconText>Transform a layer or a selection</iconText>
+      <shortcut>Ctrl+T</shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="KisToolTransformFree">
+      <icon>transform_icons_main</icon>
+      <text>Transform Tool (Free Transform)</text>
+      <whatsThis></whatsThis>
+      <toolTip></toolTip>
+      <iconText></iconText>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="KisToolTransformPerspective">
+      <icon>transform_icons_perspective</icon>
+      <text>Transform Tool (Perspective Transform)</text>
+      <whatsThis></whatsThis>
+      <toolTip></toolTip>
+      <iconText></iconText>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="KisToolTransformWarp">
+      <icon>transform_icons_warp</icon>
+      <text>Transform Tool (Warp Transform)</text>
+      <whatsThis></whatsThis>
+      <toolTip></toolTip>
+      <iconText></iconText>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="KisToolTransformCage">
+      <icon>transform_icons_cage</icon>
+      <text>Transform Tool (Cage Transform)</text>
+      <whatsThis></whatsThis>
+      <toolTip></toolTip>
+      <iconText></iconText>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="KisToolTransformLiquify">
+      <icon>transform_icons_liquify_main</icon>
+      <text>Transform Tool (Liquify Transform)</text>
+      <whatsThis></whatsThis>
+      <toolTip></toolTip>
+      <iconText></iconText>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+    <Action name="KisToolTransformMesh">
+      <icon>transform_icons_mesh</icon>
+      <text>Transform Tool (Mesh Transform)</text>
+      <whatsThis></whatsThis>
+      <toolTip></toolTip>
+      <iconText></iconText>
+      <shortcut></shortcut>
+      <isCheckable>false</isCheckable>
+      <statusTip></statusTip>
+    </Action>
+  </Actions>
+</ActionCollection>

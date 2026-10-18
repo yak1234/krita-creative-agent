@@ -1,0 +1,5 @@
+set(kritacolorspaceconversion_SOURCES colorspaceconversion.cc)
+kis_add_library(kritacolorspaceconversion MODULE ${kritacolorspaceconversion_SOURCES})
+target_link_libraries(kritacolorspaceconversion kritaui)
+install(TARGETS kritacolorspaceconversion  DESTINATION ${KRITA_PLUGIN_INSTALL_DIR})
+install( FILES  colorspaceconversion.xmlgui  DESTINATION ${KDE_INSTALL_DATADIR}/kritaplugins)

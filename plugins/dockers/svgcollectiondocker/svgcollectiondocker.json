@@ -1,0 +1,9 @@
+{
+    "Id": "SVG Collection Docker",
+    "Type": "Service",
+    "X-Krita-Version": "28",
+    "X-KDE-Library": "kritasvgcollectiondocker",
+    "X-KDE-ServiceTypes": [
+        "Krita/Dock"
+    ]
+}

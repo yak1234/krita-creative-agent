@@ -1,0 +1,308 @@
+/*
+ * SPDX-FileCopyrightText: 2019 Boudewijn Rempt <boud@valdyas.org>
+ *
+ * SPDX-License-Identifier: LGPL-2.0-or-later
+ */
+#include "KoQuaZipStore.h"
+#include "KoStore_p.h"
+
+#include <StoreDebug.h>
+
+#include <zlib.h>
+#include <quazip.h>
+#include <quazipfile.h>
+#include <quazipdir.h>
+#include <quazipfileinfo.h>
+#include <quazipnewinfo.h>
+
+#include <QTemporaryFile>
+#include <QTextCodec>
+#include <QByteArray>
+#include <QBuffer>
+
+#include <KConfig>
+#include <KSharedConfig>
+#include <KConfigGroup>
+
+struct KoQuaZipStore::Private {
+
+    Private() {}
+    ~Private() {}
+
+    QuaZip *archive {0};
+    QuaZipFile *currentFile {0};
+    QStringList directoryListCache;
+    bool directoryListCached {false};
+    int compressionLevel {Z_DEFAULT_COMPRESSION};
+    bool usingSaveFile {false};
+    QByteArray cache;
+    QBuffer buffer;
+};
+
+
+KoQuaZipStore::KoQuaZipStore(const QString &_filename, KoStore::Mode _mode, const QByteArray &appIdentification, bool writeMimetype)
+    : KoStore(_mode, writeMimetype)
+    , dd(new Private())
+{
+    Q_D(KoStore);
+    d->localFileName = _filename;
+    dd->archive = new QuaZip(_filename);
+    init(appIdentification);
+
+}
+
+KoQuaZipStore::KoQuaZipStore(QIODevice *dev, KoStore::Mode _mode, const QByteArray &appIdentification, bool writeMimetype)
+    : KoStore(_mode, writeMimetype)
+    , dd(new Private())
+{
+    dd->archive = new QuaZip(dev);
+    init(appIdentification);
+}
+
+KoQuaZipStore::~KoQuaZipStore()
+{
+    Q_D(KoStore);
+
+    if (d->good && dd->currentFile && dd->currentFile->isOpen()) {
+        dd->currentFile->close();
+    }
+
+    if (!d->finalized) {
+        finalize();
+    }
+
+
+    // NOTE:
+    //   If the dd->currentFile is corrupt (and ->getZipError() returns an error code)
+    // QuaZip cannot really close it properly (and I don't see an accessible function to reset the error code).
+    // Therefore the destructor thinks the file is open and tries to close it.
+    // And closing the file means checking if the zip archive associated with the file is open or not.
+    // Therefore the archive must exist when the file is being closed, therefore also when it's being deleted.
+    // In comparison, the archive can be deleted whenever and it doesn't check the current file.
+    // Therefore we gotta delete the file first, then the zip archive.
+
+    //   From QuaZip code comments for `QuaZipFile(QuaZip *zip, QObject *parent =nullptr);`:
+    // "* Summary: do not close \c zip object or change its current file as
+    // * long as QuaZipFile is open."
+
+    if (dd->currentFile) {
+        delete dd->currentFile;
+    }
+    delete dd->archive;
+
+}
+
+void KoQuaZipStore::setCompressionEnabled(bool enabled)
+{
+
+    if (enabled) {
+        dd->compressionLevel = Z_DEFAULT_COMPRESSION;
+    }
+    else {
+        dd->compressionLevel = Z_NO_COMPRESSION;
+    }
+}
+
+qint64 KoQuaZipStore::write(const char *_data, qint64 _len)
+{
+    Q_D(KoStore);
+    if (_len == 0) return 0;
+
+    if (!d->isOpen) {
+        errorStore << "KoStore: You must open before writing" << Qt::endl;
+        return 0;
+    }
+
+    if (d->mode != Write) {
+        errorStore << "KoStore: Can not write to store that is opened for reading" << Qt::endl;
+        return 0;
+    }
+
+    qint64 nwritten = dd->buffer.write(_data, _len);
+    d->size += nwritten;
+    return nwritten;
+}
+
+QStringList KoQuaZipStore::directoryList() const
+{
+    // If in Read mode, we can assume the directory listing won't change between invocations.
+    if(mode() == Read) {
+        if(!dd->directoryListCached) {
+            dd->directoryListCache = dd->archive->getFileNameList();
+            dd->directoryListCached = true;
+        }
+        return dd->directoryListCache;
+    }
+    else {
+        return dd->archive->getFileNameList();
+    }
+}
+
+void KoQuaZipStore::init(const QByteArray &appIdentification)
+{
+    Q_D(KoStore);
+
+    bool enableZip64 = false;
+    if (appIdentification == "application/x-krita") {
+        enableZip64 = KSharedConfig::openConfig()->group("").readEntry<bool>("UseZip64", false);
+    }
+
+    dd->archive->setDataDescriptorWritingEnabled(false);
+    dd->archive->setZip64Enabled(enableZip64);
+    dd->archive->setFileNameCodec("UTF-8");
+    dd->usingSaveFile = dd->archive->getIoDevice() && dd->archive->getIoDevice()->inherits("QSaveFile");
+    dd->archive->setAutoClose(!dd->usingSaveFile);
+
+    d->good = dd->archive->open(d->mode == Write ? QuaZip::mdCreate : QuaZip::mdUnzip);
+
+    if (!d->good) {
+        return;
+    }
+
+    if (d->mode == Write) {
+        if (d->writeMimetype) {
+            QuaZipFile f(dd->archive);
+            QuaZipNewInfo newInfo("mimetype");
+            newInfo.setPermissions(QFileDevice::ReadOwner | QFileDevice::ReadGroup | QFileDevice::ReadOther);
+            if (!f.open(QIODevice::WriteOnly, newInfo, 0, 0, 0, Z_NO_COMPRESSION)) {
+                d->good = false;
+                return;
+            }
+            f.write(appIdentification);
+            f.close();
+        }
+    }
+    else {
+        debugStore << dd->archive->getEntriesCount() << directoryList();
+        d->good = dd->archive->getEntriesCount();
+    }
+}
+
+bool KoQuaZipStore::doFinalize()
+{
+    Q_D(KoStore);
+
+    d->stream = 0;
+    if (d->good && !dd->usingSaveFile) {
+        dd->archive->close();
+    }
+    return dd->archive->getZipError() == ZIP_OK;
+
+}
+
+bool KoQuaZipStore::openWrite(const QString &name)
+{
+    Q_D(KoStore);
+    QString fixedPath = name;
+    fixedPath.replace("//", "/");
+
+    delete d->stream;
+    d->stream = 0; // Not used when writing
+
+    delete dd->currentFile;
+    dd->currentFile = new QuaZipFile(dd->archive);
+    QuaZipNewInfo newInfo(fixedPath);
+    newInfo.setPermissions(QFileDevice::ReadOwner | QFileDevice::ReadGroup | QFileDevice::ReadOther);
+    bool r = dd->currentFile->open(QIODevice::WriteOnly, newInfo, 0, 0, Z_DEFLATED, dd->compressionLevel);
+    if (!r) {
+        qWarning() << "Could not open" << name << dd->currentFile->getZipError();
+    }
+
+    dd->cache = QByteArray();
+    dd->buffer.setBuffer(&dd->cache);
+    dd->buffer.open(QBuffer::WriteOnly);
+
+    return r;
+}
+
+bool KoQuaZipStore::openRead(const QString &name)
+{
+    Q_D(KoStore);
+
+    QString fixedPath = name;
+    fixedPath.replace("//", "/");
+
+    delete d->stream;
+    d->stream = 0;
+    delete dd->currentFile;
+    dd->currentFile = 0;
+
+    if (!currentPath().isEmpty() && !fixedPath.startsWith(currentPath())) {
+        fixedPath = currentPath() + '/' + fixedPath;
+    }
+
+    if (!d->substituteThis.isEmpty()) {
+        fixedPath = fixedPath.replace(d->substituteThis, d->substituteWith);
+    }
+
+    if (!dd->archive->setCurrentFile(fixedPath)) {
+        qWarning() << "\t\tCould not set current file" << dd->archive->getZipError() << fixedPath;
+        return false;
+    }
+
+    dd->currentFile = new QuaZipFile(dd->archive);
+    if (!dd->currentFile->open(QIODevice::ReadOnly)) {
+        qWarning() << "\t\t\tBut could not open!!!" << dd->archive->getZipError();
+        return false;
+    }
+    d->stream = dd->currentFile;
+    d->size = dd->currentFile->size();
+    return true;
+}
+
+bool KoQuaZipStore::closeWrite()
+{
+    Q_D(KoStore);
+
+    bool r = true;
+    if (dd->currentFile->write(dd->cache) != dd->cache.size()) {
+        // write() returns number of bytes written, or -1 in case of error
+        // let's allow write 0 bytes in the cache, when needed
+        qWarning() << "Could not write buffer to the file";
+        r = false;
+    }
+    dd->buffer.close();
+    dd->currentFile->close();
+    d->stream = 0;
+    return (r && dd->currentFile->getZipError() == ZIP_OK);
+}
+
+bool KoQuaZipStore::closeRead()
+{
+    Q_D(KoStore);
+    d->stream = 0;
+    return true;
+}
+
+bool KoQuaZipStore::enterRelativeDirectory(const QString & /*path*/)
+{
+    return true;
+}
+
+bool KoQuaZipStore::enterAbsoluteDirectory(const QString &path)
+{
+    QString fixedPath = path;
+    fixedPath.replace("//", "/");
+
+    if (fixedPath.isEmpty()) {
+        fixedPath = "/";
+    }
+
+    QuaZipDir currentDir (dd->archive, fixedPath);
+
+    return currentDir.exists();
+}
+
+bool KoQuaZipStore::fileExists(const QString &absPath) const
+{
+    Q_D(const KoStore);
+
+    QString fixedPath = absPath;
+    fixedPath.replace("//", "/");
+
+    if (!d->substituteThis.isEmpty()) {
+        fixedPath = fixedPath.replace(d->substituteThis, d->substituteWith);
+    }
+
+    return directoryList().contains(fixedPath);
+}

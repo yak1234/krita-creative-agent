@@ -1,0 +1,31 @@
+/*
+ *  SPDX-FileCopyrightText: 2014 Dmitry Kazakov <dimula73@gmail.com>
+ *
+ *  SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#ifndef __KIS_LIQUIFY_TRANSFORM_WORKER_TEST_H
+#define __KIS_LIQUIFY_TRANSFORM_WORKER_TEST_H
+
+#include <simpletest.h>
+
+class KisLiquifyTransformWorkerTest : public QObject
+{
+    Q_OBJECT
+private Q_SLOTS:
+    void testPoints();
+    void testRestoreShapePreservesSimilarity();
+    void testRestoreShapeRestoresRotationAndScale();
+    void testRestoreShapeRestoresScalePreservingRotation();
+    void testRestoreShapePreservesCentroid();
+    void testRestoreShapeCanPreserveStretch();
+    void testPointsQImage();
+    void testIdentityTransform();
+
+    void testMaskRendering_data();
+    void testMaskRendering();
+
+
+};
+
+#endif /* __KIS_LIQUIFY_TRANSFORM_WORKER_TEST_H */

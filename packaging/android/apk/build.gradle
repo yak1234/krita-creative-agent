@@ -1,0 +1,254 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.12.0'
+    }
+}
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+apply plugin: 'com.android.application'
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar', '*.aar'])
+}
+
+ext {
+    abi = System.getenv('ANDROID_ABI') ?: project.ext.properties['abi']
+    ndkpath = System.getenv('KDECI_ANDROID_NDK_ROOT') ?: project.ext.properties['ndk.dir']  // TODO: Newer versions of Qt do support this dir
+    installPrefix = System.getenv('KRITA_INSTALL_PREFIX')
+
+    // Note about qtResPath vs qt5AndroidDir:
+    //
+    // qt5AndroidDir is set up by androiddeployqt and points to exact files
+    // in _install directory, which is not available on the builder that builds
+    // AppBundle packages, so we should access these files from a manually copied
+    // location.
+    //
+    // tldr; at one time, either qt5AndroidDir or qtResPath is valid and points
+    //       to the same files
+    qtResPath = System.getenv('KRITA_BUILD_APPBUNDLE') ? 'extra-bundle-deps/android/java' : ""
+}
+
+tasks.register('configure') {
+    doLast {
+        if (abi == null && !project.hasProperty("abi")) {
+            logger.error('ANDROID_ABI not specified using the default one instead: arm64-v8a')
+            abi = 'arm64-v8a'
+        }
+
+        def libs = new File(installPrefix, 'lib')
+        if (!libs.exists()) {
+            throw new FileNotFoundException('Krita libraries not found, please check if -p=krita-bin finished without errors')
+        }
+    }
+}
+
+tasks.register('writeConfig', WriteProperties) {
+    dependsOn('configure')
+    outputFile = file("gradle.properties")
+    def gradleProperties = new Properties()
+    outputFile.withInputStream { gradleProperties.load(it) }
+
+    properties gradleProperties
+    property 'abi', abi
+    property 'ndk.dir', ndkpath
+}
+
+// copy libs(plugins) which start with krita*.so and rename
+// them to start with `lib_`
+tasks.register('copyLibs', Copy) {
+    dependsOn('configure')
+    from "$installPrefix/lib"
+    into "libs/$abi"
+    exclude "mlt-7/**"
+    rename('^krita(.*).so$', 'lib_krita$1.so')
+}
+
+// copy MLT plugins and rename
+// them to start with `lib_`
+tasks.register('copyMltPlugins', Copy) {
+    dependsOn('configure', 'copyLibs')
+    from "$installPrefix/lib/mlt-7"
+    into "libs/$abi"
+    rename('^libmlt(.*).so$', 'lib_mltplugin_$1.so')
+}
+
+tasks.register('copySDLJar', Copy) {
+    dependsOn('configure')
+    from "$installPrefix/jar"
+    into 'libs/'
+    include 'SDL2Android.jar'
+}
+
+tasks.register('copyFonts', Copy) {
+    dependsOn('configure')
+    from "$installPrefix/etc"
+    into 'assets/etc/'
+    include '**'
+}
+
+/*
+ * androiddeployqt doesn't fully copy the directories. Hidden directories
+ * to be specific. That's why we copy manually and then delete the partial
+ * one it creates
+ */
+tasks.register('copyAssets', Copy) {
+    dependsOn('configure')
+    from "$installPrefix/share/"
+    into 'assets/'
+    include '**'
+}
+
+tasks.register('copyLocaleFiles', Copy) {
+    dependsOn('configure', 'copyAssets')
+    from "$installPrefix/share/locale"
+    from "$installPrefix/translations"
+    into 'assets/locale/'
+    include '**'
+}
+
+tasks.register('copyExtraMltFiles', Copy) {
+    dependsOn('configure', 'copyAssets')
+    from "$installPrefix/share/mlt-7"
+    into 'assets/mlt-7'
+    include '**'
+}
+
+/*
+ * Remove "share" folder in assets. It is copied both manually and by
+ * androiddeployqt(reason in copyAssets task).
+ */
+tasks.register('removeDuplicateAssets', Delete) {
+    dependsOn('configure', 'copyFonts', 'copyAssets', 'copyLocaleFiles', 'copyExtraMltFiles')
+    delete "assets/share"
+}
+
+def isPackagingAPK() {
+    return gradle.taskGraph.hasTask(assembleRelease) || gradle.taskGraph.hasTask(assembleDebug)
+}
+
+android {
+    /**
+     * We store the application ID in both, `namespace` tag and in the
+     * `package` attribute in the manifest, because androiddeployqt from Qt 5.15.x
+     * does not know how to fetch the package name from the Manifest
+     */
+    namespace = "org.krita"
+
+    ndkPath ndkpath
+
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
+    sourceSets {
+        main {
+            manifest.srcFile 'AndroidManifest.xml'
+            java.srcDirs = [qt5AndroidDir + '/src', qtResPath + '/src', 'src', 'java']
+            aidl.srcDirs = [qt5AndroidDir + '/src', qtResPath + '/src', 'src', 'aidl']
+            res.srcDirs = [qt5AndroidDir + '/res',  qtResPath + '/res', 'res']
+            resources.srcDirs = ['src']
+            renderscript.srcDirs = ['src']
+            assets.srcDirs = ['assets']
+            jniLibs.srcDirs = ['libs', 'lib']
+        }
+        nightly {
+            manifest.srcFile 'flavors/next/AndroidManifest.xml'
+        }
+        debug {
+            manifest.srcFile 'flavors/debug/AndroidManifest.xml'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
+                    'proguard-rules.pro'
+        }
+        nightly {
+            initWith release
+            applicationIdSuffix ".next"
+        }
+        debug {
+            // Comment this out when testing in-app purchases. The package name
+            // must not have a suffix for those to work properly.
+            applicationIdSuffix ".debug"
+        }
+    }
+
+    project.ext.constant = 5
+
+    def versionMajor    = 5
+    def versionMinor    = 4
+
+    /**
+     * This version does **not** correspond to the patch version
+     * of Krita. Instead, it is just incremented for every public
+     * (including alpha and beta) release of versionMajor.versionMinor
+     * branch
+     */
+    def versionRelease  = 0
+
+    defaultConfig {
+        compileSdk androidCompileSdkVersion.toInteger()
+
+        // even though buildToolsVersion is deprecated,
+        // we should still explicitly state it. Otherwise,
+        // AGP will use the default one
+        buildToolsVersion "36.0.0"
+
+        ndkVersion "27.3.13750724"
+
+        targetSdkVersion 36
+        minSdkVersion 24
+        versionCode project.ext.constant * 1000000 + versionMajor * 10000 + versionMinor * 100 + versionRelease
+        versionName "5.4.0-prealpha"
+        def unstableSuffix = System.getenv('KRITA_UNSTABLE_PACKAGE_SUFFIX')
+        archivesBaseName = System.getenv('KRITA_BUILD_APPBUNDLE') ? "krita-$versionName$unstableSuffix" : "krita-$abi-$versionName$unstableSuffix"
+    }
+    buildFeatures {
+        renderScript true
+        aidl true
+    }
+
+    // This is needed because, gradle by default ignores hidden assets.
+    androidResources {
+        ignoreAssetsPattern '!.foajasoie'
+    }
+
+    lint {
+        abortOnError false
+    }
+
+
+    configure.onlyIf { isPackagingAPK() }
+    configure.finalizedBy(writeConfig)
+    configure.finalizedBy(copyLibs)
+    configure.finalizedBy(copyMltPlugins)
+    configure.finalizedBy(copyFonts)
+    configure.finalizedBy(copyAssets)
+    configure.finalizedBy(copyLocaleFiles)
+    configure.finalizedBy(copySDLJar)
+    configure.finalizedBy(copyExtraMltFiles)
+    configure.finalizedBy(removeDuplicateAssets)
+
+    preBuild.dependsOn(configure)
+    preBuild.dependsOn(copyLibs, copyMltPlugins, copyFonts, copyAssets, copyLocaleFiles, copySDLJar, copyExtraMltFiles, removeDuplicateAssets)
+}
+
+dependencies {
+    implementation 'com.android.billingclient:billing:9.0.0'
+    implementation 'androidx.annotation:annotation:1.10.0'
+    implementation files("libs/SDL2Android.jar")
+}

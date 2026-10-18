@@ -1,0 +1,17 @@
+[build-system]
+requires = ["sip >=5, <7", "PyQt5"]
+build-backend = "sipbuild.api"
+
+[tool.sip.metadata]
+name = "@module_name_toml@"
+
+[tool.sip.project]
+sip-module = "@sip_name@"
+sip-include-dirs = @sip_include_dirs@
+sip-files-dir = "@module_srcs@"
+abi-version = "@abi_version@"
+
+[tool.sip.bindings.@module_name_toml@]
+pep484-pyi = true
+tags = @module_tags@
+disabled-features = @sip_disabled_features@

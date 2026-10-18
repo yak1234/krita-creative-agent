@@ -1,0 +1,10 @@
+{
+    "Id": "SvgTextTool",
+    "Type": "Service",
+    "X-Krita-Version": "28",
+    "X-KDE-Library": "krita_tool_svgtext",
+    "X-KDE-PluginInfo-Name": "svgtexttool",
+    "X-KDE-ServiceTypes": [
+        "Krita/Tool"
+    ]
+}

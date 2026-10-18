@@ -1,0 +1,9 @@
+{
+    "Id": "Arrange Docker",
+    "Type": "Service",
+    "X-KDE-Library": "kritaarrangedocker",
+    "X-KDE-ServiceTypes": [
+        "Krita/Dock"
+    ],
+    "X-Krita-Version": "28"
+}

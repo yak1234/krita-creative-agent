@@ -1,0 +1,10 @@
+{
+    "Id": "Default Flake Tools",
+    "Type": "Service",
+    "X-Krita-Version": "28",
+    "X-KDE-Library": "krita_flaketools",
+    "X-KDE-PluginInfo-Name": "defaulttools",
+    "X-KDE-ServiceTypes": [
+        "Krita/Tool"
+    ]
+}

@@ -1,0 +1,9 @@
+{
+    "Id": "Gaussian High Pass Filter",
+    "Type": "Service",
+    "X-KDE-Library": "kritagaussianhighpass",
+    "X-KDE-ServiceTypes": [
+        "Krita/Filter"
+    ],
+    "X-Krita-Version": "40"
+}

@@ -1,0 +1,781 @@
+/*
+ * SPDX-FileCopyrightText: 2009 Boudewijn Rempt <boud@valdyas.org>
+ *
+ *  SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#include "kis_psd_test.h"
+
+
+#include <simpletest.h>
+#include <QCoreApplication>
+
+#include <testui.h>
+
+#include "filestest.h"
+
+#ifndef FILES_DATA_DIR
+#error "FILES_DATA_DIR not set. A directory with the data used for testing the importing of files in krita"
+#endif
+
+#include <resources/KoPattern.h>
+#include "kis_group_layer.h"
+#include "kis_psd_layer_style.h"
+#include "kis_paint_device_debug_utils.h"
+#include <KisImportExportErrorCode.h>
+#include <kis_generator_layer.h>
+#include <kis_filter_configuration.h>
+#include <kis_transparency_mask.h>
+#include <kis_selection.h>
+#include <kis_guides_config.h>
+#include <kis_shape_layer.h>
+#include <KoShape.h>
+#include <KoPathShape.h>
+#include <KoShapeStroke.h>
+#include <KoSvgTextShape.h>
+#include <KisGlobalResourcesInterface.h>
+
+
+
+const QString PSDMimetype = "image/vnd.adobe.photoshop";
+
+
+void KisPSDTest::testFiles()
+{
+    QStringList exclusions;
+    exclusions << "100x100indexed.psd";
+    exclusions << "100x100rgb16.psd";
+    exclusions << "100x100cmyk16.psd";
+    exclusions << "100x100cmyk8.psd";
+    exclusions << "gray.psd";
+    exclusions << "vector.psd";
+    exclusions << "masks.psd";
+    exclusions << "angle2.psd";
+    exclusions << "diamond2.psd";
+    exclusions << "linear3.psd";
+    exclusions << "cmyk8-pantone_solid_coated_688c-L51_a33_b-8.psd";
+    exclusions << "pattern2_uncompressed.psd";
+    exclusions << "pattern4_rle.psd";
+    exclusions << "vector_mask.psd";
+    exclusions << "rgb-paragraph-text.psd";
+    exclusions << "cmyk-text-in-shape.psd";
+    exclusions << "lab-vertical-point-text.psd";
+    exclusions << "gray-text-on-path.psd";
+    exclusions << "test_shapes.psd";
+
+
+    TestUtil::testFiles(QString(FILES_DATA_DIR) + "/sources", exclusions, QString(), 2);
+}
+
+void KisPSDTest::testOpening()
+{
+    QFileInfo sourceFileInfo(QString(FILES_DATA_DIR) + '/' + "testing_psd_ls.psd");
+
+    QScopedPointer<KisDocument> doc(qobject_cast<KisDocument*>(KisPart::instance()->createDocument()));
+
+    KisImportExportManager manager(doc.data());
+    doc->setFileBatchMode(true);
+
+    KisImportExportErrorCode status = manager.importDocument(sourceFileInfo.absoluteFilePath(), QString());
+    QVERIFY(status.isOk());
+
+    Q_ASSERT(doc->image());
+}
+
+QSharedPointer<KisDocument> openPsdDocument(const QFileInfo &fileInfo)
+{
+    QSharedPointer<KisDocument> doc(qobject_cast<KisDocument*>(KisPart::instance()->createDocument()));
+
+    KisImportExportManager manager(doc.data());
+    doc->setFileBatchMode(true);
+
+    KisImportExportErrorCode status = manager.importDocument(fileInfo.absoluteFilePath(), QString());
+    Q_UNUSED(status);
+
+    return doc;
+}
+
+void KisPSDTest::testTransparencyMask()
+{
+    QFileInfo sourceFileInfo(QString(FILES_DATA_DIR) + '/' + "sources/masks.psd");
+
+    Q_ASSERT(sourceFileInfo.exists());
+
+    QSharedPointer<KisDocument> doc = openPsdDocument(sourceFileInfo);
+    QVERIFY(doc->image());
+
+    QImage result = doc->image()->projection()->convertToQImage(0, doc->image()->bounds());
+    QVERIFY(TestUtil::checkQImageExternal(result, "psd_test", "transparency_masks", "kiki_single", 1, 1));
+
+
+    doc->setFileBatchMode(true);
+    doc->setMimeType("image/vnd.adobe.photoshop");
+
+    QFileInfo dstFileInfo(QDir::currentPath() + '/' + "test_tmask.psd");
+    bool retval = doc->exportDocumentSync(dstFileInfo.absoluteFilePath(), "image/vnd.adobe.photoshop");
+    QVERIFY(retval);
+
+    {
+        QSharedPointer<KisDocument> doc = openPsdDocument(dstFileInfo);
+        QVERIFY(doc->image());
+
+        QImage result = doc->image()->projection()->convertToQImage(0, doc->image()->bounds());
+        QVERIFY(TestUtil::checkQImageExternal(result, "psd_test", "transparency_masks", "kiki_single", 1, 1));
+
+        QVERIFY(doc->image()->root()->lastChild());
+        QVERIFY(doc->image()->root()->lastChild()->firstChild());
+        QVERIFY(doc->image()->root()->lastChild()->firstChild()->inherits("KisTransparencyMask"));
+    }
+}
+
+void KisPSDTest::testOpenGrayscaleMultilayered()
+{
+    QFileInfo sourceFileInfo(QString(FILES_DATA_DIR) + '/' + "sources/gray.psd");
+    //QFileInfo sourceFileInfo(QString(FILES_DATA_DIR) + '/' + "sources/100x100gray8.psd");
+
+    Q_ASSERT(sourceFileInfo.exists());
+
+    QSharedPointer<KisDocument> doc = openPsdDocument(sourceFileInfo);
+    QVERIFY(doc->image());
+}
+
+void KisPSDTest::testOpenGroupLayers()
+{
+    QFileInfo sourceFileInfo(QString(FILES_DATA_DIR) + '/' + "group_layers.psd");
+
+    Q_ASSERT(sourceFileInfo.exists());
+
+    QSharedPointer<KisDocument> doc = openPsdDocument(sourceFileInfo);
+    QVERIFY(doc->image());
+
+    KisNodeSP node = TestUtil::findNode(doc->image()->root(), "Group 1 PT");
+    KisGroupLayer *group = dynamic_cast<KisGroupLayer*>(node.data());
+    QVERIFY(group);
+
+    QVERIFY(group->passThroughMode());
+}
+
+void KisPSDTest::testOpenLayerStyles()
+{
+    QFileInfo sourceFileInfo(QString(FILES_DATA_DIR) + '/' + "testing_psd_ls.psd");
+
+    Q_ASSERT(sourceFileInfo.exists());
+
+    QSharedPointer<KisDocument> doc = openPsdDocument(sourceFileInfo);
+    QVERIFY(doc->image());
+
+    KisLayerSP layer = qobject_cast<KisLayer*>(doc->image()->root()->lastChild().data());
+    QVERIFY(layer->layerStyle());
+    QVERIFY(layer->layerStyle()->dropShadow());
+    QVERIFY(layer->layerStyle()->dropShadow()->effectEnabled());
+}
+
+void KisPSDTest::testOpenFillLayers()
+{
+    QFileInfo sourceFileInfo(QString(FILES_DATA_DIR) + '/' + "sources/angle2.psd");
+
+        Q_ASSERT(sourceFileInfo.exists());
+
+        QSharedPointer<KisDocument> doc = openPsdDocument(sourceFileInfo);
+        QVERIFY(doc->image());
+        KisGeneratorLayerSP layer = qobject_cast<KisGeneratorLayer*>(doc->image()->root()->lastChild().data());
+        QVERIFY(layer);
+        QVERIFY(layer->filter()->name() == "gradient");
+        QVERIFY(layer->filter()->getDouble("end_position_angle") == 180);
+        QVERIFY(layer->filter()->getDouble("end_position_distance") == 50);
+        QVERIFY(layer->filter()->getString("shape") == "conical");
+
+        QFileInfo sourceFileInfo2(QString(FILES_DATA_DIR) + '/' + "sources/diamond2.psd");
+
+        Q_ASSERT(sourceFileInfo2.exists());
+
+        doc = openPsdDocument(sourceFileInfo2);
+        QVERIFY(doc->image());
+        layer = qobject_cast<KisGeneratorLayer*>(doc->image()->root()->lastChild().data());
+        QVERIFY(layer);
+        QVERIFY(layer->filter()->name() == "gradient");
+        QVERIFY(layer->filter()->getDouble("end_position_angle") == 16.5);
+        QVERIFY(layer->filter()->getDouble("end_position_distance") - double(40.2306) < 0.001);
+        QVERIFY(layer->filter()->getString("shape") == "square");
+
+        QFileInfo sourceFileInfo3(QString(FILES_DATA_DIR) + '/' + "sources/linear3.psd");
+
+        Q_ASSERT(sourceFileInfo3.exists());
+
+        doc = openPsdDocument(sourceFileInfo3);
+        QVERIFY(doc->image());
+        layer = qobject_cast<KisGeneratorLayer*>(doc->image()->root()->lastChild().data());
+        QVERIFY(layer);
+        QVERIFY(layer->filter()->name() == "gradient");
+        QVERIFY(layer->filter()->getDouble("end_position_angle") == 270);
+        QVERIFY(layer->filter()->getString("shape") == "linear");
+
+        QFileInfo sourceFileInfo4(QString(FILES_DATA_DIR) + '/' + "sources/cmyk8-pantone_solid_coated_688c-L51_a33_b-8.psd");
+
+        Q_ASSERT(sourceFileInfo4.exists());
+
+        doc = openPsdDocument(sourceFileInfo4);
+        QVERIFY(doc->image());
+        layer = qobject_cast<KisGeneratorLayer*>(doc->image()->root()->lastChild().data());
+        QVERIFY(layer);
+        QVERIFY(layer->filter()->name() == "color");
+        KoColor c = layer->filter()->getColor("color");
+        KoColor l = KoColor::fromXML("<color channeldepth='U16'><Lab space='"+KoColorSpaceRegistry::instance()->lab16()->name()+"' L='51.0' a='33.0' b='-8.0' /></color>");
+        c.convertTo(l.colorSpace());
+        QVERIFY(doc->image()->colorSpace()->difference(c.data(), l.data()) < 3);
+        QVERIFY(c.metadata().value("spotName", QVariant()).toString() == "PANTONE 688 C");
+        QVERIFY(c.metadata().value("psdSpotBook", QVariant()).toString().contains("Solid Coated"));
+        QVERIFY(c.metadata().value("psdSpotBookId", QVariant()).toInt() == 3060);
+
+        QFileInfo sourceFileInfo5(QString(FILES_DATA_DIR) + '/' + "sources/pattern2_uncompressed.psd");
+
+        Q_ASSERT(sourceFileInfo5.exists());
+
+        doc = openPsdDocument(sourceFileInfo5);
+        QVERIFY(doc->image());
+        layer = qobject_cast<KisGeneratorLayer*>(doc->image()->root()->lastChild().data());
+        QVERIFY(layer);
+        QVERIFY(layer->filter()->name() == "pattern");
+        if (layer) {
+            const QString patternMD5 = layer->filter()->getString("md5", "");
+            const QString patternNameTemp = layer->filter()->getString("pattern", "Grid01.pat");
+            const QString patternFileName = layer->filter()->getString("fileName", "");
+
+            KoResourceLoadResult res = KisGlobalResourcesInterface::instance()->source(ResourceType::Patterns).bestMatchLoadResult(patternMD5, patternFileName, patternNameTemp);
+            QVERIFY(res.resource<KoPattern>());
+        }
+        QVERIFY(layer->filter()->getDouble("transform_rotation_z") - 30.85 < 0.001);
+        QVERIFY(layer->filter()->getDouble("transform_scale_x") - 3.63 < 0.001);
+        QVERIFY(layer->filter()->getDouble("transform_scale_y") - 3.63 < 0.001);
+
+        QFileInfo sourceFileInfo6(QString(FILES_DATA_DIR) + '/' + "sources/pattern4_rle.psd");
+
+        Q_ASSERT(sourceFileInfo6.exists());
+
+        doc = openPsdDocument(sourceFileInfo6);
+        QVERIFY(doc->image());
+        layer = qobject_cast<KisGeneratorLayer*>(doc->image()->root()->lastChild().data());
+        QVERIFY(layer);
+        QVERIFY(layer->filter()->name() == "pattern");
+        if (layer) {
+            const QString patternMD5 = layer->filter()->getString("md5", "");
+            const QString patternNameTemp = layer->filter()->getString("pattern", "Grid01.pat");
+            const QString patternFileName = layer->filter()->getString("fileName", "");
+
+            KoResourceLoadResult res = KisGlobalResourcesInterface::instance()->source(ResourceType::Patterns).bestMatchLoadResult(patternMD5, patternFileName, patternNameTemp);
+            QVERIFY(res.resource<KoPattern>());
+        }
+}
+
+void KisPSDTest::testLoadVectorMasks()
+{
+    QFileInfo sourceFileInfo(QString(FILES_DATA_DIR) + '/' + "sources/vector_mask.psd");
+    Q_ASSERT(sourceFileInfo.exists());
+
+    QSharedPointer<KisDocument> doc = openPsdDocument(sourceFileInfo);
+    QVERIFY(doc->image());
+
+    KisLayerSP layer = qobject_cast<KisLayer*>(doc->image()->root()->lastChild().data());
+    QVERIFY(layer);
+    QVERIFY(layer->firstChild());
+    QVERIFY(layer->firstChild()->inherits("KisTransparencyMask"));
+    KisTransparencyMaskSP mask =  dynamic_cast<KisTransparencyMask*>(layer->firstChild().data());
+    QVERIFY(mask);
+    QVERIFY(mask->selection()->hasShapeSelection());
+}
+
+void KisPSDTest::testLoadText()
+{
+    qDebug() << "test rgb-paragraph-text.psd";
+    QFileInfo sourceFileInfo(QString(FILES_DATA_DIR) + '/' + "sources/rgb-paragraph-text.psd");
+    Q_ASSERT(sourceFileInfo.exists());
+
+    QSharedPointer<KisDocument> doc = openPsdDocument(sourceFileInfo);
+    QVERIFY(doc->image());
+    KisShapeLayerSP layer = qobject_cast<KisShapeLayer*>(doc->image()->root()->lastChild().data());
+    QVERIFY(layer);
+    QVERIFY(layer->shapes().size() == 1);
+    KoSvgTextShape *textShape = dynamic_cast<KoSvgTextShape*>(layer->shapes().first());
+    QVERIFY(textShape);
+    QVERIFY(textShape->shapesInside().size() > 0);
+
+    //TODO: Plain text contains (, \ and ), escaped, test salt.
+
+    //------ cmyk --------//
+
+    qDebug() << "test cmyk-text-in-shape.psd";
+
+    QFileInfo sourceFileInfo2(QString(FILES_DATA_DIR) + '/' + "sources/cmyk-text-in-shape.psd");
+    Q_ASSERT(sourceFileInfo2.exists());
+
+    doc = openPsdDocument(sourceFileInfo2);
+    QVERIFY(doc->image());
+    layer = qobject_cast<KisShapeLayer*>(doc->image()->root()->lastChild().data());
+    QVERIFY(layer);
+    QVERIFY(layer->shapes().size() == 1);
+    textShape = dynamic_cast<KoSvgTextShape*>(layer->shapes().first());
+    QVERIFY(textShape);
+    QVERIFY(textShape->shapesInside().size() > 0);
+
+    //TODO: test color, test shape, test text-transform:upper-case, test baseline-shift.
+
+    //------ lab --------//
+
+    // for some reason the lab one won't load, probably caused by 'incorrect profile?'
+    /*
+    qDebug() << "test lab-vertical-point-text.psd";
+
+    QFileInfo sourceFileInfo3(QString(FILES_DATA_DIR) + '/' + "sources/lab-vertical-point-text.psd");
+    Q_ASSERT(sourceFileInfo3.exists());
+
+    doc = openPsdDocument(sourceFileInfo3);
+    QVERIFY(doc->image());
+    layer = qobject_cast<KisShapeLayer*>(doc->image()->root()->lastChild().data());
+    QVERIFY(layer);
+    QVERIFY(layer->shapes().size() == 1);
+    textShape = dynamic_cast<KoSvgTextShape*>(layer->shapes().first());
+    QVERIFY(textShape);
+    QVERIFY(textShape->shapesInside().isEmpty());
+
+    //TODO: test vertical text, text-orientation and text-combine-upright as well as alignment baseline.
+    */
+    //----- gray -----//
+
+    qDebug() << "test gray-text-on-path.psd";
+
+    QFileInfo sourceFileInfo4(QString(FILES_DATA_DIR) + '/' + "sources/gray-text-on-path.psd");
+    Q_ASSERT(sourceFileInfo4.exists());
+
+    doc = openPsdDocument(sourceFileInfo4);
+    QVERIFY(doc->image());
+    layer = qobject_cast<KisShapeLayer*>(doc->image()->root()->lastChild().data());
+    QVERIFY(layer);
+    QVERIFY(layer->shapes().size() == 1);
+    textShape = dynamic_cast<KoSvgTextShape*>(layer->shapes().first());
+    QVERIFY(textShape);
+    QVERIFY(textShape->shapesInside().isEmpty());
+
+    //TODO: test text on path, color.
+}
+
+void KisPSDTest::testLoadVectorShapes()
+{
+    QFileInfo sourceFileInfo(QString(FILES_DATA_DIR) + '/' + "sources/test_shapes.psd");
+    Q_ASSERT(sourceFileInfo.exists());
+
+    QSharedPointer<KisDocument> doc = openPsdDocument(sourceFileInfo);
+    QVERIFY(doc->image());
+
+    // Test guides, both are at 100 of 200.
+    QVERIFY(doc->guidesConfig().hasGuides());
+    QVERIFY(doc->guidesConfig().horizontalGuideLines().size() == 1);
+    QVERIFY(doc->guidesConfig().verticalGuideLines().size() == 1);
+
+    // Triangle, no fill, pattern stroke.
+    KisShapeLayerSP layer = qobject_cast<KisShapeLayer*>(doc->image()->root()->lastChild().data());
+    QVERIFY(layer);
+    QVERIFY(layer->shapes().size() == 1);
+    KoShape *shape = layer->shapes().first();
+    QVERIFY(shape);
+    QVERIFY(shape->shapeId() == "KoPathShape");
+    KoPathShape *path = dynamic_cast<KoPathShape*>(shape);
+    QVERIFY(path->pathShapeId() == "StarShape");
+    QVERIFY(!shape->background());
+    QVERIFY(shape->stroke());
+    KoShapeStrokeSP shapeStroke = qSharedPointerDynamicCast<KoShapeStroke>(shape->stroke());
+    QVERIFY(shapeStroke->capStyle() == Qt::FlatCap);
+    QVERIFY(shapeStroke->joinStyle() == Qt::MiterJoin);
+
+    // Polygon, pattern fill, gradient stroke
+    layer = qobject_cast<KisShapeLayer*>(layer->prevSibling().data());
+    QVERIFY(layer);
+    QVERIFY(layer->shapes().size() == 1);
+    shape = layer->shapes().first();
+    QVERIFY(shape);
+    QVERIFY(shape->background());
+    QVERIFY(shape->stroke());
+    QVERIFY(shape->shapeId() == "KoPathShape");
+    path = dynamic_cast<KoPathShape*>(shape);
+    QVERIFY(path->pathShapeId() == "StarShape");
+    shapeStroke = qSharedPointerDynamicCast<KoShapeStroke>(shape->stroke());
+    QVERIFY(shapeStroke->capStyle() == Qt::SquareCap);
+    QVERIFY(shapeStroke->joinStyle() == Qt::BevelJoin);
+    QVERIFY(shapeStroke->lineBrush().gradient());
+
+    // Ellipse, gradient fill, solid dashed stroke
+    layer = qobject_cast<KisShapeLayer*>(layer->prevSibling().data());
+    QVERIFY(layer);
+    QVERIFY(layer->shapes().size() == 1);
+    shape = layer->shapes().first();
+    QVERIFY(shape);
+    QVERIFY(shape->background());
+    QVERIFY(shape->stroke());
+    QVERIFY(shape->shapeId() == "KoPathShape");
+    path = dynamic_cast<KoPathShape*>(shape);
+    QVERIFY(path->pathShapeId() == "EllipseShape");
+    shapeStroke = qSharedPointerDynamicCast<KoShapeStroke>(shape->stroke());
+    QVERIFY(shapeStroke->capStyle() == Qt::RoundCap);
+    QVERIFY(shapeStroke->joinStyle() == Qt::RoundJoin);
+    QVERIFY(shapeStroke->color() == Qt::red);
+
+    // Rectangle, solid fill, no stroke
+    layer = qobject_cast<KisShapeLayer*>(layer->prevSibling().data());
+    QVERIFY(layer);
+    QVERIFY(layer->shapes().size() == 1);
+    shape = layer->shapes().first();
+    QVERIFY(shape);
+    QVERIFY(shape->background());
+    QVERIFY(shape->stroke());
+    QVERIFY(shape->shapeId() == "KoPathShape");
+    path = dynamic_cast<KoPathShape*>(shape);
+    QVERIFY(path->pathShapeId() == "RectangleShape");
+    shapeStroke = qSharedPointerDynamicCast<KoShapeStroke>(shape->stroke());
+    QVERIFY(!shapeStroke->isVisible());
+}
+
+void KisPSDTest::testRoundTripUserLocked()
+{
+    const KoColorProfile *profile = KoColorSpaceRegistry::instance()->p709SRGBProfile();
+
+    QRect imageRect(0,0,512,512);
+    const KoColorSpace * cs = KoColorSpaceRegistry::instance()->colorSpace(RGBAColorModelID.id(), Integer8BitsColorDepthID.id(), profile);
+
+    QScopedPointer<KisDocument> doc(KisPart::instance()->createDocument());
+    doc->setFileBatchMode(true);
+    KisImageSP image = new KisImage(new KisSurrogateUndoStore(), imageRect.width(), imageRect.height(), cs, "test image");
+
+    doc->setCurrentImage(image);
+
+    KisPaintLayerSP paintLayer0 = new KisPaintLayer(image, "paint0", OPACITY_OPAQUE_U8);
+    paintLayer0->setUserLocked(true);
+
+    image->addNode(paintLayer0, image->root());
+
+    QCOMPARE(image->root()->childCount(), 1);
+    QCOMPARE(paintLayer0->userLocked(), true);
+
+    const QByteArray mimeType("image/vnd.adobe.photoshop");
+    QFileInfo dstFileInfo(QDir::currentPath() + '/' + "test_save_user_locked.psd");
+    bool retval = doc->exportDocumentSync(dstFileInfo.absoluteFilePath(), mimeType);
+    QVERIFY(retval);
+
+    QSharedPointer<KisDocument> openedDoc = openPsdDocument(dstFileInfo);
+    QVERIFY(openedDoc->image());
+
+    QCOMPARE(openedDoc->image()->root()->childCount(), 1);
+    QCOMPARE(openedDoc->image()->root()->firstChild()->userLocked(), true);
+}
+
+void KisPSDTest::testRoundTripGroupCollapsed()
+{
+    const KoColorProfile *profile = KoColorSpaceRegistry::instance()->p709SRGBProfile();
+
+    QRect imageRect(0,0,512,512);
+    const KoColorSpace * cs = KoColorSpaceRegistry::instance()->colorSpace(RGBAColorModelID.id(), Integer8BitsColorDepthID.id(), profile);
+
+    QScopedPointer<KisDocument> doc(KisPart::instance()->createDocument());
+    doc->setFileBatchMode(true);
+    KisImageSP image = new KisImage(new KisSurrogateUndoStore(), imageRect.width(), imageRect.height(), cs, "test image");
+
+    doc->setCurrentImage(image);
+
+    KisGroupLayerSP groupLayer0 = new KisGroupLayer(image, "group0", OPACITY_OPAQUE_U8);
+    image->addNode(groupLayer0, image->root());
+
+    KisPaintLayerSP paintLayer0 = new KisPaintLayer(image, "paint0", OPACITY_OPAQUE_U8);
+    image->addNode(paintLayer0, groupLayer0);
+
+    groupLayer0->setCollapsed(true);
+
+    QCOMPARE(image->root()->childCount(), 1);
+    QCOMPARE(groupLayer0->collapsed(), true);
+
+    const QByteArray mimeType("image/vnd.adobe.photoshop");
+    QFileInfo dstFileInfo(QDir::currentPath() + '/' + "test_save_user_locked.psd");
+    bool retval = doc->exportDocumentSync(dstFileInfo.absoluteFilePath(), mimeType);
+    QVERIFY(retval);
+
+    QSharedPointer<KisDocument> openedDoc = openPsdDocument(dstFileInfo);
+    QVERIFY(openedDoc->image());
+
+    QCOMPARE(openedDoc->image()->root()->childCount(), 1);
+    QCOMPARE(openedDoc->image()->root()->firstChild()->collapsed(), true);
+}
+
+void KisPSDTest::testOpenLayerStylesWithPattern()
+{
+    QFileInfo sourceFileInfo(QString(FILES_DATA_DIR) + '/' + "test_ls_pattern.psd");
+
+    Q_ASSERT(sourceFileInfo.exists());
+
+    QSharedPointer<KisDocument> doc = openPsdDocument(sourceFileInfo);
+    QVERIFY(doc->image());
+
+    KisLayerSP layer = qobject_cast<KisLayer*>(doc->image()->root()->lastChild().data());
+    QVERIFY(layer->layerStyle());
+    QVERIFY(layer->layerStyle()->patternOverlay());
+    QVERIFY(layer->layerStyle()->patternOverlay()->effectEnabled());
+
+    KoPatternSP pattern =
+        layer->layerStyle()->patternOverlay()->pattern(
+                layer->layerStyle()->resourcesInterface());
+
+    QVERIFY(pattern);
+    QVERIFY(pattern->valid());
+}
+
+void KisPSDTest::testOpenLayerStylesWithPatternMulti()
+{
+    QFileInfo sourceFileInfo(QString(FILES_DATA_DIR) + '/' + "test_ls_pattern_multi.psd");
+
+    Q_ASSERT(sourceFileInfo.exists());
+
+    QSharedPointer<KisDocument> doc = openPsdDocument(sourceFileInfo);
+    QVERIFY(doc->image());
+
+    KisLayerSP layer = qobject_cast<KisLayer*>(doc->image()->root()->lastChild().data());
+    QVERIFY(layer->layerStyle());
+
+    QVERIFY(layer->layerStyle()->patternOverlay());
+    QVERIFY(layer->layerStyle()->patternOverlay()->effectEnabled());
+    {
+        KoPatternSP pattern =
+            layer->layerStyle()->patternOverlay()->pattern(
+                    layer->layerStyle()->resourcesInterface());
+
+        QVERIFY(pattern);
+        QVERIFY(pattern->valid());
+    }
+
+    QVERIFY(layer->layerStyle()->stroke());
+    QVERIFY(layer->layerStyle()->stroke()->effectEnabled());
+    {
+        KoPatternSP pattern =
+            layer->layerStyle()->stroke()->pattern(
+                layer->layerStyle()->resourcesInterface());
+
+        QVERIFY(pattern);
+        QVERIFY(pattern->valid());
+    }
+}
+
+void KisPSDTest::testSaveLayerStylesWithPatternMulti()
+{
+    QFileInfo sourceFileInfo(QString(FILES_DATA_DIR) + '/' + "test_ls_pattern_multi.psd");
+
+    Q_ASSERT(sourceFileInfo.exists());
+
+    QSharedPointer<KisDocument> doc = openPsdDocument(sourceFileInfo);
+    QVERIFY(doc->image());
+
+    KisLayerSP layer = qobject_cast<KisLayer*>(doc->image()->root()->lastChild().data());
+    QVERIFY(layer->layerStyle());
+
+    QVERIFY(layer->layerStyle()->patternOverlay());
+    QVERIFY(layer->layerStyle()->patternOverlay()->effectEnabled());
+    {
+        KoPatternSP pattern =
+            layer->layerStyle()->patternOverlay()->pattern(
+                    layer->layerStyle()->resourcesInterface());
+
+        QVERIFY(pattern);
+        QVERIFY(pattern->valid());
+    }
+
+    QVERIFY(layer->layerStyle()->stroke());
+    QVERIFY(layer->layerStyle()->stroke()->effectEnabled());
+    {
+        KoPatternSP pattern =
+            layer->layerStyle()->stroke()->pattern(
+                    layer->layerStyle()->resourcesInterface());
+
+        QVERIFY(pattern);
+        QVERIFY(pattern->valid());
+    }
+
+    doc->setFileBatchMode(true);
+    const QByteArray mimeType("image/vnd.adobe.photoshop");
+    QFileInfo dstFileInfo(QDir::currentPath() + '/' + "test_save_styles.psd");
+    bool retval = doc->exportDocumentSync(dstFileInfo.absoluteFilePath(), mimeType);
+    QVERIFY(retval);
+
+    {
+        QSharedPointer<KisDocument> doc = openPsdDocument(dstFileInfo);
+        QVERIFY(doc->image());
+
+        QImage result = doc->image()->projection()->convertToQImage(0, doc->image()->bounds());
+        //QVERIFY(TestUtil::checkQImageExternal(result, "psd_test", "transparency_masks", "kiki_single"));
+
+        KisLayerSP layer = qobject_cast<KisLayer*>(doc->image()->root()->lastChild().data());
+        QVERIFY(layer->layerStyle());
+
+        QVERIFY(layer->layerStyle()->patternOverlay());
+        QVERIFY(layer->layerStyle()->patternOverlay()->effectEnabled());
+        {
+            KoPatternSP pattern =
+                layer->layerStyle()->patternOverlay()->pattern(
+                        layer->layerStyle()->resourcesInterface());
+
+            QVERIFY(pattern);
+            QVERIFY(pattern->valid());
+        }
+
+        QVERIFY(layer->layerStyle()->stroke());
+        QVERIFY(layer->layerStyle()->stroke()->effectEnabled());
+        {
+            KoPatternSP pattern =
+                layer->layerStyle()->stroke()->pattern(
+                        layer->layerStyle()->resourcesInterface());
+
+            QVERIFY(pattern);
+            QVERIFY(pattern->valid());
+        }
+    }
+
+}
+
+void KisPSDTest::testOpeningFromOpenCanvas()
+{
+    QFileInfo sourceFileInfo(QString(FILES_DATA_DIR) + '/' + "test_krita_psd_from_opencanvas.psd");
+
+    Q_ASSERT(sourceFileInfo.exists());
+
+    QSharedPointer<KisDocument> doc = openPsdDocument(sourceFileInfo);
+    QVERIFY(doc->image());
+    QVERIFY(doc->image()->root()->firstChild());
+}
+
+void KisPSDTest::testOpeningAllFormats()
+{
+    QString path = TestUtil::fetchExternalDataFileName("psd_format_test_files");
+    QDir dirSources(path);
+
+    if (path.isEmpty()) {
+        qWarning() << "External folder is not present, skipping...";
+        return;
+    }
+
+    bool shouldFailTheTest = false;
+
+    Q_FOREACH (QFileInfo sourceFileInfo, dirSources.entryInfoList()) {
+        Q_ASSERT(sourceFileInfo.exists());
+
+        if (sourceFileInfo.isHidden() || sourceFileInfo.isDir()) {
+            continue;
+        }
+
+        if (sourceFileInfo.fileName() != "ml_cmyk_16b.psd") {
+            //continue;
+        }
+
+        //dbgKrita << "Opening" << ppVar(sourceFileInfo.fileName());
+
+        QSharedPointer<KisDocument> doc = openPsdDocument(sourceFileInfo);
+
+        if (!doc->image()) {
+            /**
+             * 32bit images are expected to fail atm, their loading is not implemented
+             */
+            if (!sourceFileInfo.fileName().contains("_32b")) {
+                shouldFailTheTest = true;
+            }
+
+            errKrita << "FAILED to open" << sourceFileInfo.fileName();
+            continue;
+        }
+
+        // just check visually if the file loads fine
+        KIS_DUMP_DEVICE_2(doc->image()->projection(), QRect(0,0,100,100), sourceFileInfo.fileName(), "dd");
+    }
+
+    QVERIFY(!shouldFailTheTest);
+}
+
+void KisPSDTest::testSavingAllFormats()
+{
+    QString path = TestUtil::fetchExternalDataFileName("psd_format_test_files");
+    QDir dirSources(path);
+
+    if (path.isEmpty()) {
+        qWarning() << "External folder is not present, skipping...";
+        return;
+    }
+
+    Q_FOREACH (QFileInfo sourceFileInfo, dirSources.entryInfoList()) {
+        Q_ASSERT(sourceFileInfo.exists());
+
+        if (sourceFileInfo.isHidden() || sourceFileInfo.isDir()) {
+            continue;
+        }
+
+        if (sourceFileInfo.fileName() != "sl_rgb_8b.psd") {
+            //continue;
+        }
+
+        dbgKrita << "Opening" << ppVar(sourceFileInfo.fileName());
+
+        QSharedPointer<KisDocument> doc = openPsdDocument(sourceFileInfo);
+
+        if (!doc->image()) {
+            errKrita << "FAILED to open" << sourceFileInfo.fileName();
+            continue;
+        }
+
+        QString baseName = sourceFileInfo.fileName();
+
+        //QString originalName = QString("%1_0orig").arg(baseName);
+        //QString resultName = QString("%1_1result").arg(baseName);
+        QString tempPsdName = QString("%1_3interm.psd").arg(baseName);
+
+        QImage refImage = doc->image()->projection()->convertToQImage(0, QRect(0,0,100,100));
+
+        // uncomment to do a visual check
+        // KIS_DUMP_DEVICE_2(doc->image()->projection(), QRect(0,0,100,100), originalName, "dd");
+
+        doc->setFileBatchMode(true);
+        doc->setMimeType("image/vnd.adobe.photoshop");
+
+        QFileInfo dstFileInfo(QDir::currentPath() + '/' + tempPsdName);
+
+        dbgKrita << "Saving" << ppVar(dstFileInfo.fileName());
+
+        bool retval = doc->exportDocumentSync(dstFileInfo.absoluteFilePath(), "image/vnd.adobe.photoshop");
+        QVERIFY(retval);
+
+        {
+            QSharedPointer<KisDocument> doc = openPsdDocument(dstFileInfo);
+            QVERIFY(doc->image());
+
+            // uncomment to do a visual check
+            //KIS_DUMP_DEVICE_2(doc->image()->projection(), QRect(0,0,100,100), resultName, "dd");
+
+            QImage resultImage = doc->image()->projection()->convertToQImage(0, QRect(0,0,100,100));
+            QCOMPARE(resultImage, refImage);
+        }
+    }
+}
+
+
+
+void KisPSDTest::testImportFromWriteonly()
+{
+    TestUtil::testImportFromWriteonly(PSDMimetype);
+}
+
+
+void KisPSDTest::testExportToReadonly()
+{
+    TestUtil::testExportToReadonly(PSDMimetype);
+}
+
+
+void KisPSDTest::testImportIncorrectFormat()
+{
+    TestUtil::testImportIncorrectFormat(PSDMimetype);
+}
+
+
+
+
+KISTEST_MAIN(KisPSDTest)
+

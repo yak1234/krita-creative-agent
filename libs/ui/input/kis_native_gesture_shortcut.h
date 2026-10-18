@@ -1,0 +1,35 @@
+/*
+ *  SPDX-FileCopyrightText: 2017 Bernhard Liebl <poke1024@gmx.de>
+ *
+ *  SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ */
+
+#ifndef KISNATIVEGESTURESHORTCUT_H
+#define KISNATIVEGESTURESHORTCUT_H
+
+#include "kis_abstract_shortcut.h"
+
+class QNativeGestureEvent;
+class KisNativeGestureShortcut : public KisAbstractShortcut
+{
+public:
+    enum Type {
+        PinchNavigation,
+        SmartZoomNativeGesture
+    };
+
+public:
+    KisNativeGestureShortcut(KisAbstractInputAction* action, int index, Type type);
+	~KisNativeGestureShortcut() override;
+
+	int priority() const override;
+
+	bool match(QNativeGestureEvent* event);
+
+private:
+	class Private;
+    Private * const d {nullptr};
+};
+
+#endif // KISNATIVEGESTURESHORTCUT_H

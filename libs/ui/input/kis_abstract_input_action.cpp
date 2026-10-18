@@ -1,0 +1,274 @@
+/* This file is part of the KDE project
+ * SPDX-FileCopyrightText: 2012 Arjen Hiemstra <ahiemstra@heimr.nl>
+ * SPDX-FileCopyrightText: 2026 Ayanami Kaine <personal@ayanamikaine.com>
+ *
+ *  SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#include "kis_abstract_input_action.h"
+
+#include <QPointF>
+#include <QMouseEvent>
+#include <klocalizedstring.h>
+#include <kis_debug.h>
+
+#include <input/kis_input_manager.h>
+#include <kis_canvas2.h>
+
+
+class Q_DECL_HIDDEN KisAbstractInputAction::Private
+{
+public:
+    QString id;
+    QString name;
+    QString description;
+    QHash<QString, int> indexes;
+
+    QPointF lastCursorPosition;
+    QPointF startCursorPosition;
+
+    static KisInputManager *inputManager;
+};
+
+KisInputManager *KisAbstractInputAction::Private::inputManager = 0;
+
+KisAbstractInputAction::KisAbstractInputAction(const QString &id)
+    : d(new Private)
+{
+    d->id = id;
+    d->indexes.insert(i18n("Activate"), 0);
+}
+
+KisAbstractInputAction::~KisAbstractInputAction()
+{
+    delete d;
+}
+
+void KisAbstractInputAction::activate(int shortcut)
+{
+    Q_UNUSED(shortcut);
+}
+
+void KisAbstractInputAction::deactivate(int shortcut)
+{
+    Q_UNUSED(shortcut);
+}
+
+bool KisAbstractInputAction::trySwitchShortcut(int oldShortcut, int newShortcut)
+{
+    Q_UNUSED(oldShortcut);
+    Q_UNUSED(newShortcut);
+    return false;
+}
+
+void KisAbstractInputAction::begin(int shortcut, QEvent *event)
+{
+    Q_UNUSED(shortcut);
+
+    if (event) {
+        d->lastCursorPosition = eventPosF(event);
+        d->startCursorPosition = d->lastCursorPosition;
+    }
+}
+
+void KisAbstractInputAction::inputEvent(QEvent *event)
+{
+    if (event) {
+        QPointF newPosition = eventPosF(event);
+        cursorMoved(d->lastCursorPosition, newPosition);
+        cursorMovedAbsolute(d->startCursorPosition, newPosition);
+        d->lastCursorPosition = newPosition;
+    }
+}
+
+void KisAbstractInputAction::end(QEvent *event)
+{
+    Q_UNUSED(event);
+}
+
+void KisAbstractInputAction::cursorMoved(const QPointF &lastPos, const QPointF &pos)
+{
+    Q_UNUSED(lastPos);
+    Q_UNUSED(pos);
+}
+
+void KisAbstractInputAction::cursorMovedAbsolute(const QPointF &startPos, const QPointF &pos)
+{
+    Q_UNUSED(startPos);
+    Q_UNUSED(pos);
+}
+
+bool KisAbstractInputAction::supportsHiResInputEvents(int shortcut) const
+{
+    Q_UNUSED(shortcut);
+    return false;
+}
+
+KisInputActionGroup KisAbstractInputAction::inputActionGroup(int shortcut) const
+{
+    Q_UNUSED(shortcut);
+    return ModifyingActionGroup;
+}
+
+KisInputManager* KisAbstractInputAction::inputManager() const
+{
+    return Private::inputManager;
+}
+
+QString KisAbstractInputAction::name() const
+{
+    return d->name;
+}
+
+QString KisAbstractInputAction::description() const
+{
+    return d->description;
+}
+
+int KisAbstractInputAction::priority() const
+{
+    return 0;
+}
+
+bool KisAbstractInputAction::canIgnoreModifiers() const
+{
+    return false;
+}
+
+QHash< QString, int > KisAbstractInputAction::shortcutIndexes() const
+{
+    return d->indexes;
+}
+
+QString KisAbstractInputAction::id() const
+{
+    return d->id;
+}
+
+void KisAbstractInputAction::setName(const QString &name)
+{
+    d->name = name;
+}
+
+void KisAbstractInputAction::setDescription(const QString &description)
+{
+    d->description = description;
+}
+
+void KisAbstractInputAction::setShortcutIndexes(const QHash< QString, int > &indexes)
+{
+    d->indexes = indexes;
+}
+
+void KisAbstractInputAction::setInputManager(KisInputManager *manager)
+{
+    Private::inputManager = manager;
+}
+
+bool KisAbstractInputAction::isShortcutRequired(int shortcut) const
+{
+    Q_UNUSED(shortcut);
+    return false;
+}
+
+QPoint KisAbstractInputAction::eventPos(const QEvent *event)
+{
+    if(!event) {
+        return QPoint();
+    }
+
+    switch (event->type()) {
+    case QEvent::MouseMove:
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonDblClick:
+    case QEvent::MouseButtonRelease:
+        return static_cast<const QMouseEvent*>(event)->pos();
+
+    case QEvent::TabletMove:
+    case QEvent::TabletPress:
+    case QEvent::TabletRelease:
+        return static_cast<const QTabletEvent*>(event)->pos();
+
+    case QEvent::TouchBegin:
+    case QEvent::TouchUpdate:
+    case QEvent::TouchEnd:
+        return static_cast<const QTouchEvent *>(event)->touchPoints().at(0).pos().toPoint();
+
+    case QEvent::Wheel:
+        return static_cast<const QWheelEvent*>(event)->position().toPoint();
+
+    case QEvent::NativeGesture: {
+        KisCanvas2 *canvas = d->inputManager->canvas();
+        KIS_SAFE_ASSERT_RECOVER_RETURN_VALUE(canvas, QPoint());
+
+        /**
+         * Native gesture event has an issue in Qt on MacOS, its
+         * event->position() method returns an incorrect value (not
+         * in the widget's coordinates). So we should manually map it
+         * from global.
+         */
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        return canvas->canvasWidget()->mapFromGlobal(QPointF(static_cast<const QNativeGestureEvent*>(event)->globalPos())).toPoint();
+#else
+        return canvas->canvasWidget()->mapFromGlobal(static_cast<const QNativeGestureEvent*>(event)->globalPos());
+#endif
+    }
+
+    default:
+        warnUI << "KisAbstractInputAction" << d->name << "tried to process event data from an unhandled event type" << event->type();
+        return QPoint();
+    }
+}
+
+QPointF KisAbstractInputAction::eventPosF(const QEvent *event) {
+
+    if(!event) {
+        return QPoint();
+    }
+
+    switch (event->type()) {
+    case QEvent::MouseMove:
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonDblClick:
+    case QEvent::MouseButtonRelease:
+        return static_cast<const QMouseEvent*>(event)->localPos();
+
+    case QEvent::TabletMove:
+    case QEvent::TabletPress:
+    case QEvent::TabletRelease:
+        return static_cast<const QTabletEvent*>(event)->posF();
+
+    case QEvent::TouchBegin:
+    case QEvent::TouchUpdate:
+    case QEvent::TouchEnd:
+        return static_cast<const QTouchEvent *>(event)->touchPoints().at(0).pos();
+
+    case QEvent::Wheel:
+        return static_cast<const QWheelEvent*>(event)->position();
+
+    case QEvent::NativeGesture: {
+        KisCanvas2 *canvas = d->inputManager->canvas();
+        KIS_SAFE_ASSERT_RECOVER_RETURN_VALUE(canvas, QPointF());
+
+        /**
+         * Native gesture event has an issue in Qt on MacOS, its
+         * event->position() method returns an incorrect value (not
+         * in the widget's coordinates). So we should manually map it
+         * from global.
+         */
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        return canvas->canvasWidget()->mapFromGlobal(QPointF(static_cast<const QNativeGestureEvent*>(event)->globalPos()));
+#else
+        return canvas->canvasWidget()->mapFromGlobal(static_cast<const QNativeGestureEvent*>(event)->globalPos());
+#endif
+    }
+    default:
+        warnUI << "KisAbstractInputAction" << d->name << "tried to process event data from an unhandled event type" << event->type();
+        return QPointF();
+    }
+}
+
+bool KisAbstractInputAction::isAvailable() const
+{
+    return true;
+}

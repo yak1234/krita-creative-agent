@@ -11,6 +11,7 @@
 #   KRITA_PLUGIN_PATH     the installed plugins (without it no file format loads or saves: .kra tests fail, and Krita
 #                         shows a modal "could not open" box that nothing clicks)
 #   QT_QPA_PLATFORM       offscreen: no windows on the artist's screen
+#   EXTRA_RESOURCE_DIRS   the installed and source resources (colour profiles), as KoTestConfig.h gives Krita's tests
 # Each program runs in a new temporary folder, deleted afterwards (tests write files such as emptytest.kra beside
 # themselves), at the lowest priority. A program still running at the limit is ended with SIGTERM, which leaves no
 # crash report; Qt's own watchdog (QTEST_FUNCTION_TIMEOUT) is set past the limit, because it aborts, and an abort opens
@@ -24,6 +25,8 @@ if [ "${1:-}" = "--timeout" ]; then limit="$2"; shift 2; fi
 export DYLD_LIBRARY_PATH="$root/_build/bin"
 export KIS_TEST_PREFIX_PATH="$root/_install"
 export KRITA_PLUGIN_PATH="$root/_install/lib/kritaplugins"
+export EXTRA_RESOURCE_DIRS="$root/_install/share;$root/krita/data"   # as KoTestConfig.h: colour profiles and the
+                                                                    # rest (without them a colour conversion segfaults)
 export QT_QPA_PLATFORM=offscreen
 export QTEST_FUNCTION_TIMEOUT=$(( (limit + 60) * 1000 ))
 known="$root/agent/known-test-failures.txt"

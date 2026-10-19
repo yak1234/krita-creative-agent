@@ -7,3 +7,4 @@
 kis_kra_saver_test::*  every save/load blocks (see above); testSaveEmpty also dereferences a null image (SIGSEGV)
 kis_kra_loader_test::*  every load blocks (see above)
 TestDocument::testAnnotations  SIGSEGV after a message box, also on the lead build before any agent branch (2026-10-19)
+FillProcessingVisitorTest::*  upstream marks it krita_add_broken_unit_test; null reference device and stale "Selection Mask" data

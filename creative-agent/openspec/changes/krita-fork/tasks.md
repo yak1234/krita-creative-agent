@@ -96,12 +96,14 @@
 - [x] 2.8 Change events beyond the image: node added, removed and changed, selection, undo index, modified, active
   node, tool and preset, through `Notifier`.
 - [ ] 2.9 libkis traps fixed: `Filter.apply` undoable and selection-aware without blocking; undo for
-  `Node.setPixelData`, `move` and `setOpacity`; `Selection.contract` and `resize` corrected; painting without an active
+  `Node.setPixelData`, `move` (done in 5.3: `Node.move` is one undo step) and `setOpacity`; `Selection.contract` and `resize` corrected; painting without an active
   view refused cleanly; per-stroke overrides (mirror, selection, composite op) so the view's state never leaks into
   agent strokes. Also (from the 5.3 review): libkis calls that run a stroke must not end the artist's open strokes
   (`setRequestsOtherStrokesToEnd(false)`) and must wait for their own stroke only, never `image->waitForDone()`, which
   ends open strokes and can hang while the artist's pen is down: `DocumentHistory::runCommandStroke` and the waits in
   `Node.cpp` and `Document.cpp`.
+  And: 2.5's `collectDevices` cannot see inside a saved macro, so an artist's fill or gradient on another layer
+  during an agent move splits the move (found by 5.3's tests).
 - [ ] 2.6 Verify: the New Moscow and 1024×768 chunk times are within a factor of 1.5; an observe at 6000×4500 takes
   under 2 s.
 
@@ -127,6 +129,18 @@
   plugin side, material-stamp's Krita-brush stamps and `merge_agent_work` on mergeGroups / bake.)*
 - [ ] 5.3 Tools as functions: bucket and enclose-and-fill, gradient, smart patch (moved out of its tool), undoable move,
   and perspective, warp and liquify baked through the transform workers.
+  *(Part 1 on branch `agent/tools`, 19 October: `Node.fill(x, y, color, options, selection)`,
+  `encloseAndFill(area, color, options, selection)`, `gradient(start, end, options, selection)`, `smartPatch(area,
+  options)` and an undoable `Node.move(x, y) -> bool`, on `KisToolFunctions` (libs/ui), the tools' own strokes built
+  from arguments with the tools' defaults; no view needed; locked layers, groups, the root, detached nodes and bad,
+  non-finite or out-of-range options refused with a warning; one named step each, or part of an open agent move. The
+  calls never ask the artist's open strokes to end and wait for their own stroke only (60 s, then cancelled and
+  refused); the selection is read when the stroke runs; smart patch takes at most 512 x 512 pixels (about 5 s).
+  Smart patch's `patchImage()` moved from its plugin into libs/image. The plugin's `move_layer` reports a refused
+  move. TestNodeAgentTools 30 functions (plus a timing bench run only with TOOLS53_BENCH), TestPythonAgentTools 1
+  function, plugin test_precision_move 2; each seen red first. Remaining: part 2, perspective, warp and liquify baked
+  through the transform workers; fill with a pattern; moving a selection's pixels (the move tool with a selection);
+  the spec's live scenario, smart patch on New Moscow's sky seam.)*
 
 ## 6. The feature map (`canvas-features`)
 - [x] 6.1 `KisFeatureList` on `KisImage`: features with mask, name, kind, author, state, protected flag and measured

@@ -421,6 +421,7 @@ set(kritaui_LIB_SRCS
     input/config/KisNativeGestureSelector.cpp
     processing/fill_processing_visitor.cpp
     processing/KisEncloseAndFillProcessingVisitor.cpp
+    processing/KisToolFunctions.cpp
     canvas/kis_mirror_axis.cpp
 
     imagesize/imagesize.cc

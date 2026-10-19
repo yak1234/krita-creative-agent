@@ -360,6 +360,7 @@ set(kritaimage_LIB_SRCS
    KisBezierTransformMesh.cpp
 
    KisEncloseAndFillPainter.cpp
+   kis_inpaint.cpp
    KisBlockBackgroundFrameGenerationLock.cpp
    KisLockFrameGenerationLock.cpp
 

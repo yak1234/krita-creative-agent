@@ -224,7 +224,10 @@ void KisResourcesSnapshot::setupPainter(KisPainter* painter)
      * The paintOp should be initialized the last, because it may
      * ask the painter for some options while initialization
      */
-    painter->setPaintOpPreset(m_d->currentPaintOpPreset, m_d->currentNode, m_d->image);
+    // Krita Agent: a snapshot made without a canvas (scripts' fills) has no preset, and fills need no paintop.
+    if (m_d->currentPaintOpPreset) {
+        painter->setPaintOpPreset(m_d->currentPaintOpPreset, m_d->currentNode, m_d->image);
+    }
 }
 
 void KisResourcesSnapshot::setupMaskingBrushPainter(KisPainter *painter)

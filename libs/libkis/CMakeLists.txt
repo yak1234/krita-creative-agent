@@ -11,6 +11,7 @@ set(kritalibkis_LIB_SRCS
     FilterMaskBake.cpp
     DocumentFeatures.cpp
     Feature.cpp
+    NodeAgentTools.cpp
     Filter.cpp
     InfoObject.cpp
     Krita.cpp

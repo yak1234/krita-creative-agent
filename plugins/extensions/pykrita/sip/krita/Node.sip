@@ -66,8 +66,12 @@ public Q_SLOTS:
     QByteArray projectionPixelData(int x, int y, int w, int h) const;
     bool setPixelData(QByteArray value, int x, int y, int w, int h);
     QRect bounds() const;
-    void move(int x, int y);
+    bool move(int x, int y);
     QPoint position() const;
+    bool fill(int x, int y, const QColor &color, const QMap<QString, QVariant> &options = QMap<QString, QVariant>(), Selection *selection = 0);
+    bool encloseAndFill(Selection *enclosingArea, const QColor &color, const QMap<QString, QVariant> &options = QMap<QString, QVariant>(), Selection *selection = 0);
+    bool gradient(const QPointF &start, const QPointF &end, const QMap<QString, QVariant> &options = QMap<QString, QVariant>(), Selection *selection = 0);
+    bool smartPatch(Selection *area, const QMap<QString, QVariant> &options = QMap<QString, QVariant>());
     bool remove();
     Node *duplicate() /Factory/;
     void save(const QString &filename, double xRes, double yRes, const InfoObject & exportConfiguration, const QRect &exportRect = QRect());

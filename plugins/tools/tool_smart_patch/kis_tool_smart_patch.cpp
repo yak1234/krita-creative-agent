@@ -36,7 +36,7 @@
 #include "kis_algebra_2d.h"
 #include "kis_resources_snapshot.h"
 
-QRect patchImage(KisPaintDeviceSP imageDev, KisPaintDeviceSP maskDev, int radius, int accuracy, KisSelectionSP selection);
+#include "kis_inpaint.h"
 
 class KisToolSmartPatch::InpaintCommand : public KisTransactionBasedCommand {
 public:

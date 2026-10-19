@@ -31,7 +31,10 @@ class PrecisionTools:
         values=[number(p[k],k,-100000,100000) for k in ('dx','dy')]
         if any(int(v)!=v for v in values):raise ValueError('Offsets must be integers')
         doc.waitForDone()
-        layer.move(layer.position().x()+int(values[0]),layer.position().y()+int(values[1]))
+        # The fork's Node.move returns False when Krita refuses the move (a locked layer or group, a layer not in the
+        # document, or a stroke the artist is still drawing holding it back past the wait limit).
+        if layer.move(layer.position().x()+int(values[0]),layer.position().y()+int(values[1])) is False:
+            raise RuntimeError('Krita refused the move: the layer or a group above it is locked, the layer is not in the document, or a stroke being drawn held it back')
         doc.refreshProjection();doc.waitForDone()
         r=layer.bounds()
         return {'status':'ok','bounds':[r.x(),r.y(),r.width(),r.height()], 'position':[layer.position().x(),layer.position().y()]}

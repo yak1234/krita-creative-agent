@@ -624,12 +624,7 @@ QRect Node::bounds() const
     return d->node->exactBounds();
 }
 
-void Node::move(int x, int y)
-{
-    if (!d->node) return;
-    d->node->setX(x);
-    d->node->setY(y);
-}
+// Krita Agent: Node::move() is in NodeAgentTools.cpp, as an undo step (krita-fork 5.3).
 
 QPoint Node::position() const
 {

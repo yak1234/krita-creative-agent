@@ -7,6 +7,9 @@
 #define LIBKIS_NODE_H
 
 #include <QObject>
+#include <QColor>
+#include <QPointF>
+#include <QVariantMap>
 
 #include <kis_types.h>
 
@@ -461,8 +464,12 @@ public Q_SLOTS:
 
     /**
      *  move the pixels to the given x, y location in the image coordinate space.
+     *
+     *  Krita Agent (krita-fork 5.3): one undo step ("Move"), or part of an open macro or agent move; it waits until
+     *  the move is done, as the tool functions below do. Returns false, changing nothing, when the node is locked (or
+     *  inside a locked group), is the root, or is not a layer or mask in its document. Body in NodeAgentTools.cpp.
      */
-    void move(int x, int y);
+    bool move(int x, int y);
 
     /**
      * @brief position returns the position of the paint device of this node. The position is
@@ -471,6 +478,87 @@ public Q_SLOTS:
      * @return the top-left position of the node
      */
     QPoint position() const;
+
+    // Krita Agent: Krita's painting tools as functions (krita-fork 5.3), bodies in NodeAgentTools.cpp.
+    //
+    // Each call works without a view and never reads the view's colours, brush, mirror or eraser mode. It is one
+    // undo step, named as the tool names it unless options["name"] is given, or part of an open macro or agent move.
+    // It never asks the artist's open strokes to end, and it waits for its own stroke only (never for the whole
+    // image, and without running the event loop) until its pixels are on the layer. A stroke queued behind one the
+    // artist is still drawing cannot start: after 60 s the call gives up, cancels its stroke and returns false.
+    // It returns false, changing nothing, with a warning, when the node is locked (or inside a locked group), has no
+    // pixels of its own (a group, a file or clone layer), is not in its document, or an argument or option is
+    // unknown, not finite or out of range. Hidden layers can be painted. Colours are converted to the image's colour
+    // space. The selection is read when the call's stroke runs, after the work queued before it.
+    //
+    // fill(), encloseAndFill() and gradient(): without a selection argument, the document's selection limits the
+    // operation, as it limits the tool. smartPatch() changes only its area.
+
+    /**
+     * @brief fill fills from a point, as the Fill tool does with a click.
+     * @param x, y the point, in image pixels
+     * @param color the fill colour (converted to the image's colour space)
+     * @param options any of:
+     * <ul>
+     * <li>"mode": "contiguous" (default: the region around the point), "similar" (every pixel of a similar colour)
+     * or "selection" (all of the selection, or of the layer)</li>
+     * <li>"sample": where regions are found: "layer" (default, this layer), "all" (all layers, as shown) or
+     * "labels" (the layers with one of "labels", a list of colour label numbers 0 to 8)</li>
+     * <li>"threshold" (1 to 100, default 8), "spread" (0 to 100, default 100), "closeGap" (0 to 32), "grow" (-400 to
+     * 400 pixels), "feather" (0 to 400 pixels), "antialias" (bool), "stopGrowingAtDarkestPixel" (bool),
+     * "useSelectionAsBoundary" (bool, default true, as the tool: regions end at the selection's edge)</li>
+     * <li>"boundaryColor" (a colour): fill up to this colour instead of up to any different colour</li>
+     * <li>"opacity" (0.0 to 1.0, default 1.0), "compositeOp" (a blending mode id, default "normal")</li>
+     * <li>"name": the undo step's name (default "Flood Fill")</li>
+     * </ul>
+     * @param selection limits the fill instead of the document's selection (refused when it selects nothing)
+     * @return true when the fill was made
+     */
+    bool fill(int x, int y, const QColor &color, const QVariantMap &options = QVariantMap(),
+              Selection *selection = nullptr);
+
+    /**
+     * @brief encloseAndFill fills the regions inside an enclosing area, as the Enclose and Fill tool does with a
+     * drawn shape.
+     * @param enclosingArea the enclosing area (not empty)
+     * @param color the fill colour
+     * @param options "regions": which regions inside the area are filled: "all" (default), "color", "transparent",
+     * "colorOrTransparent", "allExceptColor", "allExceptTransparent", "allExceptColorOrTransparent",
+     * "surroundedByColor", "surroundedByTransparent" or "surroundedByColorOrTransparent", with "regionColor" (a
+     * colour, required) for the ones naming a colour; "invert" (bool), "includeContourRegions" (bool, default false,
+     * as the tool: regions touching the enclosing area's edge are left),
+     * "includeSurroundingRegions" (bool, default false); and fill()'s "sample", "labels", "threshold", "spread",
+     * "closeGap", "grow", "feather", "antialias", "stopGrowingAtDarkestPixel", "useSelectionAsBoundary", "opacity",
+     * "compositeOp" and "name" (default "Enclose and Fill")
+     * @param selection limits the fill instead of the document's selection
+     */
+    bool encloseAndFill(Selection *enclosingArea, const QColor &color, const QVariantMap &options = QVariantMap(),
+                        Selection *selection = nullptr);
+
+    /**
+     * @brief gradient paints a gradient between two points, as the Gradient tool does with a drag.
+     * @param start, end the gradient's ends, in image pixels: finite, within 1e6 of the origin, not the same point
+     * @param options "colors": a list of two or more colours, spaced evenly from start to end; or "gradient": the
+     * name of a gradient resource (its foreground and background stops take the first and second of "colors", else
+     * black and white); "shape": "linear" (default), "bilinear", "radial", "square", "conical", "conicalSymmetric",
+     * "spiral", "reverseSpiral" or "polygonal"; "repeat": "none" (default), "forwards" or "alternate"; "reverse"
+     * (bool); "dither": false (default), true (blue noise), "blueNoise", "bayer2", "bayer4" or "bayer8";
+     * "antiAliasThreshold" (0.0 to 1.0, default 0.2); "opacity", "compositeOp", and "name" (default "Gradient")
+     * @param selection the area painted instead of the document's selection; with neither, the whole layer
+     */
+    bool gradient(const QPointF &start, const QPointF &end, const QVariantMap &options = QVariantMap(),
+                  Selection *selection = nullptr);
+
+    /**
+     * @brief smartPatch fills an area from the paint around it (PatchMatch inpainting), as the Smart Patch tool does
+     * with a painted mask. Only pixels inside the area change; where the area is partly selected (soft edges), the
+     * patch is blended with the paint there. The document's selection is not used.
+     * @param area the area to patch: not empty, and its bounding rectangle at most 512 x 512 pixels (262144; a
+     * megapixel takes over 13 s, so larger areas are patched in pieces)
+     * @param options "accuracy" (0 to 99, default 50: how much of the surroundings is searched), "patchRadius" (2 to
+     * 8, default 4), "name" (default "Smart Patch")
+     */
+    bool smartPatch(Selection *area, const QVariantMap &options = QVariantMap());
 
     /**
      * @brief remove removes this node from its parent image.

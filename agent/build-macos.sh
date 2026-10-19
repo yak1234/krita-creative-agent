@@ -2,12 +2,21 @@
 # Build Krita Agent (this fork) for macOS on Qt6 with only the Command Line Tools (no Xcode), one architecture.
 #   agent/build-macos.sh            fetch dependencies if needed, configure if needed, build and install into _install
 #   agent/build-macos.sh --deps     fetch dependencies again
+#   agent/build-macos.sh --tests    configure with Krita's tests (BUILD_TESTING=ON; only when _build is configured anew)
 # Result: _install/bin/krita.app (bundle id and settings folders from cmake/modules/KritaAppIdentity.cmake).
 # Launch: agent/run.sh
 set -euo pipefail
 ROOT=${0:A:h:h}
 cd "$ROOT"
-if [[ ! -f env.sh || "${1:-}" == "--deps" ]]; then
+deps=0 tests=OFF
+for arg in "$@"; do
+  case $arg in
+    --deps) deps=1 ;;
+    --tests) tests=ON ;;
+    *) echo "unknown option $arg" >&2; exit 2 ;;
+  esac
+done
+if [[ ! -f env.sh || $deps == 1 ]]; then
   env -i HOME="$HOME" USER="$USER" LOGNAME="$USER" LANG=en_US.UTF-8 TMPDIR="$TMPDIR" SHELL=/bin/zsh \
     PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin /bin/zsh agent/fetch-deps.sh
 fi
@@ -35,7 +44,7 @@ STANDIN
 fi
 
 if [[ ! -f _build/build.ninja ]]; then
-  cmake -S . -B _build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DHIDE_SAFE_ASSERTS=ON \
+  cmake -S . -B _build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=$tests -DHIDE_SAFE_ASSERTS=ON \
     -DBUILD_WITH_QT6=ON -DALLOW_UNSTABLE=QT6 -DKRITA_ENABLE_PCH=OFF -DFOUNDATION_BUILD=ON \
     -DKRITA_BUILD_MACOS_INTEGRATION=OFF \
     -DCMAKE_INSTALL_PREFIX="$PWD/_install" -DCMAKE_PREFIX_PATH="$PWD/_install" \

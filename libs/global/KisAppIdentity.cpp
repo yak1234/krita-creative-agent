@@ -7,6 +7,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QGlobalStatic>
 #include <QStandardPaths>
 
 #include <KConfig>
@@ -15,35 +16,70 @@
 
 namespace
 {
-QString withFolder(const QString &base)
+struct Identity {
+    QString folder = QStringLiteral(KRITA_APP_SETTINGS_FOLDER);
+    // Cached by initialize(), which creates the folders once
+    QString configLocation;
+    QString logLocation;
+    QString autosaveLocation;
+};
+
+Q_GLOBAL_STATIC(Identity, s_identity)
+
+QString inFolder(QStandardPaths::StandardLocation base, const QString &subfolder = QString())
 {
-    const QString folder = KisAppIdentity::settingsFolder();
-    if (folder.isEmpty()) {
-        return base;
+    QString path = QStandardPaths::writableLocation(base) + QLatin1Char('/') + s_identity->folder;
+    if (!subfolder.isEmpty()) {
+        path += QLatin1Char('/') + subfolder;
     }
-    const QString path = base + QLatin1Char('/') + folder;
-    QDir().mkpath(path);
     return path;
+}
+
+QString ownConfigLocation()
+{
+    return inFolder(QStandardPaths::GenericConfigLocation);
+}
+
+QString ownLogLocation()
+{
+    return inFolder(QStandardPaths::GenericDataLocation);
+}
+
+QString ownAutosaveLocation()
+{
+    return inFolder(QStandardPaths::GenericDataLocation, QStringLiteral("autosave"));
+}
+
+QString cached(const QString &value, QString (*compute)())
+{
+    return value.isEmpty() ? compute() : value;
 }
 }
 
 void KisAppIdentity::initialize()
 {
-    const QString folder = settingsFolder();
-    if (folder.isEmpty()) {
+    Identity *identity = s_identity;
+    if (identity->folder.isEmpty()) {
         return;
     }
-    // Qt puts AppDataLocation and CacheLocation under <organization>/<application> (the application stays "krita",
-    // so installed data, translations and xmlgui files are found as before).
-    QCoreApplication::setOrganizationName(folder);
+    // Qt puts AppDataLocation and CacheLocation under <organization>/<application>. The application stays "krita",
+    // so installed data, translations and xmlgui files are found where upstream finds them (tested on macOS only).
+    QCoreApplication::setOrganizationName(identity->folder);
     // KSharedConfig::openConfig() with no name, i.e. Krita's main config, resolves this against GenericConfigLocation.
+    // Its shipped defaults are found as :/kconfig/<folder>/kritarc (cmake/modules/KritaAppIdentity.cmake).
     KConfig::setMainConfigName(configFileName(QStringLiteral("kritarc")));
-    QDir().mkpath(configLocation());
+
+    identity->configLocation = ownConfigLocation();
+    identity->logLocation = ownLogLocation();
+    identity->autosaveLocation = ownAutosaveLocation();
+    QDir().mkpath(identity->configLocation);
+    QDir().mkpath(identity->logLocation);
+    QDir().mkpath(identity->autosaveLocation);
 }
 
 QString KisAppIdentity::settingsFolder()
 {
-    return QStringLiteral(KRITA_APP_SETTINGS_FOLDER);
+    return s_identity->folder;
 }
 
 QString KisAppIdentity::displayName()
@@ -60,7 +96,10 @@ QString KisAppIdentity::organizationDomain()
 
 QString KisAppIdentity::configLocation()
 {
-    return withFolder(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation));
+    if (s_identity->folder.isEmpty()) {
+        return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    }
+    return cached(s_identity->configLocation, ownConfigLocation);
 }
 
 QString KisAppIdentity::configFileName(const QString &name)
@@ -71,5 +110,31 @@ QString KisAppIdentity::configFileName(const QString &name)
 
 QString KisAppIdentity::logLocation()
 {
-    return withFolder(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation));
+    if (s_identity->folder.isEmpty()) {
+        return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    }
+    return cached(s_identity->logLocation, ownLogLocation);
+}
+
+QString KisAppIdentity::crashLogLocation()
+{
+    if (s_identity->folder.isEmpty()) {
+        return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    }
+    return logLocation();
+}
+
+QString KisAppIdentity::autosaveLocation()
+{
+    if (s_identity->folder.isEmpty()) {
+        return QString();
+    }
+    return cached(s_identity->autosaveLocation, ownAutosaveLocation);
+}
+
+void KisAppIdentity::setSettingsFolderForTesting(const QString &folder)
+{
+    Identity *identity = s_identity;
+    *identity = Identity();
+    identity->folder = folder;
 }

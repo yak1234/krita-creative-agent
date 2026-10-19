@@ -10,11 +10,13 @@
 #include <QStringList>
 #include <QModelIndex>
 
+#include "kritaui_export.h"
+
 class QListView;
 
 Q_DECLARE_METATYPE(QModelIndex)
 
-class KisAutoSaveRecoveryDialog : public KoDialog
+class KRITAUI_EXPORT KisAutoSaveRecoveryDialog : public KoDialog
 {
     Q_OBJECT
 public:

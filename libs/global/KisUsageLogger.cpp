@@ -330,7 +330,7 @@ void KisUsageLogger::rotateLog()
         QString log = QString::fromUtf8(d->logFile.readAll());
         if (!log.split(s_sectionHeader).last().contains("CLOSING SESSION")) {
             log.append("\nKRITA DID NOT CLOSE CORRECTLY\n");
-            QString crashLog = KisAppIdentity::logLocation() + QStringLiteral("/kritacrash.log");
+            QString crashLog = KisAppIdentity::crashLogLocation() + QStringLiteral("/kritacrash.log");
             QFile f(crashLog);
             if (f.open(QFile::ReadOnly)) {
                 QString crashes = QString::fromUtf8(f.readAll());

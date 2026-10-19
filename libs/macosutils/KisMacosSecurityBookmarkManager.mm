@@ -13,6 +13,7 @@
 #import <AppKit/AppKit.h>
 #endif
 
+#include <QCoreApplication>
 #include <QStandardPaths>
 #include <QSettings>
 #include <QHash>
@@ -36,6 +37,19 @@
 #endif
 
 Q_GLOBAL_STATIC(KisMacosSecurityBookmarkManager, s_instance)
+
+namespace {
+// KisAppIdentity::configLocation(), which this library cannot call (kritaglobal links it, not the other way round):
+// a build with its own identity names the organization after its settings folder; stock Krita's is empty.
+QString identityConfigLocation()
+{
+    QString path = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    if (!QCoreApplication::organizationName().isEmpty()) {
+        path += QLatin1Char('/') + QCoreApplication::organizationName();
+    }
+    return path;
+}
+}
 
 class KisMacosSecurityBookmarkManager::Private
 {
@@ -114,7 +128,7 @@ void KisMacosSecurityBookmarkManager::createBookmarkFromPath(const QString &path
 
         QString base64Data = QString::fromNSString(bookmarkString);
         // write to file
-        const QString configPath = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+        const QString configPath = identityConfigLocation();
         QSettings kritarc(configPath + QStringLiteral("/securitybookmarkrc"), QSettings::NativeFormat);
 
         // get array current size
@@ -136,7 +150,7 @@ void KisMacosSecurityBookmarkManager::createBookmarkFromPath(const QString &path
 
 void KisMacosSecurityBookmarkManager::loadKeysFromArray(SecurityBookmarkType arrayKey)
 {
-    const QString configPath = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    const QString configPath = identityConfigLocation();
     QSettings kritarc(configPath + QStringLiteral("/securitybookmarkrc"), QSettings::NativeFormat);
 
     int size = kritarc.beginReadArray(securityBookmarkTypeToString(arrayKey));

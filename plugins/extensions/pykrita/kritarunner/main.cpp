@@ -12,6 +12,7 @@
 
 #include "PythonPluginManager.h"
 #include <KisApplication.h>
+#include <KisAppIdentity.h>
 
 #include <opengl/kis_opengl.h>
 
@@ -25,6 +26,8 @@ extern "C"
 #endif
 int main(int argc, char **argv)
 {
+    // Before anything reads a setting or a standard path: a build with its own identity keeps its own folders
+    KisAppIdentity::initialize();
     KLocalizedString::setApplicationDomain("kritarunner");
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts, true);
     KisOpenGL::testingInitializeDefaultSurfaceFormat();
@@ -34,7 +37,7 @@ int main(int argc, char **argv)
     KisApplication app("kritarunner", argc, argv);
     app.setApplicationDisplayName("Krita Script Runner");
     app.setApplicationName("kritarunner");
-    app.setOrganizationDomain("krita.org");
+    app.setOrganizationDomain(KisAppIdentity::organizationDomain());
 
     QCommandLineParser parser;
     parser.setApplicationDescription("kritarunner executes one python script and then returns.");

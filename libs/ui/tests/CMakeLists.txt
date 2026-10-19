@@ -203,3 +203,9 @@ if (${INSTALL_BENCHMARKS})
         data/DA_RGBA\ bluegreen_small1.png
         DESTINATION ${CMAKE_INSTALL_BINDIR}/data)
 endif()
+
+# A build with its own identity keeps unsaved documents' autosaves apart from stock Krita's (KisAppIdentity)
+kis_add_test(KisAutoSaveLocationTest.cpp
+    TEST_NAME KisAutoSaveLocationTest
+    LINK_LIBRARIES kritaui kritatestsdk
+    )

@@ -1,0 +1,15 @@
+# Allow-list for agent/check-identity.sh: lines that reach per-user locations or config names directly and are safe.
+# Format: <path>: <text on the line> -- <why it is safe>
+# A hit is allowed when its file is <path> and its line contains <text>. Review each entry when its line changes.
+
+libs/global/KisAppIdentity.cpp: inFolder(QStandardPaths::Generic -- the identity itself: its folder under the generic locations
+libs/global/KisAppIdentity.cpp: KConfig::setMainConfigName(configFileName(QStringLiteral("kritarc"))) -- the identity sets the main config name
+krita/main.cc: configPath.absoluteFilePath("klanguageoverridesrc") -- configPath is KisAppIdentity::configLocation() (set above, in main)
+krita/main.cc: configPath.absoluteFilePath("kritadisplayrc") -- configPath is KisAppIdentity::configLocation() (set above, in main)
+krita/main.cc: QStandardPaths::locate(QStandardPaths::GenericDataLocation, subPath) -- reads installed translations, writes nothing
+libs/widgetutils/xmlgui/kswitchlanguagedialog_p.cpp: configPath + QStringLiteral("/klanguageoverridesrc") -- configPath is KisAppIdentity::configLocation()
+libs/widgetutils/xmlgui/kmainwindow.cpp: writableLocation(QStandardPaths::GenericConfigLocation) + QLatin1Char('/') + config->name() -- config->name() is already "<folder>/kritarc" (KisAppIdentity sets the main config name)
+libs/widgetutils/xmlgui/kxmlguiclient.cpp: QStandardPaths::locate(QStandardPaths::GenericConfigLocation, QStringLiteral("ui/ui_standards.xmlgui")) -- reads KDE's shared ui_standards.xmlgui, writes nothing
+libs/resources/KoResourcePaths.cpp: return QStandardPaths::GenericDataLocation; -- "genericdata" only finds KDE's shared color schemes, writes nothing
+libs/image/kis_transform_mask.cpp: KIS_DUMP_DEVICE_2( -- debug dump names ending in "src", not config files
+plugins/extensions/buginfo/DlgAndroidLogcatDumper.cpp: "/krita-logcatdump.log" -- Android only, where each app id has its own storage

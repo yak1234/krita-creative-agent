@@ -5,6 +5,7 @@
 */
 
 #include "KisAutoSaveRecoveryDialog.h"
+#include <KisAppIdentity.h>
 
 #include <KoStore.h>
 
@@ -273,6 +274,11 @@ QStringList KisAutoSaveRecoveryDialog::recoverableFiles()
 
 QString KisAutoSaveRecoveryDialog::autoSaveLocation()
 {
+    // A build with its own identity keeps these autosaves in its own folder: the recovery on start deletes every
+    // autosave here it does not recover, so it must never look where stock Krita keeps its own.
+    if (!KisAppIdentity::settingsFolder().isEmpty()) {
+        return KisAppIdentity::autosaveLocation();
+    }
 #if defined(Q_OS_WIN)
     // On Windows, use the temp location (https://bugs.kde.org/show_bug.cgi?id=314921)
     return QDir::tempPath();

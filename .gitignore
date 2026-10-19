@@ -51,3 +51,15 @@ _packaging
 env
 env_deactivate
 krita-deps-management/
+
+# Krita Agent fork (AGENT-FORK.md): agent/build-macos.sh's local setup and logs, never committed
+/env.sh
+/env.sh_deactivate
+/venv
+/cache
+/_krita-tools
+/_stand-ins
+/krita-deps-management
+/upstream-ci-utilities
+/branch-corrected-deps.yml
+/*.log

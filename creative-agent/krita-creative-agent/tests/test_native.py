@@ -16,6 +16,7 @@ krita = types.ModuleType('krita')
 krita.Krita = types.SimpleNamespace(instance=lambda: types.SimpleNamespace(resources=lambda _kind: {'b) Basic-1': 1}))
 class Selection:
     def select(self, *bounds): self.bounds = bounds
+    def setPixelData(self, data, *bounds): self.data, self.bounds = bytes(data), bounds
 krita.Selection = Selection
 class InfoObject:
     def __init__(self): self.values = {}
@@ -431,7 +432,11 @@ class NativePolicyTests(unittest.TestCase):
         h=Harness(); original=Selection(); h.doc.selected=original
         p=request(); p['params']['region']=[100,150,580,330]
         h.cmd_creative(p)
-        self.assertEqual(h.doc.selection_changes[0].bounds,(100,150,580,330,255))
+        stage=h.doc.selection_changes[0]
+        self.assertEqual(stage.bounds,(100,150,580,330))
+        self.assertEqual(len(stage.data),580*330)
+        self.assertEqual(stage.data[165*580+290],255)
+        self.assertLess(stage.data[290],16,'the inner edge fades in: a hard 255 rectangle printed a straight band (fork chat, 19 October)')
         self.assertIs(h.doc.selected,original)
 
     def test_review_preserves_other_artist_layers(self):

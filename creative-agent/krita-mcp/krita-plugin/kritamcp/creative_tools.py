@@ -652,10 +652,13 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                     result['group_id'] = layer['group_id']
                 # The stage mask clips the complete brush footprint, not only
                 # its path center. Restore the artist's selection afterwards.
+                # Its inner edges fade in (stage_mask.py): a hard rectangle printed a straight band into open paint.
                 selection = doc.selection()
                 if params.get('region'):
+                    from .stage_mask import mask as stage_mask
+                    x, y, w, h = params['region']
                     mask = Selection()
-                    mask.select(*params['region'], 255)
+                    mask.setPixelData(stage_mask(params['region'], doc.width(), doc.height()).tobytes(), x, y, w, h)
                     doc.setSelection(mask)
                 else:
                     doc.setSelection(None)

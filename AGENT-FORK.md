@@ -53,6 +53,7 @@ Keep this table current: every upstream file the `krita-agent` branch changes, a
 | `libs/libkis/Krita.cpp` | `createDocument()` starts the new document's change report (`DocumentChanges::forImage`), since it adds the document without a notification | change events (2.2) |
 | `libs/libkis/Notifier.h`, `Notifier.cpp` | Declares the change signals (`imageChanged`, `nodeAdded`, `nodeRemoved`, `nodeChanged`, `nodePixelsChanged`, `selectionChanged`, `undoIndexChanged`, `documentModified`, `activeNodeChanged`, `toolChanged`, `brushPresetChanged`); the constructor creates `NotifierExtras`, which emits them | change events (2.2, 2.8) |
 | `libs/libkis/tests/CMakeLists.txt` | Adds `TestDocumentChanges`, `TestNotifierChanges` | change reports (2.2, 2.8) |
+| `plugins/extensions/CMakeLists.txt` | Adds `creative-agent/` (its `CMakeLists.txt`) when the tree has it: the creative agent's native helper (`creative-agent/krita-native/agent-accel`) built and installed with the app as a Krita plugin, its self-tests under ctest with `BUILD_TESTING`; `-DKRITA_AGENT_NATIVE_HELPER=OFF` builds upstream's plugins only | fork parity (1.6) |
 | `plugins/extensions/pykrita/CMakeLists.txt` | Adds `tests` (Python-side tests) when `BUILD_TESTING` is on | change events (2.2, 2.8) |
 | `plugins/extensions/pykrita/sip/krita/Document.sip`, `Notifier.sip` | The same methods and signals for Python | change reports (2.2, 2.8) |
 | `libs/global/tests/CMakeLists.txt` | Adds `KisAppIdentityTest` | identity (1.1) |
@@ -115,6 +116,10 @@ mark agent work with `DocumentChanges::forImage(image)->beginAgentWork()` / `end
 `libs/libkis/NotifierExtras.{h,cpp}`; tests `libs/libkis/tests/TestDocumentChanges.{h,cpp}`,
 `libs/libkis/tests/TestNotifierChanges.{h,cpp}`, `libs/libkis/tests/ChangeEventRecorder.h`, and
 `plugins/extensions/pykrita/tests/` (`TestPythonChangeEvents`: embeds Python and imports the built `krita` module).
+
+Our own files for fork parity (1.6): `creative-agent/CMakeLists.txt` (the `KRITA_AGENT_NATIVE_HELPER` option, on by
+default) and the helper itself, `creative-agent/krita-native/agent-accel` (a `KisActionPlugin`; the plugin finds its
+`creative-agent-accel` object on the application). Its self-tests: `ctest --test-dir _build -R kritaagentaccel`.
 
 Our own files for the agent speed API (2.x): `libs/libkis/DocumentAgentSpeed.cpp`, `libs/libkis/KisAgentScaledRead.h` and its tests in `libs/libkis/tests/`
 (`TestDocumentRegionRefresh`, `TestDocumentScaledProjection`, and the `AgentSpeedBenchmark` timing program, not run by
@@ -230,7 +235,7 @@ an older system `ninja` resets the build log and the next build starts over.
 - After merging: run `agent/check-identity.sh` (fails on new upstream code that reaches per-user config or data
   folders, QSettings or `*rc` config names without going through `KisAppIdentity`; `agent/check-identity.allow` lists
   the known-safe lines), rebuild (`agent/build-macos.sh --deps`, since KDE's dependency packages move with master), run
-  the identity tests above, the creative agent's suites (`creative-agent/krita-creative-agent`: Python and JS) and the Agent-mode test chats against the fork, and update the
+  the identity tests above, the creative agent's suites (`creative-agent/krita-creative-agent`: Python and JS) and the Agent-mode test chats against the fork, the Krita actions audit against the fork (`KRITA_CREATIVE_CONFIG=<fork pykrita>/kritamcp/creative-agent-config.json node creative-agent/krita-creative-agent/scripts/audit-krita-actions.mjs`, no painting open; it lists the fork as `KritaAgent <release>`), and update the
   table above if a conflict changed what an edit touches.
 - Out of cycle only for an upstream fix we need now, or before a release.
 - Dependencies follow upstream's Qt6 branch of `krita-deps-management` (`transition.now/qt6` today; the branch name is

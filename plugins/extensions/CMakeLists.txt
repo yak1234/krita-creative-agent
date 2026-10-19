@@ -21,3 +21,8 @@ add_subdirectory( dbexplorer )
 if (ANDROID)
     add_subdirectory( spensettings )
 endif()
+
+# Krita Agent (AGENT-FORK.md): the creative agent's own plugins, when the tree has them.
+if (EXISTS ${CMAKE_SOURCE_DIR}/creative-agent/CMakeLists.txt)
+    add_subdirectory(${CMAKE_SOURCE_DIR}/creative-agent ${CMAKE_CURRENT_BINARY_DIR}/creative-agent)
+endif()

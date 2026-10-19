@@ -2,10 +2,15 @@
 /** Audit Krita's menu actions for the agent: each candidate runs on a throwaway document in the
  * installed Krita; only those that opened no dialog and were undone go into the plugin's vetted
  * list (krita-mcp/krita-plugin/kritamcp/krita_actions.json), under the audited Krita version.
- * Run with Krita idle: it refuses while a painting session is open. Rebuild and install after. */
+ * Run with Krita idle: it refuses while a painting session is open. Rebuild and install after.
+ * It talks to the Krita whose panel config KRITA_CREATIVE_CONFIG names (the fork's, on its own port), else the
+ * installed stock Krita's. Entries are listed under the plugin's key for that Krita (native_craft.actions_key): stock by
+ * its exact build, the fork by its settings folder and release. */
+import { readFileSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PaintingBridge } from '../src/bridge.mjs';
+import { panelConfig } from './project-dir.mjs';
 
 export const CANDIDATES = [
   { id: 'mirrorNodeX', label: 'Mirror the layer horizontally', kind: 'pixels', needs: ['target'] },
@@ -31,17 +36,29 @@ export function vetted(results, candidates = CANDIDATES) {
   return candidates.filter(c => passed.has(c.id));
 }
 
+/** The bridge to audit: the bridge_url of the panel config development tools follow (project-dir.mjs panelConfig). */
+export function auditBridgeConfig(env = process.env) {
+  try {
+    const { bridge_url } = JSON.parse(readFileSync(panelConfig(env), 'utf8'));
+    return bridge_url ? { bridge_url } : {};
+  } catch { return {}; }
+}
+
+/** The actions table with this audit's entries under its key, every other Krita's kept. */
+export function auditTable(table, audit, entries) {
+  return { ...table, [audit.version]: entries };
+}
+
 async function main() {
-  const bridge = new PaintingBridge(null, {});
+  const bridge = new PaintingBridge(null, auditBridgeConfig());
   await bridge.connect();
   const health = await bridge.call('health');
   if (health.session_active) throw new Error('Krita is painting (a session is open). Run the audit when it is idle.');
   const audit = await bridge.call('krita_actions_audit', { candidates: CANDIDATES.map(c => c.id) });
   const entries = vetted(audit.results);
   const table = JSON.parse(await readFile(ACTIONS_FILE, 'utf8').catch(() => '{}'));
-  table[audit.version] = entries;
-  await writeFile(ACTIONS_FILE, JSON.stringify(table, null, 2) + '\n');
-  console.log(JSON.stringify({ version: audit.version, vetted: entries.map(e => e.id),
+  await writeFile(ACTIONS_FILE, JSON.stringify(auditTable(table, audit, entries), null, 2) + '\n');
+  console.log(JSON.stringify({ bridge: bridge.url.href, version: audit.version, krita_version: audit.krita_version, vetted: entries.map(e => e.id),
     refused: audit.results.filter(r => !entries.some(e => e.id === r.id)) }, null, 2));
 }
 

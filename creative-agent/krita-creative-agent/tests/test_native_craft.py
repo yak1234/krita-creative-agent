@@ -176,6 +176,53 @@ class NativeActionTests(region_tests.RegionSetup, unittest.TestCase):
         self.krita.release = '6.0.0'
         self.assertEqual(self.h.cmd_creative({'operation': 'health', 'params': {}})['krita_actions'], 0)
 
+    def test_the_fork_is_listed_by_its_settings_folder_and_version_without_the_commit(self):
+        # The fork is rebuilt at every commit, so its exact version (with "(git <commit>)") would lose its audit at each
+        # build; it is listed under its settings folder and release, re-audited at each upstream merge (AGENT-FORK.md).
+        self.assertEqual(native_craft.actions_key('6.1.0-prealpha (git 6ad1cf6)', 'KritaAgent'), 'KritaAgent 6.1.0-prealpha')
+        self.assertEqual(native_craft.actions_key('6.1.0-prealpha', 'KritaAgent'), 'KritaAgent 6.1.0-prealpha')
+        self.assertEqual(native_craft.actions_key('5.3.3 (git 858d352)', ''), '5.3.3 (git 858d352)', 'stock: the exact build')
+
+    def test_the_fork_offers_its_audited_actions_at_any_commit(self):
+        with open(native_craft.ACTIONS_PATH, 'w') as stream:
+            json.dump(dict(ACTIONS, **{'KritaAgent 6.1.0-prealpha': ACTIONS['5.3.3'][:1]}), stream)
+        previous = native_craft.organization
+        self.addCleanup(setattr, native_craft, 'organization', previous)
+        native_craft.organization = lambda: 'KritaAgent'
+        self.assertEqual([a['id'] for a in self.h._native_actions('6.1.0-prealpha (git 1234567)')], ['mirrorNodeX'])
+        self.krita.release = '6.1.0-prealpha (git 89abcde)'
+        layer = self.agent_layer()
+        run(self.h, 'krita_action', {'action': 'mirrorNodeX', 'target': layer.id}, 'mirror')
+        self.assertEqual(len(self.krita.triggered), 1)
+        native_craft.organization = lambda: ''                 # stock Krita of the same version string was never audited
+        self.assertEqual(self.h._native_actions('6.1.0-prealpha (git 1234567)'), [])
+
+    def test_the_audit_answers_the_key_it_is_listed_under(self):
+        self.h._creative_session = None
+        previous = native_craft.organization, native_craft.open_documents
+        self.addCleanup(lambda: (setattr(native_craft, 'organization', previous[0]), setattr(native_craft, 'open_documents', previous[1])))
+        native_craft.organization = lambda: 'KritaAgent'
+        native_craft.open_documents = lambda: []
+        qt = sys.modules['creative_test_package.qt_compat']     # the fake Qt: the audit imports its timers, unused here
+        for name in ('QCoreApplication', 'QElapsedTimer', 'QTimer'):
+            if not hasattr(qt, name):
+                setattr(qt, name, object()); self.addCleanup(delattr, qt, name)
+        if 'creative_test_package.audit_dialogs' not in sys.modules:      # needs real Qt widgets; never reached here
+            sys.modules['creative_test_package.audit_dialogs'] = types.ModuleType('creative_test_package.audit_dialogs')
+            self.addCleanup(sys.modules.pop, 'creative_test_package.audit_dialogs', None)
+            self.addCleanup(lambda: hasattr(sys.modules['creative_test_package'], 'audit_dialogs') and
+                            delattr(sys.modules['creative_test_package'], 'audit_dialogs'))
+        self.krita.release = '6.1.0-prealpha (git 89abcde)'
+        closed = []
+        audit = types.SimpleNamespace(rootNode=lambda: types.SimpleNamespace(childNodes=lambda: []), setModified=lambda flag: None,
+                                      close=lambda: closed.append(True))
+        self.krita.createDocument = lambda *args: audit
+        self.krita.activeWindow = lambda: None
+        answer = self.h._native_audit({'candidates': ['nosuchaction']})
+        self.assertEqual((answer['version'], answer['krita_version']), ('KritaAgent 6.1.0-prealpha', '6.1.0-prealpha (git 89abcde)'))
+        self.assertEqual(answer['results'][0]['status'], 'missing')
+        self.assertEqual(closed, [True])
+
     def test_the_audit_refuses_during_a_session(self):
         with self.assertRaisesRegex(ValueError, 'no painting session'):
             self.h.cmd_creative({'operation': 'krita_actions_audit', 'params': {'candidates': ['mirrorNodeX']}})

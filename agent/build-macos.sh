@@ -6,6 +6,8 @@
 # A second worktree can share the main checkout's fetched dependencies: see agent/setup-worktree.sh.
 # Result: _install/bin/krita.app (bundle id and settings folders from cmake/modules/KritaAppIdentity.cmake).
 # Launch: agent/run.sh
+# CMAKE_BUILD_PARALLEL_LEVEL=N caps the build at N parallel jobs (ninja's own default otherwise); run it under
+# `nice -n 19` to leave the Mac usable.
 set -euo pipefail
 ROOT=${0:A:h:h}
 cd "$ROOT"
@@ -59,4 +61,4 @@ grep -qx "CMAKE_INSTALL_PREFIX:PATH=$ROOT/_install" _build/CMakeCache.txt || {
   echo "_build installs outside $ROOT/_install: remove _build and configure again" >&2
   exit 1
 }
-ninja -C _build install
+ninja ${CMAKE_BUILD_PARALLEL_LEVEL:+-j "$CMAKE_BUILD_PARALLEL_LEVEL"} -C _build install

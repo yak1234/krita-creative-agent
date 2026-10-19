@@ -16,6 +16,8 @@
 #include <QJsonObject>
 #include <QVector>
 
+#include <utility>
+
 #include <kpluginfactory.h>
 #include <kundo2magicstring.h>
 #include <KoCanvasResourceProvider.h>
@@ -301,7 +303,9 @@ int AgentAccelService::saveInBackground(const QString &path)
     job->job.file = document->localFilePath();
     job->document = document;
     for (auto it = m_saveJobs.begin(); it != m_saveJobs.end() && m_saveJobs.size() >= KEPT_SAVE_JOBS; ) {
-        it = it.value()->job.state == AgentSave::Job::Running ? it + 1 : m_saveJobs.erase(it);
+        // Qt 6's QHash iterator only steps forward (++it), so no `it + 1`.
+        if (it.value()->job.state == AgentSave::Job::Running) ++it;
+        else it = m_saveJobs.erase(it);
     }
     m_saveJobs.insert(id, job);
     auto refuse = [&] (const QString &why) {
@@ -311,7 +315,7 @@ int AgentAccelService::saveInBackground(const QString &path)
         return id;
     };
     if (job->job.file.isEmpty()) return refuse(QStringLiteral("The document has no file yet: save it once first."));
-    for (const QSharedPointer<SaveJob> &other : qAsConst(m_saveJobs)) {
+    for (const QSharedPointer<SaveJob> &other : std::as_const(m_saveJobs)) {
         if (other != job && other->job.state == AgentSave::Job::Running && other->document == document) {
             return refuse(QStringLiteral("Save job %1 of this document is still running.").arg(other->job.id));
         }
@@ -371,7 +375,7 @@ void AgentAccelService::finishSave(int id, bool exported, const QString &exportE
 {
     QSharedPointer<SaveJob> job = m_saveJobs.value(id);
     if (!job || job->job.state != AgentSave::Job::Running) return;
-    for (const QMetaObject::Connection &connection : qAsConst(job->connections)) disconnect(connection);
+    for (const QMetaObject::Connection &connection : std::as_const(job->connections)) disconnect(connection);
     job->connections.clear();
     QString error;
     const bool saved = AgentSave::complete(job->temporary, job->job.file, exported, exportError, &error);

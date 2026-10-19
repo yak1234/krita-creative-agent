@@ -122,6 +122,21 @@ test('the action audit keeps only commands that opened no dialog and were undone
   assert.ok(!CANDIDATES.some(c => /crop|trim|resize|scale/i.test(c.id)), 'nothing that changes the canvas size');
 });
 
+test('the action audit talks to the Krita whose panel config KRITA_CREATIVE_CONFIG names, and lists it under its key', async () => {
+  const { auditBridgeConfig, auditTable } = await import('../scripts/audit-krita-actions.mjs');
+  const folder = await mkdtemp(join(tmpdir(), 'audit-config-'));
+  try {
+    const config = join(folder, 'creative-agent-config.json');
+    await writeFile(config, JSON.stringify({ bridge_url: 'http://127.0.0.1:5679' }));
+    assert.deepEqual(auditBridgeConfig({ KRITA_CREATIVE_CONFIG: config }), { bridge_url: 'http://127.0.0.1:5679' });
+    assert.deepEqual(auditBridgeConfig({ KRITA_CREATIVE_CONFIG: join(folder, 'missing.json') }), {});
+    const table = auditTable({ '5.3.3 (git 858d352)': [{ id: 'mirrorNodeX' }] },
+      { version: 'KritaAgent 6.1.0-prealpha', krita_version: '6.1.0-prealpha (git 6ad1cf6)' }, [{ id: 'clear' }]);
+    assert.deepEqual(Object.keys(table), ['5.3.3 (git 858d352)', 'KritaAgent 6.1.0-prealpha'], 'stock’s entry is kept');
+    assert.deepEqual(table['KritaAgent 6.1.0-prealpha'], [{ id: 'clear' }]);
+  } finally { await rm(folder, { recursive: true, force: true }); }
+});
+
 test('a second companion cannot acquire a live owner’s lock', async () => {
   const output = await mkdtemp(join(tmpdir(), 'creative-lock-'));
   const a = new PaintingRuntime({ config: { output } });

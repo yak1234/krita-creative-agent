@@ -3,7 +3,8 @@
 Runs inside the creative operation journal (creative_tools.py). An action is on the list
 only after the audit (krita_actions_audit, run by scripts/audit-krita-actions.mjs) showed on
 the installed Krita that it opens no dialog, leaves Krita responsive and is undone. The list
-is data, per Krita version, in krita_actions.json; an unaudited version offers no actions.
+is data, per Krita version, in krita_actions.json (actions_key: stock Krita by its exact build, the fork by its
+settings folder and release); an unaudited version offers no actions.
 
 Pixel actions change a copy of an agent layer (reject shows the original again). Selection
 actions read any layer, save the result as a named selection, and leave the artist's own
@@ -34,6 +35,24 @@ def load_actions(path=None):
     except (OSError, ValueError):
         return {}
     return table if isinstance(table, dict) else {}
+
+
+def organization():
+    """The running app's organization name: empty in stock Krita, the settings folder in an app with its own (the fork)."""
+    from .qt_compat import QCoreApplication
+    instance = getattr(QCoreApplication, 'instance', None)
+    app = instance() if instance is not None else None
+    return (app.organizationName() or '') if app is not None and hasattr(app, 'organizationName') else ''
+
+
+def actions_key(version, organization=''):
+    """The key krita_actions.json lists a Krita under. Stock Krita: its exact version, '5.3.3 (git 858d352)', since the
+    audit holds for that build. An app with its own settings folder (the fork, rebuilt at every commit): the folder and
+    the release without its commit, 'KritaAgent 6.1.0-prealpha', so a rebuild keeps its audit; the fork is audited again
+    after each upstream merge (AGENT-FORK.md)."""
+    if not organization:
+        return version
+    return '%s %s' % (organization, re.sub(r'\s*\(git [^)]*\)\s*$', '', version))
 
 
 def compact_actions(actions):
@@ -309,7 +328,7 @@ class NativeCraft:
 
     # ----- vetted actions ----------------------------------------------------------
     def _native_actions(self, version):
-        entries = load_actions(ACTIONS_PATH).get(version)
+        entries = load_actions(ACTIONS_PATH).get(actions_key(version, organization()))
         return [entry for entry in entries if isinstance(entry, dict) and entry.get('id')] if isinstance(entries, list) else []
 
     def _native_action_entry(self, params):
@@ -464,7 +483,8 @@ class NativeCraft:
         finally:
             doc.setModified(False)
             doc.close()
-        return {'status': 'ok', 'version': app.version(), 'results': results}
+        # `version` is the key the audit's entries are listed under (actions_key); `krita_version` the build audited.
+        return {'status': 'ok', 'version': actions_key(app.version(), organization()), 'krita_version': app.version(), 'results': results}
 
     def _native_audit_layer(self, doc):
         """A fresh layer painted on its left half and a selection over the top half: different areas, so selection

@@ -93,5 +93,92 @@
         "target"
       ]
     }
+  ],
+  "KritaAgent 6.1.0-prealpha": [
+    {
+      "id": "rotateLayer180",
+      "label": "Rotate the layer 180°",
+      "kind": "pixels",
+      "needs": [
+        "target"
+      ]
+    },
+    {
+      "id": "rotateLayerCW90",
+      "label": "Rotate the layer 90° clockwise",
+      "kind": "pixels",
+      "needs": [
+        "target"
+      ]
+    },
+    {
+      "id": "rotateLayerCCW90",
+      "label": "Rotate the layer 90° counter-clockwise",
+      "kind": "pixels",
+      "needs": [
+        "target"
+      ]
+    },
+    {
+      "id": "selectopaque",
+      "label": "Select the opaque pixels of the layer",
+      "kind": "selection",
+      "needs": [
+        "target"
+      ]
+    },
+    {
+      "id": "selectopaque_add",
+      "label": "Add the opaque pixels of the layer to selection",
+      "kind": "selection",
+      "needs": [
+        "target",
+        "selection"
+      ]
+    },
+    {
+      "id": "selectopaque_subtract",
+      "label": "Subtract the opaque pixels of the layer from selection",
+      "kind": "selection",
+      "needs": [
+        "target",
+        "selection"
+      ]
+    },
+    {
+      "id": "selectopaque_intersect",
+      "label": "Keep only selection where the layer is opaque",
+      "kind": "selection",
+      "needs": [
+        "target",
+        "selection"
+      ]
+    },
+    {
+      "id": "invert_selection",
+      "label": "Invert selection",
+      "kind": "selection",
+      "needs": [
+        "target",
+        "selection"
+      ]
+    },
+    {
+      "id": "clear",
+      "label": "Clear the layer inside selection",
+      "kind": "pixels",
+      "needs": [
+        "target",
+        "selection"
+      ]
+    },
+    {
+      "id": "split_alpha_into_mask",
+      "label": "Move the layer’s transparency into a mask",
+      "kind": "pixels",
+      "needs": [
+        "target"
+      ]
+    }
   ]
 }

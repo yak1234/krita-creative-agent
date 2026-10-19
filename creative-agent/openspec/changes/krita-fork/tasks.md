@@ -80,10 +80,14 @@
 - [ ] 2.4 Async stroke jobs on `paintPolylineStroke` with state, progress and changed rect, each holding its
   `KisStrokeId` so `job.wait()` waits for that job only; the companion polls jobs instead of waiting. Tests: nothing is
   lost when Krita is busy, and the window responds while a pass paints.
-- [ ] 2.5 `Document.beginAgentMove(name)` / `endAgentMove()`: one named undo step per move, marked in the undo
+- [x] 2.5 `Document.beginAgentMove(name)` / `endAgentMove()`: one named undo step per move, marked in the undo
   history docker; the plugin's Keep / Undo uses it. Tests: a 1400-stroke move is one step, Undo of a move rejects all
   its async passes, and earlier artist strokes stay in the history.
-- [ ] 2.7 Undo history in libkis: count, text, index, `setIndex`, macros and named steps (`KUndo2Stack`); scripted
+  *(Merged 2253af0 after two reviews: agent commands collected apart from the artist's and pushed as one "Agent:
+  <name>" step when the move's strokes finish; split on a shared layer; no locks; Ctrl+Z works during a move; a move left
+  open rests after save, undo or idle and continues as "(cont.)"; `with doc.agentMove(name):`. TestDocumentHistory 33,
+  TestPythonAgentMove 6, libkis set green. A live check in the fork remains.)*
+- [x] 2.7 Undo history in libkis: count, text, index, `setIndex`, macros and named steps (`KUndo2Stack`); scripted
   strokes and processing carry a name instead of "Scripted Brush Stroke".
 - [x] 2.8 Change events beyond the image: node added, removed and changed, selection, undo index, modified, active
   node, tool and preset, through `Notifier`.

@@ -7,7 +7,14 @@ be offered upstream as it is: `LGPL-2.0-or-later` in `libs/libkis` and its tests
 and in `sdk/tests` the licence of its neighbours (`GPL-2.0-or-later`). New files carry
 `SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>`. Build helpers in `agent/` stay as they are.
 
-Our work lives on the branch `krita-agent`, rebased on upstream `master`. Upstream's history is never rewritten here.
+Our work lives on the branch `krita-agent`, kept current by merging upstream `master` into it. Upstream's history is
+never rewritten here.
+
+**One repository.** The creative agent itself lives in this tree under `creative-agent/`: the plugin (`krita-mcp`), the
+companion (`krita-creative-agent`), the native helper (`krita-native`), the OpenSpec plan (`openspec/`) and docs,
+merged with their history from `digital_art/krita` (task 1.5). Fork-first (the artist's decision, 19 October 2026):
+artists download this Krita, so the agent is designed for it and new features may need it; stock Krita 5.3.3 support is
+frozen. `creative-agent/` is entirely ours and never conflicts with upstream.
 Upstream is the remote that points at `https://invent.kde.org/graphics/krita.git`: `origin` in this checkout (if a
 clone's `origin` is our own fork, add KDE's as `upstream` and read `origin/master` below as `upstream/master`).
 
@@ -153,15 +160,16 @@ and `DYLD_LIBRARY_PATH=<worktree>/_build/bin` (set in the shell, not through `/u
 variables), so the last built libraries load rather than the last installed ones. Use the `ninja` in `_krita-tools`:
 an older system `ninja` resets the build log and the next build starts over.
 
-## Rebase cadence
+## Upstream sync cadence
 
-- **Monthly**, in the first week of the month, onto the current upstream `master`:
-  `git fetch origin && git rebase origin/master krita-agent`.
-- Before rebasing, tag the current state (`agent-YYYY-MM-pre-rebase`) so it can be compared and restored.
-- After rebasing: run `agent/check-identity.sh` (fails on new upstream code that reaches per-user config or data
+- **Monthly**, in the first week of the month, merge the current upstream `master`:
+  `git fetch origin && git checkout krita-agent && git merge origin/master`. A merge rather than a rebase: with the
+  creative agent's own history in this branch (`creative-agent/`), rebasing would rewrite hundreds of our commits.
+- Before merging, tag the current state (`agent-YYYY-MM-pre-sync`) so it can be compared and restored.
+- After merging: run `agent/check-identity.sh` (fails on new upstream code that reaches per-user config or data
   folders, QSettings or `*rc` config names without going through `KisAppIdentity`; `agent/check-identity.allow` lists
   the known-safe lines), rebuild (`agent/build-macos.sh --deps`, since KDE's dependency packages move with master), run
-  the identity tests above, the plugin's test suite and the Agent-mode test chats against the fork, and update the
+  the identity tests above, the creative agent's suites (`creative-agent/krita-creative-agent`: Python and JS) and the Agent-mode test chats against the fork, and update the
   table above if a conflict changed what an edit touches.
 - Out of cycle only for an upstream fix we need now, or before a release.
 - Dependencies follow upstream's Qt6 branch of `krita-deps-management` (`transition.now/qt6` today; the branch name is
@@ -170,7 +178,7 @@ an older system `ninja` resets the build log and the next build starts over.
 ## What we offer upstream
 
 Every change that would help any Krita script or user is offered to KDE as a merge request on invent.kde.org, written
-against upstream `master` without our branding. If it is accepted, our copy goes away at the next rebase. In
+against upstream `master` without our branding. If it is accepted, our copy goes away at the next sync. In
 particular:
 
 - **Scripting speed (libkis):** region refresh (`Document.refreshProjection(QRect)`), `setPixelData` dirtying only its

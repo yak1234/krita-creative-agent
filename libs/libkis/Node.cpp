@@ -610,6 +610,8 @@ bool Node::setPixelData(QByteArray value, int x, int y, int w, int h)
         return false;
     }
     dev->writeBytes((const quint8*)value.constData(), x, y, w, h);
+    // Krita Agent: recomposite only what was written, asynchronously (waitForDone() to wait for it).
+    d->node->setDirty(QRect(x, y, w, h));
     return true;
 }
 

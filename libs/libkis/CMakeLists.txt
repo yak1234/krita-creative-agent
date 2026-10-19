@@ -5,6 +5,7 @@ set(kritalibkis_LIB_SRCS
     DockWidgetFactoryBase.cpp
     Document.cpp
     DocumentChanges.cpp
+    DocumentAgentSpeed.cpp
     Filter.cpp
     InfoObject.cpp
     Krita.cpp

@@ -775,6 +775,39 @@ print(root.childNodes())
     QImage projection(int x = 0, int y = 0, int w = 0, int h = 0) const;
 
     /**
+     * @brief projection reads \p rect of the rendered image scaled by \p scale, without first
+     * copying the full-size area. The time grows with the area of \p rect (a fast read of a few
+     * rows at a time), not with the image's; memory stays near the size of the result: besides
+     * it, each of at most Krita's thread limit of stripes holds a 256 KB row buffer (twice that
+     * when the image is not 8-bit sRGB) and three rows of sums, 120 bytes per output column.
+     *
+     * Each output pixel is the average of the pixels it covers (an area average, weighted by
+     * alpha), as a smooth downscale of projection(x, y, w, h) would give, in the same colours.
+     * The result is round(rect.width() * scale) by round(rect.height() * scale) pixels, at
+     * least 1 by 1. A \p scale of 1 or more reads the rect at full size (no upscaling).
+     *
+     * @code
+     * side = 1568
+     * view = d.projection(d.bounds(), side / max(d.width(), d.height()))
+     * @endcode
+     *
+     * The read is consistent: it waits for the image's queued work, as waitForDone() does,
+     * and holds a read-only lock while it reads, so no job can change the image under it. It
+     * never asks a tool to end its stroke: while a stroke stays open (the artist holding the
+     * pen) it keeps waiting, for at most 5 seconds, and then returns a null QImage; try again
+     * later or read projection(x, y, w, h) instead. It also returns a null QImage when called
+     * again from within a read (from events processed while it waits).
+     *
+     * @param rect the area in image pixels; it is not clipped: pixels outside the image read as
+     * the projection's default pixel (transparent in a normal image), as with
+     * projection(x, y, w, h)
+     * @param scale output size over input size, above 0
+     * @return the scaled image, or a null QImage for an empty rect, a scale of 0 or less, or a
+     * read that could not lock the image within 5 seconds
+     */
+    QImage projection(const QRect &rect, qreal scale) const;
+
+    /**
      * @brief thumbnail create a thumbnail of the given dimensions.
      *
      * If the requested size is too big a null QImage is created.
@@ -833,6 +866,31 @@ print(root.childNodes())
      * wait until the image is fully recomputed.
      */
     void refreshProjection();
+
+    /**
+     * Starts a synchronous recomposition of the projection inside \p rect only (in image
+     * pixels, clipped to the image), and waits until it is done. The cost grows with the
+     * area of \p rect, not with the size of the image, so a script that knows what it
+     * changed should pass that area instead of calling refreshProjection().
+     *
+     * The area is grown by what a change inside it can reach once composited: the halo of a
+     * blur filter mask or adjustment layer, a drop shadow or another layer style. So passing
+     * exactly the pixels written is enough; the refresh covers their effects too.
+     *
+     * An empty rect, or one entirely outside the image, does nothing and does not wait.
+     *
+     * Like refreshProjection(), it waits with waitForDone(), so it also waits for
+     * whatever else the image is doing at the time.
+     *
+     * Node.setPixelData() composites its own area by itself: after it, call waitForDone(), not
+     * refreshProjection(rect), which would composite the same area a second time. Use this
+     * for changes Krita was not told about.
+     *
+     * @code
+     * d.refreshProjection(QRect(x, y, w, h))  # recomposites (x, y, w, h) and what its effects reach
+     * @endcode
+     */
+    void refreshProjection(const QRect &rect);
 
     /**
      * @brief DEPRECATED - use guidesConfig() instead

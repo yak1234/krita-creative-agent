@@ -96,12 +96,14 @@ public Q_SLOTS:
     TransformMask *createTransformMask(const QString &name) /Factory/;
     ColorizeMask *createColorizeMask(const QString &name) /Factory/;
     QImage projection(int x = 0, int y = 0, int w = 0, int h = 0) const;
+    QImage projection(const QRect &rect, qreal scale) const;
     QImage thumbnail(int w, int h) const;
     void lock();
     void unlock();
     void waitForDone();
     bool tryBarrierLock();
     void refreshProjection();
+    void refreshProjection(const QRect &rect);
     void setHorizontalGuides(const QList<qreal> &lines);
     void setVerticalGuides(const QList<qreal> &lines);
     void setGuidesVisible(bool visible);

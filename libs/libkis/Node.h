@@ -445,6 +445,11 @@ public Q_SLOTS:
      * @param w the width of each row
      * @param h the number of rows to write
      * @return true if writing the pixeldata worked
+     *
+     * The written rect is marked dirty, so the image recomposites it (and what effects such as
+     * a blur mask spread from it) in the background; call Document.waitForDone() before reading
+     * the projection. Neither Document.refreshProjection() nor refreshProjection(rect) is
+     * needed after it: either would composite the area a second time.
      */
     bool setPixelData(QByteArray value, int x, int y, int w, int h);
 

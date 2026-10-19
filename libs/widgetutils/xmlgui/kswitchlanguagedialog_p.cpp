@@ -7,6 +7,7 @@
  */
 
 #include <QApplication>
+#include <KisAppIdentity.h>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QLayout>
@@ -45,7 +46,7 @@ typedef QSharedPointer<QSettings> QSettingsPtr;
 
 static QSettingsPtr localeOverridesSettings()
 {
-    const QString configPath = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    const QString configPath = KisAppIdentity::configLocation();
     const QDir configDir(configPath);
     if (!configDir.exists()) {
         configDir.mkpath(QStringLiteral("."));

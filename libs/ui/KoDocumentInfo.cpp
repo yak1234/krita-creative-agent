@@ -6,6 +6,7 @@
 */
 
 #include "KoDocumentInfo.h"
+#include <KisAppIdentity.h>
 
 #include "KisDocument.h"
 #include "KoXmlNS.h"
@@ -247,7 +248,7 @@ void KoDocumentInfo::updateParameters()
         return;
     }
 
-    KConfig config("kritarc");
+    KConfig config(KisAppIdentity::configFileName(QStringLiteral("kritarc")));
     config.reparseConfiguration();
     KConfigGroup appAuthorGroup(&config, "Author");
     QString profile = appAuthorGroup.readEntry("active-profile", "");

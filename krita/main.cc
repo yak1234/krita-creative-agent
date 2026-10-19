@@ -41,6 +41,7 @@
 #include <KisUsageLogger.h>
 #include <KoConfig.h>
 #include <KoResourcePaths.h>
+#include <KisAppIdentity.h>
 #include <kis_config.h>
 #include <kis_debug.h>
 #include <kis_image_config.h>
@@ -121,7 +122,7 @@ void tryInitDrMingw()
     }
 
     // Set the log file path to %LocalAppData%\kritacrash.log
-    const QString logFile = QDir(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)).absoluteFilePath("kritacrash.log");
+    const QString logFile = QDir(KisAppIdentity::logLocation()).absoluteFilePath("kritacrash.log");
     const QByteArray logFilePath = QDir::toNativeSeparators(logFile).toLocal8Bit();
     myExcHndlSetLogFileNameA(logFilePath.data());
 }
@@ -173,7 +174,7 @@ Java_org_krita_android_JNIWrappers_saveState(JNIEnv* /*env*/,
         doc->autoSaveOnPause();
     }
 
-    const QString configPath = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    const QString configPath = KisAppIdentity::configLocation();
     QSettings kritarc(configPath + QStringLiteral("/kritadisplayrc"), QSettings::IniFormat);
     kritarc.setValue("canvasState", "OPENGL_SUCCESS");
 }
@@ -227,6 +228,9 @@ extern "C" MAIN_EXPORT int MAIN_FN(int argc, char **argv)
     }
 #endif
 
+    // Before anything reads a setting or a standard path: a build with its own identity keeps its own folders.
+    KisAppIdentity::initialize();
+
     bool runningInKDE = !qgetenv("KDE_FULL_SESSION").isEmpty();
 
 #if defined HAVE_X11
@@ -243,7 +247,7 @@ extern "C" MAIN_EXPORT int MAIN_FN(int argc, char **argv)
     qputenv("QT_BEARER_POLL_TIMEOUT", QByteArray::number(-1));
 
     // A per-user unique string, without /, because QLocalServer cannot use names with a / in it
-    QString key = "Krita5" + QStandardPaths::writableLocation(QStandardPaths::HomeLocation).replace("/", "_");
+    QString key = "Krita5" + KisAppIdentity::settingsFolder() + QStandardPaths::writableLocation(QStandardPaths::HomeLocation).replace("/", "_");
     key = key.replace(":", "_").replace("\\","_");
 
     QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts, true);
@@ -359,7 +363,7 @@ extern "C" MAIN_EXPORT int MAIN_FN(int argc, char **argv)
     }
 #endif
 
-    const QDir configPath(QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation));
+    const QDir configPath(KisAppIdentity::configLocation());
     QSettings kritarc(configPath.absoluteFilePath("kritadisplayrc"), QSettings::IniFormat);
 
     // KFI18N is broken on Android. See kswitchlanguagedialog_p.cpp for details.
@@ -716,21 +720,22 @@ if (!qEnvironmentVariableIsEmpty("KRITA_OPENGL_DEBUG")) {
     /// Initialize application info, it will be used by both, Qt and
     /// DrKonqi of the host system
     KAboutData aboutData("krita",
-                            i18n("Krita"),
+                            KisAppIdentity::settingsFolder().isEmpty() ? i18n("Krita") : KisAppIdentity::displayName(),
                             KritaVersionWrapper::versionString(true),
                             i18n("Krita is the full-featured digital art studio"),
                             KAboutLicense::GPL,
                             i18nc("@info:credit", "© 1999–2026 The Krita Developers"));
     aboutData.setHomepage(QStringLiteral("https://krita.org"));
-    aboutData.setOrganizationDomain("krita.org");
+    aboutData.setOrganizationDomain(KisAppIdentity::organizationDomain().toLatin1());
 
     // this call sets corresponding fields of QApplication as well
     KAboutData::setApplicationData(aboutData);
 
     // Note: Qt docs suggest we set organization name, but if we do, we get resource
     // paths of the form of krita/krita, which is weird.
-    KIS_SAFE_ASSERT_RECOVER(app.organizationName().isEmpty()) {
-        app.setOrganizationName("");
+    // (A build with its own identity sets the organization name to its settings folder: see KisAppIdentity.)
+    KIS_SAFE_ASSERT_RECOVER(app.organizationName() == KisAppIdentity::settingsFolder()) {
+        app.setOrganizationName(KisAppIdentity::settingsFolder());
     }
 
 #ifdef Q_OS_WIN

@@ -256,6 +256,7 @@ set(KRITA_TESTS_TARGET "" CACHE INTERNAL "KRITA_TESTS_TARGET")
 ############
 
 include(FeatureSummary)
+include(KritaAppIdentity)
 
 if (WIN32)
 option(USE_DRMINGW "Support the Dr. Mingw crash handler (only on windows)" ON)

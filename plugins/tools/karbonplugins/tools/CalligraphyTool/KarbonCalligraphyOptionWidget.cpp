@@ -5,6 +5,7 @@
 */
 
 #include "KarbonCalligraphyOptionWidget.h"
+#include <KisAppIdentity.h>
 
 #include <KoIcon.h>
 
@@ -44,7 +45,7 @@ TODO: add a reset defaults option?
 */
 
 // name of the configuration file
-const QString RCFILENAME = "karboncalligraphyrc";
+const QString RCFILENAME = KisAppIdentity::configFileName(QStringLiteral("karboncalligraphyrc"));
 
 KarbonCalligraphyOptionWidget::KarbonCalligraphyOptionWidget()
     : m_changingProfile(false)

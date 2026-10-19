@@ -5,6 +5,7 @@
  */
 
 #include "DlgSysInfo.h"
+#include <KisAppIdentity.h>
 #include <QStandardPaths>
 
 DlgSysInfo::DlgSysInfo(QWidget *parent)
@@ -15,7 +16,7 @@ DlgSysInfo::DlgSysInfo(QWidget *parent)
 
 QString DlgSysInfo::originalFileName()
 {
-    return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/krita-sysinfo.log";
+    return KisAppIdentity::logLocation() + "/krita-sysinfo.log";
 }
 
 QString DlgSysInfo::captionText()

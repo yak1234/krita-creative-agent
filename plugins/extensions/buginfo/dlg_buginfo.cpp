@@ -5,6 +5,7 @@
  */
 
 #include "dlg_buginfo.h"
+#include <KisAppIdentity.h>
 
 #include <klocalizedstring.h>
 #include <kis_debug.h>
@@ -63,7 +64,7 @@ void DlgBugInfo::initialize()
 
 void DlgBugInfo::initializeText()
 {
-    const QString configPath = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    const QString configPath = KisAppIdentity::configLocation();
     QSettings kritarc(configPath + QStringLiteral("/kritadisplayrc"), QSettings::IniFormat);
 
     QString info = infoText(kritarc);

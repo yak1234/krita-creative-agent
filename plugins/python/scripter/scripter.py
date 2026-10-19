@@ -4,9 +4,9 @@ SPDX-FileCopyrightText: 2017 Eliakin Costa <eliakim170@gmail.com>
 SPDX-License-Identifier: GPL-2.0-or-later
 """
 try:
-    from PyQt6.QtCore import QSettings, QStandardPaths
+    from PyQt6.QtCore import QCoreApplication, QSettings, QStandardPaths
 except:
-    from PyQt5.QtCore import QSettings, QStandardPaths
+    from PyQt5.QtCore import QCoreApplication, QSettings, QStandardPaths
 from krita import Krita, Extension
 from builtins import i18n
 from . import uicontroller, documentcontroller, debugcontroller
@@ -26,6 +26,9 @@ class ScripterExtension(Extension):
 
     def initialize(self):
         configPath = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.GenericConfigLocation)
+        # A build with its own identity keeps its config files in a folder named after its organization (KisAppIdentity)
+        if QCoreApplication.organizationName():
+            configPath += '/' + QCoreApplication.organizationName()
         self.settings = QSettings(configPath + '/krita-scripterrc', QSettings.Format.IniFormat)
         self.uicontroller = uicontroller.UIController()
         self.documentcontroller = documentcontroller.DocumentController()

@@ -3,6 +3,7 @@ add_subdirectory( tests )
 include(CheckFunctionExists)
 check_function_exists(backtrace HAVE_BACKTRACE)
 configure_file(config-debug.h.cmake ${CMAKE_CURRENT_BINARY_DIR}/config-debug.h)
+configure_file(config-app-identity.h.cmake ${CMAKE_CURRENT_BINARY_DIR}/config-app-identity.h)
 
 option(HAVE_MEMORY_LEAK_TRACKER "Enable memory leak tracker (always disabled in release build)" OFF)
 option(HAVE_BACKTRACE_SUPPORT "Enable recording of backtrace in memory leak tracker" OFF)
@@ -29,6 +30,7 @@ set(kritaglobal_LIB_SRCS
     kis_config_notifier.cpp
     KisDeleteLaterWrapper.cpp
     KisUsageLogger.cpp
+    KisAppIdentity.cpp
     KisFileUtils.cpp
     KisSignalMapper.cpp
     KisRegion.cpp

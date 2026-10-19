@@ -11,6 +11,7 @@
 */
 
 #include "KisShortcutsEditor.h"
+#include <KisAppIdentity.h>
 #include "KisShortcutsEditor_p.h"
 #include "kshortcutschemeshelper_p.h"
 #include "config-xmlgui.h"
@@ -223,7 +224,7 @@ void KisShortcutsEditor::saveShortcuts(KConfigGroup *config) const
     // This is a horrible mess with pointers...
     KConfigGroup cg;
     if (config == 0) {
-        cg = KConfigGroup(KSharedConfig::openConfig("kritashortcutsrc"),
+        cg = KConfigGroup(KSharedConfig::openConfig(KisAppIdentity::configFileName(QStringLiteral("kritashortcutsrc"))),
                           QStringLiteral("Shortcuts"));
         config = &cg;
     }

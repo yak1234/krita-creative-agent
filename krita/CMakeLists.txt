@@ -1,6 +1,8 @@
 add_subdirectory( dtd )
 add_subdirectory( data )
-add_subdirectory( integration )
+if (NOT APPLE OR KRITA_BUILD_MACOS_INTEGRATION)
+    add_subdirectory( integration )
+endif()
 # Install the application icons following the freedesktop icon theme spec
 add_subdirectory( "pics/branding/${BRANDING}" )
 
@@ -228,9 +230,18 @@ if (APPLE)
     set(KRITA_VERSION_NUMBER_STRING "${KRITA_STABLE_VERSION_MAJOR}.${KRITA_STABLE_VERSION_MINOR}.${KRITA_VERSION_RELEASE}")
     set_target_properties(krita PROPERTIES INSTALL_RPATH "@loader_path/../../../../lib;@loader_path/../lib;
         @loader_path/../Frameworks;@executable_path/../../../../lib;@executable_path/../lib;@executable_path/../Frameworks")
-    set_target_properties(krita PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.template)
-    set_target_properties(krita PROPERTIES MACOSX_BUNDLE_GUI_IDENTIFIER "org.krita")
-    set_target_properties(krita PROPERTIES MACOSX_BUNDLE_BUNDLE_NAME "Krita")
+    set(KRITA_INFO_PLIST_TEMPLATE ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.template)
+    if (KRITA_APP_SETTINGS_FOLDER)
+        # A build with its own identity opens Krita files only when asked: it never becomes their default app.
+        file(READ ${KRITA_INFO_PLIST_TEMPLATE} _krita_info_plist)
+        string(REGEX REPLACE "(<key>LSHandlerRank</key>[ \t\r\n]*<string>)(Owner|Default)(</string>)"
+               "\\1Alternate\\3" _krita_info_plist "${_krita_info_plist}")
+        set(KRITA_INFO_PLIST_TEMPLATE ${CMAKE_CURRENT_BINARY_DIR}/Info.plist.template)
+        file(WRITE ${KRITA_INFO_PLIST_TEMPLATE} "${_krita_info_plist}")
+    endif()
+    set_target_properties(krita PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${KRITA_INFO_PLIST_TEMPLATE})
+    set_target_properties(krita PROPERTIES MACOSX_BUNDLE_GUI_IDENTIFIER "${KRITA_MACOS_BUNDLE_ID}")
+    set_target_properties(krita PROPERTIES MACOSX_BUNDLE_BUNDLE_NAME "${KRITA_MACOS_BUNDLE_NAME}")
     set_target_properties(krita PROPERTIES MACOSX_BUNDLE_ICON_FILE "krita")
     set_target_properties(krita PROPERTIES MACOSX_BUNDLE_LONG_VERSION_STRING ${KRITA_VERSION_STRING})
     set_target_properties(krita PROPERTIES MACOSX_BUNDLE_SHORT_VERSION_STRING ${KRITA_VERSION_NUMBER_STRING})

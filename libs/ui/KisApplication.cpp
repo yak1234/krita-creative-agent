@@ -6,6 +6,7 @@
  */
 
 #include "KisApplication.h"
+#include <KisAppIdentity.h>
 
 #include <stdlib.h>
 #ifdef Q_OS_WIN
@@ -1262,7 +1263,7 @@ void KisApplication::resetConfig()
     config->markAsClean();
     
     // find user settings file
-    const QString configPath = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    const QString configPath = KisAppIdentity::configLocation();
     QString kritarcPath = configPath + QStringLiteral("/kritarc");
     
     QFile kritarcFile(kritarcPath);

@@ -6,6 +6,7 @@
 
 
 #include <QString>
+#include <KisAppIdentity.h>
 #include <QGlobalStatic>
 #include <QFile>
 #include <QFileInfo>
@@ -152,7 +153,7 @@ public:
     // This is the main place containing ActionInfoItems.
     QMap<QString, ActionInfoItem> actionInfoList;
     void loadActionFiles();
-    void loadCustomShortcuts(QString filename = QStringLiteral("kritashortcutsrc"));
+    void loadCustomShortcuts(QString filename = KisAppIdentity::configFileName(QStringLiteral("kritashortcutsrc")));
 
     // XXX: this adds a default item for the given name to the list of actionInfo objects!
     ActionInfoItem &actionInfo(const QString &name) {

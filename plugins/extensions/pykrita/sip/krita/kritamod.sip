@@ -30,6 +30,7 @@
 %Include Window.sip
 %Include Krita.sip
 %Include StrokePoint.sip
+%Include StrokeJob.sip
 %Include Node.sip
 
 %Include GroupLayer.sip

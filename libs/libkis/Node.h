@@ -10,6 +10,7 @@
 #include <QColor>
 #include <QPointF>
 #include <QVariantMap>
+#include <QVariant>
 
 #include <kis_types.h>
 
@@ -18,6 +19,8 @@
 
 #include "PaintingResources.h"
 #include "StrokePoint.h"
+
+class StrokeJob; // Krita Agent: Node::paintStrokes()
 
 /**
  * Node represents a layer or mask in a Krita image's Node hierarchy. Group layers can contain
@@ -705,6 +708,57 @@ public Q_SLOTS:
     void paintPolylineStroke(const QList<StrokePoint> &points,
                      const QString strokeStyle = PaintingResources::defaultStrokeStyle,
                      const QString &name = QString());
+
+    /**
+     * @brief paintStrokes paint brush strokes in the background, with full pen input, and return the job painting
+     * them (Krita Agent; defined in NodeStrokeJobs.cpp). The call returns at once and never blocks the window, and
+     * it needs no active view: the brush comes from the job's options, never from the view's state.
+     *
+     * Each stroke is a map, painted as one freehand stroke (spacing, randomness and distance sensors continuous
+     * along it), in image pixels:
+     * <ul>
+     * <li>"points": [[x, y, pen...], ...], straight lines between them (one point paints one dab); or</li>
+     * <li>"start": [x, y, pen...] and "segments": [[c1x, c1y, c2x, c2y, x, y, pen...], ...], cubic curves;</li>
+     * <li>"color" ("#rrggbb", "#aarrggbb" or a colour name; black when not given), "size" (the brush diameter in
+     *     pixels), "opacity" and "flow" (0 to 1); the preset's own size, opacity and flow when not given.</li>
+     * </ul>
+     * Pen input per point, in the units Krita's tablet input gives its brush engine, inline after x and y in this
+     * order, or as per-point lists in the stroke (one value per point: the start, then each segment's end):
+     * "pressure" (0 to 1), "tilt" ([x, y] in degrees, -60 to 60), "rotation" (degrees, -180 to 180), "speed" (0 to 1:
+     * Krita's view pixels per millisecond over 30) and "time_ms" (milliseconds since the stroke began). A value not
+     * given is a mouse's: pressure 1, everything else 0. Values out of range are clamped, rotation wrapped.
+     *
+     * Points and control points must lie inside the image grown by one brush size (the stroke's, else the
+     * preset's); a job takes at most 10000 strokes of at most 10000 points. A stroke of only a start, or of one
+     * point, paints one dab.
+     *
+     * The strokes are queued in windows of 32, the next when the last has painted, so the artist's own strokes run
+     * between windows instead of after the whole job. Job strokes never ask the artist's strokes to end, and Esc
+     * does not cancel them; the artist's Undo during a job stops it (keeping its first strokes) and then undoes.
+     * Must be called on the GUI thread.
+     *
+     * @param strokes the strokes, painted in order.
+     * @param options a map of:
+     * <ul>
+     * <li>"preset": the name of a brush preset in the resource database; when not given, a copy of the active
+     *     view's current preset (refused without one);</li>
+     * <li>"compositeOp": the blending mode id (for example "normal", "multiply"); the preset's own when not
+     *     given. Erasing is "erase": the view's eraser mode never applies;</li>
+     * <li>"name": the undo step's name ("Scripted Brush Strokes" when not given);</li>
+     * <li>"color", "size", "opacity", "flow": defaults for strokes that do not give their own.</li>
+     * </ul>
+     * Mirror painting is always off, and neither the view's eraser mode nor its alpha lock applies.
+     * @param selection the selection the strokes are clipped to; none (null) paints everywhere, whatever the
+     * document's or the layer's selection.
+     * @return the job, owned by the caller. A job refused (no document, no paintable pixels, a locked node, no
+     * preset, a malformed stroke) is returned in state "failed" with nothing queued.
+     *
+     * Undo: the job is one undo step, named by "name", landing when its last stroke has ended; inside an open agent
+     * move or undo macro it joins that step (which then lands only after the job, even if the script ends it first).
+     */
+    StrokeJob *paintStrokes(const QVariantList &strokes,
+                            const QVariantMap &options = QVariantMap(),
+                            Selection *selection = nullptr);
 
     /**
      * @brief paint a rectangle on the canvas. Uses current brush preset

@@ -48,6 +48,8 @@ set(kritalibkis_LIB_SRCS
 
     LibKisUtils.cpp
     DocumentHistory.cpp
+    NodeStrokeJobs.cpp
+    StrokeJob.cpp
 
     AngleSelector.cpp
     IntParseSpinBox.cpp

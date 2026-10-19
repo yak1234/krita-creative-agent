@@ -125,6 +125,11 @@ Keep this table current: every upstream file the `krita-agent` branch changes, a
 | `libs/ui/tool/kis_resources_snapshot.cpp` | `setupPainter()` skips the paintop when the snapshot has no preset (one `if`): a snapshot made without a canvas, as the tool functions make, would otherwise dereference a null preset; fills need no paintop | tools as functions (5.3) |
 | `plugins/tools/tool_smart_patch/kis_inpaint.cpp` → `libs/image/kis_inpaint.cpp` | Moved (git mv) out of the Smart Patch tool's plugin into the image library, so scripts can patch; one line added (`#include "kis_inpaint.h"`, our new header exporting `patchImage()`); its file-scope classes (`ImageView`, `ImageData`, `MaskedImage`, `NearestNeighborField`, `Inpaint`) and helpers keep their global names, unchanged so the move stays a plain rename: no other file in `libs/` defines these names, and the library's hidden visibility keeps them out of other libraries and plugins, but a future file in `libs/image` must not reuse them (one definition rule); `libs/image/CMakeLists.txt` builds it, the plugin's `CMakeLists.txt` no longer does, and `kis_tool_smart_patch.cpp` includes the header instead of declaring `patchImage()` | tools as functions (5.3) |
 | `plugins/extensions/pykrita/tests/CMakeLists.txt` | Adds `TestPythonAgentTools` | tools as functions (5.3) |
+| `libs/libkis/Node.h` | Declares `paintStrokes()` (after `paintPolylineStroke()`), with `#include <QVariant>` and a forward declaration of `StrokeJob`; body in our `NodeStrokeJobs.cpp` | stroke jobs (2.4) |
+| `libs/libkis/Selection.h` | `friend class Node` (one line), so `paintStrokes()` clips its strokes to a given selection | stroke jobs (2.4) |
+| `libs/libkis/CMakeLists.txt`, `libs/libkis/tests/CMakeLists.txt` | Build `NodeStrokeJobs.cpp` and `StrokeJob.cpp`; add `TestStrokeJobs` and the `AgentStrokeJobsBenchmark` timing program | stroke jobs (2.4) |
+| `plugins/extensions/pykrita/sip/krita/Node.sip`, `kritamod.sip` | Python binding of `paintStrokes()`; `%Include StrokeJob.sip` | stroke jobs (2.4) |
+| `plugins/extensions/pykrita/tests/CMakeLists.txt` | Adds `TestPythonStrokeJobs` | stroke jobs (2.4) |
 
 Our own files for the identity: `cmake/modules/KritaAppIdentity.cmake`, `libs/global/KisAppIdentity.{h,cpp}`,
 `libs/global/config-app-identity.h.cmake`; tests `libs/global/tests/KisAppIdentityTest.{h,cpp}`,
@@ -193,6 +198,49 @@ recorded in the resource database only (a `.gbr` file has no field for it); pres
 Merge and bake (5.2) refuse locked nodes and nodes in locked or hidden groups, and inside an agent move or macro each
 is part of that one undo step (bake runs one command through `DocumentHistory::runCommandStroke`; merge runs Krita's
 own merge under `KisProcessingApplicator::UndoFacadeOverride` with `DocumentHistory::scriptUndoFacade`).
+
+Our own files for stroke jobs (2.4): `libs/libkis/NodeStrokeJobs.cpp` (`Node::paintStrokes()`),
+`libs/libkis/StrokeJob.{h,cpp}` (the job), `libs/libkis/StrokeJobShared.h` (internal: the state a job shares with its
+strokes, the feeder, and `StrokeJobStrokeStrategy`, Krita's freehand stroke reporting its start and end), and the step
+holds in our `DocumentHistory.{h,cpp}`,
+`plugins/extensions/pykrita/sip/krita/StrokeJob.sip`; tests `libs/libkis/tests/TestStrokeJobs.{h,cpp}`,
+`plugins/extensions/pykrita/tests/TestPythonStrokeJobs.{h,cpp}`, and the `AgentStrokeJobsBenchmark` timing program.
+
+### Stroke jobs
+
+`Node.paintStrokes(strokes, options, selection) -> StrokeJob` (GUI thread) reads and checks every stroke first (points
+inside the image grown by one brush size; at most 10000 strokes of 10000 points; per-point lists one value per point),
+then returns at once. Each stroke is one freehand stroke (Krita's `FreehandStrokeStrategy`, as master's
+`paintPolylineStroke` builds them, with a `KisPaintInformation` per point: pressure, tilt, rotation, speed, time). The
+job's brush is its own: a private canvas resource provider with the named preset (or a copy of the active view's
+preset), the preset's blending mode unless one is given ("erase" erases), no mirror, no eraser mode or alpha lock from
+the view, and the selection given or none. So no view is needed, and nothing the artist sets in the view leaks into
+agent strokes.
+
+**The artist comes first** (the lead's ruling). A feeder on the GUI thread (`StrokeJobFeeder`) keeps at most 32 of a
+job's strokes queued and tops them up when half have painted, so an artist's stroke started during a job waits behind
+at most 32 job strokes. Job strokes never ask open strokes to end (`setRequestsOtherStrokesToEnd(false)`) and are not
+asynchronously cancellable, so Esc, the Undo History docker and closing views leave them alone. Per image, a guard
+(`StrokeJobImageGuard`) listens for `KisImage::sigUndoDuringStrokeRequested`: the artist's Undo during a job stops every
+job on the image and, once the image is idle, carries out that undo (Krita drops it on a busy image), unless Krita
+managed it at once. `KisImage::sigAboutToBeDeleted` stops the jobs too, so closing a document waits only for the
+strokes painting at that moment.
+
+**Ends and waiting.** Each stroke reports its start and its end; the end is a barrier job queued from its finish
+callback before the base class queues a Wash brush's merge (jobs a callback adds go in front of the stroke's remaining
+jobs), so a stroke counts as done only after its pixels have landed. A stroke dropped unstarted reports from its
+destructor. `wait()` waits for the job's own strokes; on the GUI thread it always has a limit (a negative timeout
+polls, with a warning), since some strokes need the GUI thread. `changedRect()` collects the layer's redraw requests
+while a job stroke runs (`KisImageChangeReports`; strokes on an image run one at a time). `cancel()` sets a flag every
+stroke reads: strokes not started paint nothing (they skip their painters altogether), the one painting is rolled back
+(its transaction reverted), and the feeder drops the strokes not yet queued, so the layer keeps a whole prefix. It never
+calls `KisImage::cancelStroke()`, since the job's strokes are already ended. Job strokes make no level-of-detail copy
+and ignore wrap-around mode. While a job stroke paints, its changes are reported as the agent's
+(`DocumentChanges::beginAgentWork`, ended after the merge).
+
+**Undo.** The job holds its undo step (`DocumentHistory::holdStep`, a `ScriptStepHold`): the open agent move or script
+macro, or else a step of the job's own named by `name`. A held step does not land, so strokes queued in later top-ups
+still join it: a move ended by its script while a job still paints lands after the job.
 
 Our own files for the undo history: `libs/libkis/DocumentHistory.{h,cpp}`, `libs/ui/KisAgentHooks.{h,cpp}`,
 `plugins/extensions/pykrita/plugin/krita/agentmove.py`; tests `libs/libkis/tests/TestDocumentHistory.{h,cpp}` and

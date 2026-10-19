@@ -7,6 +7,7 @@
 #define LIBKIS_DOCUMENTHISTORY_H
 
 #include <QObject>
+#include <QPointer>
 #include <QScopedPointer>
 #include <QSharedPointer>
 #include <QString>
@@ -27,6 +28,32 @@ class KisStrokeUndoFacade;
 class KUndo2Command;
 class KUndo2Stack;
 class ScriptStep;
+class DocumentHistory;
+
+/**
+ * A stroke job's hold on the undo step its strokes go to (DocumentHistory::holdStep()). While held, the step does not
+ * land, so strokes queued later (a job feeds its strokes in windows) still join it. GUI thread only.
+ */
+class KRITALIBKIS_EXPORT ScriptStepHold
+{
+public:
+    ~ScriptStepHold();
+    /// The post-execution undo adapter the job's strokes send their commands to, or null once released.
+    KisPostExecutionUndoAdapter *adapter() const;
+    /// The step's text in the Undo History ("Agent: <move>", or the job's own name).
+    QString stepName() const;
+    /// Counts as script work on the step (its idle timeout).
+    void touch();
+    /// Lets the step go: a job's own step closes (it lands after the strokes queued so far), and a move or macro
+    /// closed while held lands now that nothing holds it. Further calls do nothing.
+    void release();
+
+private:
+    friend class DocumentHistory;
+    ScriptStepHold() = default;
+    QSharedPointer<ScriptStep> m_step;
+    QPointer<DocumentHistory> m_history;
+};
 
 /**
  * The history a script writes into one document: named macros, and agent moves, each of which becomes one named
@@ -148,6 +175,13 @@ public:
      */
     static bool queuePixelWrite(KisImageSP image, KisNodeSP node, const QByteArray &data, const QRect &rect);
 
+    /**
+     * A hold on the step a stroke job on \p image joins: the open macro or agent move, or else a new step of the
+     * job's own named \p name, which other script work never joins. Null when the image belongs to no document with a
+     * history. \p device as for scriptUndoAdapter(). GUI thread.
+     */
+    static QSharedPointer<ScriptStepHold> holdStep(KisImageSP image, const QString &name, KisPaintDeviceSP device);
+
 Q_SIGNALS:
     /**
      * Emitted after an agent move opens (\p open true) and after it has closed (\p open false: its work has landed),
@@ -179,6 +213,7 @@ private:
     static void afterEndMacro(KisDocument *document);
 
     friend class ScriptStep;
+    friend class ScriptStepHold;
 
     KisDocument *m_document;
     QSharedPointer<ScriptStep> m_current;       ///< the open step, if any

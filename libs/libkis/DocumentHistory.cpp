@@ -342,6 +342,14 @@ public:
     KisImageWSP m_image;
     const QString m_name;
     const bool m_agent;
+    int m_holds = 0;           ///< GUI thread: holds by stroke jobs (holdStep()); the step does not land while held
+    bool m_closeWanted = false; ///< GUI thread: closed while held; it lands when the last hold goes
+    bool m_ownedByHold = false; ///< GUI thread: a step of a job's own (not a macro or move), closed by its hold
+
+    KUndo2MagicString text() const
+    {
+        return stepText();
+    }
 
 private:
     KUndo2MagicString stepText() const
@@ -742,7 +750,77 @@ void DocumentHistory::close(QSharedPointer<ScriptStep> step)
     }
     step->setClosing();
 
+    if (step->m_holds > 0) {
+        step->m_closeWanted = true; // a stroke job still feeds it: it lands after the job (ScriptStepHold::release)
+        return;
+    }
     queueLanding(step);
+}
+
+QSharedPointer<ScriptStepHold> DocumentHistory::holdStep(KisImageSP image, const QString &name, KisPaintDeviceSP device)
+{
+    DocumentHistory *history = forImage(image);
+    if (!history) {
+        return QSharedPointer<ScriptStepHold>();
+    }
+    QSharedPointer<ScriptStepHold> hold(new ScriptStepHold());
+    hold->m_history = history;
+    if (history->activeStep()) {
+        hold->m_step = history->m_current;
+    } else {
+        history->dropStepOfReplacedImage();
+        QSharedPointer<ScriptStep> step(
+            new ScriptStep(history->m_document, image, name, false, history->m_openStackMacros));
+        step->m_ownedByHold = true;
+        {
+            QMutexLocker locker(&registryMutex());
+            history->m_steps << step;
+        }
+        hold->m_step = step;
+    }
+    hold->m_step->m_holds++;
+    hold->m_step->noteDevice(device);
+    hold->m_step->touch();
+    return hold;
+}
+
+ScriptStepHold::~ScriptStepHold()
+{
+    release();
+}
+
+KisPostExecutionUndoAdapter *ScriptStepHold::adapter() const
+{
+    return m_step ? m_step->adapter() : nullptr;
+}
+
+QString ScriptStepHold::stepName() const
+{
+    return m_step ? m_step->text().toString() : QString();
+}
+
+void ScriptStepHold::touch()
+{
+    if (m_step) m_step->touch();
+}
+
+void ScriptStepHold::release()
+{
+    QSharedPointer<ScriptStep> step = m_step;
+    m_step.reset();
+    if (!step) {
+        return;
+    }
+    step->m_holds--;
+    if (!m_history) {
+        return; // the document went, and the step with it
+    }
+    if (step->m_ownedByHold) {
+        m_history->close(step);
+    } else if (step->m_holds == 0 && step->m_closeWanted) {
+        step->m_closeWanted = false;
+        m_history->queueLanding(step);
+    }
 }
 
 void DocumentHistory::queueLanding(QSharedPointer<ScriptStep> step)

@@ -81,9 +81,18 @@
   halos (blur 111 and drop shadow 228 levels stale before), the scaled read locks with tryBarrierLock and never ends a
   stroke (null after 5 s), LGPL headers. Plugin side 3d66397. All new libkis suites pass on the merged build; a live
   measurement on New Moscow in the fork remains.)*
-- [ ] 2.4 Async stroke jobs on `paintPolylineStroke` with state, progress and changed rect, each holding its
-  `KisStrokeId` so `job.wait()` waits for that job only; the companion polls jobs instead of waiting. Tests: nothing is
-  lost when Krita is busy, and the window responds while a pass paints.
+- [x] 2.4 Async stroke jobs: `Node.paintStrokes(strokes, options, selection) -> StrokeJob` (one freehand stroke per
+  stroke with a `KisPaintInformation` per point, as `paintPolylineStroke` builds them) with state, progress and changed
+  rect; each stroke reports its own end after its pixels land, so `job.wait()` waits for that job only; the companion
+  polls jobs instead of waiting. The artist comes first: at most 32 job strokes queued at a time, no end requests, Esc
+  ignored, the artist's Undo stops the job and is then carried out. Tests: nothing is lost when Krita is busy, and the
+  window responds while a pass paints.
+  *(Libkis side merged after a review and a fix round: `Node.paintStrokes` -> `StrokeJob`, windows of 32 topped up at
+  half so the artist's strokes run between them, the artist's Ctrl+Z stops the job and then undoes, Krita's own
+  cancellation leaves jobs alone, bounded GUI-thread waits, Wash brushes report after their merge. TestStrokeJobs 24 and
+  TestPythonStrokeJobs 6 functions; the Wash test failed once in 27 author runs and 0 in 40 lead runs (watch it).
+  Remaining: the plugin switch-over (paint_pass to paintStrokes, Stop as cancel, a bridge job registry, the companion
+  polling) and a live New Moscow measurement.)*
 - [x] 2.5 `Document.beginAgentMove(name)` / `endAgentMove()`: one named undo step per move, marked in the undo
   history docker; the plugin's Keep / Undo uses it. Tests: a 1400-stroke move is one step, Undo of a move rejects all
   its async passes, and earlier artist strokes stay in the history.

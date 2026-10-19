@@ -107,11 +107,18 @@ new_moscow_merged (6000×4500) against a 1024×768 painting, with the same `timi
   has bounds.
 - **Asynchronous strokes with job status** (measured 19 October: batching 256 strokes into a few stroke jobs painted
   identical pixels at only 1.02–1.07× the speed, since the brush engine is about 70% of the time; jobs are for status,
-  nothing lost, pressure and undo, not raw speed): `Node.paintStrokesAsync(strokes) -> job`, with `job.state()`,
-  `job.wait(timeout)` and `job.changedRect()`, run through Krita's stroke system off the UI thread. A busy Krita then
-  answers "job 12 is painting, 40% done" instead of timing out, which fixes the lost results. It is built on master's
-  `paintPolylineStroke`, so each stroke carries pressure, tilt and speed per point. The job holds its `KisStrokeId`,
-  so `job.wait()` waits for that stroke only, never for the whole image as `waitForDone()` does.
+  nothing lost, pressure and undo, not raw speed): `Node.paintStrokes(strokes, options, selection) -> StrokeJob`, with
+  `state()`, `strokesDone()`, `changedRect()`, `status()`, `wait(timeout)`, `cancel()` and a `finished` signal, run
+  through Krita's stroke system off the UI thread. A busy Krita then answers "job 12 is painting, 40% done" instead of
+  timing out, which fixes the lost results. Each stroke is one `FreehandStrokeStrategy` stroke with a
+  `KisPaintInformation` per point (pressure, tilt, rotation, speed, time), as master's `paintPolylineStroke` builds
+  them, plus cubic segments; its brush is the job's own (named preset, no mirror or view state). Each stroke reports
+  its own end, after its pixels have landed (a Wash brush's merge included), so `wait()` waits for the job's strokes
+  only, never for the whole image as `waitForDone()` does. *(my call, the lead's ruling)* The artist comes first: a
+  job keeps at most 32 strokes queued and tops them up as they paint, so an artist's stroke waits behind at most 32;
+  job strokes never ask the artist's strokes to end and ignore Esc; the artist's Undo during a job stops it (a whole
+  prefix stays) and is then carried out. A job is one undo step, or part of the open move, however many top-ups it
+  takes (it holds the step until its last stroke ends). On the GUI thread `wait()` always has a limit.
 - **Cheap revision and change reports:** `Document.revision()`, a counter that increases on every change to the
   image, plus `Document.changedRect(since)` and a `Notifier.imageChanged(document, rect, source)` signal, all fed from
   `KisImage::sigImageUpdated`. `source` is `agent` while an agent job or move is open and `artist` otherwise. The

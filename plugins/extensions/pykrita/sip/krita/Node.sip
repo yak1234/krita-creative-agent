@@ -92,6 +92,7 @@ public Q_SLOTS:
     void paintPolygon(const QList<QPointF> points, const QString strokeStyle = "ForegroundColor", const QString fillStyle = "None", const QString &name = QString());
     void paintEllipse(const QRectF &rect, const QString strokeStyle = "ForegroundColor", const QString fillStyle = "None", const QString &name = QString());
     void paintPath(const QPainterPath &path, const QString strokeStyle = "ForegroundColor", const QString fillStyle = "None", const QString &name = QString());
+    StrokeJob *paintStrokes(const QList<QVariant> &strokes, const QMap<QString, QVariant> &options = QMap<QString, QVariant>(), Selection *selection = 0) /Factory/;
     QString paintAbility();
 Q_SIGNALS:
 private:

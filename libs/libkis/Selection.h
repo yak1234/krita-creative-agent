@@ -229,12 +229,12 @@ public Q_SLOTS:
 
 private:
     friend class Document;
+    friend class Node; // Krita Agent: Node::paintStrokes() (2.4) and the tools as functions (5.3) read a script's selection
     friend class FilterLayer;
     friend class FillLayer;
     friend class SelectionMask;
     friend class TransparencyMask;
     friend class FilterMask;
-    friend class Node; // Krita Agent: the tools as functions (krita-fork 5.3) read a script's selection
 
     KisSelectionSP selection() const;
 

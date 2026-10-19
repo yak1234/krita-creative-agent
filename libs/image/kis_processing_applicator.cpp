@@ -259,6 +259,22 @@ struct StrategyWithStatusPromise : KisStrokeStrategyUndoCommandBased
     std::promise<bool> m_successfullyCompleted;
 };
 
+namespace {
+/// The facade set by KisProcessingApplicator::UndoFacadeOverride on this thread, if any.
+thread_local KisStrokeUndoFacade *s_undoFacadeOverride = nullptr;
+}
+
+KisProcessingApplicator::UndoFacadeOverride::UndoFacadeOverride(KisStrokeUndoFacade *facade)
+    : m_previous(s_undoFacadeOverride)
+{
+    s_undoFacadeOverride = facade;
+}
+
+KisProcessingApplicator::UndoFacadeOverride::~UndoFacadeOverride()
+{
+    s_undoFacadeOverride = m_previous;
+}
+
 KisProcessingApplicator::KisProcessingApplicator(KisImageWSP image,
                                                  KisNodeSP node,
                                                  ProcessingFlags flags,
@@ -284,8 +300,9 @@ KisProcessingApplicator::KisProcessingApplicator(KisImageWSP image,
       m_finalSignalsEmitted(false),
       m_sharedAllFramesToken(new bool(false))
 {
+    KisStrokeUndoFacade *undoFacade = s_undoFacadeOverride ? s_undoFacadeOverride : m_image.data();
     StrategyWithStatusPromise *strategy =
-            new StrategyWithStatusPromise(name, !flags.testFlag(READ_ONLY_ACTION) ? m_image.data() : nullptr);
+            new StrategyWithStatusPromise(name, !flags.testFlag(READ_ONLY_ACTION) ? undoFacade : nullptr);
 
     m_successfullyCompletedFuture = strategy->m_successfullyCompleted.get_future();
 

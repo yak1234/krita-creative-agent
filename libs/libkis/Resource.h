@@ -92,6 +92,7 @@ private:
     friend class View;
     friend class Palette;
     friend class Preset;
+    friend class Krita; // Krita Agent: createPreset() reads the tip and base resources (KritaAgentResources.cpp)
     KoResourceSP resource() const;
 
     struct Private;

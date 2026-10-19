@@ -198,6 +198,84 @@ public Q_SLOTS:
      */
     QMap<QString, Resource*> resources(QString &type) const;
 
+    // Krita Agent: brush tips and presets made by scripts (krita-fork 5.1; implemented in KritaAgentResources.cpp).
+
+    /**
+     * @brief createBrushTip makes a brush tip from \p image, as the Custom Brush dialog's "Stamp" does, and adds it
+     * to the resource database: it is listed and usable at once, without a restart, and tagged "Agent".
+     *
+     * A tip with the name of one made here earlier replaces it (a new version of that resource, as saving a
+     * resource of the same name in Krita does). Replacing a tip changes every preset that uses it, the agent's and
+     * the artist's alike: a preset finds its tip through the resource, which now holds the new pixels. To change one
+     * preset only, make a tip with a new name and a preset with it.
+     *
+     * Only the agent's own tips are replaced: those tagged "Agent" in the resource folder, saved in the same format.
+     * When the name belongs to any other resource (one of Krita's, the artist's, a bundle's or a document's), it is
+     * left alone and the new tip is named "name (2)" (or the next free number); the returned resource has that name.
+     *
+     * How the tip is applied ("image" or "lightness", see below) is kept in the resource database, not in the tip's
+     * .gbr file, which has no place for it. Presets made with the tip keep it in their own file. If the database
+     * loses it (rebuilt from the files), a later createPreset() uses an "image" tip as a lightness map.
+     *
+     * @code
+     * tip = Application.createBrushTip(QImage("/path/cloud.png"), "Cloud tip")
+     * preset = Application.createPreset(basePreset, tip, "Cloud")
+     * @endcode
+     *
+     * @param image the tip's pixels; its size is the tip's size at brush size 100%
+     * @param name the resource's name (its file is named after it, with the characters a file name cannot take
+     * replaced)
+     * @param application how the brush engine uses the tip:
+     * <ul>
+     * <li>"alpha" (the default): the image's alpha is the tip's coverage, painted in the current colour;</li>
+     * <li>"mask": coverage from the image's darkness and alpha, painted in the current colour (the dialog's
+     * "Create mask from color");</li>
+     * <li>"image": stamps the image's own colours;</li>
+     * <li>"lightness": the image's lightness on the current colour.</li>
+     * </ul>
+     * @return the new brush tip resource (type "brush"; its name() is the name it was given), or 0 for a null or
+     * empty image, an empty name or an unknown application
+     */
+    Resource *createBrushTip(const QImage &image, const QString &name, const QString &application = QString("alpha"));
+
+    /**
+     * @brief createBrushTip makes a brush tip from an area of \p document's rendered image (its projection), as the
+     * Custom Brush dialog does from the image. See createBrushTip(QImage, ...).
+     *
+     * @param document the document to read
+     * @param rect the area in image pixels; an empty rect takes the whole image
+     * @param name the resource's name
+     * @param application "alpha", "mask", "image" or "lightness", as for createBrushTip(QImage, ...)
+     * @return the new brush tip resource, or 0
+     */
+    Resource *createBrushTip(Document *document, const QRect &rect, const QString &name,
+                             const QString &application = QString("alpha"));
+
+    /**
+     * @brief createPreset makes a brush preset from \p basePreset with \p brushTip as its tip, and adds it to the
+     * resource database: listed and usable at once (View.setCurrentBrushPreset()), without a restart, and tagged
+     * "Agent". The base preset itself does not change.
+     *
+     * The base must be a preset whose engine uses brush tips (the pixel brush, colour smudge, and so on). The new
+     * preset takes the tip at its own size (scale 100%), its spacing and its application; everything else (size
+     * curves, opacity, flow, blending mode) comes from the base. A preset with the name of one made here earlier
+     * replaces it; a name that belongs to any other preset (Krita's own, the artist's) is left alone and the new
+     * preset is named "name (2)" (or the next free number), as for createBrushTip().
+     *
+     * @param basePreset a resource of type "preset"
+     * @param brushTip a resource of type "brush", from createBrushTip() or Krita's own
+     * @param name the new preset's name
+     * @return the new preset (type "preset"), or 0 when an argument is missing or of the wrong type, or the base's
+     * engine has no brush tip
+     */
+    Resource *createPreset(Resource *basePreset, Resource *brushTip, const QString &name);
+
+    /**
+     * @brief createPreset makes a brush preset from a preset's XML (as Preset.toXML() gives) with \p brushTip as
+     * its tip. See createPreset(Resource, ...).
+     */
+    Resource *createPreset(const QString &baseXml, Resource *brushTip, const QString &name);
+
 
     /**
      * @brief return all recent documents registered in the RecentFiles group of the kritarc

@@ -6,6 +6,9 @@ set(kritalibkis_LIB_SRCS
     Document.cpp
     DocumentChanges.cpp
     DocumentAgentSpeed.cpp
+    KritaAgentResources.cpp
+    DocumentAgentCraft.cpp
+    FilterMaskBake.cpp
     Filter.cpp
     InfoObject.cpp
     Krita.cpp

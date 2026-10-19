@@ -13,6 +13,9 @@ kis_add_tests(
     TestNotifierChanges.cpp
     TestDocumentRegionRefresh.cpp
     TestDocumentScaledProjection.cpp
+    TestKritaAgentResources.cpp
+    TestDocumentAgentCraft.cpp
+    TestFilterMaskBake.cpp
     LINK_LIBRARIES kritalibkis kritatestsdk
     )
 

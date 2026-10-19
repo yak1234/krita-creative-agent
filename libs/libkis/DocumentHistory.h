@@ -16,12 +16,14 @@
 #include <atomic>
 
 #include <kis_types.h>
+#include <kis_stroke_job_strategy.h>
 #include <kundo2magicstring.h>
 
 #include "kritalibkis_export.h"
 
 class KisDocument;
 class KisPostExecutionUndoAdapter;
+class KisStrokeUndoFacade;
 class KUndo2Command;
 class KUndo2Stack;
 class ScriptStep;
@@ -89,7 +91,17 @@ public:
      * Runs \p command in a stroke on \p image, as KisProcessingApplicator::runSingleCommandStroke() does, with its
      * undo going to the open macro or move if there is one.
      */
-    static void runCommandStroke(KisImageSP image, KUndo2Command *command);
+    static void runCommandStroke(KisImageSP image,
+                                 KUndo2Command *command,
+                                 KisStrokeJobData::Sequentiality sequentiality = KisStrokeJobData::SEQUENTIAL,
+                                 KisStrokeJobData::Exclusivity exclusivity = KisStrokeJobData::NORMAL);
+
+    /**
+     * The stroke undo facade of the open macro or move on \p image, or null when none is open. Upstream operations
+     * that build their own KisProcessingApplicator (merges, flattening) send their step there when run under a
+     * KisProcessingApplicator::UndoFacadeOverride of it. \p device and activity as for scriptUndoAdapter().
+     */
+    static KisStrokeUndoFacade *scriptUndoFacade(KisImageSP image, KisPaintDeviceSP device = nullptr);
 
     /// Inside an open macro or move on \p image: runs \p command as a stroke of it (taking it) and returns true.
     /// Otherwise returns false and leaves \p command to the caller.

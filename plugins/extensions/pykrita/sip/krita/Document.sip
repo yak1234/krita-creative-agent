@@ -76,6 +76,7 @@ public Q_SLOTS:
     void crop(int x, int y, int w, int h);
     bool exportImage(const QString &filename, const InfoObject & exportConfiguration);
     void flatten();
+    Node *mergeGroups(const QList<Node *> &nodes) /Factory/;
     void resizeImage(int x, int y, int w, int h);
     void scaleImage(int w, int h, int xres, int yres, QString strategy);
     void rotateImage(double radians);

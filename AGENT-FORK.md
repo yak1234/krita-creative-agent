@@ -95,6 +95,17 @@ Keep this table current: every upstream file the `krita-agent` branch changes, a
 | `libs/command/kis_command_utils.h` | `CompositeCommand::commands()`: the commands it holds | undo history (2.5) |
 | `plugins/extensions/pykrita/plugin/krita/__init__.py` | Installs `Document.agentMove(name)` (`agentmove.py`) | undo history (2.5) |
 | `plugins/extensions/pykrita/tests/CMakeLists.txt` | Adds `TestPythonAgentMove` | undo history (2.5) |
+| `libs/libkis/Krita.h` | Declares `createBrushTip()` and `createPreset()` (two overloads each), in a block of their own after `resources()`; bodies in our `KritaAgentResources.cpp` | brush tips and presets (5.1) |
+| `libs/libkis/Resource.h` | `friend class Krita` (one line), so `createPreset()` reads the base and tip resources | brush tips and presets (5.1) |
+| `libs/libkis/CMakeLists.txt`, `libs/libkis/tests/CMakeLists.txt` | Build `KritaAgentResources.cpp`; add `TestKritaAgentResources` | brush tips and presets (5.1) |
+| `plugins/extensions/pykrita/sip/krita/Krita.sip` | Python bindings of `createBrushTip()` and `createPreset()` | brush tips and presets (5.1) |
+| `libs/libkis/Document.h` | Declares `mergeGroups()`, in a block of its own after `flatten()`; body in our `DocumentAgentCraft.cpp` | merge (5.2) |
+| `libs/libkis/CMakeLists.txt`, `libs/libkis/tests/CMakeLists.txt` | Build `DocumentAgentCraft.cpp`; add `TestDocumentAgentCraft` | merge (5.2) |
+| `plugins/extensions/pykrita/sip/krita/Document.sip` | Python binding of `mergeGroups()` | merge (5.2) |
+| `libs/libkis/FilterMask.h` | Declares `bake()`; body in our `FilterMaskBake.cpp` | bake (5.2) |
+| `libs/libkis/CMakeLists.txt`, `libs/libkis/tests/CMakeLists.txt` | Build `FilterMaskBake.cpp`; add `TestFilterMaskBake` | bake (5.2) |
+| `plugins/extensions/pykrita/sip/krita/FilterMask.sip` | Python binding of `bake()` | bake (5.2) |
+| `libs/image/kis_processing_applicator.h`, `.cpp` | `KisProcessingApplicator::UndoFacadeOverride`: while one lives, the applicators its thread creates send their undo step to the given facade instead of the image's history (a thread-local pointer read in the constructor; none set is upstream's behaviour). `mergeGroups()` sets it around Krita's merge so the merge joins an open agent move or macro | merge (5.2), undo history (2.5) |
 
 Our own files for the identity: `cmake/modules/KritaAppIdentity.cmake`, `libs/global/KisAppIdentity.{h,cpp}`,
 `libs/global/config-app-identity.h.cmake`; tests `libs/global/tests/KisAppIdentityTest.{h,cpp}`,
@@ -124,6 +135,20 @@ default) and the helper itself, `creative-agent/krita-native/agent-accel` (a `Ki
 Our own files for the agent speed API (2.x): `libs/libkis/DocumentAgentSpeed.cpp`, `libs/libkis/KisAgentScaledRead.h` and its tests in `libs/libkis/tests/`
 (`TestDocumentRegionRefresh`, `TestDocumentScaledProjection`, and the `AgentSpeedBenchmark` timing program, not run by
 ctest).
+
+Our own files for brush tips and presets (5.1): `libs/libkis/KritaAgentResources.cpp` and its test `libs/libkis/tests/TestKritaAgentResources.{h,cpp}`.
+Our own files for merge and bake (5.2): `libs/libkis/DocumentAgentCraft.cpp` (`Document::mergeGroups()`) and its test `libs/libkis/tests/TestDocumentAgentCraft.{h,cpp}`, with `libs/libkis/tests/AgentCraftTestUtils.h`; `libs/libkis/FilterMaskBake.cpp` (`FilterMask::bake()`) and its test `libs/libkis/tests/TestFilterMaskBake.{h,cpp}`.
+Python-side test of both (5.1, 5.2): `plugins/extensions/pykrita/tests/TestPythonAgentCraft.{h,cpp}`.
+
+Brush tips and presets the agent makes (5.1) replace only the agent's own: a resource tagged "Agent" in the resource
+folder, of the same name and file format. A name that belongs to any other resource (Krita's own, the artist's, a
+bundle's or a document's) is never overwritten; the new resource takes "name (2)" (or the next free number).
+Replacing a tip is deliberate and reaches every preset that uses it, the artist's included: presets find their tip by
+checksum, which leads to the resource and its latest version. How a tip is applied ("image" or "lightness") is
+recorded in the resource database only (a `.gbr` file has no field for it); presets keep it in their own files.
+Merge and bake (5.2) refuse locked nodes and nodes in locked or hidden groups, and inside an agent move or macro each
+is part of that one undo step (bake runs one command through `DocumentHistory::runCommandStroke`; merge runs Krita's
+own merge under `KisProcessingApplicator::UndoFacadeOverride` with `DocumentHistory::scriptUndoFacade`).
 
 Our own files for the undo history: `libs/libkis/DocumentHistory.{h,cpp}`, `libs/ui/KisAgentHooks.{h,cpp}`,
 `plugins/extensions/pykrita/plugin/krita/agentmove.py`; tests `libs/libkis/tests/TestDocumentHistory.{h,cpp}` and

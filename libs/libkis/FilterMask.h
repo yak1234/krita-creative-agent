@@ -63,6 +63,31 @@ public Q_SLOTS:
 
     void setFilter(Filter &filter);
     Filter *filter();
+
+    /**
+     * @brief bake applies this filter mask to its layer's pixels and removes the mask, as one undo step ("Bake
+     * Filter Mask"). The canvas looks the same afterwards. The layer stays the same layer (same name, id, other
+     * masks and style); only its pixels change. The call waits until it is done.
+     *
+     * The mask is applied by Krita's own mask code, as when it renders the layer, over the layer's content and as
+     * far as the filter reaches (a blur's halo); only a filter that changes transparent pixels (needsTransparentPixels)
+     * covers the whole image. Tiles left empty are not kept, so a small layer stays small.
+     *
+     * The filter runs over that area in one piece, while the canvas renders it tile by tile: a filter whose result
+     * depends on the whole area (auto-contrast, for one) can differ slightly from what the mask showed, as with
+     * Krita's Flatten Layer.
+     *
+     * Inside Document.beginAgentMove() ... endAgentMove() (or beginUndoMacro()), the bake is part of that one step.
+     *
+     * (Krita Agent, krita-fork 5.2; implemented in FilterMaskBake.cpp.)
+     *
+     * @return false, changing nothing, when the mask cannot be baked without changing how the layer looks: its
+     * layer is not a paint layer (a group, a file layer, ...) or is animated; the mask, its layer or a group above
+     * them is locked or hidden (the artist could not edit it either); or another visible effect mask (a filter,
+     * transparency or transform mask) applies before it (below it in the stack): bake that one first. A refusal for a
+     * lock or a hidden group also writes a warning to the log.
+     */
+    bool bake();
 };
 
 #endif // LIBKIS_FILTERMASK_H

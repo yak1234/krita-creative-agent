@@ -18,6 +18,8 @@
 
 #include "kritaimage_export.h"
 
+class KisStrokeUndoFacade;
+
 class KRITAIMAGE_EXPORT KisProcessingApplicator
 {
 public:
@@ -106,6 +108,23 @@ public:
                                        KUndo2Command *cmd,
                                        KisStrokeJobData::Sequentiality sequentiality = KisStrokeJobData::SEQUENTIAL,
                                        KisStrokeJobData::Exclusivity exclusivity = KisStrokeJobData::NORMAL);
+
+    /**
+     * While an object of this class lives, the applicators its thread creates (directly, or inside calls such as
+     * KisImage::mergeMultipleLayers()) send their undo commands to \p facade instead of the image's history. A null
+     * \p facade, or no object, keeps the image's history, as before. Objects nest; each restores the previous one.
+     * Scripts use it to collect such an operation into an undo step of their own.
+     */
+    class KRITAIMAGE_EXPORT UndoFacadeOverride
+    {
+    public:
+        explicit UndoFacadeOverride(KisStrokeUndoFacade *facade);
+        ~UndoFacadeOverride();
+
+    private:
+        KisStrokeUndoFacade *m_previous;
+        Q_DISABLE_COPY(UndoFacadeOverride)
+    };
 
 private:
     void visitRecursively(KisNodeSP node,

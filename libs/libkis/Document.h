@@ -543,6 +543,38 @@ public Q_SLOTS:
      */
     void flatten();
 
+    // Krita Agent: merge kept work (krita-fork 5.2; implemented in DocumentAgentCraft.cpp).
+
+    /**
+     * @brief mergeGroups merges \p nodes (groups, or any layers) into one paint layer, exactly as they render: each
+     * with its masks, layer styles, opacity and blending mode, as Krita's Merge with Layer Below on selected layers
+     * (or Flatten Layer, for one group) does. It is one undo step.
+     *
+     * The merged layer takes the place of the topmost of them. The canvas looks the same afterwards when no visible
+     * layer that is not merged lies between them in the stack (a layer between them would end up below all of the
+     * merged content, as with Krita's merge), and when they blend in the Normal mode (another mode, or a pass-through
+     * group, blends against the other merged nodes only, not against the layers below, as in Krita). Hidden nodes
+     * in the list are left as they are (Krita's own merge would delete them). The call waits until the merge is done.
+     *
+     * One plain paint layer with no masks and no style is merged already: it is returned as it is, with no undo
+     * step. One vector, fill, clone or file layer with no masks and no style is not converted: the call returns 0.
+     *
+     * As Krita's merge does, the merged layer becomes the selected layer in the views showing the document (the
+     * artist's layer selection changes).
+     *
+     * Inside beginAgentMove() ... endAgentMove() (or beginUndoMacro()), the merge is part of that one step.
+     *
+     * @code
+     * merged = doc.mergeGroups([groupA, groupB])
+     * @endcode
+     *
+     * @param nodes layers of this document, none an ancestor of another
+     * @return the merged layer, or 0 when nothing was merged: an empty list, a node that is not a layer of this
+     * document, a node inside another listed one, a listed node that is locked or inside a locked group, a visible
+     * listed node inside a hidden group, or only hidden nodes
+     */
+    Node *mergeGroups(const QList<Node *> &nodes);
+
     /**
      * @brief resizeImage resizes the canvas to the given left edge, top edge, width and height.
      * Note: This doesn't scale, use scale image for that.

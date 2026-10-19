@@ -497,19 +497,35 @@ bool DocumentHistory::runCommandStrokeInStep(KisImageSP image, KUndo2Command *co
     return true;
 }
 
-void DocumentHistory::runCommandStroke(KisImageSP image, KUndo2Command *command)
+void DocumentHistory::runCommandStroke(KisImageSP image,
+                                       KUndo2Command *command,
+                                       KisStrokeJobData::Sequentiality sequentiality,
+                                       KisStrokeJobData::Exclusivity exclusivity)
 {
     DocumentHistory *history = forImage(image);
     ScriptStep *step = history ? history->activeStep() : nullptr;
     if (!step) {
-        KisProcessingApplicator::runSingleCommandStroke(image, command);
+        KisProcessingApplicator::runSingleCommandStroke(image, command, sequentiality, exclusivity);
         return;
     }
     step->touch();
     KisStrokeStrategyUndoCommandBased *strategy = new KisStrokeStrategyUndoCommandBased(command->text(), false, step);
     KisStrokeId id = image->startStroke(strategy);
-    image->addJob(id, new KisStrokeStrategyUndoCommandBased::Data(KUndo2CommandSP(command), false));
+    image->addJob(id,
+                  new KisStrokeStrategyUndoCommandBased::Data(KUndo2CommandSP(command), false, sequentiality, exclusivity));
     image->endStroke(id);
+}
+
+KisStrokeUndoFacade *DocumentHistory::scriptUndoFacade(KisImageSP image, KisPaintDeviceSP device)
+{
+    DocumentHistory *history = forImage(image);
+    ScriptStep *step = history ? history->activeStep() : nullptr;
+    if (!step) {
+        return nullptr;
+    }
+    step->noteDevice(device);
+    step->touch();
+    return step;
 }
 
 void DocumentHistory::setAgentMoveIdleTimeout(int milliseconds)

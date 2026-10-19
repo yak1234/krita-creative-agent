@@ -21,6 +21,7 @@ public:
     virtual QString type() const;
     void setFilter(Filter &filter);
     Filter * filter();
+    bool bake();
 Q_SIGNALS:
 private:
 };

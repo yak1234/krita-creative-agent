@@ -1,0 +1,207 @@
+{
+  "note": "Tool-choice test set (scripts/evaluate-tool-choice.ts). Paintings are relative to the project root and are only ever copied, never opened. good: one method from each inner list; bad: methods a good run does not use. Methods: src/tool-choice.ts.",
+  "paintings": {
+    "new_moscow": "new_moscow.kra",
+    "starry_night": "benchmark-runs/202610170819-starry-night-2/Benchmark starry-night-2.kra",
+    "great_wave": "benchmark-runs/202610170718-great-wave/Benchmark great-wave.kra",
+    "new_moscow_finished": "new_moscow_finished.kra"
+  },
+  "scenarios": [
+    {
+      "id": "moscow-sky",
+      "painting": "new_moscow",
+      "prompt": "Repaint the sky so it looks more natural: a deep evening blue at the top fading to a hazy warm glow at the horizon. Keep the buildings, the woman and the car exactly as they are.",
+      "good": [
+        [
+          "seed",
+          "split"
+        ],
+        [
+          "fill",
+          "fill_layer"
+        ]
+      ],
+      "bad": [
+        "strokes_mass"
+      ]
+    },
+    {
+      "id": "moscow-windows",
+      "painting": "new_moscow",
+      "prompt": "Make the lit windows glow warmly, as if it is getting dark.",
+      "good": [
+        [
+          "seed",
+          "split",
+          "select"
+        ],
+        [
+          "fill",
+          "fill_layer"
+        ]
+      ],
+      "bad": [
+        "strokes_mass"
+      ]
+    },
+    {
+      "id": "moscow-street",
+      "painting": "new_moscow",
+      "prompt": "Darken the street a little so the figures stand out more.",
+      "good": [
+        [
+          "seed",
+          "split",
+          "select"
+        ],
+        [
+          "filter_mask",
+          "fill"
+        ]
+      ],
+      "bad": [
+        "strokes_mass"
+      ]
+    },
+    {
+      "id": "moscow-lamps",
+      "painting": "new_moscow",
+      "prompt": "Add a row of three matching street lamps along the pavement, getting smaller with distance.",
+      "good": [
+        [
+          "clone"
+        ]
+      ],
+      "bad": [
+        "strokes_mass"
+      ]
+    },
+    {
+      "id": "moscow-coat",
+      "painting": "new_moscow",
+      "prompt": "Recolour the woman's coat a dark red without changing anything else.",
+      "good": [
+        [
+          "seed",
+          "split",
+          "select"
+        ],
+        [
+          "fill",
+          "filter_mask"
+        ]
+      ],
+      "bad": [
+        "strokes_mass"
+      ]
+    },
+    {
+      "id": "starry-moon",
+      "painting": "starry_night",
+      "prompt": "Make the moon's glow larger and softer.",
+      "good": [
+        [
+          "fill_layer",
+          "fill",
+          "filter_mask"
+        ]
+      ],
+      "bad": [
+        "strokes_mass"
+      ]
+    },
+    {
+      "id": "starry-hills",
+      "painting": "starry_night",
+      "prompt": "Soften the distant hills so they recede.",
+      "good": [
+        [
+          "seed",
+          "split",
+          "select"
+        ],
+        [
+          "filter_mask",
+          "fill"
+        ]
+      ],
+      "bad": [
+        "strokes_mass"
+      ]
+    },
+    {
+      "id": "wave-sky",
+      "painting": "great_wave",
+      "prompt": "Make the sky behind the wave a warmer dawn colour.",
+      "good": [
+        [
+          "seed",
+          "split"
+        ],
+        [
+          "fill",
+          "fill_layer",
+          "filter_mask"
+        ]
+      ],
+      "bad": [
+        "strokes_mass"
+      ]
+    },
+    {
+      "id": "wave-reflection",
+      "painting": "great_wave",
+      "prompt": "Add a faint reflection of the boats in the water below them.",
+      "good": [
+        [
+          "clone"
+        ],
+        [
+          "filter_mask",
+          "transform_layer"
+        ]
+      ],
+      "bad": [
+        "strokes_mass"
+      ]
+    },
+    {
+      "id": "wave-mirror",
+      "painting": "great_wave",
+      "prompt": "Add a mirrored copy of the big wave on the right side, breaking the other way.",
+      "good": [
+        [
+          "clone",
+          "action"
+        ],
+        [
+          "transform_layer",
+          "action"
+        ]
+      ],
+      "bad": [
+        "strokes_mass"
+      ]
+    },
+    {
+      "id": "moscow-finish-clouds",
+      "painting": "new_moscow_finished",
+      "prompt": "Finish the clouds properly: give them soft, believable volume and light that matches the evening sky, without touching the buildings, the woman or the car.",
+      "good": [
+        [
+          "seed",
+          "split",
+          "select"
+        ],
+        [
+          "fill",
+          "fill_layer",
+          "filter_mask"
+        ]
+      ],
+      "bad": [
+        "strokes_mass"
+      ]
+    }
+  ]
+}

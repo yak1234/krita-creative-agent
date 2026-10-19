@@ -1,0 +1,9 @@
+{
+    "Id": "Creative Agent Accel",
+    "Type": "Service",
+    "X-KDE-Library": "kritaagentaccel",
+    "X-KDE-ServiceTypes": [
+        "Krita/ViewPlugin"
+    ],
+    "X-Krita-Version": "28"
+}

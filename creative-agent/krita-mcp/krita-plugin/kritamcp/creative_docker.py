@@ -1,0 +1,2844 @@
+"""Native Qt panel; model traffic and Pi dependencies run in a companion process."""
+import json
+import os
+import html
+import re
+import time
+import threading
+import uuid
+from .qt_compat import sip, enum_value
+from krita import DockWidget, DockWidgetFactory, DockWidgetFactoryBase, Krita, Selection
+from .creative_document_identity import document_id, open_documents
+from . import node_runtime
+from .command_queue import stop_requested
+from .protection import ProtectionCraft
+from .reference_parts import part_image, crop_image, opaque_bounds
+from .qt_compat import Qt, QProcess, QProcessEnvironment, QUrl, QTimer, pyqtSignal, QEvent, QSize, QRectF, scoped
+from .qt_compat import QDesktopServices, QPixmap, QTextCursor, QTextDocument, QTextBlockFormat, QTextCharFormat, QFont, QIcon, QKeySequence, QPalette, QColor, QPainter, QPen
+from .qt_compat import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QInputDialog,
+                            QComboBox, QLineEdit, QPlainTextEdit, QTextBrowser,
+                            QFileDialog, QSpinBox, QFormLayout, QDialog, QDialogButtonBox,
+                            QCheckBox, QGroupBox, QFrame, QScrollArea, QSizePolicy, QLayout,
+                            QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu,
+                            QApplication, QShortcut, QListWidget, QListWidgetItem, QSlider, QToolButton, QSplitter, QStylePainter, QStyleOptionComboBox, QStyle, QStyledItemDelegate, QGridLayout,
+                            QMessageBox)
+
+
+def disconnect_companion_callbacks(process):
+    """Called by dock destruction before Qt deletes its child widgets/process."""
+    if sip.isdeleted(process):
+        return
+    for signal in (process.readyReadStandardOutput, process.readyReadStandardError,
+                   process.finished, process.errorOccurred):
+        try:
+            signal.disconnect()
+        except TypeError:
+            pass  # No remaining Python receivers.
+
+
+def canvas_name(canvas):
+    """Saved filenames are the identity artists can find in Finder."""
+    return os.path.basename(canvas.get('filename') or '') or canvas.get('name') or 'Untitled'
+
+
+def canvas_details(canvas):
+    details = canvas.get('filename') or canvas_name(canvas)
+    if canvas.get('name') and canvas['name'] != canvas_name(canvas):
+        details += '\nDocument title: ' + canvas['name']
+    return details
+
+
+def provider_name(identifier):
+    return {'openrouter': 'OpenRouter', 'opencode-go': 'OpenCode Go', 'opencode': 'OpenCode',
+            'openai-codex': 'OpenAI Codex', 'openai': 'OpenAI', 'deepseek': 'DeepSeek',
+            'anthropic': 'Anthropic', 'google': 'Google', 'google-gemini-cli': 'Gemini CLI',
+            'google-antigravity': 'Google Antigravity', 'xai': 'xAI', 'cerebras': 'Cerebras',
+            'meta': 'Meta'}.get(identifier, identifier.replace('-', ' ').title())
+
+
+class ProviderDialog(QDialog):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setWindowTitle('Connect a model')
+        layout = QFormLayout(self)
+        self.provider = QComboBox()
+        self.provider.addItems(['DeepSeek', 'OpenRouter', 'Custom'])
+        self.endpoint = QLineEdit('https://api.deepseek.com')
+        self.model = QLineEdit('deepseek-flash')
+        self.key = QLineEdit()
+        self.key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.capability = QCheckBox('This model accepts images and tool calls')
+        layout.addRow('Provider', self.provider)
+        layout.addRow('API endpoint', self.endpoint)
+        layout.addRow('Model ID', self.model)
+        layout.addRow('API key', self.key)
+        layout.addRow(self.capability)
+        note = QLabel('Uses an OpenAI-compatible API. The key stays in memory for this session.\n'
+                      'Models already connected in Pi are available in the main panel.')
+        note.setWordWrap(True)
+        layout.addRow(note)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText('Connect')
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addRow(self.buttons)
+        self.provider.currentTextChanged.connect(self.select_provider)
+
+    def select_provider(self, name):
+        defaults = {'DeepSeek': ('https://api.deepseek.com', 'deepseek-flash'),
+                    'OpenRouter': ('https://openrouter.ai/api/v1', 'deepseek/deepseek-v4.1-flash'),
+                    'Custom': ('', '')}
+        endpoint, model = defaults[name]
+        self.endpoint.setText(endpoint)
+        self.model.setText(model)
+        self.capability.setChecked(False)
+
+    def accept(self):
+        if not all((self.endpoint.text().strip(), self.model.text().strip(), self.key.text().strip(), self.capability.isChecked())):
+            self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText('Complete all fields first')
+            return
+        super().accept()
+
+    def command(self):
+        return {'type': 'configure_provider', 'provider': 'creative-' + self.provider.currentText().lower(),
+                'base_url': self.endpoint.text().strip(), 'model': self.model.text().strip(),
+                'api_key': self.key.text().strip()}
+
+
+
+class ElidedComboBox(QComboBox):
+    def paintEvent(self, event):
+        painter = QStylePainter(self)
+        option = QStyleOptionComboBox(); self.initStyleOption(option)
+        text_rect = self.style().subControlRect(QStyle.ComplexControl.CC_ComboBox, option, QStyle.SubControl.SC_ComboBoxEditField, self)
+        option.currentText = self.fontMetrics().elidedText(option.currentText, Qt.TextElideMode.ElideRight, max(20, text_rect.width() - 5))
+        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
+        painter.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, option)
+
+
+class ModelComboBox(ElidedComboBox):
+    """A searchable, explicit-choice model picker; browsing cannot change a route."""
+    modelChosen = pyqtSignal()
+
+    def showPopup(self, initial_query=''):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Choose a model')
+        dialog.setMinimumSize(390, 390)
+        layout = QVBoxLayout(dialog)
+        search = QLineEdit(dialog)
+        search.setAccessibleName('Search models by name or ID')
+        search.setPlaceholderText('Search models by name or ID…')
+        listing = QListWidget(dialog)
+        listing.setAccessibleName('Available models')
+        for index in range(self.count()):
+            item = QListWidgetItem(self.itemText(index), listing)
+            item.setData(Qt.ItemDataRole.UserRole, index)
+            item.setToolTip(self.itemData(index, Qt.ItemDataRole.ToolTipRole) or '')
+            if not self.model().item(index).isEnabled():
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled & ~Qt.ItemFlag.ItemIsSelectable)
+            if index == self.currentIndex(): listing.setCurrentItem(item)
+        def filter_items(query):
+            query = query.casefold().strip()
+            for index in range(listing.count()):
+                item = listing.item(index)
+                item.setHidden(query not in (item.text() + ' ' + (item.toolTip() or '')).casefold())
+            visible = next((listing.item(i) for i in range(listing.count())
+                            if not listing.item(i).isHidden() and listing.item(i).flags() & Qt.ItemFlag.ItemIsEnabled), None)
+            if visible: listing.setCurrentItem(visible)
+        def choose(item=None):
+            item = item or listing.currentItem()
+            if item and item.flags() & Qt.ItemFlag.ItemIsEnabled:
+                dialog.accept()
+        search.textChanged.connect(filter_items)
+        search.returnPressed.connect(choose)
+        listing.itemActivated.connect(choose)
+        listing.itemClicked.connect(choose)
+        layout.addWidget(search)
+        layout.addWidget(listing)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=dialog)
+        buttons.accepted.connect(choose)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        search.setText(initial_query)
+        search.setFocus()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            item = listing.currentItem()
+            self.setCurrentIndex(item.data(Qt.ItemDataRole.UserRole))
+            self.modelChosen.emit()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown,
+                           Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.showPopup(); event.accept()
+        elif event.text() and event.text().isprintable() and not event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier | Qt.KeyboardModifier.AltModifier):
+            self.showPopup(event.text()); event.accept()
+        else:
+            super().keyPressEvent(event)
+
+
+class ChatInput(QPlainTextEdit):
+    submitted = pyqtSignal()
+    filesAttached = pyqtSignal(list)
+    imageAttached = pyqtSignal(object)
+
+    def __init__(self):
+        super().__init__()
+        self.setAcceptDrops(True)
+        self.setTabChangesFocus(True)
+        self.slash_menu = None
+
+    def keyPressEvent(self, event):
+        # The slash menu (skills) takes Up/Down to move, Tab/Return to choose, Escape to close.
+        menu = self.slash_menu
+        if menu is not None and menu.isVisible():
+            if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+                row = menu.currentRow() + (1 if event.key() == Qt.Key.Key_Down else -1)
+                menu.setCurrentRow(max(0, min(menu.count() - 1, row))); event.accept(); return
+            if event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Return, Qt.Key.Key_Enter) and menu.currentItem() is not None:
+                menu.itemActivated.emit(menu.currentItem()); event.accept(); return
+            if event.key() == Qt.Key.Key_Escape:
+                menu.hide(); event.accept(); return
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            self.submitted.emit()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def canInsertFromMimeData(self, source):
+        return source.hasImage() or source.hasUrls() or super().canInsertFromMimeData(source)
+
+    def insertFromMimeData(self, source):
+        if source.hasUrls():
+            files = [url.toLocalFile() for url in source.urls() if url.isLocalFile()]
+            if files:
+                self.filesAttached.emit(files)
+                return
+        if source.hasImage():
+            self.imageAttached.emit(source.imageData())
+            return
+        super().insertFromMimeData(source)
+
+
+class MessageBody(QTextBrowser):
+    """One selectable rich-text document; only the streaming reply is updated."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setOpenLinks(False)
+        self.setOpenExternalLinks(False)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setStyleSheet('QTextBrowser { border: none; padding: 0; background: transparent; }')
+        self.document().setDocumentMargin(0)
+
+    def set_rendered(self, markup):
+        cursor = self.textCursor()
+        selection = cursor.selectedText()
+        start, end = cursor.selectionStart(), cursor.selectionEnd()
+        self.setHtml(markup)
+        if selection:
+            # setHtml resets the cursor. Recover the user's actual selection,
+            # even when newly completed Markdown changes earlier character offsets.
+            plain = self.toPlainText()
+            normalized = selection.replace('\u2029', '\n')
+            encoded = plain.encode('utf-16-le')
+            same = encoded[start * 2:end * 2].decode('utf-16-le', errors='replace') == normalized
+            python_match = plain.find(normalized)
+            match = start if same else len(plain[:python_match].encode('utf-16-le')) // 2 if python_match >= 0 else -1
+            if match >= 0:
+                cursor = self.textCursor()
+                cursor.setPosition(match)
+                cursor.setPosition(match + len(normalized.encode('utf-16-le')) // 2, QTextCursor.MoveMode.KeepAnchor)
+                self.setTextCursor(cursor)
+        self.fit_height()
+
+    def fit_height(self):
+        self.document().setTextWidth(max(40, self.viewport().width()))
+        self.setFixedHeight(max(1, int(self.document().size().height()) + 3))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit_height()
+
+
+class ImagePreview(QDialog):
+    def __init__(self, parent, canvas, title='Canvas snapshot'):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(640, 720)
+        layout = QVBoxLayout(self)
+        self.picture = QLabel(); self.picture.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.picture.setMinimumSize(100, 100)
+        self.picture.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.pixmap = QPixmap(canvas.get('path') or '')
+        self.crop_pixmap = self.pixmap
+        self.overview_pixmap = QPixmap(canvas.get('overview_path') or '')
+        self.region_bounds = canvas.get('bounds') or canvas.get('region')
+        self.canvas_width = canvas.get('width'); self.canvas_height = canvas.get('height')
+        self.show_location = False
+        if self.region_bounds and not self.overview_pixmap.isNull():
+            self.location_button = QPushButton('Show location on canvas'); self.location_button.setCheckable(True)
+            self.location_button.toggled.connect(self.toggle_location); layout.addWidget(self.location_button)
+        self.image_scroll = QScrollArea(); self.image_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.image_scroll.setAlignment(Qt.AlignmentFlag.AlignCenter); self.image_scroll.setWidgetResizable(True); self.image_scroll.setWidget(self.picture)
+        layout.addWidget(self.image_scroll, 1)
+        self.actual_pixels = False
+        zoom_row = QHBoxLayout(); zoom_row.addStretch()
+        self.zoom_button = QPushButton('100% snapshot'); self.zoom_button.setCheckable(True)
+        self.zoom_button.setToolTip('Inspect one image pixel per display pixel. The overview may be reduced; region crops retain document pixels.')
+        self.zoom_button.toggled.connect(self.toggle_zoom); zoom_row.addWidget(self.zoom_button); layout.addLayout(zoom_row)
+        name = (canvas.get('name') or 'Selection bounds') if self.region_bounds else canvas_name(canvas)
+        details = name
+        if canvas.get('width'): details += ' · %s × %s' % (canvas['width'], canvas.get('height', '?'))
+        if not self.region_bounds and canvas.get('name') and canvas['name'] != name:
+            details += '\nDocument title: ' + canvas['name']
+        if self.region_bounds: details += '\nRectangular crop · x %s, y %s · %s × %s px' % tuple(self.region_bounds)
+        if canvas.get('captured_at'):
+            captured = canvas['captured_at']
+            if isinstance(captured, (int, float)): captured = time.strftime('%H:%M:%S', time.localtime(captured / 1000 if captured > 10**11 else captured))
+            details += '\nCaptured ' + str(captured)
+        if canvas.get('modified'): details += ' · includes unsaved changes'
+        if canvas.get('purpose'): details += '\nUse for: ' + dict(REFERENCE_PURPOSES).get(canvas['purpose'], canvas['purpose'])
+        if canvas.get('notes'): details += '\n' + canvas['notes']
+        label = QLabel(details); label.setWordWrap(True); label.setObjectName('muted')
+        layout.addWidget(label)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject); layout.addWidget(buttons)
+
+    def toggle_zoom(self, checked):
+        self.actual_pixels = checked
+        self.zoom_button.setText('Fit in window' if checked else '100% snapshot')
+        self.render_image()
+
+    def toggle_location(self, checked):
+        self.show_location = checked
+        self.location_button.setText('Show crop detail' if checked else 'Show location on canvas')
+        self.render_image()
+
+    def render_image(self):
+        source = self.overview_pixmap if self.show_location else self.crop_pixmap
+        if source.isNull():
+            self.picture.setText('Preview is unavailable. Refresh the canvas to capture it again.'); return
+        self.image_scroll.setWidgetResizable(not self.actual_pixels)
+        if self.actual_pixels:
+            self.picture.setFixedSize(source.size()); rendered = source
+        else:
+            self.picture.setMinimumSize(100, 100); self.picture.setMaximumSize(16777215, 16777215)
+            rendered = source.scaled(self.image_scroll.viewport().size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        if self.show_location and self.region_bounds and self.canvas_width and self.canvas_height:
+            rendered = rendered.copy()
+            painter = QPainter(rendered); painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QPen(QColor('#79a9ff'), 2))
+            x, y, width, height = self.region_bounds
+            painter.drawRect(QRectF(x * rendered.width() / self.canvas_width, y * rendered.height() / self.canvas_height,
+                                    width * rendered.width() / self.canvas_width, height * rendered.height() / self.canvas_height))
+            painter.end()
+        self.picture.setPixmap(rendered)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.render_image()
+
+
+REFERENCE_PURPOSES = [('general', 'Overall direction'), ('likeness', 'Character likeness'), ('composition', 'Composition'), ('palette', 'Palette'), ('material', 'Material & texture')]
+REFERENCE_CAPTIONS = {'general': 'General', 'likeness': 'Likeness', 'composition': 'Composition', 'palette': 'Palette', 'material': 'Material'}
+
+
+class ReferencePreview(ImagePreview):
+    def __init__(self, parent, reference, readonly=False):
+        super().__init__(parent, dict(reference, purpose=None, notes=None), 'Reference · ' + (reference.get('name') or os.path.basename(reference['path'])))
+        self.setMinimumWidth(380)
+        form = QFormLayout()
+        self.purpose = QComboBox(); self.purpose.setAccessibleName('Reference purpose')
+        for value, label in REFERENCE_PURPOSES: self.purpose.addItem(label, value)
+        self.purpose.setCurrentIndex(max(0, self.purpose.findData(reference.get('purpose') or 'general')))
+        self.notes = QPlainTextEdit(reference.get('notes') or '')
+        self.notes.setAccessibleName('How to use this reference')
+        self.notes.setPlaceholderText('For example: follow the pose, but keep our character’s outfit.')
+        self.notes.setMaximumHeight(75)
+        form.addRow('Use for', self.purpose); form.addRow('Your direction', self.notes)
+        self.layout().insertLayout(self.layout().count() - 1, form)
+        note = QLabel('This changes how the reference guides future messages. Earlier messages keep their original reference details.'); note.setWordWrap(True); note.setObjectName('muted')
+        self.layout().insertWidget(self.layout().count() - 1, note)
+        # A part or a crop of this reference, made with Krita's selection tools: the agent follows only that.
+        parts = QHBoxLayout(); self.part_buttons = []
+        for text, kind in (('Select a part in Krita…', 'part'), ('Crop in Krita…', 'crop')):
+            button = QPushButton(text); button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            button.setToolTip('Opens a copy in Krita; select with any selection tool, then Use this part.')
+            button.clicked.connect(lambda _checked=False, value=kind: (self.reject(), parent.start_part(reference, value)))
+            parts.addWidget(button); self.part_buttons.append(button)
+        self.layout().insertLayout(self.layout().count() - 1, parts)
+        buttons = self.findChild(QDialogButtonBox)
+        if readonly:
+            self.purpose.setEnabled(False); self.notes.setEnabled(False)
+            for button in self.part_buttons: button.setEnabled(False); button.setToolTip('Pause the agent to select a part')
+            note.setText('Pause the agent to change this reference’s purpose. You can still inspect the image.')
+        else:
+            buttons.setStandardButtons(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+            buttons.accepted.connect(self.accept)
+
+    def accept(self):
+        if len(self.notes.toPlainText()) > 2000:
+            self.setWindowTitle('Keep reference directions under 2,000 characters.'); return
+        super().accept()
+
+
+class ProtectionDialog(QDialog):
+    """Protected areas: what the agent must never change. One row per area, with Show and Remove; locked layers are
+    listed and changed in Krita. Three ways to add one, easiest first."""
+    DETAILS = {'agent': 'made by the agent · you approved', 'artist': 'made by you'}
+
+    def __init__(self, panel, areas):
+        super().__init__(panel)
+        self.setWindowTitle('Protected areas'); self.setMinimumWidth(320)
+        layout = QVBoxLayout(self)
+        intro = QLabel('The agent never changes these. Anything it paints into them is removed, and it tells you.')
+        intro.setWordWrap(True); intro.setObjectName('muted'); layout.addWidget(intro)
+        self.rows = []
+        for area in areas:
+            row = QHBoxLayout()
+            swatch = QLabel('◆'); swatch.setStyleSheet('color:#e5484d'); row.addWidget(swatch)
+            automatic = area.get('by') == 'automatic'
+            # A lock keeps a layer's own pixels and settings; the agent may still paint on new layers above it.
+            detail = ('%d layers · never edited by the agent, but it may paint over them' % area.get('count', 0)) if automatic else self.DETAILS.get(area.get('by'), '')
+            if area.get('state') == 'pending': detail = 'proposed by the agent · it keeps out; Keep to make it yours'
+            label = QLabel('%s\n%s' % (area['name'], detail)); label.setWordWrap(True); row.addWidget(label, 1)
+            show = remove = None
+            if not automatic:
+                show = QPushButton('👁'); show.setCheckable(True); show.setAccessibleName('Show %s in red' % area['name'])
+                show.toggled.connect(lambda on, entry=area: panel.show_protection(entry, on)); row.addWidget(show)
+                remove = QPushButton('✕'); remove.setAccessibleName('Remove protection %s' % area['name'])
+                remove.clicked.connect(lambda _checked=False, entry=area: (panel.remove_protection(entry), self.close())); row.addWidget(remove)
+            layout.addLayout(row)
+            self.rows.append({'name': area['name'], 'detail': detail, 'show': show, 'remove': remove})
+        if not areas:
+            empty = QLabel('Nothing is protected yet.'); empty.setObjectName('muted'); layout.addWidget(empty)
+        actions = QHBoxLayout(); self.actions = []
+        for text, slot, tip in (('Ask the agent…', panel.ask_to_protect, 'Describe what to protect; the agent marks it for you to keep.'),
+                                ('Paint over it', panel.paint_protection, 'Paint red over what to protect; the eraser takes it away.'),
+                                ('Use my selection', panel.protect_selection, 'Protect what is selected in Krita now.')):
+            button = QPushButton(text); button.setToolTip(tip); button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            button.clicked.connect(lambda _checked=False, act=slot: (self.close(), act())); actions.addWidget(button); self.actions.append(button)
+        layout.addLayout(actions)
+        close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close); close.rejected.connect(self.close); layout.addWidget(close)
+
+    def closeEvent(self, event):
+        for row in self.rows:
+            if row['show'] is not None and row['show'].isChecked(): row['show'].setChecked(False)
+        super().closeEvent(event)
+
+
+class CharacterDelegate(QStyledItemDelegate):
+    def createEditor(self, parent, option, index):
+        return QPlainTextEdit(parent) if index.column() == 1 else super().createEditor(parent, option, index)
+
+    def setEditorData(self, editor, index):
+        if isinstance(editor, QPlainTextEdit): editor.setPlainText(index.data(Qt.ItemDataRole.EditRole) or '')
+        else: super().setEditorData(editor, index)
+
+    def setModelData(self, editor, model, index):
+        if isinstance(editor, QPlainTextEdit): model.setData(index, editor.toPlainText(), Qt.ItemDataRole.EditRole)
+        else: super().setModelData(editor, model, index)
+
+
+# The AI image allowance choices for the open chat; -1 is no limit (null for the companion).
+AI_IMAGE_CHOICES = ((0, 'No AI images'), (1, '1 AI image'), (3, '3 AI images'), (5, '5 AI images'), (-1, 'AI images: no limit'))
+
+
+class PlanDialog(QDialog):
+    """The durable brief is editable without asking the model to rewrite it."""
+    def __init__(self, parent, goal):
+        super().__init__(parent)
+        self.setWindowTitle('Painting plan')
+        self.resize(680, 740)
+        self.goal_record = json.loads(json.dumps(goal))
+        self.export_references = list(getattr(parent, 'attached_references', [])) + list(getattr(parent, 'pending_references', []))
+        self.export_target = dict(getattr(parent, 'painting_target', {}) or {})
+        self.original_brief = json.loads(json.dumps(goal['brief']))
+        # Steps are a painting order; retired stage controls are dropped on save.
+        self.stage_metadata = [{key: step[key] for key in ('title', 'done_when', 'scope') if key in step} for step in goal['brief']['steps']]
+        self.stage_index = -1
+        layout = QVBoxLayout(self)
+        self.title = QLineEdit(goal['brief']['title']); self.title.setAccessibleName('Plan title')
+        self.title.setStyleSheet('font-size: 20px; font-weight: 600; padding: 8px;')
+        layout.addWidget(self.title)
+        tabs = QTabWidget(); layout.addWidget(tabs, 1)
+        overview = QTextBrowser(); overview.setOpenLinks(False); overview.setOpenExternalLinks(False)
+        brief = goal['brief']
+        overview.setHtml(parent.transcript.render('## ' + brief['title'] + '\n\n' + brief['objective'] + '\n\n### Keep intact\n' +
+            '\n'.join('- ' + rule for rule in brief['requirements']) + '\n\n### Painting order\n' +
+            '\n\n'.join('**%d. %s**\n\n%s' % (i + 1, step['title'], step['done_when']) for i, step in enumerate(brief['steps'])) +
+            '\n\n### Finished when\n' + '\n'.join('- ' + check for check in brief['completion'])))
+        tabs.addTab(overview, 'Overview')
+        if self.export_references:
+            references_view = QTextBrowser(); references_view.setOpenLinks(False); references_view.setOpenExternalLinks(False)
+            reference_text = '## References\n\n' + '\n\n'.join('**' + (reference.get('name') or os.path.basename(reference.get('path', 'Reference'))) + '** · ' +
+                dict(REFERENCE_PURPOSES).get(reference.get('purpose') or 'general', 'Overall direction') +
+                ('\n\n' + reference['notes'] if reference.get('notes') else '') for reference in self.export_references)
+            references_view.setHtml(parent.transcript.render(reference_text))
+            tabs.addTab(references_view, 'References')
+        brief_tab = QWidget(); form = QVBoxLayout(brief_tab)
+        form.addWidget(QLabel('What we are making'))
+        self.objective = QPlainTextEdit(goal['brief']['objective']); self.objective.setMaximumHeight(90)
+        self.objective.setAccessibleName('Painting objective'); form.addWidget(self.objective)
+        form.addWidget(QLabel('Requirements to preserve · one per line'))
+        self.rules = QPlainTextEdit('\n'.join(goal['brief']['requirements'])); self.rules.setAccessibleName('Requirements to preserve')
+        form.addWidget(self.rules, 1)
+        form.addWidget(QLabel('Where the agent can choose'))
+        self.freedom = QPlainTextEdit('\n'.join(goal['brief']['freedom'])); self.freedom.setMaximumHeight(90)
+        self.freedom.setAccessibleName('Creative freedom'); form.addWidget(self.freedom)
+        tabs.addTab(brief_tab, 'Brief')
+        characters_tab = QWidget(); character_layout = QVBoxLayout(characters_tab)
+        character_note = QLabel('Keep each character’s identity, appearance and relationships consistent. Add one requirement per line.'); character_note.setWordWrap(True)
+        character_layout.addWidget(character_note)
+        records = goal['brief'].get('characters', [])
+        self.characters = QTableWidget(len(records), 2); self.characters.setHorizontalHeaderLabels(['Character', 'Details to preserve'])
+        self.characters.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch); self.characters.verticalHeader().setDefaultSectionSize(88)
+        self.characters.setItemDelegate(CharacterDelegate(self.characters)); self.characters.setAccessibleName('Character requirements')
+        for row, character in enumerate(records):
+            self.characters.setItem(row, 0, QTableWidgetItem(character['name']))
+            self.characters.setItem(row, 1, QTableWidgetItem('\n'.join(character.get('requirements', []))))
+        character_layout.addWidget(self.characters, 1)
+        character_actions = QHBoxLayout()
+        add_character = QPushButton('Add character'); add_character.clicked.connect(lambda: self.characters.insertRow(self.characters.rowCount()))
+        remove_character = QPushButton('Remove selected'); remove_character.clicked.connect(lambda: self.characters.removeRow(self.characters.currentRow()))
+        character_actions.addWidget(add_character); character_actions.addWidget(remove_character); character_actions.addStretch(); character_layout.addLayout(character_actions)
+        tabs.addTab(characters_tab, 'Characters')
+        steps_tab = QWidget(); steps_layout = QVBoxLayout(steps_tab)
+        self.steps = QTableWidget(len(goal['brief']['steps']), 2)
+        self.steps.setHorizontalHeaderLabels(['Step', 'What it achieves'])
+        self.steps.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.steps.verticalHeader().setDefaultSectionSize(64)
+        self.steps.setAccessibleName('Painting order')
+        for index, step in enumerate(goal['brief']['steps']):
+            self.steps.setItem(index, 0, QTableWidgetItem(step['title']))
+            self.steps.setItem(index, 1, QTableWidgetItem(step['done_when']))
+        steps_layout.addWidget(self.steps, 1)
+        controls = QHBoxLayout()
+        add = QPushButton('Add step'); add.clicked.connect(lambda: self.add_stage())
+        remove = QPushButton('Remove selected'); remove.clicked.connect(lambda: self.remove_stage())
+        controls.addWidget(add); controls.addWidget(remove); controls.addStretch(); steps_layout.addLayout(controls)
+        self.stage_scope = QLineEdit(); self.stage_scope.setPlaceholderText('What this step focuses on (optional)'); self.stage_scope.setAccessibleName('Step scope')
+        stage_form = QFormLayout(); stage_form.addRow('Step focus', self.stage_scope); steps_layout.addLayout(stage_form)
+        order_note = QLabel('Steps are a suggested painting order. The Agent paints without stopping between them; one final review checks the finished painting.')
+        order_note.setWordWrap(True); steps_layout.addWidget(order_note)
+        self.steps.currentCellChanged.connect(lambda row, *_: self.select_stage(row))
+        if self.steps.rowCount(): self.steps.setCurrentCell(0, 0)
+        steps_layout.addWidget(QLabel('Final visual checks · one per line'))
+        self.completion = QPlainTextEdit('\n'.join(goal['brief']['completion'])); self.completion.setMaximumHeight(130)
+        self.completion.setAccessibleName('Completion checks'); steps_layout.addWidget(self.completion)
+        tabs.addTab(steps_tab, 'Painting order')
+        review_tab = QWidget(); review_layout = QVBoxLayout(review_tab)
+        review = QTextBrowser(); review.setOpenLinks(False); review.setOpenExternalLinks(False)
+        latest = (goal.get('reviews') or [None])[-1]
+        if latest:
+            review.setPlainText(latest['summary'] + '\n\n' + '\n\n'.join(('✓ ' if c['met'] else '○ ') + c['evidence'] for c in latest['checks']) +
+                                ('\n\nStill to resolve:\n' + '\n'.join(latest['issues']) if latest['issues'] else ''))
+        else:
+            review.setPlainText('During Agent mode, a separate visual review compares the actual canvas with your reference and every requirement. Findings will appear here.')
+        review_layout.addWidget(review); tabs.addTab(review_tab, 'Review')
+        allowance = QHBoxLayout()
+        allowance.addWidget(QLabel('Painting allowance'))
+        self.minutes = QSpinBox(); self.minutes.setRange(0, 120); self.minutes.setSpecialValueText('No time limit'); self.minutes.setValue(goal['limits']['minutes']); self.minutes.setSuffix(' min')
+        self.passes = QSpinBox(); self.passes.setRange(0, 150); self.passes.setSpecialValueText('No pass limit'); self.passes.setValue(goal['limits']['passes']); self.passes.setSuffix(' passes')
+        self.minutes.setAccessibleName('Time allowance'); self.passes.setAccessibleName('Pass allowance')
+        ai_images = goal['limits'].get('ai_images', 0)
+        self.ai_images = QSpinBox(); self.ai_images.setRange(-1, 20); self.ai_images.setSpecialValueText('No AI image limit')
+        self.ai_images.setSuffix(' AI images'); self.ai_images.setValue(-1 if ai_images is None else ai_images)
+        self.ai_images.setAccessibleName('AI image allowance')
+        self.ai_images.setToolTip('How many AI-generated images the painter may use in this chat. 0 paints everything by hand.')
+        allowance.addWidget(self.minutes); allowance.addWidget(self.passes); allowance.addWidget(self.ai_images); allowance.addStretch(); layout.addLayout(allowance)
+        used = QLabel('%d passes · %.1f minutes · %d AI images used. Paused time does not count.' % (goal.get('passes', 0), goal.get('used_ms', 0) / 60000, goal.get('ai_images_used', 0)))
+        layout.addWidget(used)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        export = buttons.addButton('Export plan…', QDialogButtonBox.ButtonRole.ActionRole); export.clicked.connect(self.export_plan)
+        buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject); layout.addWidget(buttons)
+
+    def add_stage(self):
+        if self.steps.rowCount() >= 12: return
+        self.save_stage(); self.stage_metadata.append({})
+        self.steps.insertRow(self.steps.rowCount()); self.steps.setCurrentCell(self.steps.rowCount() - 1, 0)
+
+    def remove_stage(self):
+        row = self.steps.currentRow()
+        if row < 0 or self.steps.rowCount() <= 1: return
+        self.stage_index = -1
+        if row < len(self.stage_metadata): self.stage_metadata.pop(row)
+        self.steps.removeRow(row); self.steps.setCurrentCell(min(row, self.steps.rowCount() - 1), 0)
+        self.select_stage(self.steps.currentRow())
+
+    def save_stage(self):
+        if self.stage_index < 0: return
+        while len(self.stage_metadata) <= self.stage_index: self.stage_metadata.append({})
+        step = self.stage_metadata[self.stage_index]
+        if self.stage_scope.text().strip(): step['scope'] = self.stage_scope.text().strip()
+        else: step.pop('scope', None)
+
+    def select_stage(self, index):
+        self.save_stage(); self.stage_index = index
+        step = self.stage_metadata[index] if 0 <= index < len(self.stage_metadata) else {}
+        self.stage_scope.setText(step.get('scope', ''))
+
+    def markdown(self):
+        brief = self.brief()
+        lines = ['# ' + brief['title'], '', brief['objective'], '', 'Plan revision: ' + str(self.goal_record.get('revision', 1))]
+        target = self.export_target
+        if target:
+            filename = os.path.basename(target.get('filename') or '')
+            name = filename or target.get('name') or ('Working copy' if target.get('mode') == 'copy' else 'New painting')
+            lines += ['', '## Painting target', '', name]
+        shape = self.goal_record.get('plan_target') or {}
+        if shape.get('width') and shape.get('height'): lines += ['', 'Canvas: %s × %s px' % (shape['width'], shape['height'])]
+        if self.export_references:
+            lines += ['', '## References', '']
+            for reference in self.export_references:
+                purpose = dict(REFERENCE_PURPOSES).get(reference.get('purpose') or 'general', 'Overall direction')
+                if reference.get('role') == 'construction-map': purpose = 'Construction map · ' + purpose
+                lines.append('- ' + (reference.get('name') or os.path.basename(reference.get('path', 'Reference'))) + ' — ' + purpose)
+                if reference.get('notes'): lines.append('  ' + reference['notes'].replace('\n', '\n  '))
+        lines += ['', '## Requirements to preserve', ''] + ['- ' + rule for rule in brief['requirements']]
+        if brief.get('characters'):
+            lines += ['', '## Characters', '']
+            for character in brief['characters']:
+                lines += ['### ' + character['name'], ''] + ['- ' + rule for rule in character['requirements']] + ['']
+        if brief['freedom']: lines += ['', '## Creative freedom', ''] + ['- ' + choice for choice in brief['freedom']]
+        lines += ['', '## Painting order', '', 'A suggested order. The Agent paints without stopping between steps.', '']
+        for index, step in enumerate(brief['steps']):
+            lines += ['### %d. %s' % (index + 1, step['title']), '']
+            if step.get('scope'): lines += ['Focus: ' + step['scope'], '']
+            lines += ['Achieves: ' + step['done_when'], '']
+        lines += ['## Final visual checks', ''] + ['- ' + check for check in brief['completion']]
+        lines += ['', '## Allowance', '', ('%d minutes' % self.minutes.value() if self.minutes.value() else 'No time limit') + ' · ' + ('%d painting operations' % self.passes.value() if self.passes.value() else 'No pass limit'),
+                  'Paused time does not count. This is a work allowance, not a monetary spending limit.']
+        reviews = self.goal_record.get('reviews') or []
+        if reviews:
+            review = reviews[-1]
+            lines += ['', '## Latest visual review', '', review.get('summary', '')]
+            for check in review.get('checks', []): lines.append('- ' + ('Met: ' if check.get('met') else 'Still to resolve: ') + check.get('evidence', ''))
+            if review.get('issues'): lines += ['', 'Remaining issues:'] + ['- ' + issue for issue in review['issues']]
+        return '\n'.join(lines).rstrip() + '\n'
+
+    def export_plan(self):
+        path, _ = QFileDialog.getSaveFileName(self, 'Export painting plan', 'painting-plan.md', 'Markdown (*.md)')
+        if not path: return
+        try:
+            with open(path, 'w', encoding='utf-8') as stream: stream.write(self.markdown())
+        except OSError as error:
+            self.setWindowTitle('Could not export plan: ' + str(error))
+
+    def brief(self):
+        split = lambda field: [line.strip() for line in field.toPlainText().splitlines() if line.strip()]
+        self.save_stage()
+        brief = dict(self.original_brief)
+        brief.update({'title': self.title.text().strip(), 'objective': self.objective.toPlainText().strip(),
+                'requirements': split(self.rules), 'freedom': split(self.freedom), 'completion': split(self.completion),
+                'steps': [dict(self.stage_metadata[i] if i < len(self.stage_metadata) else {},
+                           title=self.steps.item(i, 0).text().strip() if self.steps.item(i, 0) else '',
+                           done_when=self.steps.item(i, 1).text().strip() if self.steps.item(i, 1) else '')
+                          for i in range(self.steps.rowCount())]})
+        characters = []
+        for row in range(self.characters.rowCount()):
+            name = self.characters.item(row, 0).text().strip() if self.characters.item(row, 0) else ''
+            details = self.characters.item(row, 1).text() if self.characters.item(row, 1) else ''
+            if name or details: characters.append({'name': name, 'requirements': [line.strip() for line in details.splitlines() if line.strip()]})
+        if characters or 'characters' in brief: brief['characters'] = characters
+        return brief
+
+    def accept(self):
+        brief = self.brief()
+        if not brief['title'] or not brief['objective'] or not brief['completion'] or any(not s['title'] or not s['done_when'] for s in brief['steps']):
+            self.setWindowTitle('Complete the objective, painting order, and final checks')
+            return
+        super().accept()
+
+
+class ChatTranscript(QScrollArea):
+    followChanged = pyqtSignal(bool)
+    previewRequested = pyqtSignal(dict)
+
+    def __init__(self):
+        super().__init__()
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setAccessibleName('Conversation with Creative Agent')
+        self.body = QWidget()
+        self.rows = QVBoxLayout(self.body)
+        self.rows.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        self.rows.setContentsMargins(2, 16, 7, 12)
+        self.rows.setSpacing(20)
+        self.rows.addStretch()
+        self.setWidget(self.body)
+        self.messages = []
+        self.reflow_timer = QTimer(self)
+        self.reflow_timer.setSingleShot(True)
+        self.reflow_timer.timeout.connect(self.reflow)
+        self.setMinimumHeight(120)
+        self.follow = True
+        self.verticalScrollBar().sliderMoved.connect(self.track_scroll)
+        self.verticalScrollBar().actionTriggered.connect(lambda _action: QTimer.singleShot(0, self.track_scroll))
+
+    def wheelEvent(self, event):
+        super().wheelEvent(event)
+        self.track_scroll()
+
+    def track_scroll(self):
+        bar = self.verticalScrollBar()
+        following = bar.maximum() - bar.value() < 30
+        if following != self.follow:
+            self.follow = following
+            self.followChanged.emit(self.follow)
+
+    def jump_to_latest(self):
+        self.follow = True
+        self.followChanged.emit(True)
+        self.scroll_end()
+
+    def render(self, text):
+        # No model-generated HTML, external images, or automatic link loading.
+        safe = html.escape(text, quote=False)
+        safe = re.sub(r'!\[([^\]]*)\]\([^)]*\)', r'[Image: \1]', safe)
+        safe = re.sub(r'!\[([^\]]*)\]\[[^\]]*\]', r'[Image: \1]', safe)
+        document = QTextDocument()
+        font = self.font(); base_size = getattr(self, 'body_text_size', 14); font.setPixelSize(base_size); document.setDefaultFont(font)
+        document.setDefaultStyleSheet('body { line-height: 140%; } p { margin-top: 0; margin-bottom: 10px; } '
+                                     'h1 { font-size: 19px; } h2 { font-size: 17px; } h3 { font-size: 15px; } '
+                                     'li { margin-bottom: 5px; } pre { white-space: pre-wrap; }')
+        document.setMarkdown(safe)
+        block = document.begin()
+        while block.isValid():
+            cursor = QTextCursor(block)
+            block_format = block.blockFormat()
+            block_format.setLineHeight(138, enum_value(QTextBlockFormat.LineHeightTypes.ProportionalHeight))
+            block_format.setBottomMargin(3 if block.textList() else 9)
+            if block_format.headingLevel():
+                block_format.setTopMargin(4 if block.position() else 0)
+                block_format.setBottomMargin(7)
+                cursor.setPosition(block.position())
+                cursor.setPosition(block.position() + block.length() - 1, QTextCursor.MoveMode.KeepAnchor)
+                char_format = QTextCharFormat(); heading_font = QFont(font)
+                heading_font.setPixelSize(round({1: 20, 2: 18, 3: 16}.get(block_format.headingLevel(), 14) * base_size / 14))
+                heading_font.setWeight(QFont.Weight.DemiBold); char_format.setFont(heading_font); cursor.mergeCharFormat(char_format)
+            cursor.clearSelection(); cursor.setPosition(block.position())
+            cursor.setBlockFormat(block_format)
+            block = block.next()
+        return document.toHtml()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'reflow_timer'): self.reflow_timer.start(0)
+
+    def reflow(self):
+        # Width changes reflow documents; deltas update only the current reply.
+        for item in self.messages:
+            item['label'].fit_height()
+        self.scroll_end()
+
+    def add_message(self, role, text, action=False, message_id=None):
+        card = QFrame()
+        card.setObjectName('userMessage' if role == 'You' else 'actionMessage' if action else 'assistantMessage')
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12 if role == 'You' else 2, 10 if role == 'You' else 0, 12 if role == 'You' else 2, 10 if role == 'You' else 0)
+        layout.setSpacing(7)
+        label = QLabel(role)
+        label.setObjectName('messageRole')
+        body = MessageBody()
+        body.setAccessibleDescription(role + ' message')
+        body.set_rendered(self.render(text))
+        if action:
+            toggle = QPushButton('›  ' + text.split('\n')[0][:90])
+            toggle.setObjectName('activityDisclosure'); toggle.setCheckable(True)
+            toggle.setAccessibleName('Expand ' + role.lower() + ' details')
+            body.hide()
+            toggle.toggled.connect(body.setVisible)
+            toggle.toggled.connect(lambda checked: toggle.setText(('⌄  ' if checked else '›  ') + text.split('\n')[0][:90]))
+            layout.addWidget(toggle)
+        else:
+            layout.addWidget(label)
+        layout.addWidget(body)
+        item = {'role': role, 'text': text, 'label': body, 'card': card, 'layout': layout, 'id': message_id, 'action': action}
+        self.messages.append(item)
+        self.rows.insertWidget(self.rows.count() - 1, card)
+        self.reflow_timer.start(0)
+        self.scroll_end()
+        return item
+
+    def append_to(self, item, text):
+        old_position = self.verticalScrollBar().value()
+        item['text'] += text
+        item['label'].set_rendered(self.render(item['text']))
+        if not self.follow:
+            self.verticalScrollBar().setValue(old_position)
+        self.scroll_end()
+
+    def add_receipt(self, item, canvas):
+        if item.get('receipt'): return
+        name = canvas_name(canvas)
+        button = QPushButton('▧  ' + name + ' · included')
+        button.setObjectName('receipt')
+        button.setToolTip('Open the exact canvas snapshot included in this message\n' + canvas_details(canvas))
+        button.setAccessibleName('Preview included canvas ' + name)
+        button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        button.clicked.connect(lambda: self.previewRequested.emit(canvas))
+        item['layout'].insertWidget(1, button)
+        item['receipt'] = canvas
+
+    def add_region_receipt(self, item, region, canvas=None):
+        if item.get('region_receipt'): return
+        snapshot = dict(region)
+        if canvas and canvas.get('revision') == region.get('revision'): snapshot['overview_path'] = canvas.get('path')
+        name = region.get('name') or 'Selection bounds'
+        button = QPushButton('⌗  ' + name + ' · crop included'); button.setObjectName('receipt')
+        button.setAccessibleName('Preview included rectangular crop')
+        button.setToolTip('Open the exact rectangular crop included in this message')
+        button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        button.clicked.connect(lambda: self.previewRequested.emit(snapshot))
+        item['layout'].insertWidget(2 if item.get('receipt') else 1, button)
+        item['region_receipt'] = snapshot
+
+    def add_reference_receipts(self, item, references):
+        if item.get('reference_receipts'): return
+        snapshots = [dict(reference) for reference in references]
+        for index, reference in enumerate(snapshots):
+            name = reference.get('name') or os.path.basename(reference.get('path', 'Reference'))
+            purpose = REFERENCE_CAPTIONS.get(reference.get('purpose') or 'general', 'General')
+            button = QPushButton('▧  ' + name + ' · ' + purpose.lower()); button.setObjectName('receipt')
+            button.setAccessibleName('Preview included reference ' + name)
+            button.setToolTip('Included reference · ' + name + '\nPurpose when sent: ' + purpose)
+            button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            button.clicked.connect(lambda checked=False, snapshot=reference: self.previewRequested.emit(snapshot))
+            item['layout'].insertWidget(1 + index + bool(item.get('receipt')) + bool(item.get('region_receipt')), button)
+        item['reference_receipts'] = snapshots
+
+    def add_question(self, question, options, answer):
+        item = self.add_message('A quick question', question)
+        item['card'].setObjectName('questionMessage')
+        choices = list(options)
+        if not any(choice.casefold().strip(' .') == 'you decide' for choice in choices): choices.append('You decide')
+        controls = []
+        for option in choices:
+            button = QPushButton(option)
+            button.setObjectName('questionChoice')
+            button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            button.setToolTip(option)
+            button.clicked.connect(lambda _checked=False, value=option: answer(value))
+            item['layout'].addWidget(button); controls.append(button)
+        note = QLabel('Or write your own answer below.'); note.setObjectName('muted')
+        item['layout'].addWidget(note)
+        return controls
+
+    def scroll_end(self):
+        if self.follow:
+            QTimer.singleShot(0, self._finish_scroll)
+
+    def _finish_scroll(self):
+        # A user may scroll between scheduling and dispatching this callback.
+        if self.follow:
+            self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+
+    def clear(self):
+        for item in self.messages:
+            self.rows.removeWidget(item['card'])
+            item['card'].hide()
+            item['card'].deleteLater()
+        self.messages = []
+        self.follow = True
+        self.followChanged.emit(True)
+
+    def toPlainText(self):
+        return '\n\n'.join(item['role'] + '\n' + item['text'] for item in self.messages)
+
+
+class LessonDialog(QDialog):
+    """The latest Ask-mode lesson, for the artist only. Not modal, so it stays open while painting."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.panel = parent
+        self.setWindowTitle('Lesson'); self.resize(560, 680); self.setModal(False)
+        layout = QVBoxLayout(self)
+        self.body = QTextBrowser(); self.body.setOpenLinks(False); self.body.setOpenExternalLinks(False)
+        self.body.setAccessibleName('Lesson'); layout.addWidget(self.body, 1)
+        note = QLabel('For you to follow along. The painter does not read this lesson.'); note.setObjectName('muted'); note.setWordWrap(True)
+        layout.addWidget(note)
+
+    def show_lesson(self, lesson):
+        self.setWindowTitle('Lesson · ' + lesson.get('title', ''))
+        position = self.body.verticalScrollBar().value() if self.isVisible() else 0
+        self.body.setHtml(self.panel.transcript.render(lesson.get('markdown', '')))
+        self.body.verticalScrollBar().setValue(position)
+
+
+class HistoryDialog(QDialog):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.panel = parent
+        self.setWindowTitle('Conversations'); self.resize(560, 580)
+        layout = QVBoxLayout(self)
+        self.search = QLineEdit(); self.search.setPlaceholderText('Search paintings and conversations…'); self.search.setAccessibleName('Search conversations')
+        layout.addWidget(self.search)
+        self.list = QListWidget(); self.list.setAccessibleName('Saved conversations'); layout.addWidget(self.list, 1)
+        self.note = QLabel('Loading conversations…'); self.note.setObjectName('muted'); self.note.setWordWrap(True); layout.addWidget(self.note)
+        # Chat records: delete, and move chats between machines as one archive file (storage-layout E).
+        manage = QHBoxLayout()
+        self.delete_button = QPushButton('Delete…'); self.delete_button.setToolTip('Delete this chat and its records. Its painting is not touched.')
+        self.delete_button.clicked.connect(self.delete_chat); manage.addWidget(self.delete_button)
+        self.export_button = QPushButton('Export…'); self.export_button.setToolTip('Save the selected chat, or every chat when none is selected, as one archive file.')
+        self.export_button.clicked.connect(self.export_chats); manage.addWidget(self.export_button)
+        importer = QPushButton('Import…'); importer.setToolTip('Add chats from an archive file exported on this or another computer.')
+        importer.clicked.connect(self.import_archive); manage.addWidget(importer)
+        manage.addStretch(); layout.addLayout(manage)
+        actions = QHBoxLayout()
+        locate = QPushButton('Locate painting…'); locate.clicked.connect(self.relink); actions.addWidget(locate)
+        actions.addStretch()
+        restore = QPushButton('Open conversation'); restore.setObjectName('primaryAction'); restore.clicked.connect(self.restore); actions.addWidget(restore)
+        layout.addLayout(actions)
+        self.total_bytes = None; self.query = ''
+        self.timer = QTimer(self); self.timer.setSingleShot(True); self.timer.timeout.connect(lambda: parent.send({'type': 'history', 'query': self.search.text()}))
+        self.search.textChanged.connect(lambda: self.timer.start(180)); self.list.itemDoubleClicked.connect(lambda _: self.restore())
+
+    @staticmethod
+    def size_text(size):
+        return '%.1f GB' % (size / 1e9) if size >= 1e9 else '%d MB' % round(size / 1e6) if size >= 1e6 else '%d KB' % max(1, round(size / 1e3))
+
+    def set_items(self, items, total_bytes=None, query=''):
+        self.total_bytes, self.query = total_bytes, query
+        self.list.clear()
+        for entry in items:
+            filename = entry.get('filename') or 'Draft · no painting yet'
+            state = entry.get('status', 'paused').replace('_', ' ')
+            size = ' · ' + self.size_text(entry['size_bytes']) if entry.get('size_bytes') else ''
+            item = QListWidgetItem((entry.get('title') or 'Untitled conversation') + '\n' + os.path.basename(filename) + ' · ' + state + size)
+            item.setData(Qt.ItemDataRole.UserRole, entry)
+            item.setToolTip(filename + '\n' + str(entry.get('updated_at', '')))
+            if entry.get('thumbnail'): item.setIcon(QIcon(entry['thumbnail']))
+            self.list.addItem(item)
+        self.list.setIconSize(QSize(48, 48))
+        total = (' Agent records: ' + self.size_text(total_bytes) + '.') if total_bytes else ''
+        if items: self.note.setText('Restored conversations stay paused. Your other open paintings are preserved.' + total)
+        elif query: self.note.setText('No matching conversations. Try another search or locate your painting.')
+        else: self.note.setText('No chats in this project yet. Chats from another computer can be added with Import….')
+
+    def selected_entry(self):
+        selected = self.list.currentItem()
+        return selected.data(Qt.ItemDataRole.UserRole) if selected else None
+
+    # Dialog helpers, replaceable in tests.
+    def confirm(self, title, text):
+        return QMessageBox.question(self, title, text, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel) == QMessageBox.StandardButton.Yes
+
+    def choose_save(self, title, name):
+        path, _ = QFileDialog.getSaveFileName(self, title, os.path.join(os.path.expanduser('~/Desktop'), name), 'Creative Agent archive (*.creative-agent-archive)')
+        return path and (path if path.endswith('.creative-agent-archive') else path + '.creative-agent-archive')
+
+    def choose_open(self, title):
+        path, _ = QFileDialog.getOpenFileName(self, title, os.path.expanduser('~'), 'Creative Agent archive (*.creative-agent-archive)')
+        return path
+
+    def delete_chat(self):
+        entry = self.selected_entry()
+        if not entry:
+            self.note.setText('Choose the chat to delete.'); return
+        if entry.get('id') == getattr(self.panel, 'study_id', None):
+            self.note.setText('Close this chat before deleting it.'); return
+        if self.confirm('Delete chat', 'Delete "%s" and its records (%s)? Its painting is not touched. This cannot be undone.'
+                        % (entry.get('title') or 'Untitled conversation', self.size_text(entry.get('size_bytes') or 0))):
+            self.panel.send({'type': 'delete_chat', 'id': entry['id']})
+
+    def export_chats(self):
+        entry = self.selected_entry()
+        name = re.sub(r'\s+', ' ', re.sub(r'[^\w .-]+', '', entry.get('title') or 'chat')).strip() or 'chat' if entry else 'All chats'
+        path = self.choose_save('Export chat' if entry else 'Export every chat', name + '.creative-agent-archive')
+        if path: self.panel.send({'type': 'export_archive', 'path': path, **({'id': entry['id']} if entry else {})})
+
+    def import_archive(self):
+        path = self.choose_open('Import chats')
+        if path: self.panel.send({'type': 'import_archive', 'path': path})
+
+    def restore(self):
+        selected = self.list.currentItem()
+        if selected:
+            self.panel.request_restore({'type': 'resume', 'id': selected.data(Qt.ItemDataRole.UserRole)['id']}); self.hide()
+
+    def relink(self):
+        selected = self.list.currentItem()
+        if not selected:
+            self.note.setText('Choose the conversation whose painting has moved.'); return
+        path, _ = QFileDialog.getOpenFileName(self, 'Locate this painting', getattr(self.panel, 'paintings_directory', ''), 'Krita paintings (*.kra)')
+        if path: self.panel.send({'type': 'relink', 'id': selected.data(Qt.ItemDataRole.UserRole)['id'], 'path': path})
+
+
+class PassReviewDialog(QDialog):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.panel = parent; self.entries = []
+        self.setWindowTitle('Review painting changes'); self.resize(760, 650)
+        layout = QVBoxLayout(self)
+        self.selector = QComboBox(); self.selector.setAccessibleName('Agent pass to review'); self.selector.currentIndexChanged.connect(self.show_pass); layout.addWidget(self.selector)
+        views = QHBoxLayout()
+        self.before = QLabel(); self.after = QLabel()
+        for title, label in [('Before', self.before), ('After', self.after)]:
+            column = QVBoxLayout(); heading = QLabel(title); heading.setObjectName('muted'); column.addWidget(heading)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter); label.setMinimumSize(80, 100); label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+            column.addWidget(label, 1); views.addLayout(column, 1)
+        layout.addLayout(views, 1)
+        self.warning = QLabel(''); self.warning.setWordWrap(True); self.warning.setObjectName('muted'); layout.addWidget(self.warning)
+        controls = QHBoxLayout()
+        self.visible = QCheckBox('Show pass'); self.visible.toggled.connect(lambda checked: self.change('visibility', checked)); controls.addWidget(self.visible)
+        controls.addWidget(QLabel('Strength'))
+        self.strength = QSlider(Qt.Orientation.Horizontal); self.strength.setRange(0, 100); self.strength.setAccessibleName('Agent pass strength')
+        self.strength.sliderReleased.connect(lambda: self.change('strength', self.strength.value() / 100)); controls.addWidget(self.strength, 1)
+        self.percent = QLabel('100%'); self.strength.valueChanged.connect(lambda v: self.percent.setText(str(v) + '%')); controls.addWidget(self.percent)
+        self.reject_pass = QPushButton('Reject pass'); self.reject_pass.clicked.connect(lambda: self.change('reject')); controls.addWidget(self.reject_pass)
+        layout.addLayout(controls)
+        note = QLabel('Changes apply only to recorded agent layers. If an artist has edited a layer, it is protected.'); note.setWordWrap(True); note.setObjectName('muted'); layout.addWidget(note)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close); self.buttons.rejected.connect(self.hide); layout.addWidget(self.buttons)
+
+    def set_passes(self, entries):
+        identifier = self.selector.currentData()
+        self.entries = entries
+        self.selector.blockSignals(True); self.selector.clear()
+        for entry in entries: self.selector.addItem(entry.get('title') or entry.get('label') or 'Painting pass', entry['id'])
+        index = self.selector.findData(identifier)
+        self.selector.setCurrentIndex(index if index >= 0 else max(0, len(entries) - 1)); self.selector.blockSignals(False)
+        self.show_pass()
+
+    def show_pass(self, *_args):
+        index = self.selector.currentIndex()
+        entry = self.entries[index] if 0 <= index < len(self.entries) else None
+        self.visible.blockSignals(True); self.strength.blockSignals(True)
+        if entry:
+            self.before_image = QPixmap(entry.get('before_path', '')); self.after_image = QPixmap(entry.get('after_path', ''))
+            self.visible.setChecked(entry.get('visible', True)); self.strength.setValue(round(entry.get('strength', 1) * 100))
+            self.percent.setText(str(self.strength.value()) + '%')
+            self.warning.setText(entry.get('warning') or ('This pass has been rejected.' if entry.get('rejected') else 'Compare the captured before and after views.'))
+        else:
+            self.before_image = QPixmap(); self.after_image = QPixmap(); self.warning.setText('No recorded agent changes yet.')
+        enabled = bool(entry and not entry.get('rejected') and not self.panel.busy)
+        available = (entry or {}).get('review_actions', ['visibility', 'strength', 'reject'])
+        self.visible.setText('Show step' if entry and entry.get('kind') == 'stage' else 'Show pass')
+        self.reject_pass.setText('Reject step' if entry and entry.get('kind') == 'stage' else 'Reject pass')
+        for action, widget in [('visibility', self.visible), ('strength', self.strength), ('reject', self.reject_pass)]: widget.setEnabled(enabled and action in available)
+        self.visible.blockSignals(False); self.strength.blockSignals(False); self.render_images()
+
+    def render_images(self):
+        for label, image in [(self.before, getattr(self, 'before_image', QPixmap())), (self.after, getattr(self, 'after_image', QPixmap()))]:
+            if image.isNull(): label.setText('No snapshot')
+            else: label.setPixmap(image.scaled(label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event); self.render_images()
+
+    def change(self, action, value=None):
+        if not self.selector.currentData(): return
+        command = {'type': 'review_pass', 'action': action, 'pass_id': self.selector.currentData()}
+        if value is not None: command['value'] = value
+        self.panel.send(command)
+
+
+class CreativeAgentDocker(DockWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle('Creative Agent')
+        self.process = None
+        self.buffer = b''
+        self.models = []
+        self.providers = []
+        self.accepted_model = None
+        self.pending_model_change = False
+        self.reference = None
+        self.construction_map = None
+        self.study_active = False
+        self.busy = False
+        self.reply_open = False
+        self.current_reply = None
+        self.output_directory = None
+        self.resume_on_ready = None
+        self.pending_restore = None
+        self.focus_after_restore = False
+        self.study_id = None
+        self.relink_id = None
+        self.phase = 'idle'
+        self.phase_started = time.monotonic()
+        self.run_started = None
+        self.saved_path = None
+        self.saved_at = None
+        self.painting_target = {}
+        self.goal = None
+        self.chat_mode = 'ask'
+        self.pending_references = []
+        self.attached_references = []
+        self.canvas_context = {'selected': True, 'follow_active': True, 'state': 'none', 'canvas': None}
+        self.question_id = None
+        self.question_controls = []
+        self.streaming_text = ''
+        self.last_user_item = None
+        self.history_dialog = None
+        self.pass_dialog = None
+        self.versions = {}
+        self.theme_mode = 'system'
+        self.text_scale = 1.0
+        self.document_signature = None
+        self.uncertain_operations = []
+        self.inspected_uncertain = False
+        self.preview_after_refresh = False
+        self.stream_timer = QTimer(self)
+        self.stream_timer.setSingleShot(True)
+        self.stream_timer.timeout.connect(self.flush_stream)
+        self.context_timer = QTimer(self)
+        self.context_timer.setSingleShot(True)
+        self.context_timer.timeout.connect(lambda: self.context_command('inspect'))
+        body = QWidget(); body.setObjectName('creativeChat')
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(14, 12, 14, 10)
+        layout.setSpacing(8)
+        self.setMinimumWidth(320)
+        self.setMinimumHeight(440)
+        header = QHBoxLayout(); header.setSpacing(3)
+        title = QLabel('Creative Agent'); title.setObjectName('chatTitle')
+        header.addWidget(title, 1)
+        self.end_button = QPushButton('＋'); self.end_button.setObjectName('headerAction')
+        self.end_button.setAccessibleName('New chat')
+        self.end_button.setToolTip('New chat · your painting stays open')
+        self.end_button.clicked.connect(lambda: self.send({'type': 'end'}) if self.study_active else self.new_chat())
+        header.addWidget(self.end_button)
+        self.history_button = QPushButton('◷'); self.history_button.setObjectName('headerAction')
+        self.history_button.setAccessibleName('Conversation history'); self.history_button.setToolTip('Conversation history')
+        self.history_button.clicked.connect(self.show_history); header.addWidget(self.history_button)
+        self.options_button = QPushButton('···'); self.options_button.setObjectName('headerAction')
+        self.options_button.setAccessibleName('Settings'); self.options_button.setToolTip('Painting settings and connections')
+        self.options_button.clicked.connect(lambda: self.options_dialog.show())
+        header.addWidget(self.options_button)
+        layout.addLayout(header)
+        self.workspace_label = QLabel('Your painting, in conversation'); self.workspace_label.setObjectName('muted')
+        self.workspace_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        workspace_row = QHBoxLayout(); workspace_row.setSpacing(6)
+        workspace_row.addWidget(self.workspace_label, 1)
+        self.return_button = QPushButton('Return to painting'); self.return_button.setObjectName('footerAction')
+        self.return_button.setAccessibleName('Return to the painting target')
+        self.return_button.clicked.connect(lambda: self.return_to_painting())
+        self.return_button.hide(); workspace_row.addWidget(self.return_button)
+        layout.addLayout(workspace_row)
+        self.use_canvas_button = QPushButton('Use this canvas as painting target')
+        self.use_canvas_button.setObjectName('footerAction')
+        self.use_canvas_button.setToolTip('Keep this conversation and plan, and work on the attached Krita painting. Nothing paints until you Resume.')
+        self.use_canvas_button.clicked.connect(lambda: self.send({'type': 'use_attached_canvas'}))
+        self.use_canvas_button.hide(); layout.addWidget(self.use_canvas_button)
+
+        self.model = ModelComboBox(); self.model.setMinimumWidth(70)
+        self.model.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.model.setMinimumContentsLength(8)
+        self.model.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.model.setAccessibleName('Model'); self.model.setToolTip('Choose the model receiving this conversation and attached images')
+        self.model.modelChosen.connect(self.change_model)
+        self.setup_box = QWidget(); self.setup_box.setObjectName('settingsBody'); self.setup_box.setMinimumWidth(0)
+        settings_sections = QVBoxLayout(self.setup_box); settings_sections.setContentsMargins(6, 0, 10, 10); settings_sections.setSpacing(18)
+        def settings_section(title):
+            group = QGroupBox(title)
+            rows = QFormLayout(group); rows.setContentsMargins(0, 10, 0, 0)
+            rows.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+            rows.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+            rows.setVerticalSpacing(7); settings_sections.addWidget(group)
+            return rows
+        form = settings_section('Painting target')
+        self.source = QComboBox(); self.source.addItem('Current canvas', 'current'); self.source.addItem('New painting', 'new'); self.source.addItem('Copy current painting', 'copy')
+        # The dock often loads before any document opens. That is not an
+        # instruction to create a painting when the artist later sends a message.
+        self.source.setToolTip('Agent works on the current canvas by default. Choose a new painting or working copy only when you want one.')
+        self.name = QLineEdit('Creative painting')
+        size = QHBoxLayout(); size.setSpacing(8)
+        self.canvas_width = QSpinBox(); self.canvas_width.setRange(128, 8192); self.canvas_width.setValue(768)
+        self.canvas_height = QSpinBox(); self.canvas_height.setRange(128, 8192); self.canvas_height.setValue(1024)
+        size_separator = QLabel('×'); size_separator.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        size.addWidget(self.canvas_width, 1); size.addWidget(size_separator); size.addWidget(self.canvas_height, 1)
+        self.experiment = QComboBox(); self.experiment.addItem('Create freely', 'free')
+        self.experiment.addItem('Follow a construction map', 'guided'); self.experiment.addItem('Plan from a reference', 'independent')
+        form.addRow('Work on', self.source); form.addRow('Name', self.name); form.addRow('Size', size); form.addRow('Approach', self.experiment)
+        self.map_button = QPushButton('Attach construction map…'); self.map_button.clicked.connect(lambda: self.attach('map')); form.addRow(self.map_button)
+        appearance = settings_section('Appearance')
+        self.theme_selector = QComboBox(); self.theme_selector.addItems(['Match Krita', 'Dark', 'Light'])
+        self.theme_selector.currentIndexChanged.connect(self.set_theme); appearance.addRow('Theme', self.theme_selector)
+        self.text_size = QSpinBox(); self.text_size.setRange(13, 20); self.text_size.setValue(14); self.text_size.setSuffix(' px')
+        self.text_size.setAccessibleName('Chat text size'); self.text_size.valueChanged.connect(self.set_text_size); appearance.addRow('Text size', self.text_size)
+        execution = settings_section('Agent execution')
+        self.reasoning_selector = QComboBox(); self.reasoning_selector.setAccessibleName('Reasoning level')
+        for label, value in [('Auto', 'auto'), ('Off', 'off'), ('Minimal', 'minimal'), ('Low', 'low'), ('Medium', 'medium'), ('High', 'high'), ('Extra high', 'xhigh'), ('Maximum', 'max')]:
+            self.reasoning_selector.addItem(label, value)
+        execution.addRow('Reasoning', self.reasoning_selector)
+        self.reasoning_note = QLabel('Auto adjusts reasoning to the task when the model supports it.'); self.reasoning_note.setWordWrap(True)
+        self.reasoning_note.setObjectName('muted'); execution.addRow(self.reasoning_note)
+        # Generic settings (move size, merging, image assets, decision checks…) are built from the companion's
+        # declarations (settings_schema), so a new setting needs no code here.
+        self.setting_widgets = {}; self.last_execution_settings = None
+        self.generic_settings_host = QWidget(); self.generic_settings = QFormLayout(self.generic_settings_host)
+        self.generic_settings.setContentsMargins(0, 0, 0, 0); self.generic_settings.setVerticalSpacing(7)
+        self.generic_settings.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows); self.generic_settings.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        execution.addRow(self.generic_settings_host)
+        craft_note = QLabel('The painter uses the full Krita toolset: layers, selections, fills, filters, masks and gradients, then brush strokes.')
+        craft_note.setWordWrap(True); craft_note.setObjectName('muted'); execution.addRow(craft_note)
+        # Decision endpoint and model: OpenRouter (live list), OpenAI, TypeSafe, or a custom System One endpoint.
+        self.decision_endpoint = QComboBox(); self.decision_endpoint.setAccessibleName('Decision endpoint')
+        self.decision_endpoint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed); self.decision_endpoint.setMinimumContentsLength(8)
+        self.decision_endpoint.currentIndexChanged.connect(lambda *_: self.decision_endpoint.currentData() and self.send({'type': 'decisions', 'action': 'list', 'endpoint': self.decision_endpoint.currentData()}))
+        execution.addRow('Decision endpoint', self.decision_endpoint)
+        self.decision_model = ElidedComboBox(); self.decision_model.setAccessibleName('Decision model')
+        self.decision_model.activated.connect(lambda *_: self.decision_model.currentData() and self.send({'type': 'decisions', 'action': 'select',
+            'endpoint': self.decision_endpoint.currentData(), 'model': self.decision_model.currentData()}))
+        execution.addRow('Decision model', self.decision_model)
+        decision_buttons = QHBoxLayout()
+        self.decision_check = QPushButton('Check images'); self.decision_check.setToolTip('Send two control images that differ only in colour; the answer must change.')
+        self.decision_check.clicked.connect(lambda: self.send({'type': 'decisions', 'action': 'check_images', 'endpoint': self.decision_endpoint.currentData(), 'model': self.decision_model.currentData()}))
+        self.decision_key = QPushButton('Set key…'); self.decision_key.clicked.connect(self.set_decision_key)
+        self.decision_add = QPushButton('Add endpoint…'); self.decision_add.clicked.connect(self.add_decision_endpoint)
+        for button in (self.decision_check, self.decision_key): decision_buttons.addWidget(button)
+        execution.addRow(decision_buttons); execution.addRow(self.decision_add)
+        self.decision_note = QLabel(''); self.decision_note.setWordWrap(True); self.decision_note.setObjectName('muted'); execution.addRow(self.decision_note)
+        self.reasoning_selector.currentIndexChanged.connect(self.change_execution_settings)
+        connection = settings_section('Connections and history')
+        self.provider_filter = ElidedComboBox()
+        self.provider_filter.setAccessibleName('Model provider'); self.provider_filter.setToolTip('Choose a provider, then choose one of its models')
+        self.provider_filter.currentIndexChanged.connect(self.change_provider)
+        self.provider_note = QLabel('Choose a provider beside the composer, then select a model.'); self.provider_note.setObjectName('muted')
+        self.provider_note.setWordWrap(True); self.provider_note.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred); connection.addRow(self.provider_note)
+        self.filter = QLineEdit(); self.filter.setPlaceholderText('Find a model…'); self.filter.textChanged.connect(self.filter_models)
+        connection.addRow('Model search', self.filter)
+        self.refresh_models_button = QPushButton('Refresh model catalog')
+        self.refresh_models_button.setAccessibleName('Refresh model catalog')
+        self.refresh_models_button.clicked.connect(lambda: self.send({'type': 'refresh_models', 'provider': self.provider_filter.currentData()}))
+        connection.addRow(self.refresh_models_button)
+        self.connect_button = QPushButton('Connect another API…'); self.connect_button.clicked.connect(self.connect_provider); connection.addRow(self.connect_button)
+        self.restore_button = QPushButton('Locate a painting or plan…'); self.restore_button.clicked.connect(self.restore_conversation); connection.addRow(self.restore_button)
+        self.connection_status = QLabel('Connecting…'); self.connection_status.setWordWrap(True)
+        self.connection_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred); connection.addRow(self.connection_status)
+        self.diagnostics = QLabel(''); self.diagnostics.setWordWrap(True); self.diagnostics.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.diagnostics.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.diagnostics.setObjectName('muted'); connection.addRow(self.diagnostics)
+        details_row = QHBoxLayout()
+        self.diagnostics_toggle = QPushButton('Show diagnostics'); self.diagnostics_toggle.setCheckable(True)
+        self.diagnostics_toggle.setAccessibleName('Show connection diagnostics'); details_row.addWidget(self.diagnostics_toggle)
+        self.copy_diagnostics = QPushButton('Copy'); self.copy_diagnostics.setAccessibleName('Copy connection diagnostics')
+        self.copy_diagnostics.clicked.connect(lambda: QApplication.clipboard().setText(self.diagnostics_text.toPlainText()))
+        details_row.addWidget(self.copy_diagnostics); connection.addRow(details_row)
+        self.diagnostics_text = QPlainTextEdit(); self.diagnostics_text.setReadOnly(True); self.diagnostics_text.setAccessibleName('Connection diagnostics')
+        self.diagnostics_text.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth); self.diagnostics_text.setMinimumWidth(0)
+        self.diagnostics_text.setFixedHeight(180); self.diagnostics_text.hide(); connection.addRow(self.diagnostics_text)
+        self.diagnostics_toggle.toggled.connect(self.toggle_diagnostics)
+        self.export_diagnostics = QPushButton('Export troubleshooting report')
+        self.export_diagnostics.setToolTip('Collect this conversation, plan, target and errors into one local file. No upload.')
+        self.export_diagnostics.clicked.connect(lambda: self.send({'type': 'export_diagnostics', 'connection': self.diagnostics_text.toPlainText()}))
+        connection.addRow(self.export_diagnostics)
+        settings_sections.addStretch()
+        for control in (self.source, self.experiment, self.theme_selector, self.provider_filter, self.name, self.filter):
+            control.setMinimumWidth(0); control.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.options_scroll = QScrollArea(); self.options_scroll.setWidgetResizable(True); self.options_scroll.setWidget(self.setup_box)
+        self.options_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.options_dialog = QDialog(self); self.options_dialog.setWindowTitle('Creative Agent settings'); self.options_dialog.resize(480, 620)
+        self.options_dialog.setMinimumSize(360, 400)
+        settings_layout = QVBoxLayout(self.options_dialog); settings_layout.addWidget(self.options_scroll)
+        settings_close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close); settings_close.rejected.connect(self.options_dialog.hide); settings_layout.addWidget(settings_close)
+        self.source.currentIndexChanged.connect(lambda: self.update_controls())
+        self.experiment.currentIndexChanged.connect(lambda: self.update_controls())
+
+        self.transcript = ChatTranscript(); self.transcript.body.setObjectName('conversationBody')
+        self.transcript.previewRequested.connect(self.preview_canvas)
+        layout.addWidget(self.transcript, 1)
+        self.empty_state = QWidget(); empty = QVBoxLayout(self.empty_state); empty.setContentsMargins(8, 24, 8, 16); empty.setSpacing(12)
+        welcome = QLabel('A little direction.\nRoom to create.'); welcome.setObjectName('emptyTitle'); welcome.setWordWrap(True); empty.addWidget(welcome)
+        hint = QLabel('Explore your canvas, shape an idea, or paint together.'); hint.setWordWrap(True); hint.setObjectName('muted'); empty.addWidget(hint)
+        for label, mode, prompt in [('Discuss this painting', 'ask', 'What do you notice about this painting?'),
+                                     ('Plan from a reference', 'plan', ''), ('Start a painting', 'autopilot', '')]:
+            button = QPushButton(label + '  ↗'); button.setObjectName('emptyAction')
+            button.clicked.connect(lambda _checked=False, m=mode, p=prompt: self.choose_starter(m, p)); empty.addWidget(button)
+        self.transcript.rows.insertWidget(0, self.empty_state)
+        jump_row = QHBoxLayout(); jump_row.addStretch()
+        self.jump_button = QPushButton('↓  Latest'); self.jump_button.setObjectName('jumpLatest')
+        self.jump_button.clicked.connect(self.transcript.jump_to_latest); self.jump_button.hide(); jump_row.addWidget(self.jump_button); jump_row.addStretch()
+        self.transcript.followChanged.connect(lambda following: self.jump_button.setVisible(not following))
+        layout.addLayout(jump_row)
+        self.plan_bar = QFrame(); self.plan_bar.setObjectName('planBar')
+        plan_layout = QVBoxLayout(self.plan_bar); plan_layout.setContentsMargins(10, 9, 10, 9); plan_layout.setSpacing(6)
+        self.plan_summary = QLabel(''); self.plan_summary.setWordWrap(True); self.plan_summary.setObjectName('planSummary')
+        self.plan_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred); plan_layout.addWidget(self.plan_summary)
+        plan_actions = QHBoxLayout(); plan_actions.setSpacing(5)
+        self.plan_button = QPushButton('View plan'); self.plan_button.clicked.connect(self.edit_plan); plan_actions.addWidget(self.plan_button)
+        self.compare_button = QPushButton('Review changes'); self.compare_button.clicked.connect(self.show_passes); plan_actions.addWidget(self.compare_button)
+        plan_actions.addStretch()
+        self.execute_button = QPushButton('Start painting'); self.execute_button.setObjectName('primaryAction')
+        self.execute_button.clicked.connect(self.start_plan); plan_actions.addWidget(self.execute_button)
+        plan_layout.addLayout(plan_actions); layout.addWidget(self.plan_bar); self.plan_bar.hide()
+        # Agent mode: the painted move, to keep, undo or refine (refining is just the next message).
+        self.move_bar = QFrame(); self.move_bar.setObjectName('planBar')
+        move_layout = QVBoxLayout(self.move_bar); move_layout.setContentsMargins(10, 9, 10, 9); move_layout.setSpacing(6)
+        self.move_summary = QLabel(''); self.move_summary.setWordWrap(True); self.move_summary.setObjectName('planSummary')
+        self.move_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred); move_layout.addWidget(self.move_summary)
+        move_actions = QHBoxLayout(); move_actions.setSpacing(5)
+        self.move_undo = QPushButton('Undo'); self.move_undo.setToolTip('Hide every pass of this move (reversible) and try a different approach')
+        self.move_undo.clicked.connect(lambda: self.move_command('undo')); move_actions.addWidget(self.move_undo)
+        move_actions.addStretch()
+        self.move_keep = QPushButton('Keep'); self.move_keep.setObjectName('primaryAction'); self.move_keep.setToolTip('Keep this move and paint the next one')
+        self.move_keep.clicked.connect(lambda: self.move_command('keep')); move_actions.addWidget(self.move_keep)
+        move_layout.addLayout(move_actions); layout.addWidget(self.move_bar); self.move_bar.hide(); self.current_move = None
+        activity = QHBoxLayout(); activity.setSpacing(6)
+        self.activity_dot = QLabel(''); self.activity_dot.setObjectName('activityDot'); activity.addWidget(self.activity_dot)
+        self.status = QLabel('Connecting…'); self.status.setWordWrap(True); self.status.setObjectName('muted')
+        self.status.setAccessibleDescription('Current activity'); self.status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        activity.addWidget(self.status, 1)
+        self.recovery_button = QPushButton('Retry'); self.recovery_button.setObjectName('footerAction'); self.recovery_button.hide()
+        self.recovery_action = None
+        self.recovery_button.clicked.connect(lambda: self.recovery_action() if self.recovery_action else None)
+        activity.addWidget(self.recovery_button)
+        # Shown only while the companion keeps the screen awake for a painting run (Settings: Screen).
+        self.awake_indicator = QLabel('☕ Screen awake'); self.awake_indicator.setObjectName('muted')
+        self.awake_indicator.setAccessibleName('Keeping the screen awake while painting')
+        self.awake_indicator.setToolTip('Keeping the screen awake while this run paints: Krita can only paint while its window is active. '
+                                        'It stops when the run pauses or ends. Turn it off in Settings: Screen.')
+        self.awake_indicator.hide(); activity.addWidget(self.awake_indicator)
+        self.elapsed = QLabel(''); self.elapsed.setObjectName('muted'); self.elapsed.setAccessibleDescription('Activity elapsed time'); activity.addWidget(self.elapsed)
+        layout.addLayout(activity)
+        self.composer = QFrame(); self.composer.setObjectName('composer')
+        compose = QVBoxLayout(self.composer); compose.setContentsMargins(10, 9, 10, 8); compose.setSpacing(7)
+        self.canvas_row = QWidget(); canvas_layout = QHBoxLayout(self.canvas_row); canvas_layout.setContentsMargins(0, 0, 0, 0); canvas_layout.setSpacing(3)
+        self.canvas_button = QPushButton('＋  Add current canvas'); self.canvas_button.setObjectName('contextChip')
+        self.canvas_button.setMinimumWidth(0); self.canvas_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.canvas_button.setAccessibleName('Canvas context'); self.canvas_button.setIconSize(QSize(26, 26))
+        self.canvas_button.clicked.connect(self.canvas_clicked); canvas_layout.addWidget(self.canvas_button, 1)
+        self.canvas_refresh = QPushButton('↻'); self.canvas_refresh.setObjectName('contextAction'); self.canvas_refresh.setAccessibleName('Refresh canvas snapshot')
+        self.canvas_refresh.setToolTip('Refresh canvas snapshot'); self.canvas_refresh.clicked.connect(lambda: self.context_command('refresh')); canvas_layout.addWidget(self.canvas_refresh)
+        self.canvas_remove = QPushButton('×'); self.canvas_remove.setObjectName('contextAction'); self.canvas_remove.setAccessibleName('Detach canvas')
+        self.canvas_remove.setToolTip('Exclude canvas from upcoming messages'); self.canvas_remove.clicked.connect(lambda: self.context_command('detach')); canvas_layout.addWidget(self.canvas_remove)
+        compose.addWidget(self.canvas_row)
+        self.context_hint = QLabel('The open canvas is included by default.'); self.context_hint.setObjectName('contextHint')
+        self.context_hint.setWordWrap(True); compose.addWidget(self.context_hint)
+        self.scope_tray = QWidget(); scope_layout = QHBoxLayout(self.scope_tray); scope_layout.setContentsMargins(0, 0, 0, 0); scope_layout.setSpacing(5)
+        self.region_group = QWidget(); region_layout = QHBoxLayout(self.region_group); region_layout.setContentsMargins(0, 0, 0, 0); region_layout.setSpacing(1)
+        self.region_button = QPushButton('⌗  Selection bounds'); self.region_button.setObjectName('contextChip')
+        self.region_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed); self.region_button.setMinimumWidth(0)
+        self.region_button.setAccessibleName('Preview attached rectangular selection crop'); self.region_button.clicked.connect(self.preview_region)
+        region_layout.addWidget(self.region_button, 1)
+        self.region_remove = QPushButton('×'); self.region_remove.setObjectName('contextAction'); self.region_remove.setAccessibleName('Remove region attachment')
+        self.region_remove.clicked.connect(lambda: self.send({'type': 'context', 'action': 'clear_region'})); region_layout.addWidget(self.region_remove)
+        scope_layout.addWidget(self.region_group, 1)
+        self.plan_context_button = QPushButton('Plan'); self.plan_context_button.setObjectName('contextChip')
+        self.plan_context_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed); self.plan_context_button.setMinimumWidth(0)
+        self.plan_context_button.setAccessibleName('View the active plan included in this conversation'); self.plan_context_button.clicked.connect(self.edit_plan)
+        scope_layout.addWidget(self.plan_context_button, 1)
+        self.lesson_button = QPushButton('Lesson'); self.lesson_button.setObjectName('contextChip')
+        self.lesson_button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed); self.lesson_button.setMinimumWidth(0)
+        self.lesson_button.setAccessibleName('Open the lesson from Ask mode'); self.lesson_button.clicked.connect(self.open_lesson)
+        scope_layout.addWidget(self.lesson_button, 1); compose.addWidget(self.scope_tray)
+        self.lesson_dialog = None
+        self.scope_tray.hide(); self.region_group.hide(); self.plan_context_button.hide(); self.lesson_button.hide()
+        self.attachments = QWidget(); self.attachment_row = QHBoxLayout(self.attachments)
+        self.attachment_row.setContentsMargins(0, 0, 0, 0); self.attachment_row.setSpacing(5)
+        compose.addWidget(self.attachments); self.attachments.hide()
+        self.protection_bar = QWidget(); bar = QHBoxLayout(self.protection_bar); bar.setContentsMargins(0, 0, 0, 0)
+        self.protection_bar_label = QLabel('Painting protection'); bar.addWidget(self.protection_bar_label, 1)
+        done = QPushButton('Done'); done.clicked.connect(lambda: self.finish_protection(True)); bar.addWidget(done)
+        cancel = QPushButton('Cancel'); cancel.clicked.connect(lambda: self.finish_protection(False)); bar.addWidget(cancel)
+        compose.addWidget(self.protection_bar); self.protection_bar.hide()
+        self.part_session = None
+        self.part_bar = QWidget(); part_bar = QHBoxLayout(self.part_bar); part_bar.setContentsMargins(0, 0, 0, 0)
+        self.part_bar_label = QLabel(''); self.part_bar_label.setWordWrap(True); part_bar.addWidget(self.part_bar_label, 1)
+        use = QPushButton('Use this part'); use.clicked.connect(self.use_part); part_bar.addWidget(use)
+        cancel_part = QPushButton('Cancel'); cancel_part.clicked.connect(self.close_part); part_bar.addWidget(cancel_part)
+        compose.addWidget(self.part_bar); self.part_bar.hide()
+        self.part_timer = QTimer(self); self.part_timer.setInterval(1000); self.part_timer.timeout.connect(self.check_part_session)
+        # Slash commands: typing "/" lists the agent's skills; choosing one inserts "/name ".
+        self.skills = []
+        self.slash_menu = QListWidget(); self.slash_menu.setAccessibleName('Skills'); self.slash_menu.setMaximumHeight(150)
+        self.slash_menu.itemActivated.connect(self.choose_skill); self.slash_menu.itemClicked.connect(self.choose_skill)
+        compose.addWidget(self.slash_menu); self.slash_menu.hide()
+        self.prompt = ChatInput(); self.prompt.setAccessibleName('Message Creative Agent'); self.prompt.slash_menu = self.slash_menu
+        self.prompt.setPlaceholderText('Ask about your painting…'); self.prompt.setFixedHeight(62)
+        self.prompt.textChanged.connect(self.resize_composer); self.prompt.textChanged.connect(self.update_slash_menu); self.prompt.submitted.connect(self.submit)
+        self.prompt.filesAttached.connect(self.attach_paths); self.prompt.imageAttached.connect(self.attach_pasted_image)
+        compose.addWidget(self.prompt)
+        buttons = QHBoxLayout(); buttons.setSpacing(3)
+        self.reference_button = QPushButton('＋'); self.reference_button.setObjectName('contextAction')
+        self.reference_button.setAccessibleName('Attach context'); self.reference_button.setToolTip('Attach canvas or reference image')
+        self.attach_menu = QMenu(self)
+        self.attach_menu.addAction('Current canvas', lambda: self.context_command('attach'))
+        self.attach_menu.addAction('Reference image…', lambda: self.attach('reference'))
+        self.selected_area_action = self.attach_menu.addAction('Selected area')
+        self.selected_area_action.setToolTip('Attach a rectangular crop around the active selection. This does not authorize painting.')
+        self.selected_area_action.triggered.connect(self.attach_selected_area)
+        self.attach_menu.addSeparator()
+        self.pin_canvas_action = self.attach_menu.addAction('Keep this canvas attached')
+        self.pin_canvas_action.setCheckable(True); self.pin_canvas_action.triggered.connect(self.toggle_canvas_pin)
+        self.document_menu = self.attach_menu.addMenu('Choose an open canvas')
+        self.reference_button.setMenu(self.attach_menu); buttons.addWidget(self.reference_button)
+        self.mode_selector = QComboBox(); self.mode_selector.setAccessibleName('Chat mode')
+        self.mode_selector.addItem('Ask', 'ask'); self.mode_selector.addItem('Plan', 'plan'); self.mode_selector.addItem('Agent', 'agent'); self.mode_selector.addItem('Autopilot', 'autopilot')
+        self.mode_selector.setToolTip('Ask and Plan never paint. Agent paints one move at a time for you to keep, undo or refine. Autopilot paints the plan until the review passes.')
+        self.mode_selector.setToolTip('Ask and Plan inspect your canvas. Agent can paint.')
+        self.mode_selector.currentIndexChanged.connect(self.change_mode); buttons.addWidget(self.mode_selector)
+        self.ai_images_selector = QComboBox(); self.ai_images_selector.setAccessibleName('AI images for this chat')
+        for value, text in AI_IMAGE_CHOICES: self.ai_images_selector.addItem(text, value)
+        self.ai_images_selector.setToolTip('How many AI-generated images the painter may use in this chat. 0 paints everything by hand.')
+        self.ai_images_selector.currentIndexChanged.connect(self.change_ai_images); buttons.addWidget(self.ai_images_selector)
+        self.ai_images_used = QLabel(''); self.ai_images_used.setAccessibleName('AI images used'); buttons.addWidget(self.ai_images_used)
+        # Protected areas: what the agent must never change. The panel changes them here, in Krita's own process.
+        self.protection = ProtectionCraft(); self.protection_controls = []; self.protection_editing = None; self.protection_shown = None
+        self.protect_button = QPushButton('🛡'); self.protect_button.setObjectName('contextAction')
+        self.protect_button.setAccessibleName('Protected areas'); self.protect_button.setToolTip('Protected areas: what the agent must never change')
+        self.protect_button.clicked.connect(lambda: self.open_protection()); buttons.addWidget(self.protect_button)
+        buttons.addStretch(1)
+        self.stop_button = QPushButton('■'); self.stop_button.setObjectName('stopAction')
+        self.stop_button.setAccessibleName('Stop generating and pause agent'); self.stop_button.setToolTip('Stop · in-progress paint settles safely')
+        self.stop_button.clicked.connect(self.request_stop); buttons.addWidget(self.stop_button)
+        self.send_button = QPushButton('↑'); self.send_button.setObjectName('sendMessage'); self.send_button.setAccessibleName('Send message')
+        self.send_button.clicked.connect(self.submit); buttons.addWidget(self.send_button)
+        model_row = QHBoxLayout(); model_row.setSpacing(6)
+        model_row.addWidget(self.provider_filter, 2); model_row.addWidget(self.model, 3)
+        compose.addLayout(model_row); compose.addLayout(buttons); layout.addWidget(self.composer)
+        saved = QHBoxLayout(); saved.setSpacing(4)
+        self.save_status = QLabel('Ask · read only'); self.save_status.setObjectName('muted')
+        self.save_status.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed); saved.addWidget(self.save_status, 1)
+        # This chat's Langfuse session (every chat is traced until New chat).
+        self.trace_link = QLabel(''); self.trace_link.setObjectName('muted'); self.trace_link.setOpenExternalLinks(True)
+        self.trace_link.setToolTip('Open this chat\'s traces in Langfuse'); self.trace_link.hide(); saved.addWidget(self.trace_link)
+        self.folder_button = QPushButton('Show file'); self.folder_button.setObjectName('footerAction')
+        self.folder_button.clicked.connect(self.open_output); saved.addWidget(self.folder_button); layout.addLayout(saved)
+        self.start_button = QPushButton('Connect assistant'); self.start_button.clicked.connect(self.start_companion); layout.addWidget(self.start_button)
+        self.preview = QLabel(); self.preview.hide()
+        self.refresh_button = self.canvas_refresh
+        self.clock = QTimer(self); self.clock.setInterval(1000); self.clock.timeout.connect(self.update_elapsed); self.clock.start()
+        self.setWidget(body)
+        # QDockWidget caches transient control widths as a window minimum. The
+        # content layout already constrains its controls; let docking stay narrow.
+        self.layout().setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        self.apply_theme()
+        self.shortcuts = []
+        for key, callback in [('Ctrl+L', lambda: self.prompt.setFocus()), ('Ctrl+Shift+N', self.end_button.click), ('Escape', self.pause_if_busy)]:
+            shortcut = QShortcut(QKeySequence(key), self); shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut); shortcut.activated.connect(callback); self.shortcuts.append(shortcut)
+        self.update_controls()
+        self.render_context()
+
+    def set_text_size(self, value):
+        self.text_scale = value / 14
+        self.apply_theme(); self.resize_composer()
+
+    def set_theme(self, index):
+        self.theme_mode = ['system', 'dark', 'light'][index]
+        self.apply_theme()
+
+    def apply_theme(self, dark=None):
+        if dark is None:
+            dark = self.theme_mode == 'dark' or (self.theme_mode == 'system' and QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128)
+        c = ({'bg':'#1e1f22','surface':'#28292d','raised':'#313338','border':'#42444b','text':'#e7e8eb','muted':'#a7aab3','hover':'#3b3e45','accent':'#b9c7e8','button':'#e1e5ee','buttonText':'#24272d'} if dark else
+             {'bg':'#f7f7f8','surface':'#ffffff','raised':'#e9ebee','border':'#d3d6dc','text':'#24272e','muted':'#646a76','hover':'#dee2e9','accent':'#3c5c91','button':'#313946','buttonText':'#ffffff'})
+        self.theme_colors = c
+        c['chevron'] = os.path.join(os.path.dirname(__file__), 'icons', 'chevron-dark.svg' if dark else 'chevron-light.svg').replace('\\', '\\\\').replace('"', '\\"')
+        palette = QPalette(self.palette())
+        for role, color in [(QPalette.ColorRole.Window, c['bg']), (QPalette.ColorRole.Base, c['surface']), (QPalette.ColorRole.Button, c['raised']),
+                            (QPalette.ColorRole.WindowText, c['text']), (QPalette.ColorRole.Text, c['text']), (QPalette.ColorRole.ButtonText, c['text']),
+                            (QPalette.ColorRole.Highlight, c['accent']), (QPalette.ColorRole.HighlightedText, c['bg'])]: palette.setColor(role, QColor(color))
+        self.setPalette(palette)
+        stylesheet = '''
+            QWidget#creativeChat, QWidget#conversationBody, QWidget#settingsBody, QDialog { background: %(bg)s; color: %(text)s; }
+            QLabel { color: %(text)s; background: transparent; font-size: 13px; }
+            QLabel#chatTitle { font-size: 15px; font-weight: 600; }
+            QLabel#emptyTitle { font-size: 25px; font-weight: 500; }
+            QLabel#muted, QLabel#contextHint { color: %(muted)s; font-size: 11px; }
+            QLabel#messageRole { color: %(muted)s; font-size: 11px; font-weight: 500; }
+            QLabel#planSummary { font-size: 12px; }
+            QLabel#activityDot { color: %(accent)s; font-size: 12px; }
+            QFrame#userMessage { background: %(raised)s; border: none; border-radius: 10px; }
+            QFrame#assistantMessage, QFrame#actionMessage { background: transparent; border: none; }
+            QFrame#questionMessage { background: transparent; border: none; }
+            QFrame#composer { background: %(surface)s; border: 1px solid %(border)s; border-radius: 12px; }
+            QFrame#composer:focus-within { border-color: %(accent)s; }
+            QFrame#planBar { background: %(surface)s; border: 1px solid %(border)s; border-radius: 9px; }
+            QPlainTextEdit, QTextBrowser, QLineEdit, QTableWidget { color: %(text)s; selection-background-color: %(accent)s; selection-color: %(bg)s; font-size: 14px; }
+            QPlainTextEdit, QTextBrowser { border: none; background: transparent; }
+            QDialog QPlainTextEdit { background: %(surface)s; border: 1px solid %(border)s; border-radius: 6px; padding: 6px; }
+            QDialog QComboBox { background: %(surface)s; border: 1px solid %(border)s; min-height: 24px; }
+            QToolButton { background: %(surface)s; color: %(text)s; border: none; }
+            QLineEdit, QSpinBox, QTableWidget { color: %(text)s; background: %(surface)s; border: 1px solid %(border)s; border-radius: 5px; padding: 5px; }
+            QPushButton { color: %(text)s; background: %(raised)s; border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; min-height: 20px; font-size: 11px; }
+            QPushButton:hover { background: %(hover)s; }
+            QPushButton:focus { border-color: %(accent)s; }
+            QPushButton:disabled { color: %(muted)s; background: transparent; }
+            QPushButton#headerAction { background: transparent; padding: 1px 4px; min-width: 22px; font-size: 20px; }
+            QPushButton#headerAction:hover, QPushButton#contextAction:hover { background: %(raised)s; }
+            QPushButton#emptyAction { background: transparent; border: 1px solid %(border)s; text-align: left; padding: 10px; font-size: 12px; }
+            QPushButton#emptyAction:hover { background: %(raised)s; }
+            QPushButton#contextChip { background: %(raised)s; text-align: left; font-size: 11px; min-height: 26px; padding: 3px 7px; }
+            QPushButton#contextAction { background: transparent; padding: 2px 4px; font-size: 17px; min-width: 16px; }
+            QPushButton#contextAction::menu-indicator { image: none; width: 0; }
+            QPushButton#sendMessage, QPushButton#stopAction { background: %(button)s; color: %(buttonText)s; font-size: 18px; font-weight: 500; min-width: 17px; min-height: 24px; padding: 2px 5px; border-radius: 7px; }
+            QPushButton#sendMessage:disabled { background: %(raised)s; color: %(muted)s; }
+            QPushButton#stopAction { font-size: 12px; }
+            QPushButton#primaryAction { background: %(button)s; color: %(buttonText)s; }
+            QPushButton#footerAction { background: transparent; color: %(muted)s; font-size: 10px; padding: 0 2px; min-height: 17px; }
+            QPushButton#activityDisclosure { background: transparent; color: %(muted)s; text-align: left; padding: 0; font-size: 11px; }
+            QPushButton#referencePurpose { background: transparent; color: %(muted)s; padding: 0; min-height: 17px; font-size: 10px; }
+            QPushButton#referenceRemove { background: %(raised)s; color: %(text)s; padding: 0; min-height: 12px; border-radius: 6px; font-size: 12px; }
+            QPushButton#receipt { background: transparent; color: %(muted)s; text-align: left; padding: 0; font-size: 10px; }
+            QPushButton#questionChoice { text-align: left; background: %(surface)s; border: 1px solid %(border)s; padding: 8px 10px; font-size: 12px; }
+            QPushButton#questionChoice:hover { background: %(raised)s; }
+            QComboBox { color: %(text)s; background: transparent; border: 1px solid transparent; border-radius: 5px; padding: 4px 20px 4px 5px; min-height: 22px; font-size: 11px; }
+            QComboBox:hover { background: %(raised)s; border-color: %(border)s; }
+            QComboBox:focus { background: %(surface)s; border-color: %(accent)s; }
+            QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: top right; border: none; width: 18px; }
+            QComboBox::down-arrow { image: url("%(chevron)s"); width: 12px; height: 8px; }
+            QComboBox QAbstractItemView, QMenu { background: %(surface)s; color: %(text)s; border: 1px solid %(border)s; selection-background-color: %(raised)s; }
+            QMenu::item { padding: 7px 16px; }
+            QScrollArea { border: none; background: transparent; }
+            QScrollBar:vertical { background: transparent; width: 6px; margin: 0; }
+            QScrollBar::handle:vertical { background: %(border)s; min-height: 28px; border-radius: 3px; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+            QGroupBox { border: none; padding-top: 20px; color: %(text)s; }
+            QGroupBox::title { color: %(muted)s; }
+            QListWidget { background: %(surface)s; color: %(text)s; border: none; }
+            QListWidget::item { padding: 12px; border-bottom: 1px solid %(border)s; }
+            QListWidget::item:selected { background: %(raised)s; }
+            QTabWidget::pane { border: 1px solid %(border)s; border-radius: 5px; }
+            QTabBar::tab { background: %(bg)s; color: %(muted)s; padding: 9px 10px; border: none; font-size: 11px; }
+            QTabBar::tab:selected { color: %(text)s; background: %(surface)s; border-bottom: 2px solid %(accent)s; }
+            QTabBar::tab:hover { background: %(raised)s; }
+            QCheckBox { color: %(text)s; font-size: 12px; }
+            QHeaderView::section { background: %(raised)s; color: %(text)s; border: none; padding: 7px; font-size: 11px; }
+            QTableCornerButton::section { background: %(raised)s; border: none; }
+        ''' % c
+        stylesheet = re.sub(r'font-size: (\d+)px', lambda match: 'font-size: %dpx' % round(int(match.group(1)) * self.text_scale), stylesheet)
+        self.setStyleSheet(stylesheet)
+        self.transcript.body_text_size = round(14 * self.text_scale)
+        for item in self.transcript.messages:
+            item['label'].set_rendered(self.transcript.render(item['text']))
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.ApplicationPaletteChange and hasattr(self, 'theme_mode') and self.theme_mode == 'system':
+            self.apply_theme()
+
+    def toggle_diagnostics(self, expanded):
+        self.diagnostics_text.setVisible(expanded)
+        self.diagnostics_toggle.setText('Hide diagnostics' if expanded else 'Show diagnostics')
+        if expanded:
+            QTimer.singleShot(0, lambda: self.options_scroll.ensureWidgetVisible(self.diagnostics_text))
+
+    def render_connection(self, ui_build, event):
+        companion = event.get('build') or event.get('versions') or {}
+        bridge = event.get('bridge') or {}
+        bridge_build = bridge.get('build') or {}
+        summaries = []
+        for label, version, build in [('UI', ui_build.get('version'), ui_build),
+                                       ('Companion', companion.get('version'), companion),
+                                       ('Bridge', bridge.get('creative_version') or bridge_build.get('version') or bridge.get('version'), bridge_build)]:
+            identifier = build.get('build_id')
+            if identifier == 'development-unverified': identifier = None
+            summaries.append(label + ' ' + (version or 'unavailable') + (' · ' + identifier[:12] if identifier else ''))
+        self.diagnostics.setText('\n'.join(summaries))
+        identifiers = [entry.get('build_id') for entry in (ui_build, companion, bridge_build)]
+        verified = all(identifiers) and identifiers[0] != 'development-unverified' and len(set(identifiers)) == 1
+        if bridge.get('error'): status = 'Bridge unavailable · ' + bridge['error']
+        elif event.get('compatible') is False or (all(identifiers) and identifiers[0] != 'development-unverified' and len(set(identifiers)) != 1): status = 'Update required · plugin and companion differ'
+        elif verified: status = 'Connected · matching build'
+        else: status = 'Connected · build verification unavailable'
+        self.connection_status.setText(status)
+        # Deliberately include version metadata only, never model keys or config.
+        report = {'status': status, 'compatible': event.get('compatible'), 'ui': ui_build,
+                  'companion': companion, 'bridge': {key: bridge[key] for key in ('version', 'creative_version', 'protocol_version', 'build', 'error') if key in bridge}}
+        self.diagnostics_text.setPlainText(json.dumps(report, ensure_ascii=False, indent=2))
+        self.send({'type': 'diagnostic_ui', 'connection': report})
+
+    def pause_if_busy(self):
+        if self.busy: self.request_stop()
+
+    def request_stop(self):
+        # Krita stops starting painting actions at once, and a stroke pass ends after its current
+        # stroke, without waiting for the companion: its next action often started before it heard.
+        stop_requested.set()
+        self.send({'type': 'stop'})
+
+    def choose_starter(self, mode, prompt):
+        self.mode_selector.setCurrentIndex(self.mode_selector.findData(mode))
+        self.prompt.setPlainText(prompt)
+        self.prompt.setFocus()
+        if mode == 'plan' and not self.pending_references and not self.attached_references:
+            self.attach('reference')
+
+    def request_restore(self, command):
+        if self.busy:
+            self.status.setText('Pause the current painting before restoring another conversation.'); return
+        if self.study_active:
+            self.pending_restore = command
+            self.send({'type': 'end'})
+        else:
+            self.focus_after_restore = True
+            self.send(command)
+
+    def locate_missing_painting(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'Locate this painting', getattr(self, 'paintings_directory', ''), 'Krita paintings (*.kra)')
+        if path and (self.relink_id or self.study_id):
+            self.focus_after_restore = True
+            self.send({'type': 'relink', 'id': self.relink_id or self.study_id, 'path': path})
+
+    def set_recovery(self, label=None, action=None):
+        self.recovery_action = action
+        self.recovery_button.setVisible(bool(label))
+        if label: self.recovery_button.setText(label)
+
+    def context_command(self, action):
+        if action == 'detach':
+            self.canvas_context.update(selected=False, state='detached')
+        elif action == 'attach':
+            self.canvas_context.update(selected=True, follow_active=True, state='stale')
+        self.render_context()
+        if action in ('attach', 'refresh'):
+            self.context_hint.setText('Capturing current canvas…')
+        command = {'type': 'context', 'action': action}
+        self.send(command)
+
+    def attach_selected_area(self):
+        try:
+            document = Krita.instance().activeDocument()
+            selection = document.selection() if document else None
+            if selection is None or selection.width() <= 0 or selection.height() <= 0:
+                self.status.setText('Select an area on the canvas first, then use ＋ → Selected area.'); return
+            x = max(0, selection.x()); y = max(0, selection.y())
+            right = min(document.width(), selection.x() + selection.width())
+            bottom = min(document.height(), selection.y() + selection.height())
+            if right <= x or bottom <= y:
+                self.status.setText('The selection is outside this canvas. Choose an area within the painting.'); return
+            region = {'document_id': document_id(document), 'bounds': [x, y, right - x, bottom - y], 'name': 'Selection bounds'}
+            self.send({'type': 'context', 'action': 'region', 'region': region})
+            self.status.setText('Attaching a rectangular crop around your selection…')
+        except (AttributeError, RuntimeError):
+            self.status.setText('The current selection could not be read. Try selecting the area again.')
+
+    def preview_region(self):
+        region = self.canvas_context.get('region') or {}
+        if not region.get('path') or region.get('state') == 'unavailable':
+            self.status.setText('This crop belongs to another canvas. Return to it or attach a new selected area.'); return
+        snapshot = dict(region)
+        canvas = self.canvas_context.get('canvas') or {}
+        if canvas.get('revision') == region.get('revision'): snapshot['overview_path'] = canvas.get('path')
+        self.preview_canvas(snapshot)
+
+    def render_scope_tray(self):
+        region = self.canvas_context.get('region') or {}
+        brief = self.goal.get('brief') if self.goal else None
+        lesson = self.goal.get('lesson') if self.goal else None
+        self.region_group.setVisible(bool(region)); self.plan_context_button.setVisible(bool(brief)); self.lesson_button.setVisible(bool(lesson))
+        self.scope_tray.setVisible(bool(region or brief or lesson))
+        if lesson:
+            self.lesson_button.setText('✎  Lesson')
+            self.lesson_button.setToolTip(lesson.get('title', '') + '\nFrom Ask mode, for you to follow along. The painter does not read it.')
+        if self.lesson_dialog is not None:
+            if lesson: self.lesson_dialog.show_lesson(lesson)
+            else: self.lesson_dialog.close()
+        if region:
+            unavailable = region.get('state') in ('unavailable', 'error')
+            self.region_button.setText('⌗  Crop unavailable' if unavailable else '⌗  Region crop')
+            bounds = region.get('bounds') or region.get('region')
+            description = 'Rectangular crop; includes the bounding box, not an exact freehand mask. Attaching it does not authorize painting.'
+            if bounds: description += '\nx %s, y %s · %s × %s px' % tuple(bounds)
+            if unavailable: description += '\nReturn to its canvas or attach a new selected area.'
+            self.region_button.setToolTip(description)
+        if brief:
+            self.plan_context_button.setText('☷  Plan · r' + str(self.goal.get('revision', 1)))
+            self.plan_context_button.setToolTip(brief['title'] + '\nActive requirements and painting order are included in the conversation. Open to review or edit.')
+
+    def render_target(self):
+        target = self.painting_target
+        canvas = self.canvas_context.get('canvas') or {}
+        goal = self.goal or {}
+        different = bool(canvas.get('document_id') and (target.get('document_id') != canvas['document_id'] or (target.get('mode') == 'new' and not target.get('bound'))))
+        self.use_canvas_button.setVisible(bool(self.study_active and self.canvas_context.get('selected') and different and not goal.get('passes')))
+        self.use_canvas_button.setEnabled(not self.busy)
+        ready_plan = bool(goal.get('brief') and (goal.get('status') in ('ready', 'active', 'reviewing', 'paused', 'complete', 'limited') or goal.get('approved_revision') is not None))
+        self.return_button.setVisible(bool(target.get('filename') or target.get('bound')))
+        self.return_button.setEnabled(not self.busy)
+        self.return_button.setText('Locate painting' if target.get('missing') else 'Return to painting')
+        self.return_button.setToolTip('Open or focus this painting. The conversation stays paused.')
+        if target and (target.get('bound') or ready_plan):
+            name = os.path.basename(target.get('filename') or '') or target.get('name') or 'New painting'
+            prefix = 'Painting target · ' if target.get('filename') or target.get('bound') else 'Target on start · '
+            self.workspace_label.setText(self.fontMetrics().elidedText(prefix + name, Qt.TextElideMode.ElideMiddle, max(100, self.width() - self.return_button.sizeHint().width() - 34)))
+            details = target.get('filename') or name
+            if not target.get('bound'): details += '\nThe conversation is not currently painting. Start Agent explicitly to work on this target.'
+            if target.get('document_id') and canvas.get('document_id') != target['document_id']:
+                details += '\nThe attached canvas is different from this painting target.'
+            self.workspace_label.setToolTip(details)
+        elif canvas and self.canvas_context.get('selected'):
+            name = canvas_name(canvas)
+            button_width = self.return_button.sizeHint().width() if target.get('filename') or target.get('bound') else 0
+            self.workspace_label.setText(self.fontMetrics().elidedText('Canvas · ' + name, Qt.TextElideMode.ElideMiddle, max(100, self.width() - button_width - 34)))
+            self.workspace_label.setToolTip(canvas_details(canvas) + '\nObservation context. No painting target has been started.')
+        else:
+            self.workspace_label.setText('No painting target started')
+            self.workspace_label.setToolTip('Attach context or describe a painting. Ask and Plan do not change artwork.')
+
+    def return_to_painting(self, restored=False):
+        """Focus the recorded artwork without saving, closing, binding or starting Agent."""
+        if self.busy: return False
+        target = self.painting_target
+        filename, identifier = target.get('filename'), target.get('document_id')
+        if not (filename or identifier): return False
+        try:
+            instance = Krita.instance()
+            documents = open_documents()
+            identity = document_id
+            canonical = lambda path: os.path.normcase(os.path.realpath(path)) if path else None
+            document = next((doc for doc in documents if identifier and identity(doc) == identifier), None)
+            if document is None and filename:
+                document = next((doc for doc in documents if canonical(doc.fileName()) == canonical(filename)), None)
+            if document is not None and document == instance.activeDocument():
+                # Krita 5.3 can crash when showView re-enters setCurrentView for
+                # the already-active document during a docker restore.
+                self.context_command('inspect')
+                return True
+            if document is None and (not filename or not os.path.isfile(filename)):
+                self.status.setText('This painting has moved. Locate it to reconnect the conversation.')
+                self.set_recovery('Locate painting', self.locate_missing_painting)
+                self.return_button.setText('Locate painting')
+                if not restored: self.locate_missing_painting()
+                return False
+            window = instance.activeWindow()
+            if not window: raise RuntimeError('Open a Krita window before returning to the painting.')
+            if document is None:
+                document = instance.openDocument(filename)
+                if not document: raise RuntimeError('Krita could not open this painting. Your other documents are still open.')
+            # Reuse a view in any window, including an unsaved in-memory target.
+            views = instance.views()
+            view = next((view for view in views if identity(view.document()) == identity(document) and view.window() == window), None)
+            if view is None: view = next((view for view in views if identity(view.document()) == identity(document)), None)
+            if view is not None: window = view.window()
+            else: view = window.addView(document)
+            if not view: raise RuntimeError('The painting opened, but Krita could not show its view.')
+            window.showView(view); window.activate()
+            self.context_command('inspect')
+            self.status.setText('Painting opened · conversation paused' if restored else 'Painting focused. Use Start painting when you are ready.')
+            return True
+        except (AttributeError, RuntimeError, OSError) as error:
+            self.status.setText('Could not show the painting: ' + str(error))
+            return False
+
+    def toggle_canvas_pin(self, pinned):
+        canvas = self.canvas_context.get('canvas') or {}
+        if not canvas.get('document_id'): return
+        self.send({'type': 'context', 'action': 'attach', 'follow_active': not pinned, 'document_id': canvas['document_id']})
+
+    def context_payload(self):
+        payload = {key: self.canvas_context.get(key, default) for key, default in [('selected', True), ('follow_active', True)]}
+        canvas = self.canvas_context.get('canvas') or {}
+        if canvas.get('document_id'): payload['document_id'] = canvas['document_id']
+        return payload
+
+    def render_context(self):
+        context = self.canvas_context
+        canvas = context.get('canvas') or {}
+        state = context.get('state', 'none')
+        selected = context.get('selected', True)
+        name = canvas_name(canvas)
+        if selected and canvas:
+            prefix = 'Canvas · '
+            self.canvas_button.setText(prefix + self.fontMetrics().elidedText(name, Qt.TextElideMode.ElideMiddle, max(80, self.width() - 190)))
+            self.canvas_button.setAccessibleName('Canvas context ' + name)
+            pixmap = QPixmap(canvas.get('path', ''))
+            self.canvas_button.setIcon(QIcon(pixmap) if not pixmap.isNull() else QIcon())
+            self.canvas_button.setToolTip('Preview selected canvas\n' + canvas_details(canvas) + ('\nFollows the active canvas' if context.get('follow_active', True) else '\nPinned as observation context'))
+            hints = {'fresh': 'Snapshot ready · latest canvas captured when you send', 'stale': 'Canvas selected · next message captures the latest view',
+                     'error': context.get('error') or 'Canvas capture failed. Use refresh to retry.'}
+            self.context_hint.setText(hints.get(state, 'Canvas selected · includes unsaved changes' if canvas.get('modified') else 'Canvas selected for the next message'))
+
+        else:
+            self.canvas_button.setIcon(QIcon())
+            self.canvas_button.setText('＋  Add current canvas')
+            self.canvas_button.setAccessibleName('Add current canvas')
+            self.canvas_button.setToolTip('Attach the active Krita document as visual context')
+            self.context_hint.setText('Canvas not included' if not selected else context.get('error') or 'No open canvas · attach a reference or start a painting')
+        self.canvas_refresh.setVisible(selected and bool(canvas))
+        self.canvas_remove.setVisible(selected and bool(canvas))
+        self.pin_canvas_action.blockSignals(True); self.pin_canvas_action.setChecked(not context.get('follow_active', True)); self.pin_canvas_action.blockSignals(False)
+        self.pin_canvas_action.setEnabled(selected and bool(canvas))
+        self.document_menu.clear()
+        for document in context.get('documents', []):
+            title = canvas_name(document)
+            action = self.document_menu.addAction(title, lambda checked=False, doc=document: self.send({'type': 'context', 'action': 'attach', 'document_id': doc['document_id'], 'follow_active': False}))
+            action.setToolTip(canvas_details(document))
+        self.document_menu.setEnabled(bool(context.get('documents')))
+        self.render_scope_tray(); self.render_target()
+
+    def canvas_clicked(self):
+        if self.canvas_context.get('selected') and (self.canvas_context.get('canvas') or {}).get('path'):
+            self.preview_canvas(self.canvas_context['canvas'])
+        elif self.canvas_context.get('selected') and self.canvas_context.get('canvas'):
+            self.preview_after_refresh = True; self.context_command('refresh')
+        else: self.context_command('attach')
+
+    def preview_canvas(self, canvas):
+        dialog = ImagePreview(self, canvas)
+        dialog.exec()
+
+    def select_provider(self, provider):
+        self.provider_filter.blockSignals(True)
+        index = self.provider_filter.findData(provider)
+        if index < 0:
+            self.provider_filter.addItem(provider_name(provider), provider); index = self.provider_filter.count() - 1
+        self.provider_filter.setCurrentIndex(index); self.provider_filter.blockSignals(False)
+
+    def change_provider(self, *_args):
+        self.filter.blockSignals(True); self.filter.clear(); self.filter.blockSignals(False)
+        self.filter_models()
+
+    def set_decision_key(self):
+        endpoint = self.decision_endpoint.currentData()
+        if not endpoint: return
+        key, ok = QInputDialog.getText(self, 'Decision endpoint key', 'API key for %s (leave empty to remove):' % self.decision_endpoint.currentText(), QLineEdit.EchoMode.Password)
+        if ok: self.send({'type': 'decisions', 'action': 'save_key', 'endpoint': endpoint, 'key': key.strip()})
+
+    def add_decision_endpoint(self):
+        url, ok = QInputDialog.getText(self, 'Add decision endpoint', 'System One endpoint URL (e.g. http://localhost:8888/v1/systemone):')
+        if not ok or not url.strip(): return
+        name, ok = QInputDialog.getText(self, 'Add decision endpoint', 'Short id (letters, digits, dashes):', text='local')
+        if not ok or not name.strip(): return
+        key, _ = QInputDialog.getText(self, 'Add decision endpoint', 'API key (optional):', QLineEdit.EchoMode.Password)
+        self.send({'type': 'decisions', 'action': 'add_endpoint', 'id': name.strip().lower(), 'name': name.strip(), 'url': url.strip(), 'key': key.strip()})
+
+    def show_decisions(self, event):
+        self.decision_endpoint.blockSignals(True); self.decision_endpoint.clear()
+        for endpoint in event.get('endpoints', []):
+            self.decision_endpoint.addItem(endpoint['name'] + ('' if endpoint['key_configured'] or endpoint['custom'] else ' · needs key'), endpoint['id'])
+        self.decision_endpoint.setCurrentIndex(max(0, self.decision_endpoint.findData(event.get('endpoint'))))
+        self.decision_endpoint.blockSignals(False)
+        selection = event.get('selection') or {}
+        self.decision_model.clear()
+        labels = {True: 'reads images', False: 'text only', None: 'image support unchecked'}
+        for model in event.get('models', []):
+            price = model.get('price_per_million_input')
+            self.decision_model.addItem('%s · %s%s' % (model['id'], labels.get(model.get('images')), (' · $%.3f/M' % price) if price else ''), model['id'])
+        if selection.get('endpoint') == event.get('endpoint'):
+            self.decision_model.setCurrentIndex(max(0, self.decision_model.findData(selection.get('model'))))
+        endpoint = next((e for e in event.get('endpoints', []) if e['id'] == event.get('endpoint')), {})
+        self.decision_key.setEnabled(event.get('endpoint') != 'openrouter')
+        note = event.get('error') or event.get('note') or ''
+        if not note and not endpoint.get('key_configured') and not endpoint.get('custom'): note = endpoint.get('key_hint', '')
+        if not note: note = 'Visual checks and pacing are on for this model.' if event.get('visual') is True else 'Visual checks need a model that passed the image check.'
+        self.decision_note.setText(note)
+
+    def build_generic_settings(self, fields):
+        """One labelled combo box per declared setting (see the companion's settings-schema.mjs)."""
+        while self.generic_settings.rowCount(): self.generic_settings.removeRow(0)
+        self.setting_widgets = {}
+        for field in fields:
+            if field.get('control') == 'checkbox':
+                # A boolean shown as one checkbox: options are [off, on] and the "on" label is its text.
+                # The text is a wrapping label beside a bare box (a checkbox's own text cannot wrap at narrow widths).
+                options = {option['value']: option['label'] for option in field.get('options', [])}
+                box = QCheckBox(); box.setAccessibleName(field.get('accessible') or field['label'])
+                text = QLabel(options.get(True, field['label'])); text.setWordWrap(True)
+                text.mousePressEvent = lambda _event, box=box: box.toggle()
+                row = QWidget(); row_layout = QHBoxLayout(row); row_layout.setContentsMargins(0, 0, 0, 0); row_layout.setSpacing(6)
+                row_layout.addWidget(box, 0, Qt.AlignmentFlag.AlignTop); row_layout.addWidget(text, 1)
+                if field.get('tooltip'): box.setToolTip(field['tooltip']); text.setToolTip(field['tooltip'])
+                box.toggled.connect(self.change_execution_settings)
+                self.generic_settings.addRow(field['label'], row); self.setting_widgets[field['key']] = box
+                continue
+            combo = QComboBox(); combo.setAccessibleName(field.get('accessible') or field['label'])
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon); combo.setMinimumContentsLength(8)
+            for option in field.get('options', []): combo.addItem(option['label'], option['value'])
+            if field.get('tooltip'): combo.setToolTip(field['tooltip'])
+            combo.currentIndexChanged.connect(self.change_execution_settings)
+            self.generic_settings.addRow(field['label'], combo); self.setting_widgets[field['key']] = combo
+            if field.get('note'):
+                note = QLabel(field['note']); note.setWordWrap(True); note.setObjectName('muted'); self.generic_settings.addRow(note)
+        self.update_controls()
+
+    def apply_execution_settings(self, settings):
+        """Show saved settings without sending them back."""
+        controls = [(widget, settings.get(key)) for key, widget in self.setting_widgets.items()] + [(self.reasoning_selector, settings.get('reasoning'))]
+        for control, value in controls:
+            if isinstance(control, QCheckBox):
+                if isinstance(value, bool): control.blockSignals(True); control.setChecked(value); control.blockSignals(False)
+                continue
+            index = control.findData(value)
+            if index >= 0: control.blockSignals(True); control.setCurrentIndex(index); control.blockSignals(False)
+
+    def change_execution_settings(self, *_args):
+        if self.busy: return
+        settings = {key: widget.isChecked() if isinstance(widget, QCheckBox) else widget.currentData() for key, widget in self.setting_widgets.items()}
+        settings.update({'reasoning': self.reasoning_selector.currentData(), 'native_craft': True})
+        self.send({'type': 'set_execution_settings', 'settings': settings})
+
+    def change_model(self, *_args):
+        selected = self.model.currentData()
+        if selected:
+            self.model.setToolTip(selected['provider'] + ' · ' + selected['id'] + '\nSelected images are sent to this provider.')
+            if self.study_active and not self.busy and selected != self.accepted_model:
+                self.pending_model_change = True
+                self.send({'type': 'set_model', 'provider': selected['provider'], 'model': selected['id']})
+                self.update_controls()
+
+    def restore_accepted_model(self):
+        if self.pending_model_change and self.accepted_model:
+            self.select_provider(self.accepted_model['provider']); self.filter_models()
+            self.model.blockSignals(True)
+            for index in range(self.model.count()):
+                if self.model.itemData(index) == self.accepted_model: self.model.setCurrentIndex(index); break
+            self.model.blockSignals(False)
+        self.pending_model_change = False
+        self.update_controls()
+
+    def show_move(self, move):
+        self.current_move = move if move.get('status') == 'ready' else None
+        if not self.current_move:
+            self.move_bar.hide(); return
+        detail = '%d action%s' % (move.get('actions', 0), '' if move.get('actions') == 1 else 's')
+        if move.get('strokes'): detail += ' · %d strokes' % move['strokes']
+        review = '<br><span>%s</span>' % html.escape(move['review_line']) if move.get('review_line') else ''   # Luna's verdict
+        self.move_summary.setText('<b>Move %d</b> · %s<br><span>%s. Keep it, undo it, or type a correction below.</span>%s'
+                                  % (move['number'], html.escape(move.get('title') or 'Painting move'), detail, review))
+        self.move_bar.show()
+
+    def move_command(self, action):
+        if not self.current_move or self.busy: return
+        self.send({'type': 'move', 'action': action, 'move': self.current_move['number']})
+        self.move_bar.hide(); self.current_move = None
+
+    def start_plan(self):
+        if not self.goal or not self.goal.get('brief'): return
+        self.mode_selector.setCurrentIndex(self.mode_selector.findData('autopilot'))
+        self.submit(force_start=True)
+
+    def show_history(self):
+        if self.history_dialog is None:
+            self.history_dialog = HistoryDialog(self)
+        self.history_dialog.show(); self.history_dialog.raise_()
+        self.send({'type': 'history', 'query': self.history_dialog.search.text()})
+
+    def show_passes(self):
+        if self.pass_dialog is None: self.pass_dialog = PassReviewDialog(self)
+        self.pass_dialog.show(); self.pass_dialog.raise_()
+        self.send({'type': 'review_pass', 'action': 'list'})
+
+    def attach_paths(self, paths, role='reference'):
+        for path in paths:
+            if not path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                self.status.setText('Attach a PNG, JPEG or GIF reference image.'); continue
+            if len(self.pending_references) + len(self.attached_references) >= 4:
+                self.status.setText('Use up to four references. Remove one to replace it.'); break
+            if os.path.isfile(path) and not any(r['path'] == path for r in self.pending_references + self.attached_references):
+                self.pending_references.append({'path': path, 'role': role, 'name': os.path.basename(path), 'purpose': 'composition' if role == 'construction-map' else 'general', 'notes': ''})
+        self.show_references()
+
+    @staticmethod
+    def pasted_folder():
+        """Where pasted references and reference parts wait until they are sent; files older than a day go."""
+        import tempfile, time
+        folder = os.path.join(tempfile.gettempdir(), 'creative-agent-pasted')
+        os.makedirs(folder, exist_ok=True)
+        for name in os.listdir(folder):
+            try:
+                if time.time() - os.path.getmtime(os.path.join(folder, name)) > 86400: os.remove(os.path.join(folder, name))
+            except OSError: pass
+        return folder
+
+    def attach_pasted_image(self, image):
+        # Temporary attachment only; runtime copies it into portable study state on send.
+        # Pastes live in one folder, and any older than a day are removed here.
+        from .qt_compat import QImage
+        path = os.path.join(self.pasted_folder(), 'creative-reference-' + uuid.uuid4().hex + '.png')
+        if QImage(image).save(path):
+            self.attach_paths([path])
+            for reference in self.pending_references:
+                if reference['path'] == path: reference['name'] = 'Pasted reference'
+            self.show_references()
+
+    def update_slash_menu(self):
+        text = self.prompt.toPlainText()
+        typed = text[1:] if text.startswith('/') and ' ' not in text and '\n' not in text else None
+        if typed is not None and typed.startswith('skill:'): typed = typed[6:]
+        matches = [s for s in self.skills if typed is not None and s['name'].startswith(typed)]
+        self.slash_menu.clear()
+        for skill in matches:
+            item = QListWidgetItem('/' + skill['name'] + ' — ' + skill['description'][:90] + ('…' if len(skill['description']) > 90 else ''))
+            item.setData(Qt.ItemDataRole.UserRole, skill['name']); item.setToolTip(skill['description'])
+            self.slash_menu.addItem(item)
+        if matches:
+            self.slash_menu.setCurrentRow(0); self.slash_menu.show()
+        else:
+            self.slash_menu.hide()
+
+    def choose_skill(self, item):
+        self.prompt.setPlainText('/' + item.data(Qt.ItemDataRole.UserRole) + ' ')
+        cursor = self.prompt.textCursor(); cursor.movePosition(QTextCursor.MoveOperation.End); self.prompt.setTextCursor(cursor)
+        self.slash_menu.hide(); self.prompt.setFocus()
+
+    def resize_composer(self):
+        height = int(self.prompt.document().size().height() * self.prompt.fontMetrics().lineSpacing()) + 10
+        self.prompt.setFixedHeight(max(66, min(120, height)))
+
+    def flush_stream(self):
+        if self.streaming_text:
+            self.empty_state.hide()
+            if not self.reply_open:
+                self.current_reply = self.transcript.add_message('Creative Agent', '')
+                self.reply_open = True
+            self.transcript.append_to(self.current_reply, self.streaming_text)
+            self.streaming_text = ''
+
+    def change_mode(self, *_args):
+        self.chat_mode = self.mode_selector.currentData()
+        placeholders = {'ask': 'Ask about your painting…', 'plan': 'Describe the result and what to preserve…', 'agent': 'Describe a move, e.g. paint the swirling night sky…', 'autopilot': 'Give a direction, or send to start the plan…'}
+        self.prompt.setPlaceholderText(placeholders[self.chat_mode])
+        if self.process and self.process.state() == QProcess.ProcessState.Running:
+            self.send({'type': 'set_mode', 'mode': self.chat_mode})
+        self.update_controls(); self.render_context()
+
+    def show_references(self):
+        while self.attachment_row.count():
+            item = self.attachment_row.takeAt(0)
+            if item.widget(): item.widget().hide(); item.widget().deleteLater()
+        self.reference_remove_buttons = []
+        references = list(self.attached_references) + self.pending_references
+        for ref in references[:4]:
+            tile = QFrame(); tile.setObjectName('referenceTile'); tile.setFixedWidth(72)
+            column = QVBoxLayout(tile); column.setContentsMargins(0, 0, 0, 0); column.setSpacing(1)
+            thumbnail = QWidget(); image_layout = QGridLayout(thumbnail); image_layout.setContentsMargins(0, 0, 0, 0)
+            picture = QPushButton(); picture.setObjectName('contextChip'); picture.setFixedSize(72, 42)
+            picture.setIcon(QIcon(ref['path'])); picture.setIconSize(QSize(56, 34))
+            name = ref.get('name') or os.path.basename(ref['path'])
+            picture.setToolTip(name + '\n' + dict(REFERENCE_PURPOSES).get(ref.get('purpose') or 'general', 'Overall direction'))
+            picture.setAccessibleName('Preview and edit reference ' + name)
+            picture.clicked.connect(lambda _checked=False, entry=ref: self.edit_reference(entry)); image_layout.addWidget(picture, 0, 0)
+            remove = QPushButton('×'); remove.setObjectName('referenceRemove'); remove.setFixedSize(18, 18)
+            remove.setAccessibleName('Remove reference ' + name); remove.setToolTip('Remove reference')
+            remove.setEnabled(not self.busy)
+            remove.clicked.connect(lambda _checked=False, entry=ref: self.remove_reference(entry)); image_layout.addWidget(remove, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+            self.reference_remove_buttons.append(remove); column.addWidget(thumbnail)
+            purpose = QPushButton(REFERENCE_CAPTIONS.get(ref.get('purpose') or 'general', 'General'))
+            purpose.setObjectName('referencePurpose'); purpose.setFixedWidth(72)
+            purpose.setAccessibleName('Change reference purpose for ' + name)
+            purpose.setToolTip('Choose how this reference guides the painting')
+            purpose.clicked.connect(lambda _checked=False, entry=ref: self.edit_reference(entry)); column.addWidget(purpose)
+            self.attachment_row.addWidget(tile)
+        self.attachment_row.addStretch()
+        self.attachments.setVisible(bool(references))
+
+    def edit_reference(self, reference):
+        dialog = ReferencePreview(self, reference, readonly=self.busy)
+        if dialog.exec() == QDialog.DialogCode.Accepted and not self.busy:
+            self.apply_reference_purpose(reference, dialog.purpose.currentData(), dialog.notes.toPlainText().strip())
+
+    def apply_reference_purpose(self, reference, purpose, notes):
+        if reference in self.pending_references:
+            reference.update(purpose=purpose, notes=notes); self.show_references()
+        else:
+            command = {'type': 'set_reference_purpose', 'path': reference['path'], 'purpose': purpose, 'notes': notes}
+            if reference.get('id'): command['id'] = reference['id']
+            self.send(command)
+
+    def remove_reference(self, reference):
+        if reference in self.pending_references: self.pending_references.remove(reference)
+        else:
+            self.send({'type': 'remove_reference', 'path': reference['path']})
+        self.show_references()
+
+    def answer_question(self, text):
+        for button in self.question_controls: button.setEnabled(False)
+        self.prompt.setPlainText(text); self.submit()
+
+    def edit_plan(self):
+        if not self.goal or not self.goal.get('brief'): return
+        dialog = PlanDialog(self, self.goal)
+        if self.busy:
+            dialog.setWindowTitle('Painting plan · pause to edit')
+            for editor in dialog.findChildren(QWidget):
+                if isinstance(editor, (QLineEdit, QPlainTextEdit, QTableWidget, QSpinBox, QCheckBox)): editor.setEnabled(False)
+            for buttons in dialog.findChildren(QDialogButtonBox):
+                save = buttons.button(QDialogButtonBox.StandardButton.Save)
+                if save: save.setEnabled(False)
+        if dialog.exec() == QDialog.DialogCode.Accepted and not self.busy:
+            self.send({'type': 'edit_plan', 'brief': dialog.brief()})
+            ai_images = dialog.ai_images.value()
+            self.send({'type': 'set_limits', 'limits': {'minutes': dialog.minutes.value(), 'passes': dialog.passes.value(),
+                                                        'ai_images': None if ai_images < 0 else ai_images}})
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self.process and not os.environ.get('KRITA_CREATIVE_NO_AUTOSTART'):
+            QTimer.singleShot(100, self.start_companion)
+
+    def update_elapsed(self):
+        self.poll_canvas_metadata()
+        if not self.busy:
+            self.elapsed.setText('')
+            return
+        seconds = int(time.monotonic() - self.phase_started)
+        self.elapsed.setText('%d:%02d' % (seconds // 60, seconds % 60))
+        if self.phase in ('waiting', 'thinking', 'planning') and seconds >= 30:
+            self.status.setText('Waiting for the model… You can pause at any time.')
+
+    def poll_canvas_metadata(self):
+        if not self.isVisible() or not self.process: return
+        try:
+            doc = Krita.instance().activeDocument()
+            signature = (document_id(doc), doc.fileName(), doc.modified()) if doc else None
+            if signature != self.document_signature:
+                self.document_signature = signature
+                self.canvasChanged(None)
+        except (AttributeError, RuntimeError):
+            pass
+
+    def open_lesson(self):
+        lesson = self.goal.get('lesson') if self.goal else None
+        if not lesson: return
+        if self.lesson_dialog is None: self.lesson_dialog = LessonDialog(self)
+        self.lesson_dialog.show_lesson(lesson)
+        self.lesson_dialog.show(); self.lesson_dialog.raise_(); self.lesson_dialog.activateWindow()
+
+    def new_chat(self):
+        self.source.setCurrentIndex(self.source.findData('current'))
+        self.flush_stream()
+        self.transcript.clear()
+        self.current_reply = None; self.reply_open = False
+        self.goal = None; self.plan_bar.hide(); self.move_bar.hide(); self.current_move = None; self.question_id = None; self.question_controls = []
+        self.pending_references = []; self.attached_references = []; self.show_references()
+        self.empty_state.show()
+        self.last_user_item = None
+        self.chat_mode = 'ask'; self.mode_selector.blockSignals(True); self.mode_selector.setCurrentIndex(0); self.mode_selector.blockSignals(False)
+        self.saved_path = None; self.saved_at = None; self.painting_target = {}; self.save_status.setText('Ask · no canvas changes')
+        self.trace_link.hide(); self.trace_link.setText('')
+        self.study_id = None
+        self.render_scope_tray(); self.render_target()
+        self.prompt.setPlaceholderText('Ask about your painting…')
+        self.context_command('inspect')
+        self.prompt.setFocus()
+
+    def restore_conversation(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'Restore a painting or saved plan', getattr(self, 'paintings_directory', self.output_directory) or '', 'Painting or saved plan (*.kra goal.json)')
+        if path:
+            if path.lower().endswith('.kra'): self.request_restore({'type': 'resume', 'path': path})
+            else: self.request_restore({'type': 'resume', 'id': os.path.basename(os.path.dirname(path))})
+
+    def canvasChanged(self, canvas):
+        # Krita may emit this while constructing the dock. Observe only after
+        # initialization; the host owns attachment state and target pinning.
+        if hasattr(self, 'context_timer'):
+            if self.canvas_context.get('selected'):
+                self.canvas_context['state'] = 'stale'
+                self.render_context()
+            self.context_timer.start(120)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'canvas_button'): self.render_context()
+
+
+    def config_path(self):
+        return os.path.join(os.path.dirname(__file__), 'creative-agent-config.json')
+
+    def fetch_node_runtime(self, config):
+        if getattr(self, 'runtime_fetch', None) and self.runtime_fetch['thread'].is_alive():
+            return
+        spec = config['node_runtime']
+        state = {'done': 0, 'total': 0, 'error': None, 'finished': False}
+        def work():
+            try: node_runtime.ensure(spec, config.get('node_runtimes'), progress=lambda done, total: state.update(done=done, total=total))
+            except Exception as error: state['error'] = str(error)
+            finally: state['finished'] = True
+        self.runtime_fetch = {'thread': threading.Thread(target=work, daemon=True), 'state': state}
+        self.runtime_fetch['thread'].start()
+        self.start_button.setEnabled(False)
+        self.status.setText('Downloading Node %s for Creative Agent (one time)…' % spec['version'])
+        timer = QTimer(self); timer.setInterval(250)
+        def poll():
+            if not state['finished']:
+                if state['total']: self.status.setText('Downloading Node %s for Creative Agent (one time)… %d%%' % (spec['version'], state['done'] * 100 // state['total']))
+                elif state['done']: self.status.setText('Downloading Node %s for Creative Agent (one time)… %.0f MB' % (spec['version'], state['done'] / 1e6))
+                return
+            timer.stop(); timer.deleteLater()
+            if state['error']:
+                self.start_button.setEnabled(True)
+                self.status.setText('Could not set up Node: %s Check your connection and press Start to retry.' % state['error'])
+            else:
+                self.start_companion()
+        timer.timeout.connect(poll); timer.start()
+
+    def start_companion(self):
+        if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
+            return
+        try:
+            with open(self.config_path()) as stream:
+                config = json.load(stream)
+            # A managed Node runtime is fetched once, in the background, then the companion starts.
+            if config.get('node_runtime') and not os.environ.get(node_runtime.OVERRIDE) and not node_runtime.is_ready(config['node_runtime'], config.get('node_runtimes')):
+                self.fetch_node_runtime(config); return
+            # The runtime manager names this OS's node (bin/node, or node.exe on Windows); the installer's path is a hint.
+            if config.get('node_runtime'): config['node'] = str(node_runtime.resolve(config['node_runtime'], config.get('node_runtimes')))
+            if not os.path.isfile(config['companion']) or not os.path.isfile(config['node']):
+                raise ValueError('The companion path is unavailable. Run the local setup and installer.')
+            self.paintings_directory = os.path.normpath(os.path.join(os.path.dirname(os.path.dirname(config['companion'])), config.get('paintings_dir', 'output')))
+        except Exception as error:
+            self.status.setText(str(error))
+            return
+        self.buffer = b''
+        self.process = QProcess(self)
+        # QObject.destroyed precedes child deletion. Use a free callback: a
+        # bound method on this dying dock is not a reliable signal receiver.
+        self.destroyed.connect(lambda _object=None, process=self.process: disconnect_companion_callbacks(process))
+        environment = QProcessEnvironment.systemEnvironment()
+        environment.insert('KRITA_CREATIVE_CONFIG', self.config_path())
+        self.process.setProcessEnvironment(environment)
+        self.process.setWorkingDirectory(os.path.dirname(config['companion']))
+        self.process.readyReadStandardOutput.connect(self.read_output)
+        self.process.readyReadStandardError.connect(lambda: self.process.readAllStandardError())
+        self.process.finished.connect(self.process_finished)
+        self.process.errorOccurred.connect(self.process_error)
+        self.process.start(config['node'], [config['companion']])
+        self.start_button.setEnabled(False)
+        self.status.setText('Connecting Agent Pi…')
+
+    def process_ui_alive(self):
+        return not sip.isdeleted(self) and not sip.isdeleted(self.status) and not sip.isdeleted(self.start_button)
+
+    def process_error(self, _error):
+        if self.process_ui_alive():
+            self.status.setText('The companion could not start. Check its installation.')
+
+    def process_finished(self, *_args):
+        if not self.process_ui_alive():
+            return
+        self.busy = False; self.study_active = False; stop_requested.clear()
+        self.start_button.setEnabled(True)
+        self.start_button.setText('Reconnect assistant')
+        self.start_button.show()
+        self.status.setText('Assistant disconnected. Reconnect to continue.')
+        self.update_controls()
+
+    def send(self, command):
+        if not self.process or self.process.state() != QProcess.ProcessState.Running:
+            self.status.setText('Start the assistant first.')
+            return
+        self.process.write((json.dumps(command) + '\n').encode('utf-8'))
+
+    def read_output(self):
+        if not self.process_ui_alive():
+            return
+        self.buffer += bytes(self.process.readAllStandardOutput())
+        while b'\n' in self.buffer:
+            line, self.buffer = self.buffer.split(b'\n', 1)
+            try:
+                self.handle_event(json.loads(line.decode('utf-8')))
+            except (ValueError, KeyError, TypeError):
+                self.status.setText('An assistant message could not be displayed.')
+
+    def handle_event(self, event):
+        kind = event['type']
+        if kind == 'diagnostics_exported':
+            self.diagnostics_text.setPlainText('Troubleshooting report saved locally:\n' + event['path'])
+            self.diagnostics_toggle.setChecked(True)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.dirname(event['path'])))
+        elif kind == 'tracing':
+            url = event.get('url', '')
+            if url.startswith('https://') or url.startswith('http://'):
+                self.trace_link.setText('<a href="%s">Trace</a>' % html.escape(url, quote=True)); self.trace_link.show()
+        elif kind == 'context':
+            self.canvas_context = {key: value for key, value in event.items() if key != 'type'}
+            self.render_context(); self.update_controls()
+            if self.status.text().startswith('Attaching a rectangular crop') and (self.canvas_context.get('region') or {}).get('state') == 'fresh':
+                self.status.setText('Rectangular crop attached')
+            if self.preview_after_refresh and self.canvas_context.get('state') == 'fresh' and (self.canvas_context.get('canvas') or {}).get('path'):
+                self.preview_after_refresh = False; self.preview_canvas(self.canvas_context['canvas'])
+            if self.canvas_context.get('state') == 'error': self.set_recovery('Retry canvas', lambda: self.context_command('refresh'))
+            elif self.recovery_button.text() == 'Retry canvas': self.set_recovery()
+        elif kind == 'needs_relink':
+            self.relink_id = event['id']; self.status.setText(event['message'])
+            self.set_recovery('Locate painting', self.locate_missing_painting)
+        elif kind == 'relinked':
+            self.saved_path = event['path']; self.set_recovery(); self.status.setText('Painting location updated. Conversation remains paused.')
+            self.painting_target.update(filename=event['path'], missing=False)
+            self.render_target()
+        elif kind == 'model_capability':
+            capability = event.get('status')
+            if capability in ('verifying', 'failed') or self.phase == 'checking_model': self.status.setText(event.get('message') or 'Checking model compatibility…')
+            self.model.setToolTip(event.get('message') or 'Model route')
+            if capability == 'failed': self.restore_accepted_model()
+        elif kind == 'move':
+            self.show_move(event['move'])
+        elif kind == 'decisions':
+            self.show_decisions(event)
+        elif kind == 'skills':
+            self.skills = [s for s in event.get('skills', []) if s.get('name') and s.get('description')]
+            self.update_slash_menu()
+        elif kind == 'settings_schema':
+            self.build_generic_settings(event.get('fields', []))
+            if self.last_execution_settings: self.apply_execution_settings(self.last_execution_settings)
+        elif kind == 'execution_settings':
+            settings = event['settings']; self.last_execution_settings = settings
+            self.apply_execution_settings(settings)
+            # Strokes only is no longer offered: a chat saved with it gets the full Krita toolset back.
+            if settings.get('native_craft') is False and not self.busy: self.change_execution_settings()
+            effective = event.get('effective_reasoning')
+            available = event.get('available_reasoning') or []
+            # The companion describes its Auto policy; an older companion sends none.
+            auto = event.get('reasoning_note') if settings.get('reasoning') == 'auto' else None
+            if effective is not None:
+                self.reasoning_note.setText((auto + ' ' if auto else '') + 'Now: ' + effective + '. Supported levels: ' + ', '.join(available) + '. Your preference applies to the painter, the reviewer and preparation workers.')
+            else:
+                self.reasoning_note.setText('Applies when the conversation starts. ' + (auto or 'Auto uses low reasoning when supported.') + ' Other levels adapt to the selected model.')
+        elif kind == 'model':
+            value = event['model']; self.accepted_model = {'provider': value['provider'], 'id': value['id']}; self.pending_model_change = False
+            self.select_provider(value['provider']); self.filter_models(); self.model.blockSignals(True)
+            for index in range(self.model.count()):
+                if self.model.itemData(index) == self.accepted_model: self.model.setCurrentIndex(index); break
+            self.model.blockSignals(False); self.update_controls()
+        elif kind == 'uncertain_operations':
+            self.uncertain_operations = event.get('operations', [])
+            self.inspected_uncertain = False
+            self.status.setText(event.get('message') or 'Inspect the last operation before continuing.')
+            if self.uncertain_operations: self.set_recovery('Inspect result', lambda: self.send({'type': 'inspect_result'}))
+            else: self.set_recovery()
+            self.update_controls()
+        elif kind == 'inspected_result':
+            self.inspected_uncertain = True
+            canvas = event.get('canvas')
+            if canvas: self.preview_canvas(canvas)
+            self.status.setText('Check the canvas. Continue only after inspecting the result.')
+            self.set_recovery('Continue after inspection', lambda: self.send({'type': 'reconcile'}))
+        elif kind == 'reconciled':
+            self.uncertain_operations = []; self.inspected_uncertain = False
+            self.set_recovery(); self.status.setText('Result acknowledged. Painting remains paused.'); self.update_controls()
+        elif kind == 'message_context':
+            item = next((item for item in reversed(self.transcript.messages) if item.get('id') == event.get('message_id') and item['role'] == 'You'), self.last_user_item)
+            if item and event.get('status') == 'included' and event.get('canvas'):
+                self.transcript.add_receipt(item, event['canvas'])
+            if item and event.get('status') == 'included' and event.get('region'):
+                self.transcript.add_region_receipt(item, event['region'], event.get('canvas'))
+            if item and event.get('status') == 'included' and event.get('references'):
+                self.transcript.add_reference_receipts(item, event['references'])
+        elif kind == 'conversations':
+            if self.history_dialog: self.history_dialog.set_items(event.get('items', []), event.get('total_bytes'), event.get('query', ''))
+        elif kind == 'passes':
+            if self.pass_dialog: self.pass_dialog.set_passes(event.get('passes', []))
+        elif kind in ('ready', 'models'):
+            self.models = event['models']
+            self.providers = event.get('providers') or []
+            selected = self.accepted_model if self.study_active else event.get('selected') or self.model.currentData()
+            provider = (selected or {}).get('provider') or self.provider_filter.currentData()
+            if not provider:
+                provider = next((m['provider'] for m in self.models if m.get('configured') and m.get('interactive', True)), None)
+            self.provider_filter.blockSignals(True); self.provider_filter.clear()
+            provider_records = {item['id']: item for item in self.providers}
+            for identifier in sorted({item['provider'] for item in self.models} | set(provider_records), key=provider_name):
+                configured = provider_records.get(identifier, {}).get('configured') or any(item.get('configured') for item in self.models if item['provider'] == identifier)
+                oauth = provider_records.get(identifier, {}).get('auth') == 'oauth' or any(item.get('auth') == 'oauth' for item in self.models if item['provider'] == identifier)
+                self.provider_filter.addItem(provider_name(identifier) + ('' if configured else ' · sign in' if oauth else ' · connect'), identifier)
+            self.provider_filter.setCurrentIndex(max(0, self.provider_filter.findData(provider))); self.provider_filter.blockSignals(False)
+            self.filter_models()
+            self.model.blockSignals(True)
+            if selected:
+                for index in range(self.model.count()):
+                    if self.model.itemData(index) == selected:
+                        self.model.setCurrentIndex(index)
+                        break
+            self.model.blockSignals(False)
+            if kind == 'ready':
+                self.status.setText(event.get('bridge', {}).get('error') or 'Ready')
+                self.versions = event.get('versions') or event.get('build') or {}
+                try:
+                    with open(os.path.join(os.path.dirname(__file__), 'build-info.json')) as stream: ui_build = json.load(stream)
+                except (OSError, ValueError): ui_build = {'build_id': 'development-unverified', 'version': 'development'}
+                self.render_connection(ui_build, event)
+                self.bridge_compatible = event.get('compatible', True)
+                if event.get('compatible') is False:
+                    self.status.setText('A matching plugin build must be loaded before painting.')
+                self.context_command('inspect')
+            self.start_button.hide()
+            self.update_controls()
+            if kind == 'ready' and self.resume_on_ready:
+                identifier = self.resume_on_ready; self.resume_on_ready = None
+                self.focus_after_restore = not getattr(self, 'preserve_canvas_on_reload', False)
+                self.send({'type': 'resume', 'id': identifier})
+        elif kind == 'busy':
+            self.busy = event['busy']
+            if not self.busy: stop_requested.clear()      # the stopped run has ended
+            self.run_started = time.monotonic() if self.busy else None
+            self.activity_dot.setText('●' if self.busy else '')
+            self.update_controls(); self.update_elapsed()
+            self.return_button.setEnabled(not self.busy)
+            if not self.busy and self.study_active and self.focus_after_restore:
+                self.focus_after_restore = False
+                self.return_to_painting(restored=True)
+        elif kind == 'study':
+            self.study_id = event['id']
+            self.study_active = True; self.output_directory = event['directory']
+            self.model.blockSignals(True)
+            if event.get('model'):
+                self.accepted_model = event['model']; self.pending_model_change = False
+                self.select_provider(event['model']['provider']); self.filter_models(); self.model.blockSignals(True)
+                for index in range(self.model.count()):
+                    if self.model.itemData(index) == event['model']:
+                        self.model.setCurrentIndex(index)
+                        break
+            self.model.blockSignals(False)
+            self.empty_state.hide()
+            self.options_button.setChecked(False)
+            self.options_dialog.hide()
+            self.update_controls()
+        elif kind == 'ended':
+            self.study_active = False; self.update_controls()
+            self.new_chat()
+            self.status.setText('Ready for a new conversation.')
+            if self.pending_restore:
+                command = self.pending_restore; self.pending_restore = None
+                self.focus_after_restore = True
+                self.send(command)
+        elif kind == 'canvas':
+            if event.get('checkpoint'):
+                self.saved_path = event['checkpoint']
+                self.saved_at = time.strftime('%H:%M:%S')
+                self.output_directory = os.path.dirname(self.saved_path)
+                self.folder_button.setEnabled(True)
+                self.save_status.setText('Saved ' + time.strftime('%H:%M:%S') + ' · ' + os.path.basename(self.saved_path))
+                self.save_status.setToolTip(self.saved_path)
+                self.painting_target.update(filename=self.saved_path, document_id=event.get('document_id') or self.painting_target.get('document_id'), bound=True)
+                self.render_target()
+        elif kind == 'history':
+            self.flush_stream(); self.transcript.clear(); self.current_reply = None; self.reply_open = False
+            self.empty_state.setVisible(not bool(event['messages']))
+            for message in event['messages']:
+                item = self.transcript.add_message('You' if message['role'] == 'user' else 'Creative Agent', message['text'], message_id=message.get('id'))
+                canvas = message.get('canvas') or message.get('context', {}).get('canvas')
+                if canvas: self.transcript.add_receipt(item, canvas)
+                if message.get('region'): self.transcript.add_region_receipt(item, message['region'], canvas)
+                if message.get('references'): self.transcript.add_reference_receipts(item, message['references'])
+                if message['role'] == 'user': self.last_user_item = item
+        elif kind == 'keep_awake':
+            self.awake_indicator.setVisible(bool(event.get('active') and event.get('display')))
+        elif kind == 'goal':
+            self.goal = event['goal']
+            if 'painting_target' in event:
+                self.painting_target = event['painting_target'] or {}
+                if self.painting_target.get('filename'): self.saved_path = self.painting_target['filename']
+            self.render_scope_tray(); self.render_target()
+            self.chat_mode = event['mode']
+            self.mode_selector.blockSignals(True)
+            self.mode_selector.setCurrentIndex(self.mode_selector.findData(self.chat_mode)); self.mode_selector.blockSignals(False)
+            references = event.get('references', [])
+            copied = {r.get('source_path') for r in references}
+            self.pending_references = [r for r in self.pending_references if r['path'] not in copied]
+            self.attached_references = references; self.show_references()
+            brief = self.goal.get('brief')
+            self.render_ai_images()
+            self.plan_bar.setVisible(bool(brief))
+            if brief:
+                states = {'draft': 'Plan draft', 'ready': 'Plan ready', 'active': 'Painting', 'paused': 'Paused', 'reviewing': 'Visual review',
+                          'complete': 'Finished', 'limited': 'Allowance reached', 'needs_input': 'Needs your input', 'move_ready': 'Move ready'}
+                step = max(0, min(self.goal.get('current_step', 0), len(brief['steps']) - 1))
+                label = 'Canvas changed · review plan' if self.goal.get('target_needs_review') else 'Needs your answer' if self.goal.get('question') else states.get(self.goal['status'], self.goal['status'])
+                self.plan_summary.setText(label + ' · ' + brief['title'] + ('\nStep %d of %d · %s' % (step + 1, len(brief['steps']), brief['steps'][step]['title']) if brief['steps'] else ''))
+                self.plan_summary.setToolTip('Step %d/%d: %s\n%d painting passes · %d tokens used' %
+                    (step + 1, len(brief['steps']), brief['steps'][step]['title'], self.goal.get('passes', 0), self.goal.get('tokens', 0)))
+            if not self.goal.get('question'):
+                for button in self.question_controls: button.setEnabled(False)
+            self.update_controls()
+        elif kind == 'mode':
+            self.mode_selector.blockSignals(True); self.mode_selector.setCurrentIndex(self.mode_selector.findData(event['mode'])); self.mode_selector.blockSignals(False)
+            self.chat_mode = event['mode']; self.update_controls()
+        elif kind == 'question':
+            self.flush_stream(); self.reply_open = False
+            if self.question_id != event['id']:
+                self.question_id = event['id']
+                self.question_controls = self.transcript.add_question(event['question'], event.get('options', []), self.answer_question)
+            self.prompt.setPlaceholderText('Answer here, or choose an option above…')
+        elif kind == 'review':
+            self.flush_stream(); self.reply_open = False
+            review = event['review']
+            text = review['summary']
+            if review.get('issues'): text += '\n\n' + '\n'.join('- ' + issue for issue in review['issues'])
+            self.empty_state.hide()
+            self.transcript.add_message('Visual review', text, True)
+        elif kind == 'protection_proposed':
+            self.flush_stream(); self.reply_open = False; self.empty_state.hide()
+            area = event['area']
+            item = self.transcript.add_message('Protected area', "I marked '%s' in red. Keep this protection?" % area['name'], True)
+            self.protection_controls = []
+            for text, choice in (('Keep', 'keep'), ('Adjust', 'adjust'), ('Discard', 'discard')):
+                button = QPushButton(text); button.setObjectName('questionChoice')
+                button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+                button.clicked.connect(lambda _checked=False, entry=area, value=choice: self.answer_protection(entry, value))
+                item['layout'].addWidget(button); self.protection_controls.append(button)
+            self.show_protection(area, True)
+        elif kind == 'protection_hit':
+            self.flush_stream(); self.reply_open = False; self.empty_state.hide()
+            self.transcript.add_message('Protected area', event['message'], True)
+        elif kind == 'visual_check':
+            self.flush_stream(); self.reply_open = False; self.empty_state.hide()
+            found = ', '.join('%s (%s, %d%%)' % (f['label'], (f.get('location') or 'location unknown').replace('_', ' '), round(f['probability'] * 100))
+                              for f in event.get('findings', []))
+            suffix = ' Recorded only.' if event.get('mode') == 'evaluate' else ' Given to the painter to verify.'
+            self.transcript.add_message('Luna check', 'This pass may have introduced: ' + found + '.' + suffix, True)
+        elif kind == 'review_progress':
+            self.flush_stream(); self.reply_open = False; self.empty_state.hide()
+            mean = event.get('mean', 0)
+            verdict = 'no real improvement' if mean < 1 else 'slight improvement' if mean < 2 else 'clear improvement'
+            self.transcript.add_message('Luna progress', 'Since the previous review, the failing checks show %s (%.1f of 3).' % (verdict, mean), True)
+        elif kind == 'text':
+            self.streaming_text += event['text']
+            if not self.stream_timer.isActive(): self.stream_timer.start(35)
+        elif kind == 'message_end':
+            self.flush_stream()
+            self.reply_open = False
+        elif kind == 'action':
+            self.flush_stream()
+            self.reply_open = False
+            self.empty_state.hide()
+            self.transcript.add_message('Needs attention' if event.get('error') else 'Activity', event['message'], not event.get('error'))
+        elif kind in ('status', 'error'):
+            phase = event.get('phase', 'error' if kind == 'error' else self.phase)
+            if phase != self.phase or event['message'] != self.status.text():
+                self.phase_started = time.monotonic()
+            self.phase = phase
+            self.status.setText(event['message'])
+            if kind == 'error':
+                self.pending_restore = None
+                self.focus_after_restore = False
+                self.restore_accepted_model()
+                self.flush_stream()
+                self.reply_open = False
+                self.empty_state.hide()
+                self.transcript.add_message('Needs attention', event['message'])
+            self.update_elapsed()
+
+    def append_text(self, text):
+        self.transcript.add_message('Creative Agent', text)
+
+    def filter_models(self, *_args):
+        selected = self.model.currentData()
+        query = self.filter.text().casefold()
+        provider = self.provider_filter.currentData()
+        self.model.blockSignals(True)
+        self.model.clear()
+        entries = [m for m in self.models if m['provider'] == provider and query in (provider_name(m['provider']) + ' ' + m['provider'] + ' ' + m['name'] + ' ' + m['id']).casefold()]
+        current = next((m for m in self.models if {'provider': m['provider'], 'id': m['id']} == selected), None)
+        if current and current['provider'] == provider and current not in entries: entries.insert(0, current)
+        accepted = next((m for m in self.models if {'provider': m['provider'], 'id': m['id']} == self.accepted_model), None)
+        if accepted and accepted['provider'] == provider and accepted not in entries: entries.insert(0, accepted)
+        for item in entries:
+            available = item.get('configured') and item.get('interactive', True)
+            oauth = item.get('auth') == 'oauth'
+            suffix = (' · sign in' if oauth else ' · connect') if not item.get('configured') else ' · batch' if not item.get('interactive', True) else ''
+            self.model.addItem(item['name'] + suffix, {'provider': item['provider'], 'id': item['id']})
+            row = self.model.model().item(self.model.count() - 1); row.setEnabled(bool(available))
+            reason = ('Sign in to this provider in Pi (run pi, then /login).' if oauth else 'Connect this provider in Pi, or add an API connection below.') if not item.get('configured') else 'Batch models do not support interactive chat.' if not item.get('interactive', True) else item.get('capability_message') or 'Ready for interactive chat.'
+            if oauth and item.get('configured'):
+                reason += '\nSigned in through Pi. If the sign-in lapses, the run pauses until you sign in again.'
+            row.setToolTip(provider_name(item['provider']) + '\n' + item['id'] + '\n' + reason)
+        preferred = next((i for i in range(self.model.count()) if self.model.itemData(i) == selected), -1)
+        if preferred < 0 and self.study_active and self.accepted_model and provider != self.accepted_model['provider']:
+            preferred = -1
+        elif preferred < 0:
+            preferred = next((i for i in range(self.model.count()) if self.model.model().item(i).isEnabled() and 'deepseek-v4.1-flash' in self.model.itemData(i)['id']), -1)
+        if preferred < 0 and (not self.study_active or not self.accepted_model or provider == self.accepted_model['provider']):
+            preferred = next((i for i in range(self.model.count()) if self.model.model().item(i).isEnabled()), -1)
+        self.model.setCurrentIndex(preferred)
+        self.model.blockSignals(False)
+        provider_models = [m for m in self.models if not provider or m['provider'] == provider]
+        if provider and not provider_models:
+            self.provider_note.setText('No models are registered for ' + provider_name(provider) + ' in Pi yet. Add a model in Pi or connect an API below.')
+        elif provider and not any(m.get('configured') for m in provider_models):
+            self.provider_note.setText('Connect ' + provider_name(provider) + ' in Pi, or add an API below. Choose a connected provider to send messages.')
+        else:
+            self.provider_note.setText('Choose a provider beside the composer. The next dropdown shows only that provider’s models.')
+        self.update_controls()
+
+    def connect_provider(self):
+        dialog = ProviderDialog(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.send(dialog.command())
+            dialog.key.clear()
+
+    def attach(self, role):
+        paths, _filter = QFileDialog.getOpenFileNames(self, 'Attach reference images', '', 'Images (*.png *.jpg *.jpeg *.gif)')
+        self.attach_paths(paths, 'construction-map' if role == 'map' else 'reference')
+
+    def submit(self, _checked=False, force_start=False):
+        if getattr(self, 'move_bar', None) is not None: self.move_bar.hide(); self.current_move = None   # a message after a move refines it
+        if not self.process or self.process.state() != QProcess.ProcessState.Running:
+            self.status.setText('Connect the assistant before sending.'); return
+        prompt = self.prompt.toPlainText().strip()
+        start_plan = bool(force_start and self.goal and self.goal.get('brief'))
+        if not prompt:
+            if start_plan: prompt = 'Start painting from this plan.'
+            elif self.pending_references: prompt = 'Help me plan a painting from these references and our discussion.'
+            else:
+                self.status.setText('Write a message, attach a reference, or use Start painting.'); return
+        selected = (self.accepted_model if self.study_active else None) or self.model.currentData()
+        if not selected:
+            self.status.setText('Choose or connect a model first.'); return
+        self.empty_state.hide()
+        self.transcript.jump_to_latest(); self.flush_stream()
+        message_id = uuid.uuid4().hex
+        self.last_user_item = self.transcript.add_message('You', prompt, message_id=message_id)
+        self.reply_open = False
+        shared = {'chat_mode': self.chat_mode, 'start_plan': start_plan, 'references': self.pending_references,
+                  'canvas': self.context_payload(), 'message_id': message_id}
+        if self.study_active:
+            self.send(dict(shared, type='prompt', text=prompt))
+        else:
+            self.send(dict(shared, type='start', prompt=prompt, provider=selected['provider'], model=selected['id'],
+                           mode=self.source.currentData(), name=self.name.text(), width=self.canvas_width.value(),
+                           height=self.canvas_height.value(), experiment=self.experiment.currentData()))
+        self.prompt.clear(); self.status.setText('Preparing your message…')
+
+    def render_ai_images(self):
+        """Show the open chat's AI image allowance (-1 in the selector is no limit) and how many it used."""
+        goal = self.goal or {}
+        value = (goal.get('limits') or {}).get('ai_images', 0)
+        key = -1 if value is None else value
+        selector = self.ai_images_selector
+        selector.blockSignals(True)
+        if selector.findData(key) < 0: selector.addItem('%d AI images' % key, key)
+        selector.setCurrentIndex(selector.findData(key)); selector.blockSignals(False)
+        used = goal.get('ai_images_used', 0)
+        self.ai_images_used.setText('%d used' % used if used else '')
+        self.ai_images_used.setToolTip('%d AI images made in this chat' % used)
+
+    def change_ai_images(self, _index):
+        if not self.goal or self.busy: return
+        value = self.ai_images_selector.currentData()
+        limits = self.goal.get('limits') or {}
+        self.send({'type': 'set_limits', 'limits': {'minutes': limits.get('minutes', 0), 'passes': limits.get('passes', 0),
+                                                    'ai_images': None if value < 0 else value}})
+
+    # ----- reference parts -----------------------------------------------------------
+    def start_part(self, reference, kind):
+        """Open a copy of the reference in Krita for the artist to select a part (or a crop) with Krita's tools."""
+        import shutil
+        if self.part_session: return
+        if len(self.pending_references) + len(self.attached_references) >= 4:
+            self.status.setText('Remove a reference to add a part.'); return
+        copy = os.path.join(self.pasted_folder(), 'creative-part-source-' + uuid.uuid4().hex + os.path.splitext(reference['path'])[1])
+        shutil.copyfile(reference['path'], copy)
+        app = Krita.instance(); window = app.activeWindow()
+        previous = window.activeView() if window else None
+        doc = app.openDocument(copy)
+        if doc is None:
+            os.remove(copy); self.status.setText('Krita could not open this reference.'); return
+        if (doc.colorModel(), doc.colorDepth()) != ('RGBA', 'U8'):             # a part is cut from 8-bit RGBA pixels
+            doc.setColorSpace('RGBA', 'U8', 'sRGB-elle-V2-srgbtrc.icc')
+        if window: window.addView(doc)
+        tool = app.action('KisToolSelectSimilar' if kind == 'part' else 'KisToolSelectRectangular')
+        if tool is not None: tool.trigger()
+        name = reference.get('name') or os.path.basename(reference['path'])
+        self.part_session = {'reference': reference, 'kind': kind, 'doc': doc, 'copy': copy, 'view': previous, 'window': window, 'name': name}
+        self.part_bar_label.setText('Selecting a part of ' + name); self.part_bar.show(); self.part_timer.start()
+
+    def part_name(self, default):
+        name, ok = QInputDialog.getText(self, 'Name this part', 'Name', QLineEdit.EchoMode.Normal, default)
+        return name.strip()[:60] if ok and name.strip() else None
+
+    def use_part(self):
+        session = self.part_session
+        if not session: return
+        doc, kind = session['doc'], session['kind']
+        width, height = doc.width(), doc.height()
+        selection = doc.selection()
+        bounds = self.selection_bounds(selection, doc)
+        if bounds is None:
+            self.status.setText('Select the part first.'); return
+        pixels = bytes(doc.pixelData(0, 0, width, height))
+        if kind == 'part':
+            image = part_image(pixels, bytes(selection.pixelData(0, 0, width, height)), width, height)
+            bounds, size = opaque_bounds(image, width, height), (width, height)
+            if bounds is None:
+                self.status.setText('Select the part first.'); return
+        else:
+            image, bounds = crop_image(pixels, width, height, bounds); size = (bounds[2], bounds[3])
+        name = self.part_name('Part of ' + session['name'])
+        if not name: return
+        from .qt_compat import QImage
+        path = os.path.join(self.pasted_folder(), 'creative-reference-' + uuid.uuid4().hex + '.png')
+        if not QImage(image, size[0], size[1], size[0] * 4, QImage.Format.Format_ARGB32).save(path):
+            self.status.setText('Could not save the part.'); return
+        original = session['reference']
+        self.close_part()
+        self.pending_references.append({'path': path, 'role': 'reference', 'name': '%s (%s)' % (name, kind), 'purpose': original.get('purpose') or 'general',
+                                        'notes': '', 'part_of': original['path'], 'part_kind': kind, 'bounds': bounds})
+        self.show_references(); self.status.setText("'%s (%s)' is attached. Ask the agent to paint from it." % (name, kind))
+
+    def close_part(self, closed_by_artist=False):
+        session, self.part_session = self.part_session, None
+        self.part_timer.stop(); self.part_bar.hide()
+        if not session: return
+        if not closed_by_artist:
+            session['doc'].setModified(False); session['doc'].close()
+        if session['window'] is not None and session['view'] is not None: session['window'].showView(session['view'])
+        try: os.remove(session['copy'])
+        except OSError: pass
+
+    def check_part_session(self):
+        """The artist closed the temporary document themselves: as if Cancel was pressed."""
+        if self.part_session and self.part_session['doc'] not in Krita.instance().documents():
+            self.close_part(closed_by_artist=True)
+
+    # ----- protected areas ---------------------------------------------------------
+    def protection_document(self):
+        return Krita.instance().activeDocument()
+
+    def open_protection(self, modal=True):
+        doc = self.protection_document()
+        if doc is None:
+            self.status.setText('Open your painting to protect parts of it.'); return None
+        dialog = ProtectionDialog(self, self.protection._protect_list(doc))
+        if modal: dialog.exec()
+        else: dialog.show()
+        return dialog
+
+    def answer_protection(self, area, choice):
+        for button in self.protection_controls: button.setEnabled(False)
+        self.show_protection(area, False)
+        doc = self.protection_document()
+        if choice == 'keep':
+            self.protection._protect_set_state(doc, area['id'], 'active'); self.status.setText("'%s' is protected." % area['name'])
+        elif choice == 'discard':
+            self.protection._protect_remove(doc, area['id'])
+        else:
+            self.paint_protection(area)
+
+    def remove_protection(self, area):
+        self.protection._protect_remove(self.protection_document(), area['id'])
+        self.status.setText("'%s' is no longer protected." % area['name'])
+
+    def show_protection(self, area, on):
+        """Krita shows the active selection mask's area over the painting; Show makes the area's mask active."""
+        doc = self.protection_document()
+        mask = doc is not None and hasattr(self.protection, '_protect_mask_node') and self.protection._protect_mask_node(doc, area['id'])
+        if not mask: return
+        if on:
+            self.protection_shown = self.protection_shown or doc.activeNode(); doc.setActiveNode(mask)
+        elif self.protection_shown is not None:
+            doc.setActiveNode(self.protection_shown); self.protection_shown = None
+
+    def ask_to_protect(self):
+        if self.mode_selector.currentData() != 'agent':
+            self.mode_selector.setCurrentIndex(self.mode_selector.findData('agent'))
+        self.prompt.setPlainText('Protect '); self.prompt.moveCursor(QTextCursor.MoveOperation.End); self.prompt.setFocus()
+
+    @staticmethod
+    def selection_bounds(selection, doc):
+        if selection is None: return None
+        left, top = max(0, selection.x()), max(0, selection.y())
+        right, bottom = min(doc.width(), selection.x() + selection.width()), min(doc.height(), selection.y() + selection.height())
+        return None if right <= left or bottom <= top else [left, top, right - left, bottom - top]
+
+    def protect_selection(self):
+        doc = self.protection_document()
+        selection = doc.selection() if doc is not None else None
+        bounds = self.selection_bounds(selection, doc) if doc is not None else None
+        if bounds is None:
+            self.status.setText('Select an area first.'); return
+        count = len([a for a in self.protection._protect_list(doc) if a.get('by') != 'automatic']) + 1
+        name, ok = QInputDialog.getText(self, 'Protect this area', 'Name', QLineEdit.EchoMode.Normal, 'Protected %d' % count)
+        if not ok or not name.strip(): return
+        self.protection._protect_add(doc, selection.duplicate(), name.strip()[:60], 'artist', 'active', bounds)
+        self.status.setText("'%s' is protected." % name.strip()[:60])
+
+    def paint_protection(self, area=None):
+        """Paint over it: the area's mask becomes the active node and the brush paints protection, the eraser
+        removes it. Done keeps it; Cancel restores it (or drops a new one)."""
+        doc = self.protection_document()
+        if doc is None:
+            self.status.setText('Open your painting to protect parts of it.'); return
+        if area is None:
+            count = len([a for a in self.protection._protect_list(doc) if a.get('by') != 'automatic']) + 1
+            name, ok = QInputDialog.getText(self, 'Paint protection', 'Name', QLineEdit.EchoMode.Normal, 'Protected %d' % count)
+            if not ok or not name.strip(): return
+            area = self.protection._protect_add(doc, Selection(), name.strip()[:60], 'artist', 'active', [0, 0, 0, 0]); saved = None
+        else:
+            saved = self.protection._protect_mask_node(doc, area['id']).selection().duplicate()
+        self.protection_editing = {'area': area, 'saved': saved, 'node': doc.activeNode()}
+        self.protection._protect_editing(doc, True)              # Krita will not paint a mask in a locked group
+        doc.setActiveNode(self.protection._protect_mask_node(doc, area['id']))
+        brush = Krita.instance().action('KritaShape/KisToolBrush')
+        if brush is not None: brush.trigger()
+        self.protection_bar_label.setText("Painting protection: '%s'" % area['name']); self.protection_bar.show(); self.update_controls()
+
+    def finish_protection(self, keep):
+        editing, self.protection_editing = self.protection_editing, None
+        self.protection_bar.hide()
+        if editing is None: return
+        doc, area = self.protection_document(), editing['area']
+        self.protection._protect_editing(doc, False)
+        mask = self.protection._protect_mask_node(doc, area['id'])
+        bounds = self.selection_bounds(mask.selection(), doc) if mask is not None and keep else None
+        if keep and bounds:
+            self.protection._protect_set_bounds(doc, area['id'], bounds)
+            self.protection._protect_set_state(doc, area['id'], 'active'); self.status.setText("'%s' is protected." % area['name'])
+        elif editing['saved'] is None or (keep and not bounds):
+            self.protection._protect_remove(doc, area['id']); self.status.setText('Nothing was protected.')
+        else:
+            mask.setSelection(editing['saved'])
+        if editing['node'] is not None: doc.setActiveNode(editing['node'])
+        self.update_controls()
+
+    def update_controls(self):
+        running = bool(self.process and self.process.state() == QProcess.ProcessState.Running)
+        self.ai_images_selector.setVisible(bool(self.goal)); self.ai_images_used.setVisible(bool(self.goal))
+        self.ai_images_selector.setEnabled(running and bool(self.goal) and not self.busy)
+        self.ai_images_selector.setToolTip('Pause to change AI images for this chat.' if self.busy else
+                                           'How many AI-generated images the painter may use in this chat. 0 paints everything by hand.')
+        self.protect_button.setEnabled(not self.busy and self.protection_editing is None)
+        self.protect_button.setToolTip('Pause to change protection' if self.busy else 'Protected areas: what the agent must never change')
+        for control in (self.source, self.name, self.experiment): control.setEnabled(not self.study_active and not self.busy)
+        self.model.setEnabled(not self.busy and not self.pending_model_change)
+        self.provider_filter.setEnabled(not self.busy and not self.pending_model_change)
+        self.reasoning_selector.setEnabled(running and not self.busy)
+        for widget in self.setting_widgets.values(): widget.setEnabled(running and not self.busy)
+        self.filter.setEnabled(not self.busy)
+        self.connect_button.setEnabled(running and not self.busy)
+        self.canvas_width.setEnabled(not self.study_active and self.source.currentData() == 'new')
+        self.canvas_height.setEnabled(not self.study_active and self.source.currentData() == 'new')
+        self.map_button.setVisible(self.experiment.currentData() == 'guided')
+        self.send_button.setToolTip('Send direction · current brush action settles first' if self.busy else 'Send message · Enter')
+        self.send_button.setEnabled(running and bool((self.accepted_model if self.study_active else None) or self.model.currentData()) and not self.pending_model_change and (not self.busy or self.study_active))
+        self.stop_button.setEnabled(self.busy); self.stop_button.setVisible(self.busy)
+        self.reference_button.setEnabled(running and not self.busy)
+        self.plan_button.setEnabled(bool(self.goal))
+        self.end_button.setEnabled(running and not self.busy)
+        self.history_button.setEnabled(running and not self.busy)
+        self.restore_button.setEnabled(running and not self.busy)
+        self.canvas_refresh.setEnabled(running and not self.busy)
+        self.canvas_remove.setEnabled(not self.busy)
+        self.use_canvas_button.setEnabled(running and not self.busy)
+        self.region_remove.setEnabled(not self.busy)
+        for button in getattr(self, 'reference_remove_buttons', []): button.setEnabled(not self.busy)
+        canvas_file = (self.canvas_context.get('canvas') or {}).get('filename')
+        self.folder_button.setEnabled(bool(self.saved_path or canvas_file or getattr(self, 'paintings_directory', None)))
+        self.folder_button.setText('Locate file' if self.painting_target.get('missing') else 'Show file' if self.saved_path or canvas_file else 'Show folder')
+        self.folder_button.setToolTip('Reveal the painting in Finder' if self.saved_path or canvas_file else 'Open your painting folder')
+        can_start = bool(not self.painting_target.get('missing') and not self.uncertain_operations and self.goal and not self.goal.get('target_needs_review') and not self.goal.get('question') and self.goal.get('brief') and self.goal.get('status') in ('draft', 'ready', 'paused', 'limited', 'needs_input'))
+        self.execute_button.setVisible(can_start and not self.busy)
+        self.execute_button.setEnabled(running and can_start and not self.busy and getattr(self, 'bridge_compatible', True))
+        self.execute_button.setText('Resume' if self.goal and self.goal.get('status') == 'paused' else 'Start painting')
+        self.compare_button.setVisible(bool(self.goal and self.goal.get('passes', 0)))
+        placeholders = {'ask': 'Ask about your painting…', 'plan': 'Describe the result and what to preserve…', 'agent': 'Describe the next move, or type a correction to refine the last one…', 'autopilot': 'Give a direction for the next painting step…'}
+        self.prompt.setPlaceholderText('Answer here, or choose an option above…' if self.goal and self.goal.get('question') else placeholders[self.chat_mode])
+        if self.chat_mode in ('ask', 'plan'): self.save_status.setText(self.chat_mode.capitalize() + ' · read only')
+        elif self.saved_at and self.saved_path: self.save_status.setText('Saved ' + self.saved_at + ' · ' + os.path.basename(self.saved_path))
+        elif self.saved_path: self.save_status.setText('Painting · ' + os.path.basename(self.saved_path))
+        else: self.save_status.setText('Agent · ready')
+
+    def open_output(self):
+        if self.painting_target.get('missing') or (self.saved_path and not os.path.isfile(self.saved_path)):
+            if self.relink_id: self.locate_missing_painting()
+            else: self.status.setText('The painting has moved. Open History and use Locate painting to reconnect it.')
+            return
+        canvas_file = (self.canvas_context.get('canvas') or {}).get('filename')
+        file_path = self.saved_path or canvas_file
+        if file_path and os.path.isfile(file_path):
+            QProcess.startDetached('/usr/bin/open', ['-R', file_path])
+        elif getattr(self, 'paintings_directory', None):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self.paintings_directory))
+
+
+
+def register_creative_docker():
+    Krita.instance().addDockWidgetFactory(DockWidgetFactory(
+        'krita_creative_agent', scoped(DockWidgetFactoryBase, 'DockPosition', 'DockRight'), CreativeAgentDocker))

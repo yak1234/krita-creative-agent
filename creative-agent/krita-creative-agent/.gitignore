@@ -1,0 +1,6 @@
+node_modules/
+output/
+.local-config.json
+__pycache__/
+*.pyc
+.env

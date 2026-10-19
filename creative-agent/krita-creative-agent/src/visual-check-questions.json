@@ -1,0 +1,145 @@
+{
+ "version": 1,
+ "pass": {
+  "threshold": 0.7,
+  "severe_threshold": 0.9,
+  "failures": {
+   "splice": {
+    "label": "hard join",
+    "instructions": "Does AFTER show a hard, straight horizontal or vertical seam where content on either side does not line up, as if two pictures were joined, that is not present in BEFORE?",
+    "criteria": {
+     "true": "AFTER has a new visible straight join with misaligned content.",
+     "false": "No new join; content continues naturally."
+    },
+    "reference_only": true
+   },
+   "duplicate": {
+    "label": "duplicated band",
+    "instructions": "Does AFTER show a band of content repeated, so the same shapes or details appear twice stacked, that is not present in BEFORE?",
+    "criteria": {
+     "true": "AFTER has a new repeated or stacked copy of content.",
+     "false": "No new repeated band."
+    },
+    "reference_only": true
+   },
+   "flat_block": {
+    "label": "flat block",
+    "instructions": "Does AFTER show a flat, rectangular block of nearly uniform or speckled colour that does not belong to the painted forms, that is not present in BEFORE?",
+    "criteria": {
+     "true": "AFTER has a new rectangular flat or noisy patch.",
+     "false": "No new rectangular patch."
+    },
+    "blockin_exempt": true,
+    "severe": true
+   },
+   "stripes": {
+    "label": "mechanical stripes",
+    "instructions": "Does AFTER show regular, evenly spaced parallel stripes or a ladder pattern that look mechanical rather than painted, that is not present in BEFORE?",
+    "criteria": {
+     "true": "AFTER has new mechanical, evenly spaced stripes.",
+     "false": "No new mechanical stripe pattern."
+    }
+   },
+   "ellipses": {
+    "label": "pasted ellipses",
+    "instructions": "Does AFTER show flat, hard-edged ellipses or circles pasted over the painting instead of painted forms, that are not present in BEFORE?",
+    "criteria": {
+     "true": "AFTER has new flat hard-edged ellipse shapes.",
+     "false": "No new pasted ellipse shapes."
+    },
+    "blockin_exempt": true,
+    "severe": true
+   },
+   "hard_graphic": {
+    "label": "hard graphic look",
+    "instructions": "Does AFTER replace painted, blended transitions with a hard, flat, poster-like or vector-like look that is not present in BEFORE?",
+    "criteria": {
+     "true": "AFTER newly looks graphic: hard flat shapes, cut-out edges, ribbon-like strokes.",
+     "false": "No new graphic flattening."
+    },
+    "blockin_exempt": true
+   }
+  },
+  "location": {
+   "instructions": "In which ninth of AFTER is the {label} most visible?",
+   "cells": {
+    "top_left": "Top-left ninth.",
+    "top_center": "Top-centre ninth.",
+    "top_right": "Top-right ninth.",
+    "middle_left": "Middle-left ninth.",
+    "center": "Centre ninth.",
+    "middle_right": "Middle-right ninth.",
+    "bottom_left": "Bottom-left ninth.",
+    "bottom_center": "Bottom-centre ninth.",
+    "bottom_right": "Bottom-right ninth."
+   }
+  },
+  "established": {
+   "instructions": "Does BEFORE look like a finished or nearly finished, detailed painting?",
+   "criteria": {
+    "true": "BEFORE is a detailed, rendered painting.",
+    "false": "BEFORE is blank, rough or an early block-in."
+   },
+   "threshold": 0.9
+  }
+ },
+ "progress": {
+  "max_checks": 8,
+  "instructions": "Compare PREVIOUS and CURRENT. How much did CURRENT improve on this failed requirement: {check}",
+  "scale": [
+   "No improvement: the problem is unchanged or worse.",
+   "Slight improvement: a small part is better.",
+   "Clear improvement: most of the problem is fixed.",
+   "Resolved: the requirement now looks met."
+  ]
+ },
+ "layer_need": {
+  "instructions": "Look at {area} in CANVAS (compare with REFERENCE when given). Which layer does that area need next, as a digital painter builds it: base shape, then shadow and light, then surface texture, then glow and depth, then accents?",
+  "needs": {
+   "flat": "It has no clean base shape yet: missing, or a scribbled mass of strokes with ragged edges or the wrong overall value.",
+   "shadow": "The base shape is there but reads flat: no darker side, cast shadow or form shading.",
+   "light": "Shaded, but the lit side, highlights or reflections are missing or dull.",
+   "texture": "Shape, shadow and light read, but the surface is too smooth or plain compared with the reference.",
+   "glow": "Light sources in the area (lamps, windows, moon, signs) do not glow or bloom into their surroundings.",
+   "depth": "The area is far away but as sharp and contrasty as the foreground; it needs haze, fog or softness.",
+   "accents": "Everything reads; only crisp edges, small highlights or details such as snow are missing.",
+   "done": "The area already reads as finished at this painting's level of detail."
+  }
+ },
+ "move": {
+  "texture_over_forms": {
+   "label": "texture over forms",
+   "instructions": "Does AFTER lay a broad, even texture or wash over forms that BEFORE showed clearly (cloud shapes, edges, lit areas), so they read flatter or vaguer than in BEFORE?",
+   "criteria": {
+    "true": "AFTER flattens or blurs forms BEFORE showed.",
+    "false": "Forms BEFORE showed are as clear or clearer."
+   },
+   "blockin_exempt": true
+  },
+  "feature": {
+   "label": "{feature} covered",
+   "instructions": "Is the {feature} that BEFORE shows as visible in AFTER as in BEFORE? Answer true only if BEFORE shows it and AFTER covers, removes or hides it. If BEFORE does not show it, answer false.",
+   "criteria": {
+    "true": "AFTER covered or removed the {feature} BEFORE showed.",
+    "false": "The {feature} is as visible as before, or BEFORE did not show it."
+   }
+  },
+  "any_feature": {
+   "label": "an object covered",
+   "instructions": "Did a distinct object BEFORE shows (a moon, figure, light source, building top) disappear or get covered in AFTER?",
+   "criteria": {
+    "true": "A distinct object from BEFORE is gone or covered in AFTER.",
+    "false": "Every distinct object from BEFORE is still visible."
+   }
+  }
+ },
+ "seam": {
+  "threshold": 0.5,
+  "instructions": "Is there a seam along {where}? A seam is an artificial straight join where the painting changes brightness, colour or texture abruptly along a perfectly straight line through otherwise continuous sky, water or wall, as if a rectangle was pasted in or image tiles were joined. The painted edge of an object (a roof, tower, bridge, railing, window frame, reflection or light streak) is not a seam.",
+  "criteria": {
+   "true": "An artificial straight join crosses continuous paint along that line.",
+   "false": "No join there, or the line is the painted edge of an object."
+  },
+  "calibration": "New Moscow 2026-10-19 (offline): 3 of 6 seams by eye at 0.59-0.98, the 2 faintest missed; 5 object edges (bridge, railing, tower, windscreen, roof) at 0.01-0.05."
+ }
+}

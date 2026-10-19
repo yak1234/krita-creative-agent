@@ -1,0 +1,44 @@
+{
+  "chat_id": "298709b6-23d7-49ab-ae3d-90ee44fe161f",
+  "project": "Invictas / Typesafejev · development, keys from environment",
+  "painting_minutes": 76.16694999999997,
+  "painter_calls": 295,
+  "painter_mean_seconds": 12.627349152542374,
+  "painter_input_tokens": {
+    "mean": 40954,
+    "max": 469636
+  },
+  "categories": {
+    "painting tools": {
+      "calls": 290,
+      "minutes": 13.565633333333343
+    },
+    "painter model calls": {
+      "calls": 295,
+      "minutes": 62.084466666666664
+    },
+    "Luna decisions": {
+      "calls": 223,
+      "minutes": 3.2684166666666656
+    },
+    "reviews": {
+      "calls": 20,
+      "minutes": 4.993483333333333
+    },
+    "parallel preparation": {
+      "calls": 4,
+      "minutes": 0.9262500000000001
+    }
+  },
+  "reviews": 20,
+  "best_checks_met": {
+    "at": "2026-10-09T18:52:40.693Z",
+    "met": 5,
+    "total": 11
+  },
+  "last_checks_met": {
+    "at": "2026-10-10T01:22:58.976Z",
+    "met": 1,
+    "total": 9
+  }
+}

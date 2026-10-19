@@ -1,0 +1,16 @@
+{
+  // Type checking only: the companion runs its .mjs files directly, with no build step.
+  // Files opt in with // @ts-check; `npm run typecheck` (and CI) runs tsc on them.
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "target": "es2023",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.mjs"]
+}

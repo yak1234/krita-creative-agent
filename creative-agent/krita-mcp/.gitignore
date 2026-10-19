@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+
+# local
+.venv/
+.api-ref/
+__pycache__/
+*.pyc
+.DS_Store

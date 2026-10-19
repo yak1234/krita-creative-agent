@@ -1,0 +1,42 @@
+# Dependencies and caches
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+# Secrets and machine-local settings
+.env
+.env.*
+!.env.example
+.local-config.json
+
+# Artwork and run output (lives in the artwork project folder, not here)
+*.kra
+*.kra~
+krita-creative-agent/output/
+krita-creative-agent/backups/
+krita-creative-agent/docs/typesafe-evidence/
+krita-creative-agent/docs/review-evidence/
+
+# krita-mcp: early experiments, proofs and API dumps
+krita-mcp/backups/
+krita-mcp/recovery/
+krita-mcp/.api-ref/
+krita-mcp/*.png
+krita-mcp/face_*_progress.json
+krita-mcp/consolidate_documents.py
+krita-mcp/paint_christmas_scene.py
+krita-mcp/paint_memileo_study.py
+krita-mcp/refine_face_planes.py
+krita-mcp/MEMILEO_NOTES.md
+
+# repowise API keys (local)
+.repowise/.env
+
+# Local agent tooling (may hold sign-ins) and compile leftovers
+.pi/
+.codex/
+.mcp.json
+*.bun-build

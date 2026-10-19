@@ -1,0 +1,39 @@
+---
+name: place-subject
+description: Add one subject to a painting (a tree, figure, animal, lamp post, car, building) at the right place, size and lighting, standing on its ground with a contact shadow. Use when the artist asks to add or replace an object or character.
+---
+
+# Place a subject
+
+**Which route:** your instructions say how many AI images this chat allows. With one available, use the
+**AI image route**; with AI images off or used up, use the **hand-painted route** and do not call `make_asset`.
+Tool details for the AI image route are in the `image-asset` skill.
+
+## Hand-painted route
+
+1. **Look and decide**, as in step 1 below: the target [x,y,w,h] on the ground line, and the light direction.
+2. **Silhouette:** `paint_contours` with the subject's big shapes back to front (trunk then foliage masses; body
+   then head and limbs), one new layer, inside the target. Mid-tone local colours, no detail yet.
+3. **Form:** `create_layer` `clip_to` the silhouette layer, `blend_mode: multiply`, for the shadow side
+   (`fill_region` a gradient away from the light), and another with `blend_mode: screen` for the lit side.
+4. **Detail:** `paint_batch` strokes for the features that make it read (branches, folds, windows), small
+   brushes, only where the eye goes. Sample neighbouring colours (`sample_canvas_colors`) so it belongs.
+5. **Ground it and crisp the edges**, as in steps 6 and 7 below.
+
+## AI image route
+
+1. **Look and decide** (`observe_canvas`): where it stands, the ground line, its height in the scene
+   (perspective: smaller further away), and where the light comes from. Write the target [x,y,w,h] so its
+   bottom edge sits on the ground line.
+2. **Make it:** `make_asset` `mode: generate`, `cutout: true`, `fit_to` = the target, `anchor: bottom`,
+   aspect near the target's (tall subjects `3:4` or `2:3`). Prompt: the subject, its pose or angle, the
+   painting's style, and the light direction and colour *("lit warm from the left, cool shadow side")*.
+3. **Check the preview:** whole subject, nothing extra, clean edge. Regenerate rather than paint a bad one.
+4. **Match the scene** when its colours look pasted: `run_skill_script` `image-asset/match_palette.py`,
+   `inputs: {input: <asset>}`, `region_inputs: {palette_from: <canvas area around the target>}`,
+   `strength: 0.5`.
+5. **Paint it:** `paint_from_reference` with the result's arguments. Transparent pixels are skipped, so
+   only the subject is painted.
+6. **Ground it:** a soft contact shadow under it on its own layer (`create_layer` `blend_mode: multiply`,
+   low opacity, then a short soft `paint_pass` along the ground line, darkest where it touches).
+7. **Crisp edges:** `paint_reference_edges` on the subject's region. Then `observe_canvas`.

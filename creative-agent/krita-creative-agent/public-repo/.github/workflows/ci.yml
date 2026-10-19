@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  companion:
+    name: Companion (Node)
+    runs-on: macos-14   # installer and packaging tests use macOS tools (otool, caffeinate)
+    defaults:
+      run:
+        working-directory: companion
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: companion/package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: Syntax check
+        run: for f in src/*.mjs scripts/*.mjs; do node --check "$f"; done
+      - name: Type check (the .mjs marked // @ts-check, and the TypeScript strictly, against Pi's own types)
+        run: npm run typecheck
+      - name: Unit and integration tests (in-memory Langfuse, local model stub)
+        run: node --test --test-timeout=120000 tests/*.test.mjs
+
+  portability:
+    # The companion's unit tests on every OS Krita runs on. Informational until the cross-platform-runtime
+    # change lands: Windows and Linux failures here are the to-do list, not a broken build.
+    name: Portability (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-14]
+    defaults:
+      run:
+        working-directory: companion
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: companion/package-lock.json
+      - run: npm ci --ignore-scripts
+      - name: Unit tests, including the Python sandbox and its lock
+        run: node scripts/run-unit-tests.mjs --test-timeout=180000
+
+  python:
+    name: Plugin, MCP server and panel (Python)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Lint (syntax errors and undefined names)
+        run: uvx ruff check --select E9,F63,F7,F82 plugin companion mcp-server
+      - name: Plugin and companion policy tests (PyQt5, as Krita 5)
+        run: uv run --python 3.12 --with httpx --with pyqt5 python -m unittest discover -s companion/tests -p 'test_*.py'
+      - name: Plugin and companion policy tests (PyQt6, as Krita on Qt6)
+        run: uv run --python 3.12 --with httpx --with pyqt6 python -m unittest discover -s companion/tests -p 'test_*.py'
+      - name: MCP server tests
+        run: uv run --python 3.12 --with pytest --with httpx --with fastmcp pytest -q mcp-server/tests
+      - name: Qt panel smoke test (offscreen)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          uv run --python 3.12 --with pyqt5 python companion/tests/ui_smoke.py
+          uv run --python 3.12 --with pyqt6 python companion/tests/ui_smoke.py
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

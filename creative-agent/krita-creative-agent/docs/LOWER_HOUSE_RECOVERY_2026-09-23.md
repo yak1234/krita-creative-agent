@@ -1,0 +1,41 @@
+# Lower-house finish: evidence and recovery path (23 September 2026)
+
+This note concerns the live `test.kra` Victorian-house study `c1739284-4270-47ad-b34d-e2e1e2afc2db`. The artist's latest accepted requirement keeps the current rail and earth boundary and asks only for the lower paint, windows and porch to read clearly as a house. Preserve the saved artwork; test new methods on a copy or a reversible contribution.
+
+## What the current run proves
+
+- The paused run has 238 recorded passes/adjustments and 41 visual reviews. The final reviews continue to fail the lower façade and porch. The run's limits are `passes: 0`, `minutes: 0`, meaning no run ceiling. A changed content ID resets the controller's `emptyCycles` counter even if the same visible defect remains.
+- The rail is at about 70% of the square canvas, while the whole-house reference places it near 83%. The artist explicitly accepted this difference. The reviewer nevertheless cites the reference rail height and deep foreground in several final verdicts. The stage's unchanged `done_when` also asks for a coherent read “against the reference,” so the effective accepted compromise is ambiguous to the reviewer.
+- `paint_from_reference` requires one source rectangle and one target rectangle with matching aspect ratio, then maps every sampled position affinely. It has no landmark alignment, foreground/building segmentation, alpha mask, or seam blend. The completed 3,408-stroke lower-story transfer made a hard horizontal splice and duplicated the architecture; it was hidden. A second transfer reached 14,960 of 28,886 strokes and was also hidden. A rectangular toolbox reconstruction made flat, speckled blocks and was hidden. These are visual results from the saved pass previews, not hypothetical failures.
+- The latest local window/porch marks are visible, but they cannot add vertical room beneath the accepted rail. Additional faint strokes and opacity adjustments have not removed the façade join or regular porch stripes.
+
+## Existing paths and their limits
+
+- Creative Agent executes through the Node companion and native `CreativeTools` bridge. The separate Krita Artist MCP provides observation, color masses and raw batches for external control; it is not the Agent's painting controller. Adding another transport would not fix the drawing or review problem.
+- `painting_toolbox` can make a new layer or a reversible copy of **one** source paint layer. It supports selections, clipped brush strokes, erasing, gradients, Smart Patch, layer transforms and adjustments. It cannot start from a reversible copy of the *visible merged image* across the many existing layers. `paint_contours` creates selected brush-filled shapes on a new layer, but cannot represent holes or curved openings accurately without many model-authored points. Rectangular filled `draw_shape` and `clear` ignore selections and are not suitable for a masked house reconstruction.
+- Gradient can alter broad tone; Smart Patch can remove a localized defect on one observed paint layer. Neither solves the window/porch geometry. `paint_recipe` adds sampled colors and texture but has no semantic understanding of columns, windows, or the rail.
+
+## Practical recovery for this painting
+
+1. Keep the currently accepted rail at roughly canvas y=420. Make the current scope and final `done_when` explicit: the lower arches may be short at this datum; assess whether they and the porch read coherently **at that datum**, not whether the composition matches the reference's lower rail. The upper house, palette and square canvas remain protected.
+2. Retire or keep hidden the failed lower-story transfer/rebuild layers. Identify the few visible layers contributing flat joins and stripe-like porch marks before adding more paint. Use one bounded lower façade/porch working group rather than another series of whole-stage overlays.
+3. Construct a small, coherent lower-half correction: two dark arched recesses with pale rims and sills; a connected porch fascia, spaced light-facing posts and dark bays; soft lower-wall transitions and restrained ground marks. Match the existing 600×600 image and rail height. Use a full-resolution lower-house crop for before/after judgment. Keep changes on reversible native layers and verify the rest of the canvas is unchanged.
+4. Request one independent review after the coherent correction. If the same substantive defects remain after two materially different attempts, stop the automatic cycle with the actual before/after evidence and a precise limitation. Never silently declare artistic success or spend unlimited passes on similar small strokes.
+
+## Product changes that would make recovery reliable
+
+**First: reconcile the effective brief.** When an accepted user correction changes a constraint, update or supersede conflicting objective/stage-completion language; give both painter and reviewer the same effective criteria. The review prompt should explicitly rank current locked requirements over older directions and reference geometry. Still let the critic fail genuinely poor execution within the accepted constraint.
+
+**Second: add a reversible merged-region retouch adapter to the existing native bridge.** Capture the visible projection for a bounded region into a new paint layer, with an explicit mask and feathered boundary, while retaining underlying layers unchanged. Let the Agent apply existing brush, contour, eraser and Smart Patch commands to that layer. Validate document identity/revision, mask bounds, alpha behavior, pixel changes outside the mask, rollback and uncertain-operation receipts. Avoid flattening the whole document or copying a rectangular reference strip into an unaligned target.
+
+**Third: detect quality plateaus.** Track repeated failed check IDs, changed pixels in their affected region, and the last materially different strategy. A few repeated `continue` reviews should trigger a different construction plan; continued failure should pause with an honest result. Pixel change alone is not progress, so the existing content-ID-only reset cannot be the convergence test. A safety limit for runaway reviews/operations should be an execution guard, not an invented artistic requirement.
+
+Validate on a copy of `test.kra` before installing: the lower region becomes more coherent, accepted rail stays put, upper-house pixels remain unchanged, failed passes can be rejected, and the reviewer either passes the accepted scope or stops after bounded unsuccessful attempts. A mock review or a native save alone is insufficient evidence.
+
+## Implementation checkpoint — 23 September 2026
+
+Build `1ca04445c34391bea128179f3ee7d2676f288915fd91f7ca08e8e1b13d09722e` is installed and loaded in Krita 5.3.3. The Agent now carries accepted requirement corrections into painter context and independent review, where latest artist directions take precedence over conflicting older criteria. The controller changes strategy after three successive changed passes fail the same checks and pauses after five. Restored historical runs start a new failure window so their old reviews do not immediately halt them. The native toolbox offers a feathered, selection-clipped copy of a bounded visible region on a reversible top layer; it rejects unsupported color formats, transparent source regions, oversize regions and whole-layer operations in this mode.
+
+The live native acceptance test on the final build used `test-lower-retouch-final-check.kra`, a copy made from the saved `test.kra`. A brush stroke deliberately crossed its 60 × 60 mask boundary. Its saved merged image changed 540 pixels inside and zero outside; rejection restored the merged image exactly. The original `test.kra` remained unmodified and is the only document left open. Node unit tests: 111 passed. Python suite: 63 passed, using `httpx` installed into a temporary test-only directory for the optional diagnostics-client test. Packaging tests: 6 passed.
+
+This is a tool and control-loop acceptance result. The lower façade and porch have **not** been repainted by the Creative Agent with the new method, so the artistic completion gate remains open. The live test did not exercise the resumed Pi reviewer/plateau loop or Smart Patch on a projection copy; those remain separate acceptance cases.

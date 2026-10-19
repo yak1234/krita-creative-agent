@@ -1,0 +1,6 @@
+# Native packages for Krita's own Python (kritamcp/vendor.py), installed once per machine into the shared folder by
+# krita-creative-agent/scripts/install-python-packages.py. Wheels only. Every licence here is GPL-3.0-compatible.
+numpy==2.5.4                    # BSD-3-Clause: pixel maths (material tips, colour masks)
+opencv-python-headless==5.0.0.93  # Apache-2.0: blur, morphology, connected regions, k-means, Lab. Headless: no Qt of its own
+psutil==7.2.2                   # BSD-3-Clause: Krita's real memory use (painting weight)
+xxhash==4.0.1                   # BSD-2-Clause: fast content hashes

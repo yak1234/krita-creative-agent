@@ -245,6 +245,20 @@ class NativeCraft:
         doc.waitForDone()
         for group in empty:
             group.remove()
+        if hasattr(doc, 'mergeGroups'):
+            # The fork (krita-fork 5.2): Krita merges each run as it renders it (masks, styles, opacity) in one call,
+            # and the agent move makes the whole merge one undo step.
+            result['built_with'] = 'mergeGroups'
+            with doc.agentMove('Merge agent work'):
+                for number, run in enumerate(runs, 1):
+                    merged = doc.mergeGroups(run)
+                    if merged is None:
+                        raise RuntimeError('Krita refused to merge %s (a locked layer or group, or one inside a hidden '
+                                           'group): unlock it, or undo the merge so far.' % ', '.join("'%s'" % g.name() for g in run))
+                    merged.setName('%s merged %d' % (AGENT_GROUP, number))
+            runs = []
+        else:
+            result['built_with'] = 'projection copy'
         for number, run in enumerate(runs, 1):
             layers = []
             for group in run:

@@ -610,6 +610,53 @@ class MergeAgentWorkTests(unittest.TestCase):
             self.merge(dry_run=False)
 
 
+class MergeAgentWorkForkTests(MergeAgentWorkTests):
+    """On the fork (krita-fork 5.2): each run of agent groups is one Document.mergeGroups call, all inside one agent move,
+    so the whole merge is one undo step and nothing is copied through Python."""
+    def setUp(self):
+        super().setUp()
+        doc, test = self.h.doc, self
+        self.calls, self.moves = [], []
+        def merge_groups(nodes):
+            test.calls.append([n.label for n in nodes])
+            if test.refuse:
+                return None
+            parent = nodes[-1].parent
+            merged = test._fresh('merged', 'paintlayer')
+            parent.children.insert(parent.children.index(nodes[-1]) + 1, merged); merged.parent = parent
+            for n in nodes:
+                n.remove()
+            return merged
+        self.refuse = False
+        doc.mergeGroups = merge_groups
+        class Move:
+            def __init__(self, name): test.moves.append([name, 'open'])
+            def __enter__(self): return self
+            def __exit__(self, *exc): test.moves[-1][1] = 'closed'; return False
+        doc.agentMove = Move
+
+    def test_each_run_is_one_merge_groups_call_inside_one_agent_move(self):
+        result = self.merge(dry_run=False)
+        self.assertEqual(self.calls, [['Creative Agent · move-1', 'Creative Agent · move-3'], ['Creative Agent · move-4']])
+        self.assertEqual(self.moves, [['Merge agent work', 'closed']])
+        self.assertEqual(self.merged_down, [], 'no layer-by-layer merge down on the fork')
+        names = [n for n, _ in self.top()]
+        self.assertEqual(names, ['Background', 'Creative Agent · merged 1', 'Car finish', 'Creative Agent · merged 2', 'Protected areas · Creative Agent'])
+        self.assertEqual((result['built_with'], result['unchanged']), ('mergeGroups', True))
+
+    def test_a_refused_run_stops_the_merge_and_says_which(self):
+        self.refuse = True
+        with self.assertRaisesRegex(RuntimeError, "Krita refused to merge 'Creative Agent · move-1', 'Creative Agent · move-3'"):
+            self.merge(dry_run=False)
+        self.assertEqual(self.moves, [['Merge agent work', 'closed']], 'the move closes even when a run is refused')
+
+    def test_a_group_keeps_its_opacity_on_the_layer_that_replaces_it(self):
+        pass                                                  # Krita's merge renders the group's opacity itself
+
+    def test_groups_become_one_layer_each_run_merges_down_and_the_artist_is_untouched(self):
+        pass                                                  # the stock path's merge down; the fork's is tested above
+
+
 class TidyTests(unittest.TestCase):
     """Tidying a painting: the agent's hidden leftovers go; everything of the artist's stays."""
     def setUp(self):

@@ -106,6 +106,18 @@ Keep this table current: every upstream file the `krita-agent` branch changes, a
 | `libs/libkis/CMakeLists.txt`, `libs/libkis/tests/CMakeLists.txt` | Build `FilterMaskBake.cpp`; add `TestFilterMaskBake` | bake (5.2) |
 | `plugins/extensions/pykrita/sip/krita/FilterMask.sip` | Python binding of `bake()` | bake (5.2) |
 | `libs/image/kis_processing_applicator.h`, `.cpp` | `KisProcessingApplicator::UndoFacadeOverride`: while one lives, the applicators its thread creates send their undo step to the given facade instead of the image's history (a thread-local pointer read in the constructor; none set is upstream's behaviour). `mergeGroups()` sets it around Krita's merge so the merge joins an open agent move or macro | merge (5.2), undo history (2.5) |
+| `libs/image/kis_image.h`, `kis_image.cc` | A `KisFeatureList` member: `featureList()`, created with the image's bounds and copied in `copyFromImageImpl()` (so clones for saving and snapshots carry the features) | feature map (6.1) |
+| `libs/image/CMakeLists.txt`, `libs/image/tests/CMakeLists.txt` | Build `KisFeature.cpp`, `KisFeatureList.cpp`, `KisFeatureCommands.cpp`, `KisFeatureImageCommand.cpp`; add `KisFeatureListTest`, `KisFeatureImageCommandTest` | feature map (6.1, 6.1b) |
+| `libs/image/kis_image.cc` | Feature masks follow the image: five `applicator.end()` calls become `KisFeatureImageCommand::endApplicator(...)` (one line each, marked `// Krita Agent`): `resizeImageImpl()` (crop and canvas resize), `scaleImage()`, `rotateImpl()` and `shearImpl()` (image only: a null image for layer rotations and shears ends as upstream), `convertImageColorSpaceImpl()` (measures the mean colours again); plus the include. With no features each ends exactly as upstream | feature map (6.1b) |
+| `libs/ui/kis_node_manager.cpp` | `mirrorNodes()` ends with `KisFeatureImageCommand::endMirrorApplicator(...)` (one line, and the include): Mirror Image and Mirror All Layers without a selection mirror the masks; everything else ends as upstream | feature map (6.1b) |
+| `libs/ui/tests/CMakeLists.txt` | Adds `KisFeatureMirrorTest` (Mirror Image through a real `KisNodeManager`) | feature map (6.1b) |
+| `plugins/impex/libkra/kis_kra_saver.h`, `.cpp` | `saveFeatures()` (the masks) and `saveFeaturesToXML()` (one call at the end of `saveXML()`), both calling `KisKraFeatures` | feature map (6.1) |
+| `plugins/impex/libkra/kis_kra_loader.h`, `.cpp` | `loadXML()` keeps the `<features>` element (one branch); `loadFeatures()` hands it to `KisKraFeatures::load()` | feature map (6.1) |
+| `plugins/impex/libkra/kra_converter.cpp` | Calls `saveFeatures()` after the storyboards and `loadFeatures()` after them | feature map (6.1) |
+| `plugins/impex/libkra/CMakeLists.txt`, `tests/CMakeLists.txt` | Build `KisKraFeatures.cpp`; add `KisKraFeaturesTest` | feature map (6.1) |
+| `libs/libkis/Document.h` | Declares `features()`, `feature()`, `addFeature()`, `renameFeature()`, `removeFeature()` (defined in `DocumentFeatures.cpp`, their commands run through `DocumentHistory::runCommandStroke`, so inside an agent move they join its step), in a block of their own after the change-report block | feature map (6.2) |
+| `libs/libkis/CMakeLists.txt`, `libs/libkis/tests/CMakeLists.txt` | Build `DocumentFeatures.cpp`, `Feature.cpp`; add `TestDocumentFeatures` | feature map (6.2) |
+| `plugins/extensions/pykrita/sip/krita/Document.sip`, `kritamod.sip` | The feature methods for Python; includes our `Feature.sip` | feature map (6.2) |
 
 Our own files for the identity: `cmake/modules/KritaAppIdentity.cmake`, `libs/global/KisAppIdentity.{h,cpp}`,
 `libs/global/config-app-identity.h.cmake`; tests `libs/global/tests/KisAppIdentityTest.{h,cpp}`,
@@ -131,6 +143,31 @@ mark agent work with `DocumentChanges::forImage(image)->beginAgentWork()` / `end
 Our own files for fork parity (1.6): `creative-agent/CMakeLists.txt` (the `KRITA_AGENT_NATIVE_HELPER` option, on by
 default) and the helper itself, `creative-agent/krita-native/agent-accel` (a `KisActionPlugin`; the plugin finds its
 `creative-agent-accel` object on the application). Its self-tests: `ctest --test-dir _build -R kritaagentaccel`.
+
+Our own files for the feature map (6.1, 6.1b, 6.2): `libs/image/KisFeature.{h,cpp}` (a feature: name, kind, author,
+state, protected flag, 8-bit tiled mask, measured bounds, area and mean colour), `libs/image/KisFeatureList.{h,cpp}`
+(the document's list with an R-tree over bounds, owned by `KisImage`), `libs/image/KisFeatureCommands.{h,cpp}` (add,
+remove, rename as undo commands), `libs/image/KisFeatureImageCommand.{h,cpp}` (masks follow crop, canvas resize,
+scale, rotate, shear and mirror of the image, and are measured again after those and a colour-space conversion, in the
+operation's undo step), `plugins/impex/libkra/KisKraFeatures.{h,cpp}` (the `.kra` format: a `<features version="1">`
+child of `<IMAGE>` in `maindoc.xml`, appended after the layers and before `<animation>`, never first; one mask per
+feature in `<image>/features/`; later versions are read as far as this one understands them),
+`libs/libkis/Feature.{h,cpp}`, `libs/libkis/DocumentFeatures.cpp`, `plugins/extensions/pykrita/sip/krita/Feature.sip`;
+tests `libs/image/tests/KisFeatureListTest`, `libs/image/tests/KisFeatureImageCommandTest`,
+`libs/ui/tests/KisFeatureMirrorTest`,
+`plugins/impex/libkra/tests/KisKraFeaturesTest`, `libs/libkis/tests/TestDocumentFeatures`,
+`plugins/extensions/pykrita/tests/TestPythonFeatures`. The `KisImage`, `KisNodeManager` and `.kra` edits are not behind
+a configure option (an exception to rule 4): a document without features writes no element and no file, so its `.kra`
+is what stock Krita writes, an image operation on it runs as upstream, and an empty list costs one object per image.
+Stock Krita opens our `.kra` files but drops their features: saving the file again from stock Krita loses them.
+
+Feature masks and image operations (6.1b): Image > Crop, Resize Canvas, Scale, Rotate, Shear, Mirror Image and
+Layer > Mirror All Layers without a selection move the masks (they are one path in `KisNodeManager::mirrorNodes`).
+Rotate, Shear and Scale All Layers, the transform tool, and any mirror of a selected area or of some layers do not:
+they change the painting under the features like a brush stroke does, and the features keep their masks. Notes for
+task 6.8 (memory): loading measures every mask once (one pass over its non-default tiles); each image operation keeps
+each feature's mask before and after it in the undo step (the "after" mask is new tiles for a transform, shared tiles
+for a colour conversion), so undo memory grows by about one mask per feature per operation.
 
 Our own files for the agent speed API (2.x): `libs/libkis/DocumentAgentSpeed.cpp`, `libs/libkis/KisAgentScaledRead.h` and its tests in `libs/libkis/tests/`
 (`TestDocumentRegionRefresh`, `TestDocumentScaledProjection`, and the `AgentSpeedBenchmark` timing program, not run by

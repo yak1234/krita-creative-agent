@@ -42,6 +42,9 @@ public:
 
     bool saveAudio(KoStore *store);
 
+    /// Krita Agent: writes the masks of the image's features (the list is in maindoc.xml); see KisKraFeatures.h
+    bool saveFeatures(KoStore *store, KisImageSP image);
+
     /// @return a list with everything that went wrong while saving
     QStringList errorMessages() const;
 
@@ -65,6 +68,7 @@ private:
     void saveAnimationMetadataToXML(QDomDocument& doc, QDomElement &element, KisImageSP image);
     void saveColorHistory(QDomDocument &doc, QDomElement &element);
     void saveHDRMetadata(QDomDocument &doc, QDomElement &element, KisImageSP image);
+    void saveFeaturesToXML(QDomDocument &doc, QDomElement &element, KisImageSP image);
 
     bool saveKoColors(QDomDocument& doc, QDomElement &element, const QList<KoColor> &colors) const;
 

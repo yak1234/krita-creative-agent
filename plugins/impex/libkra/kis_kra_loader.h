@@ -49,6 +49,8 @@ public:
     void loadStoryboards(KoStore *store, KisDocument *doc);
     void loadAnimationMetadata(KoStore *store, KisImageSP image);
     void loadAudio(KoStore *store, KisDocument *kisDoc);
+    /// Krita Agent: adds the features read in loadXML() to the image, with their masks; see KisKraFeatures.h
+    void loadFeatures(KoStore *store, KisImageSP image);
     Q_DECL_DEPRECATED void backCompat_loadAudio(const QDomElement &elem, KisDocument *document);
 
     vKisNodeSP selectedNodes() const;

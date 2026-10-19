@@ -16,6 +16,8 @@ set(kritalibkra_LIB_SRCS
     kis_kra_tags.h
     kis_kra_utils.cpp
     kis_kra_utils.h
+    KisKraFeatures.cpp
+    KisKraFeatures.h
     kra_converter.cpp
 )
 

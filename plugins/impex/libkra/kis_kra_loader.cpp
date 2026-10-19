@@ -5,6 +5,7 @@
  */
 
 #include "kis_kra_loader.h"
+#include "KisKraFeatures.h"
 
 #include <QApplication>
 #include <QStringList>
@@ -137,6 +138,7 @@ public:
     QStringList errorMessages;
     QStringList warningMessages;
     QList<KisAnnotationSP> annotations;
+    QDomElement featuresElement; // Krita Agent: read in loadXML(), loaded with the masks in loadFeatures()
 };
 
 void convertColorSpaceNames(QString &colorspacename, QString &profileProductName) {
@@ -390,6 +392,8 @@ KisImageSP KisKraLoader::loadXML(const QDomElement& imageElement)
             loadAssistantsList(e);
         } else if (e.tagName() == "audio") {
             backCompat_loadAudio(e, m_d->document);
+        } else if (e.tagName() == KisKraFeatures::ElementName) {
+            m_d->featuresElement = e;
         }
     }
 
@@ -1634,4 +1638,9 @@ QList<KoColor> KisKraLoader::loadKoColors(const QDomElement &colorElement) const
     }
 
     return colors;
+}
+
+void KisKraLoader::loadFeatures(KoStore *store, KisImageSP image)
+{
+    KisKraFeatures::load(m_d->featuresElement, store, m_d->imageName, image, &m_d->warningMessages);
 }

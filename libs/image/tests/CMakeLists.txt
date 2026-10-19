@@ -133,6 +133,20 @@ kis_add_tests(
     LINK_LIBRARIES kritaimage kritatestsdk
     )
 
+# Krita Agent: the feature map (krita-fork 6.1), run in a temporary home.
+kis_add_test(
+    KisFeatureListTest.cpp
+    TEST_NAME KisFeatureListTest
+    LINK_LIBRARIES kritaimage kritatestsdk
+    )
+
+# Krita Agent: feature masks follow image operations (krita-fork 6.1b), run in a temporary home.
+kis_add_test(
+    KisFeatureImageCommandTest.cpp
+    TEST_NAME KisFeatureImageCommandTest
+    LINK_LIBRARIES kritaimage kritatestsdk
+    )
+
 kis_add_test(
     kis_clone_layer_test.cpp
     LINK_LIBRARIES kritaimage kritatestsdk kritaglobal kritatransformmaskstubs

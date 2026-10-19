@@ -9,6 +9,8 @@ set(kritalibkis_LIB_SRCS
     KritaAgentResources.cpp
     DocumentAgentCraft.cpp
     FilterMaskBake.cpp
+    DocumentFeatures.cpp
+    Feature.cpp
     Filter.cpp
     InfoObject.cpp
     Krita.cpp

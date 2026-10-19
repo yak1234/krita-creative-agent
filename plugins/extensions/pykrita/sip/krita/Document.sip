@@ -28,6 +28,13 @@ public Q_SLOTS:
     QString changeSource() const;
 
 public Q_SLOTS:
+    QList<Feature *> features() const /Factory/;
+    Feature *feature(const QString &name) const /Factory/;
+    Feature *addFeature(const QString &name, const QString &kind, Selection *mask, const QString &author = QString("agent"), const QString &state = QString("proposed"), bool isProtected = false) /Factory/;
+    bool renameFeature(const QString &name, const QString &newName);
+    bool removeFeature(const QString &name);
+
+public Q_SLOTS:
     QList<qreal> horizontalGuides() const;
     QList<qreal> verticalGuides() const;
     bool guidesVisible() const;

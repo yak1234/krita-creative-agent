@@ -7,6 +7,8 @@
 
 #include "kis_image.h"
 #include "KisImageChangeReports.h"
+#include "KisFeatureList.h"
+#include "kis_default_bounds.h"
 
 #include <KoConfig.h> // WORDS_BIGENDIAN
 
@@ -59,6 +61,7 @@
 
 #include "kis_transform_worker.h"
 #include "kis_processing_applicator.h"
+#include "KisFeatureImageCommand.h"
 #include "processing/kis_crop_processing_visitor.h"
 #include "processing/kis_crop_selections_processing_visitor.h"
 #include "processing/kis_transform_processing_visitor.h"
@@ -268,6 +271,7 @@ public:
     KisPostExecutionUndoAdapter postExecutionUndoAdapter;
 
     vKisAnnotationSP annotations;
+    KisFeatureList featureList {KisDefaultBoundsBaseSP(new KisDefaultBounds(q))};
 
     QAtomicInt disableUIUpdateSignals;
     KisLocklessStack<QRect> savedDisabledUIUpdates;
@@ -582,6 +586,8 @@ void KisImage::copyFromImageImpl(const KisImage &rhs, int policy)
     }
     m_d->annotations = newAnnotations;
 
+    m_d->featureList.copyFrom(rhs.m_d->featureList);
+
     KIS_ASSERT_RECOVER_NOOP(rhs.m_d->projectionUpdatesFilters.isEmpty());
     KIS_ASSERT_RECOVER_NOOP(!rhs.m_d->disableUIUpdateSignals);
     KIS_ASSERT_RECOVER_NOOP(!rhs.m_d->disableDirtyRequests);
@@ -739,6 +745,11 @@ KisImageGlobalSelectionManagementInterface* KisImage::globalSelectionManagementI
     return &m_d->globalSelectionInterface;
 }
 
+KisFeatureList* KisImage::featureList() const
+{
+    return &m_d->featureList;
+}
+
 QString KisImage::nextLayerName(const QString &_baseName) const
 {
     QString baseName = _baseName;
@@ -886,7 +897,7 @@ void KisImage::resizeImageImpl(const QRect& newRect, bool cropLayers)
         applicator.applyVisitorAllFrames(visitor, KisStrokeJobData::CONCURRENT);
     }
     applicator.applyCommand(new KisImageResizeCommand(this, newRect.size()));
-    applicator.end();
+    KisFeatureImageCommand::endApplicator(applicator, this, KisFeatureImageCommand::cropTransform(newRect)); // Krita Agent
 }
 
 void KisImage::resizeImage(const QRect& newRect)
@@ -1094,7 +1105,7 @@ void KisImage::scaleImage(const QSize &size, qreal xres, qreal yres, KisFilterSt
         applicator.applyCommand(new KisImageResizeCommand(this, size));
     }
 
-    applicator.end();
+    KisFeatureImageCommand::endApplicator(applicator, this, sizeChanged ? KisFeatureImageCommand::workerTransform(sx, sy, 0, 0, 0, 0, 0, filterStrategy) : KisFeatureImageCommand::MaskTransform()); // Krita Agent
 }
 
 void KisImage::scaleNode(KisNodeSP node, const QPointF &center, qreal scaleX, qreal scaleY, KisFilterStrategy *filterStrategy, KisSelectionSP selection)
@@ -1236,7 +1247,7 @@ void KisImage::rotateImpl(const KUndo2MagicString &actionName,
     if (sizeChanged) {
         applicator.applyCommand(new KisImageResizeCommand(this, newSize));
     }
-    applicator.end();
+    KisFeatureImageCommand::endApplicator(applicator, resizeImage ? this : nullptr, KisFeatureImageCommand::workerTransform(1.0, 1.0, 0.0, 0.0, radians, offset.x(), offset.y(), filter)); // Krita Agent
 }
 
 
@@ -1346,7 +1357,7 @@ void KisImage::shearImpl(const KUndo2MagicString &actionName,
         applicator.applyCommand(new KisImageResizeCommand(this, newSize));
     }
 
-    applicator.end();
+    KisFeatureImageCommand::endApplicator(applicator, resizeImage ? this : nullptr, KisFeatureImageCommand::workerTransform(1.0, 1.0, tanX, tanY, 0, offset.x(), offset.y(), filter)); // Krita Agent
 }
 
 void KisImage::shearNode(KisNodeSP node, double angleX, double angleY, KisSelectionSP selection)
@@ -1470,7 +1481,7 @@ void KisImage::KisImagePrivate::convertImageColorSpaceImpl(const KoColorSpace *d
         KisStrokeJobData::BARRIER);
 
 
-    applicator.end();
+    KisFeatureImageCommand::endApplicator(applicator, q, KisFeatureImageCommand::MaskTransform()); // Krita Agent
 }
 
 void KisImage::convertImageColorSpace(const KoColorSpace *dstColorSpace,

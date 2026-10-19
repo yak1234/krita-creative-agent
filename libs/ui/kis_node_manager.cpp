@@ -55,6 +55,7 @@
 #include "kis_action.h"
 #include "kis_action_manager.h"
 #include "kis_processing_applicator.h"
+#include "KisFeatureImageCommand.h"
 #include "kis_sequential_iterator.h"
 #include "kis_transaction.h"
 #include "kis_node_selection_adapter.h"
@@ -1274,7 +1275,7 @@ void KisNodeManager::mirrorNodes(KisNodeList nodes,
         applicator.applyVisitor(visitor, KisStrokeJobData::CONCURRENT);
     }
 
-    applicator.end();
+    KisFeatureImageCommand::endMirrorApplicator(applicator, m_d->view->image(), nodes, selection, orientation); // Krita Agent
 
     nodesUpdated();
 }

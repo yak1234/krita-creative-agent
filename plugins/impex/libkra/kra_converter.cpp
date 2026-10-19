@@ -185,6 +185,12 @@ KisImportExportErrorCode KraConverter::buildFile(QIODevice *io, const QString &f
         qWarning() << "Saving storyboard data failed";
     }
 
+    result = m_kraSaver->saveFeatures(m_store, m_image);
+    if (!result) {
+        success = false;
+        qWarning() << "Saving feature masks failed";
+    }
+
     result = m_kraSaver->saveAnimationMetadata(m_store, m_image, m_doc->path());
     if (!result) {
         success = false;
@@ -453,6 +459,7 @@ bool KraConverter::completeLoading(KoStore* store)
     m_kraLoader->loadResources(store, m_doc);
     m_kraLoader->loadBinaryData(store, m_image, m_doc->localFilePath(), true);
     m_kraLoader->loadStoryboards(store, m_doc);
+    m_kraLoader->loadFeatures(store, m_image);
     m_kraLoader->loadAnimationMetadata(store, m_image);
     m_kraLoader->loadAudio(store, m_doc);
 

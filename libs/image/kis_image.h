@@ -42,6 +42,7 @@ class KUndo2MagicString;
 class KisProofingConfiguration;
 class KisPaintDevice;
 class KisImageGlobalSelectionManagementInterface;
+class KisFeatureList;
 
 struct KisRelativeContentLightLevelInformation;
 struct KisColorVolumeInformation;
@@ -1278,6 +1279,12 @@ public Q_SLOTS:
      * A special interface that commands use to modify image's global selection
      */
     KisImageGlobalSelectionManagementInterface* globalSelectionManagementInterface() const;
+
+    /**
+     * The document's features (named regions of the painting, krita-fork's feature map), copied with the image.
+     * Never null. Change it through the commands in KisFeatureCommands.h to make undo steps.
+     */
+    KisFeatureList* featureList() const;
 
 private:
 

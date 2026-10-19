@@ -9,6 +9,7 @@
 #include "kis_kra_tags.h"
 #include "kis_kra_save_visitor.h"
 #include "kis_kra_savexml_visitor.h"
+#include "KisKraFeatures.h"
 
 #include <QApplication>
 #include <QMessageBox>
@@ -166,6 +167,7 @@ QDomElement KisKraSaver::saveXML(QDomDocument& doc,  KisImageSP image)
     saveMirrorAxis(doc, imageElement);
     saveColorHistory(doc, imageElement);
     saveResourcesToXML(doc, imageElement);
+    saveFeaturesToXML(doc, imageElement, image);
 
     // Redundancy -- Save animation metadata in XML to prevent data loss for the time being...
     QDomElement animationElement = doc.createElement("animation");
@@ -393,6 +395,16 @@ void KisKraSaver::saveResourcesToXML(QDomDocument &doc, QDomElement &element)
     }
     element.appendChild(ePalette);
     element.appendChild(eResources);
+}
+
+bool KisKraSaver::saveFeatures(KoStore *store, KisImageSP image)
+{
+    return KisKraFeatures::saveMasks(store, m_d->imageName, image, &m_d->errorMessages);
+}
+
+void KisKraSaver::saveFeaturesToXML(QDomDocument &doc, QDomElement &element, KisImageSP image)
+{
+    KisKraFeatures::saveToXML(doc, element, image);
 }
 
 void KisKraSaver::saveStoryboardToXML(QDomDocument& doc, QDomElement &element)

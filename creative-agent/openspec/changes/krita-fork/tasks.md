@@ -126,16 +126,21 @@
   and perspective, warp and liquify baked through the transform workers.
 
 ## 6. The feature map (`canvas-features`)
-- [ ] 6.1 `KisFeatureList` on `KisImage`: features with mask, name, kind, author, state, protected flag and measured
+- [x] 6.1 `KisFeatureList` on `KisImage`: features with mask, name, kind, author, state, protected flag and measured
   properties; `KisKraSaver::saveFeatures` / `KisKraLoader::loadFeatures` on the storyboard pattern (`<features
   version="1">` in `maindoc.xml`, masks through Krita's paint-device writer); a `boost::geometry::index::rtree` over
   bounds. Tests: round trip, and stock Krita opens the file.
-- [ ] 6.2 libkis `Feature` and `Document.features()`, add, rename, remove; adding or removing a feature changes no
+- [x] 6.2 libkis `Feature` and `Document.features()`, add, rename, remove; adding or removing a feature changes no
   pixel and is one undo step.
-- [ ] 6.1b Feature masks follow image operations: crop, canvas resize, scale, rotate, shear and mirror move and cut
+- [x] 6.1b Feature masks follow image operations: crop, canvas resize, scale, rotate, shear and mirror move and cut
   every mask in the same undo step, and a colour-space conversion re-measures the mean colour. Operations on some
   layers only, and the transform tool, change the painting under features like a brush stroke and leave masks alone.
   (Found by the 6.1 review; blocks 6.4/6.5 and any artist build that shows features.)
+  *(6.1, 6.1b and 6.2 merged after two reviews and two fix rounds: KisFeatureList with an R-tree, `.kra` storage that
+  later versions load, libkis `Feature` and add/rename/remove as one step or part of an agent move; masks follow crop,
+  canvas size, scale, rotate, shear and mirror of the image with undo (KisFeatureImageCommand, one-line hooks listed in
+  AGENT-FORK.md); names trimmed and de-duplicated; masks bounded to the document. Lead ran 17 suites through
+  agent/run-tests.sh: all pass. Notes for 6.8: load re-measure cost, undo memory per image operation.)*
 - [ ] 6.3 Builders: `fromSelection`, `similarColour`, `contiguous` (tool logic moved into functions), `snapOutline`
   (`KisMagneticWorker`), `segment` (lazy-brush). Test on runs 10 and 11: the skyline from 20 rough points leaves no
   band of old sky.

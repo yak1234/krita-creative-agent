@@ -26,6 +26,8 @@
 #include "GuidesConfig.h"
 #include "GridConfig.h"
 
+class Feature;
+
 class KisDocument;
 
 /**
@@ -111,6 +113,65 @@ public Q_SLOTS:
      * @return "agent" while the changes are marked as the agent's, else "artist"
      */
     QString changeSource() const;
+
+public Q_SLOTS:
+    // The feature map (krita-fork 6.1, 6.2; implemented in DocumentFeatures.cpp)
+
+    /**
+     * @brief features the document's features, named regions of the painting such as "Sky" or "Tower 3", in order.
+     * A feature describes the painting and never holds its pixels. The caller owns the returned objects.
+     * @return a list of Feature objects
+     */
+    QList<Feature *> features() const;
+
+    /**
+     * @brief feature the feature called \p name
+     * @return a Feature, or None if the document has no feature of that name
+     */
+    Feature *feature(const QString &name) const;
+
+    /**
+     * @brief addFeature adds a feature: a copy of \p mask cut to the document, measured on the painting (bounds,
+     * area, mean colour). It changes no pixel, is one undo step (inside an open agent move or macro, part of its
+     * step), and marks the document modified.
+     *
+     * @code
+     * sel = Selection()
+     * sel.select(0, 0, doc.width(), 1800, 255)
+     * doc.addFeature("Sky", "sky", sel)                      # the agent's proposal
+     * doc.addFeature("Moon", "moon", moonSel, "artist", "kept", True)
+     * @endcode
+     *
+     * @param name the feature's name, unique in the document; outer spaces are dropped ("Sky " is "Sky")
+     * @param kind what it is: "sky", "building", "figure", "seam", ... (free text)
+     * @param mask the region, 255 inside and 0 outside (soft edges in between)
+     * @param author "agent" (default) or "artist"
+     * @param state "proposed" (default) or "kept"
+     * @param isProtected whether the feature is protected
+     * @return the new Feature, or None if the name is empty, only spaces or taken, the mask is missing, or author or
+     * state is not one of the values above
+     */
+    Feature *addFeature(const QString &name,
+                        const QString &kind,
+                        Selection *mask,
+                        const QString &author = QString("agent"),
+                        const QString &state = QString("proposed"),
+                        bool isProtected = false);
+
+    /**
+     * @brief renameFeature renames the feature called \p name to \p newName, as one undo step (inside an open agent
+     * move or macro, part of its step). No pixel changes.
+     * @return true if renamed (or the names are equal); false if there is no such feature, \p newName is empty or
+     * only spaces, or another feature has it (outer spaces are dropped, as in addFeature())
+     */
+    bool renameFeature(const QString &name, const QString &newName);
+
+    /**
+     * @brief removeFeature removes the feature called \p name, as one undo step (inside an open agent move or macro,
+     * part of its step). No pixel changes; undo brings the feature back as it was.
+     * @return false if there is no such feature
+     */
+    bool removeFeature(const QString &name);
 
 public Q_SLOTS:
     /**

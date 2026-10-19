@@ -209,3 +209,9 @@ kis_add_test(KisAutoSaveLocationTest.cpp
     TEST_NAME KisAutoSaveLocationTest
     LINK_LIBRARIES kritaui kritatestsdk
     )
+
+# Krita Agent: Mirror Image through KisNodeManager moves feature masks (krita-fork 6.1b), run in a temporary home.
+kis_add_test(KisFeatureMirrorTest.cpp
+    TEST_NAME KisFeatureMirrorTest
+    LINK_LIBRARIES kritaui kritatestsdk
+    )

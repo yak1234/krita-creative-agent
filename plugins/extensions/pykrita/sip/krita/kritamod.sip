@@ -47,6 +47,7 @@
 %Include Notifier.sip
 %Include Resource.sip
 %Include Selection.sip
+%Include Feature.sip
 %Include Extension.sip
 %Include Preset.sip
 %Include PresetChooser.sip

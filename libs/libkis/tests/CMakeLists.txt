@@ -16,6 +16,7 @@ kis_add_tests(
     TestKritaAgentResources.cpp
     TestDocumentAgentCraft.cpp
     TestFilterMaskBake.cpp
+    TestDocumentFeatures.cpp
     LINK_LIBRARIES kritalibkis kritatestsdk
     )
 

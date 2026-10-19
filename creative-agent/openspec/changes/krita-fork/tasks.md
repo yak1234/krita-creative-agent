@@ -44,6 +44,11 @@
   an Agent-mode move of 46 actions and 468 strokes with no errors, Luna undid 1 of 7. The fork, like stock, stalls while
   the display sleeps: unattended runs keep it awake.)*
 - [ ] 1.3 Release pipeline: the build plus its source, licence notices, and the About box.
+  *(Finding, 19 October: the app bundle in `_install/bin/krita.app` is a 9 MB shell that loads about 1.3 GB of libraries, Qt
+  frameworks and `share` from `_install` through rpath, so it cannot be moved or handed out. 1.3 must build a self-contained
+  bundle (libraries, frameworks, resources, the plugin and its Python packages inside `Contents`), installable in
+  `/Applications` without a dependency on the build tree, signed with one stable identity: that also ends macOS asking
+  again for Documents access after every rebuild. Priority, with 1.5.)*
 - [x] 1.4 Upstream policy written down: the list of files we edit, the rebase cadence, and what is offered upstream.
   *(`AGENT-FORK.md` in the fork, 09ef936.)*
 
@@ -54,6 +59,9 @@
   *(Merged 56c7040: the whole repository, 464 files and 204 commits, under `creative-agent/` on `krita-agent`; suites pass
   there (Python 442, JS 392); AGENT-FORK.md switched to monthly merges, c1f3f3b; `digital_art/krita` frozen. Remaining:
   the fork's build installs the plugin into its own pykrita, and CI.)*
+  *(19 October, the artist: 1.5 is a priority, since he is away from the laptop at times. Done: the build installs the plugin
+  into `share/krita/pykrita` (`KRITA_AGENT_PLUGIN`), and `agent/ci.sh` runs every suite we own. Remaining: the plugin's
+  enabling and Python packages on a fresh settings folder (3.3 and 1.3), and a CI service config when there is a remote.)*
 - [ ] 1.6 Fork parity, first priority (the artist, 19 October): the fork must be at least as capable as stock Krita with
   the helper. Build the native helper inside the fork's tree for Qt6, installed and loaded with the app; pen pressure,
   tilt and speed through master's `paintPolylineStroke`; native seed selection; background save; the vetted Krita

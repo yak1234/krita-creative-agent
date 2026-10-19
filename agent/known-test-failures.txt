@@ -1,0 +1,9 @@
+# Upstream Krita tests that fail or block in our macOS setup. agent/run-tests.sh skips them unless functions are named.
+# program::function, or program::* for every function. Reason, date, build. Remove a line once it passes again.
+#
+# Upstream .kra file tests: every function's save or load fails here and Krita opens a modal "could not open" box, which
+# blocks until the runner ends it. Cause not found yet (2026-10-19, krita-agent 612fcaf): KRITA_PLUGIN_PATH is set, the
+# fork app opens and saves .kra files, and our own .kra tests (absolute paths in a QTemporaryDir) pass.
+kis_kra_saver_test::*  every save/load blocks (see above); testSaveEmpty also dereferences a null image (SIGSEGV)
+kis_kra_loader_test::*  every load blocks (see above)
+TestDocument::testAnnotations  SIGSEGV after a message box, also on the lead build before any agent branch (2026-10-19)

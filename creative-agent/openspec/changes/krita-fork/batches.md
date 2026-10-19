@@ -83,3 +83,4 @@ One line per finished task: task, commit(s), tests, measurement.
 - Budget rule (the artist, usage 86%): at most two agents, critical path only; builds `nice -n 19`, 6 jobs.
 - 6.1/6.2: done on agent/features (47172ac, 77737b2; KisFeatureListTest 16, KisKraFeaturesTest 8, TestDocumentFeatures 9, TestPythonFeatures 3; stock 5.3.3 kritarunner opened a fork .kra with features, pixels identical, no warnings). Parked for the 3:41 pm review. Open: canvas resize, crop, scale and rotate do not transform feature masks yet; stock Krita drops features if it saves the file.
 - 2.5/2.7: agent/undo merged 2253af0 after two reviews; lead re-ran TestDocumentHistory and TestPythonAgentMove (pass). Main rebuild deferred until 1.6 parity merges.
+- 1.6: agent/parity merged; live parity measured in the fork (above). The audit used to target port 5678 (stock) regardless; fixed. Open: mirrorNodeX in the fork, an Agent-mode chat in the fork, main rebuild running.

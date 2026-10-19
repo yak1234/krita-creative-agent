@@ -59,6 +59,9 @@
   tilt and speed through master's `paintPolylineStroke`; native seed selection; background save; the vetted Krita
   actions audited for the fork's version. Live check in the fork: accel, pen, select and save probes, and an Agent-mode
   chat.
+  *(Merged 19 October: the helper builds and installs with the fork (one listed line in plugins/extensions/CMakeLists.txt),
+  Qt6 fix; live on New Moscow in the fork: tilt 2→8 px, speed 48→28 px, pressure 1–60–1 px, 8 seeds 0.36 s, checkpoint
+  6 ms; 10 Krita actions vetted (stock 11: mirrorNodeX not yet). Remaining: an Agent-mode chat in the fork.)*
 ## 2. Krita's bottleneck (`agent-speed-api`)
 - [x] 2.1 `Document.refreshProjection(QRect)`, and `setPixelData` dirtying only its rect; the plugin passes known
   bounds. Measure.

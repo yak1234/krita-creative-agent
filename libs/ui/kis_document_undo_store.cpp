@@ -8,6 +8,7 @@
 
 #include "KisDocument.h"
 #include <kundo2stack.h>
+#include "KisAgentHooks.h"
 
 
 /*****************************************************************/
@@ -51,17 +52,20 @@ void KisDocumentUndoStore::undoLastCommand()
 void KisDocumentUndoStore::addCommand(KUndo2Command *command)
 {
     if(!command) return;
+    KisAgentHooks::beforeAddCommand(m_doc, command); // Krita Agent: script steps stay apart from this one
     m_doc->undoStack()->push(command);
 }
 
 void KisDocumentUndoStore::beginMacro(const KUndo2MagicString& macroName)
 {
+    KisAgentHooks::beforeBeginMacro(m_doc); // Krita Agent: script steps never land inside this macro
     m_doc->undoStack()->beginMacro(macroName);
 }
 
 void KisDocumentUndoStore::endMacro()
 {
     m_doc->undoStack()->endMacro();
+    KisAgentHooks::afterEndMacro(m_doc); // Krita Agent
 }
 
 void KisDocumentUndoStore::purgeRedoState()

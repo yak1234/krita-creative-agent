@@ -70,6 +70,7 @@
 #include <kis_layer_utils.h>
 
 #include "PaintingResources.h"
+#include "DocumentHistory.h"
 #include "KisMainWindow.h"
 #include "kis_canvas2.h"
 #include "KoCanvasResourceProvider.h"
@@ -192,7 +193,7 @@ void Node::setBlendingMode(QString value)
     KUndo2Command *cmd = new KisNodeCompositeOpCommand(d->node,
                                                        value);
 
-    KisProcessingApplicator::runSingleCommandStroke(d->image, cmd);
+    DocumentHistory::runCommandStroke(d->image, cmd); // Krita Agent: joins an open macro or agent move
     d->image->waitForDone();
 }
 
@@ -277,7 +278,7 @@ bool Node::addChildNode(Node *child, Node *above)
         cmd = new KisImageLayerAddCommand(d->image, child->node(), d->node, d->node->childCount());
     }
 
-    KisProcessingApplicator::runSingleCommandStroke(d->image, cmd);
+    DocumentHistory::runCommandStroke(d->image, cmd); // Krita Agent: joins an open macro or agent move
     d->image->waitForDone();
 
     return true;
@@ -609,6 +610,8 @@ bool Node::setPixelData(QByteArray value, int x, int y, int w, int h)
         qWarning() << "Node::setPixelData: not enough data to write to the paint device";
         return false;
     }
+    // Krita Agent: inside a macro or agent move the write is an undoable step of it, queued after its earlier strokes.
+    if (DocumentHistory::queuePixelWrite(d->image, d->node, value, QRect(x, y, w, h))) return true;
     dev->writeBytes((const quint8*)value.constData(), x, y, w, h);
     // Krita Agent: recomposite only what was written, asynchronously (waitForDone() to wait for it).
     d->node->setDirty(QRect(x, y, w, h));
@@ -641,7 +644,7 @@ bool Node::remove()
 
     KUndo2Command *cmd = new KisImageLayerRemoveCommand(d->image, d->node);
 
-    KisProcessingApplicator::runSingleCommandStroke(d->image, cmd);
+    DocumentHistory::runCommandStroke(d->image, cmd); // Krita Agent: joins an open macro or agent move
     d->image->waitForDone();
 
     return true;
@@ -797,7 +800,7 @@ bool Node::setLayerStyleFromAsl(const QString &asl)
     KisPSDLayerStyleSP newStyle = serializer.styles().first();
     KUndo2Command *cmd = new KisSetLayerStyleCommand(layer, layer->layerStyle(), newStyle);
 
-    KisProcessingApplicator::runSingleCommandStroke(d->image, cmd);
+    DocumentHistory::runCommandStroke(d->image, cmd); // Krita Agent: joins an open macro or agent move
     d->image->waitForDone();
 
     return true;
@@ -867,7 +870,7 @@ QString Node::paintAbility()
     return "UNPAINTABLE";
 }
 
-void Node::paintLine(const QPointF pointOne, const QPointF pointTwo, double pressureOne, double pressureTwo, const QString strokeStyle)
+void Node::paintLine(const QPointF pointOne, const QPointF pointTwo, double pressureOne, double pressureTwo, const QString strokeStyle, const QString &name)
 {
     if (paintAbility() != "PAINT") {
         dbgScript << "Script attempted to use Node::paintLine() on an unpaintable node, ignoring.";
@@ -882,11 +885,11 @@ void Node::paintLine(const QPointF pointOne, const QPointF pointTwo, double pres
     pointTwoInfo.setPressure(pressureTwo);
     pointTwoInfo.setPos(pointTwo);
 
-    KisFigurePaintingToolHelper helper = PaintingResources::createHelper(d->image, node(), strokeStyle);
+    KisFigurePaintingToolHelper helper = PaintingResources::createHelper(d->image, node(), strokeStyle, PaintingResources::defaultFillStyle, name);
     helper.paintLine(pointOneInfo, pointTwoInfo);
 }
 
-void Node::paintPolylineStroke(const QList<StrokePoint> &points, const QString strokeStyle)
+void Node::paintPolylineStroke(const QList<StrokePoint> &points, const QString strokeStyle, const QString &name)
 {
     if (paintAbility() != "PAINT") {
         dbgScript << "Script attempted to use Node::paintPolylineStroke() on an unpaintable node, ignoring.";
@@ -909,7 +912,7 @@ void Node::paintPolylineStroke(const QList<StrokePoint> &points, const QString s
                                    point.speed());
     };
 
-    KisFigurePaintingToolHelper helper = PaintingResources::createHelper(d->image, node(), strokeStyle);
+    KisFigurePaintingToolHelper helper = PaintingResources::createHelper(d->image, node(), strokeStyle, PaintingResources::defaultFillStyle, name);
 
     KisPaintInformation previous = paintInformation(points.first());
     if (points.size() == 1) {
@@ -925,7 +928,7 @@ void Node::paintPolylineStroke(const QList<StrokePoint> &points, const QString s
 }
 
 
-void Node::paintRectangle(const QRectF &rect, const QString strokeStyle, const QString fillStyle)
+void Node::paintRectangle(const QRectF &rect, const QString strokeStyle, const QString fillStyle, const QString &name)
 {
     if (paintAbility() != "PAINT") {
         dbgScript << "Script attempted to use Node::paintRectangle() on an unpaintable node, ignoring.";
@@ -935,12 +938,12 @@ void Node::paintRectangle(const QRectF &rect, const QString strokeStyle, const Q
     // reference class where this stuff is being done. Maybe can use the "facade" like that does for setup?
     // void KisFigurePaintingToolHelper::paintRect(const QRectF &rect)
 
-    KisFigurePaintingToolHelper helper = PaintingResources::createHelper(d->image, node(), strokeStyle, fillStyle);
+    KisFigurePaintingToolHelper helper = PaintingResources::createHelper(d->image, node(), strokeStyle, fillStyle, name);
     helper.paintRect(rect);
 }
 
 
-void Node::paintPolygon(const QList<QPointF> listPoint, const QString strokeStyle, const QString fillStyle)
+void Node::paintPolygon(const QList<QPointF> listPoint, const QString strokeStyle, const QString fillStyle, const QString &name)
 {
     if (paintAbility() != "PAINT") {
         dbgScript << "Script attempted to use Node::paintPolygon() on an unpaintable node, ignoring.";
@@ -949,30 +952,30 @@ void Node::paintPolygon(const QList<QPointF> listPoint, const QString strokeStyl
 
     // strategy needs points in vPointF format
     QVector<QPointF> points = points.fromList(listPoint);
-    KisFigurePaintingToolHelper helper = PaintingResources::createHelper(d->image, node(), strokeStyle, fillStyle);
+    KisFigurePaintingToolHelper helper = PaintingResources::createHelper(d->image, node(), strokeStyle, fillStyle, name);
     helper.paintPolygon(points);
 }
 
 
-void Node::paintEllipse(const QRectF &rect, const QString strokeStyle, const QString fillStyle)
+void Node::paintEllipse(const QRectF &rect, const QString strokeStyle, const QString fillStyle, const QString &name)
 {
     if (paintAbility() != "PAINT") {
         dbgScript << "Script attempted to use Node::paintEllipse() on an unpaintable node, ignoring.";
         return;
     }
 
-    KisFigurePaintingToolHelper helper = PaintingResources::createHelper(d->image, node(), strokeStyle, fillStyle);
+    KisFigurePaintingToolHelper helper = PaintingResources::createHelper(d->image, node(), strokeStyle, fillStyle, name);
     helper.paintEllipse(rect);
 }
 
 
-void Node::paintPath(const QPainterPath &path, const QString strokeStyle, const QString fillStyle)
+void Node::paintPath(const QPainterPath &path, const QString strokeStyle, const QString fillStyle, const QString &name)
 {
     if (paintAbility() != "PAINT") {
         dbgScript << "Script attempted to use Node::paintPath() on an unpaintable node, ignoring.";
         return;
     }
 
-    KisFigurePaintingToolHelper helper = PaintingResources::createHelper(d->image, node(), strokeStyle, fillStyle);
+    KisFigurePaintingToolHelper helper = PaintingResources::createHelper(d->image, node(), strokeStyle, fillStyle, name);
     helper.paintPainterPath(path);
 }

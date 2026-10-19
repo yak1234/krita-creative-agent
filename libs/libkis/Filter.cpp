@@ -4,6 +4,7 @@
  *  SPDX-License-Identifier: LGPL-2.0-or-later
  */
 #include "Filter.h"
+#include "DocumentHistory.h"
 
 #include <KoCanvasResourceProvider.h>
 
@@ -132,6 +133,9 @@ bool Filter::startFilter(Node *node, int x, int y, int w, int h)
         }
     }
     delete document;
+
+    // Krita Agent: a filter started in a macro or agent move joins its step.
+    resources->setPostExecutionUndoAdapterOverride(DocumentHistory::scriptUndoAdapter(image, node->paintDevice()));
 
     KisStrokeId currentStrokeId = image->startStroke(new KisFilterStrokeStrategy(filter,
                                                                                  KisFilterConfigurationSP(filterConfig),

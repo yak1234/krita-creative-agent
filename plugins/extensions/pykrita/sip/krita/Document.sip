@@ -142,6 +142,19 @@ public Q_SLOTS:
     QList<QString> audioTracks() const;
     bool setAudioTracks(const QList<QString> files) const;
 
+    int undoCount() const;
+    QString undoText(int index) const;
+    int undoIndex() const;
+    bool setUndoIndex(int index);
+    int cleanIndex() const;
+    bool beginUndoMacro(const QString &name);
+    bool endUndoMacro();
+    bool beginAgentMove(const QString &name);
+    bool endAgentMove();
+    bool agentMoveOpen() const;
+    QString agentMoveName() const;
+    int agentMoveId() const;
+
 private:
 
 };

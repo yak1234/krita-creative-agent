@@ -43,6 +43,10 @@ from .decorators import *
 from .dockwidgetfactory import *
 from PyKrita import krita
 
+# Krita Agent: with document.agentMove(name): ... closes the move even when the block raises.
+from .agentmove import install as _install_agent_move
+_install_agent_move(krita.Document)
+
 import signal
 signal.signal(signal.SIGINT, signal.SIG_DFL)
 

@@ -7,7 +7,10 @@
 #define KISTEMPORARYHOMEUITEST_H
 
 #include <QApplication>
+#include <QClipboard>
 #include <QFile>
+#include <QGuiApplication>
+#include <QMimeData>
 
 #include "KisTemporaryHomeTest.h"
 
@@ -43,6 +46,10 @@ inline void useOneFont(const QString &home)
  * copies resources under the user's real home (~/.qttest in Qt's test mode); this one starts the test again with HOME
  * and CFFIXED_USER_HOME in a new temporary folder, refuses to run if the standard paths still point outside it, and
  * removes the folder when done. Fontconfig sees one font, DejaVu Sans (see useOneFont()).
+ *
+ * Windows never show on screen: QT_QPA_PLATFORM defaults to "offscreen" (set it to override). Offscreen has no
+ * clipboard data until some is set, and Krita's clipboard reads it while a main window is built, so the main sets an
+ * empty one; offscreen's clipboard lives in the test process.
  */
 #define KISTEST_TEMPORARY_HOME_MAIN(TestObject)                                                                        \
     int main(int argc, char *argv[])                                                                                   \
@@ -52,6 +59,9 @@ inline void useOneFont(const QString &home)
             return KisTemporaryHomeTest::startInTemporaryHome(argv);                                                   \
         }                                                                                                              \
         KisTemporaryHomeTest::useOneFont(QString::fromLocal8Bit(home));                                                \
+        if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {                                                          \
+            qputenv("QT_QPA_PLATFORM", "offscreen");                                                                   \
+        }                                                                                                              \
         qputenv("LANGUAGE", "en");                                                                                     \
         QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));                                         \
         qputenv("QT_LOGGING_RULES", "");                                                                               \
@@ -63,6 +73,11 @@ inline void useOneFont(const QString &home)
         {                                                                                                              \
             QApplication app(argc, argv);                                                                              \
             app.setAttribute(Qt::AA_Use96Dpi, true);                                                                   \
+            if (QGuiApplication::platformName() == QLatin1String("offscreen")) {                                       \
+                /* Krita's clipboard reads the system clipboard's data, which offscreen has none of until set; */      \
+                /* offscreen keeps it in this process, so the user's clipboard is never touched. */                    \
+                QApplication::clipboard()->setMimeData(new QMimeData());                                               \
+            }                                                                                                          \
             const QString homePath = QString::fromLocal8Bit(home);                                                     \
             const QList<QStandardPaths::StandardLocation> locations = {QStandardPaths::GenericConfigLocation,          \
                                                                        QStandardPaths::GenericDataLocation,            \
@@ -85,5 +100,8 @@ inline void useOneFont(const QString &home)
         QDir(QString::fromLocal8Bit(home)).removeRecursively();                                                        \
         return result;                                                                                                 \
     }
+
+/// The name this main had on agent/undo: the same main.
+#define KIS_OFFSCREEN_UI_TEST_MAIN(TestObject) KISTEST_TEMPORARY_HOME_MAIN(TestObject)
 
 #endif // KISTEMPORARYHOMEUITEST_H

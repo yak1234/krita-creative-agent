@@ -2,6 +2,7 @@ kis_add_tests(
     #TestKrita.cpp
     TestChannel.cpp
     TestDocument.cpp
+    TestDocumentHistory.cpp
     TestNode.cpp
     TestVectorLayer.cpp
     TestShape.cpp

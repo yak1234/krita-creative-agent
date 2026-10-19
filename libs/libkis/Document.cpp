@@ -4,6 +4,7 @@
  *  SPDX-License-Identifier: LGPL-2.0-or-later
  */
 #include "Document.h"
+#include "DocumentHistory.h"
 #include <QPointer>
 #include <QUrl>
 #include <QDomDocument>
@@ -362,11 +363,10 @@ void Document::setSelection(Selection* value)
 {
     if (!d->document) return;
     if (!d->document->image()) return;
-    if (value) {
-        d->document->image()->undoAdapter()->addCommand(new KisSetGlobalSelectionCommand(d->document->image(), value->selection()));
-    }
-    else {
-        d->document->image()->undoAdapter()->addCommand(new KisSetGlobalSelectionCommand(d->document->image(), nullptr));
+    KUndo2Command *cmd = new KisSetGlobalSelectionCommand(d->document->image(), value ? value->selection() : nullptr);
+    // Krita Agent: inside a macro or agent move the change is a queued stroke of it; otherwise as upstream.
+    if (!DocumentHistory::runCommandStrokeInStep(d->document->image(), cmd)) {
+        d->document->image()->undoAdapter()->addCommand(cmd);
     }
 }
 

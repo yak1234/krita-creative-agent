@@ -12,6 +12,7 @@
 #include "KisMainWindow.h"
 #include "kis_image.h"
 #include "KisToolShapeUtils.h"
+#include "DocumentHistory.h"
 
 
 const QStringList StrokeStyle = {
@@ -30,7 +31,8 @@ const QStringList FillStyle = {
 KisFigurePaintingToolHelper PaintingResources::createHelper(KisImageWSP image,
                                                             KisNodeSP node,
                                                             const QString strokeStyleString,
-                                                            const QString fillStyleString)
+                                                            const QString fillStyleString,
+                                                            const QString &name)
 {
     // need to grab the resource provider
     KisView *activeView = KisPart::instance()->currentMainwindow()->activeView();
@@ -58,13 +60,16 @@ KisFigurePaintingToolHelper PaintingResources::createHelper(KisImageWSP image,
     }
     KisToolShapeUtils::FillStyle fillStyle = (KisToolShapeUtils::FillStyle) fillIndex;
 
-    const KUndo2MagicString name = kundo2_i18n("Scripted Brush Stroke");
+    // Krita Agent: the step is named by the script, or after the open agent move, and joins the open macro or
+    // agent move (its commands go to that step's undo adapter instead of the document's history).
     KisFigurePaintingToolHelper helper(
-        name,
+        DocumentHistory::scriptedStrokeName(image, name),
         image,
         node, resourceManager,
         strokeStyle,
-        fillStyle
+        fillStyle,
+        QTransform(),
+        DocumentHistory::scriptUndoAdapter(image, node ? node->paintDevice() : KisPaintDeviceSP())
     );
 
     return helper;

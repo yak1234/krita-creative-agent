@@ -1174,6 +1174,124 @@ newDoc.setGridConfig(newDocGrid)
      */
     bool setAudioTracks(const QList<QString> files) const;
 
+    // Krita Agent: undo history and agent moves (DocumentHistory.cpp).
+
+    /**
+     * @brief undoCount the number of steps in the document's undo history, the ones that can be
+     * redone included. While a macro or an agent move is open, it is counted as the last step.
+     */
+    int undoCount() const;
+
+    /**
+     * @brief undoText the name of step \p index (0 is the oldest), as the Undo History docker
+     * shows it; an empty string when there is no such step.
+     */
+    QString undoText(int index) const;
+
+    /**
+     * @brief undoIndex the number of steps applied: steps 0 to undoIndex() - 1 are done, the
+     * rest can be redone.
+     */
+    int undoIndex() const;
+
+    /**
+     * @brief setUndoIndex undoes or redoes steps until \p index steps are applied, as clicking
+     * a step in the Undo History docker does.
+     *
+     * It first waits for the image's queued work to finish (Krita would otherwise cancel it),
+     * without asking any stroke to end, for up to 3 seconds, handling input meanwhile (so an
+     * artist holding the pen down can lift it); it refuses if the image is still busy. The undo and redo work itself is
+     * queued like painting: call waitForDone() before reading pixels.
+     *
+     * @return false, changing nothing, when \p index is outside 0 to undoCount(), or a macro or
+     * an agent move is open
+     */
+    bool setUndoIndex(int index);
+
+    /**
+     * @brief cleanIndex the undo index at which the document was last saved (or created), or
+     * -1 when that state is no longer in the history.
+     */
+    int cleanIndex() const;
+
+    /**
+     * @brief beginUndoMacro groups the script's work until endUndoMacro() into one undo step
+     * named \p name: its strokes (the paint* calls), new layers and other Node edits run as
+     * strokes, filters started with Filter.startFilter(), and pixel writes (inside a macro or an
+     * agent move, Node.setPixelData() is undoable and queued after the script's earlier strokes,
+     * like painting: read pixels after waitForDone()). A macro opened inside an open one joins it.
+     * The artist's work meanwhile keeps its own steps; see beginAgentMove().
+     *
+     * @return false without an image
+     */
+    bool beginUndoMacro(const QString &name);
+
+    /**
+     * @brief endUndoMacro closes the innermost macro. It returns at once; the step lands in the
+     * history when the strokes queued in it have finished (waitForDone() waits for that). An empty
+     * macro adds no step.
+     * @return false when no macro is open, or the innermost open step is an agent move
+     */
+    bool endUndoMacro();
+
+    /**
+     * @brief beginAgentMove opens an agent move: everything done until endAgentMove() becomes
+     * one undo step named "Agent: <name>", however many strokes, layers, pixel writes and filters
+     * it holds, so a move never uses up Krita's undo limit and one undo removes all of it.
+     *
+     * Scripted strokes without a name of their own are named after the move. The step appears in
+     * the Undo History docker as "Agent: <name>" once the move ends. The artist's work during the
+     * move keeps its own steps, and undo stays available. When the artist changes a layer the
+     * move has already changed, the move's work so far becomes a step first, and the rest follows
+     * as "Agent: <name> (cont.)", so each layer's changes undo in the order they were made.
+     *
+     * A move left open closes by itself, with a warning: when the document is saved (not
+     * exported), when the history moves on an idle image (undo, redo, a step chosen in the Undo
+     * History docker), and after 120 seconds without script work (queued work counts). Its work
+     * so far becomes a step; the move stays open for the script (agentMoveOpen(), the same
+     * agentMoveId()), its next work continues it as "Agent: <name> (cont.)", and endAgentMove()
+     * ends it. In Python, prefer the context manager, which ends only its own move, also on
+     * exceptions:
+     *
+     * @code
+     * with d.agentMove("paint sky"):
+     *     for points in strokes:
+     *         layer.paintPolylineStroke(points)
+     * @endcode
+     *
+     * @return false, opening nothing, without an image, or when an agent move or a macro is
+     * already open (agent moves are always top-level steps)
+     */
+    bool beginAgentMove(const QString &name);
+
+    /**
+     * @brief endAgentMove closes the open agent move. It returns at once; the move's step lands in
+     * the history when the strokes queued in it have finished (waitForDone() waits for that). An
+     * empty move adds no step and leaves the document unmodified.
+     * @return false when no agent move is open, a macro opened inside it is still open, the
+     * document's image was replaced, or the document was closed
+     */
+    bool endAgentMove();
+
+    /**
+     * @brief agentMoveOpen whether an agent move is open on this document (through any Document
+     * object for it). An open move is agent work: from beginAgentMove() until its step has landed,
+     * agentActive() is true and changeSource() is "agent".
+     */
+    bool agentMoveOpen() const;
+
+    /**
+     * @brief agentMoveName the name of the open agent move, or an empty string.
+     */
+    QString agentMoveName() const;
+
+    /**
+     * @brief agentMoveId a number for the open agent move, the same for its whole life (a move
+     * that closed by itself and continues keeps it), new for each beginAgentMove(); 0 when no
+     * move is open. A script checks it to end only its own move.
+     */
+    int agentMoveId() const;
+
 private:
 
     friend class Krita;

@@ -3,6 +3,7 @@
  *
  *  SPDX-License-Identifier: LGPL-2.0-or-later
  */
+#include "DocumentHistory.h"
 #include "VectorLayer.h"
 #include <kis_shape_layer.h>
 #include <kis_image.h>
@@ -132,7 +133,7 @@ QList<Shape *> VectorLayer::addShapesFromSvg(const QString &svgData)
 
         KUndo2Command *cmd = new KoShapeCreateCommand(document->document()->shapeController(), originalShapes, container);
 
-        KisProcessingApplicator::runSingleCommandStroke(this->node()->image(), cmd);
+        DocumentHistory::runCommandStroke(this->node()->image(), cmd); // Krita Agent: joins an open macro or agent move
         this->node()->image()->waitForDone();
         delete document;
 
@@ -226,7 +227,7 @@ Shape* VectorLayer::createGroupShape(const QString &name, QList<Shape *> shapes)
     new KoShapeCreateCommand(document->document()->shapeController(), group, container, cmd);
     new KoShapeGroupCommand(group, originalShapes, true, cmd);
 
-    KisProcessingApplicator::runSingleCommandStroke(this->node()->image(), cmd);
+    DocumentHistory::runCommandStroke(this->node()->image(), cmd); // Krita Agent: joins an open macro or agent move
     this->node()->image()->waitForDone();
     delete document;
 

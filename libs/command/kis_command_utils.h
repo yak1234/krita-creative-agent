@@ -125,6 +125,9 @@ namespace KisCommandUtils
 
         void addCommand(KUndo2Command *cmd);
 
+        /// Krita Agent: the commands added, in order (read by DocumentHistory to find the devices they change).
+        const QVector<KUndo2Command*> &commands() const { return m_commands; }
+
         void redo() override;
         void undo() override;
 

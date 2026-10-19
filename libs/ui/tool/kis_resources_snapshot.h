@@ -38,6 +38,12 @@ public:
     void setupMaskingBrushPainter(KisPainter *painter);
 
     KisPostExecutionUndoAdapter* postExecutionUndoAdapter() const;
+
+    /**
+     * Krita Agent: commands of the full-resolution stroke go to \p adapter instead of the image's
+     * (level-of-detail previews keep the image's). Null restores the default. Set it before the stroke starts.
+     */
+    void setPostExecutionUndoAdapterOverride(KisPostExecutionUndoAdapter *adapter);
     void setCurrentNode(KisNodeSP node);
     void setStrokeStyle(KisPainter::StrokeStyle strokeStyle);
     void setFillStyle(KisPainter::FillStyle fillStyle);

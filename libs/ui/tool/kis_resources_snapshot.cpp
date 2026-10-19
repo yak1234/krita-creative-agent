@@ -57,6 +57,7 @@ struct KisResourcesSnapshot::Private {
     bool globalAlphaLock {false};
     qreal effectiveZoom {1.0};
     bool presetAllowsLod {false};
+    KisPostExecutionUndoAdapter *undoAdapterOverride {nullptr};
     KisSelectionSP selectionOverride;
     bool hasOverrideSelection {false};
 
@@ -254,7 +255,15 @@ void KisResourcesSnapshot::setupMaskingBrushPainter(KisPainter *painter)
 
 KisPostExecutionUndoAdapter* KisResourcesSnapshot::postExecutionUndoAdapter() const
 {
+    if (m_d->image && m_d->undoAdapterOverride && m_d->image->currentLevelOfDetail() == 0) {
+        return m_d->undoAdapterOverride;
+    }
     return m_d->image ? m_d->image->postExecutionUndoAdapter() : 0;
+}
+
+void KisResourcesSnapshot::setPostExecutionUndoAdapterOverride(KisPostExecutionUndoAdapter *adapter)
+{
+    m_d->undoAdapterOverride = adapter;
 }
 
 void KisResourcesSnapshot::setCurrentNode(KisNodeSP node)

@@ -2,9 +2,11 @@
 
 This is a fork of [KDE/krita](https://invent.kde.org/graphics/krita) `master`, built on Qt6. "Krita Agent" is a working
 name; the artist chooses the final one (it is set in one place, `cmake/modules/KritaAppIdentity.cmake`). The built
-application is GPL-3.0-or-later. Each new file takes the licence of the Krita library or folder it lives in, so it can
-be offered upstream as it is: `LGPL-2.0-or-later` in `libs/libkis` and its tests, `GPL-2.0-or-later` in `libs/image`,
-and in `sdk/tests` the licence of its neighbours (`GPL-2.0-or-later`). New files carry
+application is GPL-3.0-or-later: it is a combined work of files under several compatible licences, distributed as a
+whole under the GPL-3.0-or-later. Each new file takes the licence of the Krita library or folder it lives in, so it can
+be offered upstream as it is: `LGPL-2.0-or-later` in `libs/libkis` and its tests, `GPL-2.0-or-later` in `libs/image`
+and `libs/ui`, and elsewhere (`sdk/tests`, the pykrita plugin's Python package and tests) the licence of its
+neighbours. New files carry
 `SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>`. Build helpers in `agent/` stay as they are.
 
 Our work lives on the branch `krita-agent`, kept current by merging upstream `master` into it. Upstream's history is
@@ -76,6 +78,22 @@ Keep this table current: every upstream file the `krita-agent` branch changes, a
 | `libs/libkis/CMakeLists.txt` | Builds `DocumentAgentSpeed.cpp` | region refresh (2.1) |
 | `libs/libkis/tests/CMakeLists.txt` | Registers our libkis tests and the `AgentSpeedBenchmark` program | region refresh (2.1), scaled read (2.3) |
 | `plugins/extensions/pykrita/sip/krita/Document.sip` | Python bindings of `refreshProjection(QRect)` and `projection(QRect, scale)` | region refresh (2.1), scaled read (2.3) |
+| `libs/libkis/Document.h`, `plugins/extensions/pykrita/sip/krita/Document.sip` | One block at the end of the public slots: undo history (`undoCount`, `undoText`, `undoIndex`, `setUndoIndex`, `cleanIndex`), macros (`beginUndoMacro`, `endUndoMacro`) and agent moves (`beginAgentMove`, `endAgentMove`, `agentMoveOpen`, `agentMoveName`), implemented in `DocumentHistory.cpp` | undo history (2.7, 2.5) |
+| `libs/libkis/Node.h`, `Node.cpp`, `plugins/extensions/pykrita/sip/krita/Node.sip` | The six `paint*` calls take an optional last argument `name` for their undo step; inside a macro or agent move `setPixelData` queues its write as a stroke of the step (one line before `writeBytes`, `DocumentHistory::queuePixelWrite`); the single-command strokes (`addChildNode`, `remove`, `setBlendingMode`, `setLayerStyleFromAsl`) run through `DocumentHistory::runCommandStroke`, which is upstream's `runSingleCommandStroke` outside a macro or move | undo history (2.7, 2.5) |
+| `libs/libkis/PaintingResources.h`, `.cpp` | `createHelper` names the stroke (`DocumentHistory::scriptedStrokeName`: the given name, else the open agent move's, else upstream's "Scripted Brush Stroke") and hands it the open step's undo adapter | undo history (2.7, 2.5) |
+| `libs/libkis/CMakeLists.txt`, `libs/libkis/tests/CMakeLists.txt` | Builds `DocumentHistory.cpp` and `TestDocumentHistory` | undo history (2.7, 2.5) |
+| `libs/libkis/Filter.cpp` | `startFilter` hands its stroke the open step's undo adapter | undo history (2.5) |
+| `libs/libkis/Document.cpp` | `setSelection` runs as a stroke of an open macro or move (`runCommandStrokeInStep`), else as upstream | undo history (2.5) |
+| `libs/libkis/VectorLayer.cpp`, `TransformMask.cpp`, `Shape.cpp` | Their single-command strokes go through `DocumentHistory::runCommandStroke` | undo history (2.5) |
+| `libs/ui/kis_document_undo_store.cpp` | `KisAgentHooks::beforeAddCommand` before each command joins the document's history (any thread); `beforeBeginMacro` and `afterEndMacro` around the stack's macros | undo history (2.5) |
+| `libs/ui/KisDocument.cpp` | `KisAgentHooks::beforeHistoryMove` in the undo stack's `undo`, `redo`, `setIndex`; `KisAgentHooks::beforeSave` at the start of `exportDocumentImpl`, except for exports | undo history (2.5) |
+| `libs/ui/tool/kis_resources_snapshot.h`, `.cpp` | `setPostExecutionUndoAdapterOverride`: a stroke's full-resolution commands go to another adapter (level-of-detail previews keep the image's) | undo history (2.5) |
+| `libs/ui/tool/kis_figure_painting_tool_helper.h`, `.cpp` | An optional last constructor argument, the undo adapter override for its stroke | undo history (2.5) |
+| `libs/ui/CMakeLists.txt` | Builds `KisAgentHooks.cpp` | undo history (2.5) |
+| `libs/image/kis_transaction_data.h`, `.cpp` | `device()`: the device a transaction changes | undo history (2.5) |
+| `libs/command/kis_command_utils.h` | `CompositeCommand::commands()`: the commands it holds | undo history (2.5) |
+| `plugins/extensions/pykrita/plugin/krita/__init__.py` | Installs `Document.agentMove(name)` (`agentmove.py`) | undo history (2.5) |
+| `plugins/extensions/pykrita/tests/CMakeLists.txt` | Adds `TestPythonAgentMove` | undo history (2.5) |
 
 Our own files for the identity: `cmake/modules/KritaAppIdentity.cmake`, `libs/global/KisAppIdentity.{h,cpp}`,
 `libs/global/config-app-identity.h.cmake`; tests `libs/global/tests/KisAppIdentityTest.{h,cpp}`,
@@ -101,6 +119,49 @@ mark agent work with `DocumentChanges::forImage(image)->beginAgentWork()` / `end
 Our own files for the agent speed API (2.x): `libs/libkis/DocumentAgentSpeed.cpp`, `libs/libkis/KisAgentScaledRead.h` and its tests in `libs/libkis/tests/`
 (`TestDocumentRegionRefresh`, `TestDocumentScaledProjection`, and the `AgentSpeedBenchmark` timing program, not run by
 ctest).
+
+Our own files for the undo history: `libs/libkis/DocumentHistory.{h,cpp}`, `libs/ui/KisAgentHooks.{h,cpp}`,
+`plugins/extensions/pykrita/plugin/krita/agentmove.py`; tests `libs/libkis/tests/TestDocumentHistory.{h,cpp}` and
+`plugins/extensions/pykrita/tests/TestPythonAgentMove.{h,cpp}`, both on `sdk/tests/KisTemporaryHomeUiTest.h` (which
+also runs windows on the offscreen platform, with an in-process clipboard).
+
+### Undo history and agent moves
+
+An agent move (`Document.beginAgentMove(name)` … `endAgentMove()`, or `with document.agentMove(name):` in Python)
+and a script macro (`beginUndoMacro` … `endUndoMacro`) collect only the script's own commands. The open step has an
+undo store and post-execution undo adapter of its own; the script's strokes (through their resources snapshot),
+filters, single-command strokes (new layers and other node edits, the global selection, vector shapes, transform
+masks) and pixel writes (queued as strokes of the step, after its earlier strokes) send their commands there. The
+artist's work goes to the document's stack as usual, so undo stays available during a move and the artist's strokes
+stay separate steps. Ending the step queues a stroke with no work after the script's strokes; when it runs,
+everything collected is pushed as one step, "Agent: <name>" (nothing for an empty step). Steps are pushed only from
+the strokes queue or, on the GUI thread, when the image is idle, never while a GUI undo macro is open (its begin
+pushes the work collected so far first; landings wait for its end). Begin and end take no lock and never ask other
+strokes to end. The Undo History docker is not changed: the step's text is the marking.
+
+**Device rule (a design call).** Krita undoes a paint device's changes strictly newest first. When the artist adds
+a command while a step holds collected work, the devices it changes are read (transactions, through composites and
+saved commands; `KisAgentHooks::beforeAddCommand`): if it may change a device the step has changed, or what it
+changes cannot be read (a saved macro, a legacy command of unknown kind), the step's work so far is pushed first,
+and the rest of the move continues as "Agent: <name> (cont.)". Artist work on other layers leaves the move whole.
+
+**A move left open** closes by itself with a warning: when the document is saved (not exported; on an idle image
+its work lands before the save, so the history is clean there), when the history moves on an idle image (undo,
+redo, the docker; on a busy image Krita drops the undo and the move stays), and after 120 s without script work
+(queued or running work counts as work; `DocumentHistory::setAgentMoveIdleTimeout`). It then rests: the script's
+next work reopens it as "Agent: <name> (cont.)", its end ends it, and `Document.agentMoveId()` stays the same, which
+the Python context manager checks so it never ends another move. The undo limit counts each step once.
+`setUndoIndex` waits at most 3 s for the image, handling input meanwhile so a held pen can lift.
+
+**startStroke's end requests (deferred to task 2.9).** Every stroke libkis starts, the agent's included, makes
+Krita ask the open strokes to end (`KisImage::startStroke` → `requestStrokeEnd`). The freehand brush keeps going
+and the agent's strokes wait behind it, but the transform, move, crop, line and selection tools commit their
+in-progress work, and animation playback stops. Per-stroke overrides in 2.9 are to turn this off for agent strokes.
+
+Coordination with the change reports: `DocumentHistory::agentMoveHook()` opens agent work
+(`DocumentChanges::beginAgentWork()`) when a move begins or continues and ends it once the move's step has landed,
+and emits `DocumentHistory::agentMoveChanged(bool open, QString name)`; `DocumentHistory::isAgentMoveOpen(image)`
+answers from any thread.
 
 ### What the identity does
 

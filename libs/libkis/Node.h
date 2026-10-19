@@ -590,12 +590,15 @@ public Q_SLOTS:
      * <li>ForegroundColor</li>
      * <li>BackgroundColor</li>
      * </ul>
+     * @param name the name of the undo step; empty for the open agent move's name, or else
+     * "Scripted Brush Stroke"
      */
     void paintLine(const QPointF pointOne,
                    const QPointF pointTwo,
                    double pressureOne = 1.0,
                    double pressureTwo = 1.0,
-                   const QString strokeStyle = PaintingResources::defaultStrokeStyle);
+                   const QString strokeStyle = PaintingResources::defaultStrokeStyle,
+                   const QString &name = QString());
 
     /**
      * @brief paintPolylineStroke paint one continuous brush stroke with complete input
@@ -608,9 +611,12 @@ public Q_SLOTS:
      * @param points input samples in image coordinates. Time is elapsed
      * milliseconds from the beginning of the stroke; speed is normalized.
      * @param strokeStyle appearance of the outline; see paintLine().
+     * @param name the name of the undo step; empty for the open agent move's name, or else
+     * "Scripted Brush Stroke"
      */
     void paintPolylineStroke(const QList<StrokePoint> &points,
-                     const QString strokeStyle = PaintingResources::defaultStrokeStyle);
+                     const QString strokeStyle = PaintingResources::defaultStrokeStyle,
+                     const QString &name = QString());
 
     /**
      * @brief paint a rectangle on the canvas. Uses current brush preset
@@ -630,10 +636,13 @@ public Q_SLOTS:
      * <li>Pattern</li>
      * </ul>
      * Default is None.
+     * @param name the name of the undo step; empty for the open agent move's name, or else
+     * "Scripted Brush Stroke"
      */
     void paintRectangle(const QRectF &rect,
                         const QString strokeStyle = PaintingResources::defaultStrokeStyle,
-                        const QString fillStyle = PaintingResources::defaultFillStyle);
+                        const QString fillStyle = PaintingResources::defaultFillStyle,
+                        const QString &name = QString());
  
     /**
      * @brief paint a polygon on the canvas. Uses current brush preset
@@ -652,10 +661,13 @@ public Q_SLOTS:
      * <li>Pattern</li>
      * </ul>
      * Default is None.
+     * @param name the name of the undo step; empty for the open agent move's name, or else
+     * "Scripted Brush Stroke"
      */
     void paintPolygon(const QList<QPointF> points,
                       const QString strokeStyle = PaintingResources::defaultStrokeStyle,
-                      const QString fillStyle = PaintingResources::defaultFillStyle);
+                      const QString fillStyle = PaintingResources::defaultFillStyle,
+                      const QString &name = QString());
     /**
      * @brief paint an ellipse on the canvas. Uses current brush preset
      * @param rect QRect with x, y, width, and height
@@ -673,10 +685,13 @@ public Q_SLOTS:
      * <li>Pattern</li>
      * </ul>
      * Default is None.
+     * @param name the name of the undo step; empty for the open agent move's name, or else
+     * "Scripted Brush Stroke"
      */
     void paintEllipse(const QRectF &rect,
                       const QString strokeStyle = PaintingResources::defaultStrokeStyle,
-                      const QString fillStyle = PaintingResources::defaultFillStyle);
+                      const QString fillStyle = PaintingResources::defaultFillStyle,
+                      const QString &name = QString());
     /**
      * @brief paint a custom path on the canvas. Uses current brush preset
      * @param  path QPainterPath to determine path
@@ -694,10 +709,13 @@ public Q_SLOTS:
      * <li>Pattern</li>
      * </ul>
      * Default is None.
+     * @param name the name of the undo step; empty for the open agent move's name, or else
+     * "Scripted Brush Stroke"
      */
     void paintPath(const QPainterPath &path,
                    const QString strokeStyle = PaintingResources::defaultStrokeStyle,
-                   const QString fillStyle = PaintingResources::defaultFillStyle);
+                   const QString fillStyle = PaintingResources::defaultFillStyle,
+                   const QString &name = QString());
     /**
      * @brief paintAbility can be used to determine whether this node can be painted on with the current brush preset.
      * @return QString, one of the following:

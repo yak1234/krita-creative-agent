@@ -3,6 +3,7 @@ set(PYKRITA_TEST_PYQT_DIR "${CMAKE_INSTALL_PREFIX}/lib/python${Python_VERSION_MA
 
 kis_add_tests(
     TestPythonChangeEvents.cpp
+    TestPythonAgentMove.cpp
     LINK_LIBRARIES kritalibkis kritatestsdk ${PYTHON_LIBRARY}
     )
 
@@ -11,3 +12,12 @@ target_compile_definitions(TestPythonChangeEvents PRIVATE
     PYKRITA_TEST_MODULE="$<TARGET_FILE:python_module_PyKrita_krita>"
     PYKRITA_TEST_PYQT_DIR="${PYKRITA_TEST_PYQT_DIR}")
 add_dependencies(TestPythonChangeEvents python_module_PyKrita_krita)
+
+foreach(test TestPythonAgentMove)
+    target_include_directories(${test} SYSTEM PRIVATE "${PYTHON_INCLUDE_DIRS}")
+    target_compile_definitions(${test} PRIVATE
+        PYKRITA_TEST_MODULE="$<TARGET_FILE:python_module_PyKrita_krita>"
+        PYKRITA_TEST_PYQT_DIR="${PYKRITA_TEST_PYQT_DIR}"
+        PYKRITA_TEST_AGENTMOVE="${CMAKE_CURRENT_SOURCE_DIR}/../plugin/krita/agentmove.py")
+    add_dependencies(${test} python_module_PyKrita_krita)
+endforeach()

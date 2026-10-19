@@ -86,6 +86,11 @@ KisTransactionData::KisTransactionData(const KUndo2MagicString& name, KisPaintDe
     saveSelectionOutlineCache();
 }
 
+KisPaintDeviceSP KisTransactionData::device() const
+{
+    return m_d->device;
+}
+
 void KisTransactionData::init(KisPaintDeviceSP device)
 {
     m_d->device = device;

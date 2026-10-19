@@ -41,6 +41,7 @@ set(kritalibkis_LIB_SRCS
     GroupShape.cpp
 
     LibKisUtils.cpp
+    DocumentHistory.cpp
 
     AngleSelector.cpp
     IntParseSpinBox.cpp

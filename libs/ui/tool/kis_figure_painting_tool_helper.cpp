@@ -22,7 +22,8 @@ KisFigurePaintingToolHelper::KisFigurePaintingToolHelper(const KUndo2MagicString
                                                          KoCanvasResourceProvider *resourceManager,
                                                          KisToolShapeUtils::StrokeStyle strokeStyle,
                                                          KisToolShapeUtils::FillStyle fillStyle,
-                                                         QTransform fillTransform)
+                                                         QTransform fillTransform,
+                                                         KisPostExecutionUndoAdapter *undoAdapterOverride)
 {
     m_strokesFacade = image.data();
 
@@ -32,6 +33,8 @@ KisFigurePaintingToolHelper::KisFigurePaintingToolHelper(const KUndo2MagicString
                                  resourceManager);
 
     setupPaintStyles(m_resources, strokeStyle, fillStyle, fillTransform);
+    // Krita Agent: a script's stroke can keep its undo commands apart (DocumentHistory's agent moves).
+    m_resources->setPostExecutionUndoAdapterOverride(undoAdapterOverride);
 
     KisFreehandStrokeInfo *strokeInfo = new KisFreehandStrokeInfo();
 

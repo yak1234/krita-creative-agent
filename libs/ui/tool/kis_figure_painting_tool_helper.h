@@ -15,6 +15,7 @@
 
 class KoCanvasResourceProvider;
 class KisStrokesFacade;
+class KisPostExecutionUndoAdapter;
 
 class KRITAUI_EXPORT KisFigurePaintingToolHelper
 {
@@ -25,7 +26,8 @@ public:
                                 KoCanvasResourceProvider *resourceManager,
                                 KisToolShapeUtils::StrokeStyle strokeStyle,
                                 KisToolShapeUtils::FillStyle fillStyle,
-                                QTransform fillTransform = QTransform());
+                                QTransform fillTransform = QTransform(),
+                                KisPostExecutionUndoAdapter *undoAdapterOverride = nullptr);
     ~KisFigurePaintingToolHelper();
 
     void paintLine(const KisPaintInformation &pi0,

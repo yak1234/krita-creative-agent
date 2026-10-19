@@ -34,6 +34,9 @@ public:
 
     virtual void endTransaction();
 
+    /// Krita Agent: the device this transaction changes (read by DocumentHistory to order undo steps per device).
+    KisPaintDeviceSP device() const;
+
 protected:
     virtual void saveSelectionOutlineCache();
     virtual void restoreSelectionOutlineCache(bool undo);

@@ -108,6 +108,7 @@
 #include "KisPart.h"
 #include "KisApplication.h"
 #include "KisDocument.h"
+#include "KisAgentHooks.h"
 #include "KisImportExportManager.h"
 #include "KisView.h"
 #include "kis_grid_config.h"
@@ -175,6 +176,7 @@ public:
     }
 
     void setIndex(int idx) override {
+        KisAgentHooks::beforeHistoryMove(m_doc); // Krita Agent
         m_postponedJobs.append({PostponedJob::SetIndex, idx});
         processPostponedJobs();
     }
@@ -194,12 +196,14 @@ public:
     }
 
     void undo() override {
+        KisAgentHooks::beforeHistoryMove(m_doc); // Krita Agent
         m_postponedJobs.append({PostponedJob::Undo, 0});
         processPostponedJobs();
     }
 
 
     void redo() override {
+        KisAgentHooks::beforeHistoryMove(m_doc); // Krita Agent
         m_postponedJobs.append({PostponedJob::Redo, 0});
         processPostponedJobs();
     }
@@ -779,6 +783,10 @@ bool KisDocument::exportDocumentImpl(const KritaUtils::ExportFileJob &job, KisPr
     // implement this correctly, but I'm not aware of any of them botching it
     // that hard. Well, at least none of the ones that actually save files, as
     // mentioned above some of them just seem to lose whatever you give them.
+
+    if (!(job.flags & KritaUtils::SaveIsExporting)) {
+        KisAgentHooks::beforeSave(this); // Krita Agent: a script's open steps reach the history before it is saved
+    }
 
     QFileInfo filePathInfo(job.filePath);
     bool fileExists = filePathInfo.exists();

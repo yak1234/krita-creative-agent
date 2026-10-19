@@ -3,6 +3,7 @@
  *
  *  SPDX-License-Identifier: LGPL-2.0-or-later
  */
+#include "DocumentHistory.h"
 #include "TransformMask.h"
 #include <kis_transform_mask.h>
 #include <kis_image.h>
@@ -109,7 +110,7 @@ bool TransformMask::fromXML (const QString &xml)
 
     new KisSimpleModifyTransformMaskCommand(mask, params, {}, cmd.get());
 
-    KisProcessingApplicator::runSingleCommandStroke(this->node()->image(), cmd.release());
+    DocumentHistory::runCommandStroke(this->node()->image(), cmd.release()); // Krita Agent: joins an open macro or agent move
 
     return true;
 }

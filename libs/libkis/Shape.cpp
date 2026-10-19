@@ -3,6 +3,7 @@
  *
  *  SPDX-License-Identifier: LGPL-2.0-or-later
  */
+#include "DocumentHistory.h"
 #include "Shape.h"
 #include <kis_icon_utils.h>
 #include <SvgWriter.h>
@@ -156,7 +157,7 @@ bool Shape::remove()
     if (KisPart::instance()->viewCount(document->document()) > 0) {
         for (QPointer<KisView> view : KisPart::instance()->views()) {
             if (view && view->document() == document->document()) {
-                KisProcessingApplicator::runSingleCommandStroke(view->image(), view->canvasBase()->shapeController()->removeShape(d->shape));
+                DocumentHistory::runCommandStroke(view->image(), view->canvasBase()->shapeController()->removeShape(d->shape)); // Krita Agent: joins an open macro or agent move
                 view->image()->waitForDone();
                 removeStatus = true;
                 break;

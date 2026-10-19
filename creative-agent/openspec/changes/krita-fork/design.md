@@ -126,7 +126,11 @@ new_moscow_merged (6000×4500) against a 1024×768 painting, with the same `timi
   move's own strokes finish, so the artist's strokes during a move stay separate steps, Ctrl+Z keeps working and no
   artist stroke is ever ended by the agent. Krita rolls back each layer's tiles strictly in order, so if the artist
   paints on a layer the open move has touched, the move's step is split there ("Agent: sky", then "Agent: sky (cont.)").
-  A move a script leaves open is closed on save, on the artist's Undo and after an idle timeout. Undo of a move removes all its passes; the
+  A move a script leaves open is closed on save, on the artist's Undo and after an idle timeout. The artist's Ctrl+Z during a move
+  undoes the move's work so far; the script's later work continues as "Agent: <name> (cont.)". Known limit until task
+  2.9: a script's stroke start asks other strokes to end (`KisImage::startStroke`), as in stock Krita; the freehand
+  brush ignores it, but an in-progress transform, move, crop, line or selection-tool action is committed and animation
+  playback stops. Undo of a move removes all its passes; the
   plugin's Keep / Undo maps onto this step. *(my call)* Undoing an agent move that lies under later artist strokes
   stays Krita's normal in-order undo; out-of-order undo is a non-goal.
 - *(my call)* The order follows the report's measurement:

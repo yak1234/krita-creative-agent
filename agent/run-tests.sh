@@ -56,7 +56,8 @@ run() {                                                   # run PROGRAM [FUNCTIO
     else
         wait "$pid"; status=$?
         grep -E "^(FAIL!|XPASS|Totals)|QFATAL" "$scratch.log"
-        [ "$status" -ge 128 ] && echo "CRASH  $program (signal $((status - 128)); see ~/Library/Logs/DiagnosticReports)"
+        if [ "$status" -eq 143 ]; then echo "ENDED  $program by a SIGTERM from outside the runner: run it again"
+        elif [ "$status" -ge 128 ]; then echo "CRASH  $program (signal $((status - 128)); see ~/Library/Logs/DiagnosticReports)"; fi
     fi
     rm -rf "$scratch" "$scratch.log"
     return "$status"

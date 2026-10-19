@@ -382,3 +382,13 @@ Photoshop-style defaults, the canvas feature map until it has proven itself, and
 Every binary release publishes the exact source it was built from (this branch at the release tag) under
 GPL-3.0-or-later, with Krita's, Krita-Revamp's, the bundled packages' and our MIT-origin licence notices. See the
 release task (1.3).
+
+## Shipping the plugin and running the suites (krita-fork 1.5)
+- `creative-agent/CMakeLists.txt` installs the Python plugin (`creative-agent/krita-mcp/krita-plugin/kritamcp` and its `.desktop` file) into
+  `share/krita/pykrita` with the build (option `KRITA_AGENT_PLUGIN`, on by default): a build is usable without a separate install
+  step. A copy in the artist's own pykrita folder (what `scripts/install.py --krita fork` writes) is found first and shadows it: remove
+  it to run the shipped one. Enabling the plugin on a fresh settings folder belongs to the new-install defaults (task 3.3).
+- `agent/ci.sh` runs every suite we own (plugin Python, companion JS and typecheck, then the C++ programs in `agent/ci-tests.txt` through
+  `agent/run-tests.sh`); it is what a CI service runs and what a merge needs green. `--no-cpp` needs no build.
+- Commits in this repository carry the artist's identity (repository config). Commits made before 19 October evening carry the machine's
+  host name address: rewrite them (mailmap or filter) only as a deliberate step before anything is published.

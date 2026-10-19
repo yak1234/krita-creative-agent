@@ -1267,7 +1267,11 @@ class KritaMCPExtension(CreativeTools, PrecisionTools, Extension):
         view = self.get_active_view()
         if not view or not view.currentBrushPreset():
             return {"error": "No active brush"}
-        resource = view.currentBrushPreset()
+        # params["preset"]: the preset configure_brush changed, by name, whatever the view holds now.
+        name = (params or {}).get("preset")
+        resource = Krita.instance().resources("preset").get(name) if name else view.currentBrushPreset()
+        if resource is None:
+            return {"error": "Brush preset not found: %s" % name}
         original = getattr(self, "_preset_originals", {}).get(resource.name())
         if original is None:
             return {"error": "No saved settings for this brush in this session"}

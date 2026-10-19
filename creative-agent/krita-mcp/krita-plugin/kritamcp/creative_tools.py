@@ -1,10 +1,17 @@
-"""Document-bound creative sessions on the existing native Krita painting engine."""
+"""Document-bound creative sessions on the existing native Krita painting engine.
+
+A paint pass paints, on the fork (our Krita), as one libkis stroke job: Node.paintStrokes(strokes, options, selection)
+-> StrokeJob, clipped by the region's stage mask, with full pen input, polled on the GUI thread so Krita keeps
+responding, Stop as job.cancel() (_creative_stroke_job). On stock Krita 5.3.3 (frozen) it paints through the native
+helper's paint_strokes when Krita loaded it, else stroke by stroke through the Python API (_creative_stock_strokes).
+"""
 import hashlib
 import json
 import os
 import re
 import time
 import uuid
+import krita as krita_module
 from krita import Krita, Selection
 from .qt_compat import Qt, QCoreApplication
 from .creative_validation import fields, numeric, text, color, validate_pass, painted_share, PEN_INPUTS
@@ -32,6 +39,26 @@ stop_requested = getattr(importlib.import_module('.command_queue', __package__),
 
 # During a stroke pass, Krita handles clicks this often (Stop, the window) instead of freezing for the whole pass.
 RESPONSIVE_SECONDS = 0.2
+# The fork's stroke job (Node.paintStrokes): each wait on Krita's GUI thread lasts at most this long (it returns as soon
+# as the job ends), with Qt's events run between waits. A job still painting after JOB_DEADLINE_SECONDS (well past the
+# companion's own wait for a pass, so only a stuck job) is cancelled, and one that then does not end is an error.
+JOB_POLL_MS = 10
+# paint_pass has the bridge's default 120 s (not in LONG_OPERATIONS), so a job is cancelled at 100 s of job time: the result
+# is then a definite "stopped after N strokes", not a lost one. After the cancel the job gets CANCEL_GRACE_SECONDS to end.
+JOB_DEADLINE_SECONDS = 100
+CANCEL_GRACE_SECONDS = 15
+# After the artist's Undo ended a job, Krita carries the undo out later, from its event loop once the image is idle: the pass
+# waits (running events) this long for it before it records anything.
+UNDO_WAIT_SECONDS = 5
+_FORK = None
+
+
+def on_fork():
+    """True in our Krita: the Node class has paintStrokes (asked once; a plugin reload starts over)."""
+    global _FORK
+    if _FORK is None:
+        _FORK = hasattr(getattr(krita_module, 'Node', None), 'paintStrokes')
+    return _FORK
 # Krita refuses a save while it is already saving (its autosave of a large painting can take minutes): wait this long
 # between tries, letting Krita run, before a checkpoint fails.
 SAVE_RETRY_SECONDS = (10, 20, 30)
@@ -585,7 +612,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             'error_code': 'outcome_unknown'})
         self._creative_store_operations(session, operation_id)
         result = {'status': 'ok'}
-        smudge_restore = False
+        smudge_restore, smudge_preset = False, None
         session['operation_id'] = operation_id
         self._view_message(doc, params.get('name') or params.get('filter') or operation.replace('_', ' '))
         try:
@@ -618,9 +645,14 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             elif operation == 'stamp':
                 result.update(self._stamp_apply(doc, session, params))
             elif operation == 'paint_pass':
-                brush = self.cmd_set_brush({'preset': params['preset']})
-                if brush.get('error'):
-                    raise RuntimeError(brush['error'])
+                # The fork paints a pass as one stroke job (Node.paintStrokes) that takes its preset by name and needs no
+                # view, so the artist's brush is left alone; smudge overlay mode is set on the view's preset, which the
+                # job then copies. Stock Krita paints with the view's brush, as before.
+                stroke_job = on_fork()
+                if not stroke_job or params.get('smudge_overlay'):
+                    brush = self.cmd_set_brush({'preset': params['preset']})
+                    if brush.get('error'):
+                        raise RuntimeError(brush['error'])
                 if params.get('smudge_overlay'):
                     # Overlay mode smudges the merged image onto this pass's own empty layer;
                     # without it a smudge brush only mixes that empty layer and paints nothing.
@@ -629,10 +661,11 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                         **({'SmudgeRateValue': params['smudge_rate']} if 'smudge_rate' in params else {}))})
                     if overlay.get('error'):
                         raise RuntimeError(overlay['error'])
-                    smudge_restore = True
+                    smudge_restore, smudge_preset = True, overlay.get('preset')
                 if params.get('continue_layer_id'):
                     node = self._creative_node(doc, params['continue_layer_id'])
-                    doc.setActiveNode(node)
+                    if not stroke_job:
+                        doc.setActiveNode(node)
                     layer = {'id': params['continue_layer_id']}
                     previous_pass = next(e for e in reversed(session['passes']) if e.get('layer_id') == layer['id'])
                     if previous_pass.get('group_id'):
@@ -650,57 +683,17 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 result['layer_id'] = layer['id']
                 if layer.get('group_id'):
                     result['group_id'] = layer['group_id']
-                # The stage mask clips the complete brush footprint, not only
-                # its path center. Restore the artist's selection afterwards.
-                # Its inner edges fade in (stage_mask.py): a hard rectangle printed a straight band into open paint.
-                selection = doc.selection()
-                if params.get('region'):
-                    from .stage_mask import mask as stage_mask
-                    x, y, w, h = params['region']
-                    mask = Selection()
-                    mask.setPixelData(stage_mask(params['region'], doc.width(), doc.height()).tobytes(), x, y, w, h)
-                    doc.setSelection(mask)
+                if stroke_job:
+                    # The job targets its node directly and needs no view: the artist's layer is active again as soon as it starts.
+                    node = self._creative_node(doc, layer['id'])
+                    if not hasattr(node, 'paintStrokes'):
+                        raise RuntimeError('This Krita has Node.paintStrokes but this layer does not: nothing was painted.')
+                    result.update(self._creative_stroke_job(doc, session, params, node, result, not params.get('continue_layer_id'),
+                                                            lambda: prior_node is not None and doc.setActiveNode(prior_node)))
                 else:
-                    doc.setSelection(None)
-                try:
-                    strokes, node, responded, interrupted = params['strokes'], doc.activeNode(), time.monotonic(), None
-                    # With the native helper loaded, the chunk is queued in a few calls with no view update per stroke
-                    # (agent_accel.paint_strokes); without it, stroke by stroke through the Python API as before.
-                    native = self._creative_native_strokes(doc, session, strokes, node)
-                    # Only the helper can paint the pen (pressure, tilt, rotation, speed, time); without it the pass paints
-                    # as a mouse at full pressure, and a helper before protocol 5 paints pressure alone. Each input says which.
-                    for name in PEN_INPUTS:
-                        if any(name in stroke for stroke in strokes):
-                            result[name] = ('ignored: Krita has not loaded the native helper' if native is None else
-                                            'ignored: the native helper predates tilt, rotation, speed and time (protocol 5)'
-                                            if name in native.get('ignored', ()) else 'applied')
-                    if native is not None:
-                        result['native_strokes'] = native
-                        if 'stopped_after_strokes' in native:
-                            result.update(stopped='Stopped by the artist.', stopped_after_strokes=native['stopped_after_strokes'], strokes_total=len(strokes))
-                        strokes = []
-                    for index, stroke in enumerate(strokes):
-                        # Stop ends the pass cleanly after the current stroke: a definite, shorter pass, not an uncertain one.
-                        if interrupted or stop_requested.is_set():
-                            result.update(stopped=interrupted or 'Stopped by the artist.', stopped_after_strokes=index, strokes_total=len(strokes))
-                            break
-                        self._creative_progress(session, 'painting', 'Painting stroke %d of %d' % (index + 1, len(strokes)))
-                        # Krita renders each stroke; waiting and recompositing the whole canvas
-                        # after every stroke made a pass dozens of times slower, so it happens once.
-                        # The Python API paints as a mouse (cmd_curve_stroke refuses pressure): the curve alone.
-                        painted = self.cmd_curve_stroke({k: v for k, v in stroke.items() if k not in PEN_INPUTS}, settle=False)
-                        if painted.get('error'):
-                            raise RuntimeError(painted['error'])
-                        if time.monotonic() - responded >= RESPONSIVE_SECONDS:
-                            interrupted, responded = self._creative_let_krita_respond(doc, node), time.monotonic()
-                finally:
-                    doc.waitForDone()                    # every stroke done before the selection changes back
-                    doc.setSelection(selection)
-                # Only the strokes' reach changed: the layer's settings were composited when it was made (a new layer,
-                # create_layer for a blended or clipped one) or are unchanged (a continuation). Recomposite that area
-                # (canvas_projection: the fork, else the helper on stock), else the whole image as before.
-                canvas_projection.refresh(doc, self._creative_stroke_rect(params))
-                session['projection_fresh'] = True       # the observation after this skips a second recomposite
+                    self._creative_stock_strokes(doc, session, params, result)
+                if result.get('error_code') != 'validation_rejected':
+                    session['projection_fresh'] = True   # the observation after this skips a second recomposite
             else:
                 selected = self.cmd_select_layer({'id': params['layer_id']})
                 if selected.get('error'):
@@ -712,7 +705,11 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             result = dict(result, status='partial', error=str(error), error_code='partial_change')
         finally:
             if smudge_restore:
-                self.cmd_restore_brush({})           # the artist's preset never keeps overlay mode
+                # The artist's preset never keeps overlay mode: the preset the overlay was set on, by name (on the fork only
+                # now that the job has ended, since it reads the view's live preset while it paints).
+                restored = self.cmd_restore_brush({'preset': smudge_preset} if smudge_preset else {})
+                if restored.get('error'):
+                    result['brush_restore'] = 'failed: ' + str(restored['error'])
             if prior_node is not None:
                 doc.setActiveNode(prior_node)
         lap('apply')
@@ -1800,6 +1797,176 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             return painting_weight.weight(painting_weight.records(doc), doc.width(), doc.height())
         except Exception:
             return None                                  # a measure must never stop an observation
+
+    def _creative_stroke_job(self, doc, session, params, node, result, new_layer=True, started=None):
+        """The fork: the whole pass as one Node.paintStrokes job (libkis StrokeJob, krita-fork task 2.4). The job paints in
+        Krita's worker threads; this call stays synchronous to the bridge by polling it on the GUI thread with short
+        bounded waits, running Qt's events between them: the job's feeder tops up its strokes from the event loop, which
+        a GUI-thread wait never runs. So the window, the panel's Stop and the artist's own strokes respond while the pass
+        paints, and the companion follows it through the progress file. `started` runs as soon as the job exists (the
+        artist's layer becomes active again). Returns the result's fields: pen notes, `stroke_job`, and on a stop
+        `stopped_after_strokes`. A job Krita ended on the artist's Undo is waited out until the undo has landed and then
+        raised, so nothing is observed, saved or recorded as painted; a refused job painted nothing and is a rejected pass.
+        The job's undo step is its own, named after the pass, or joins an open agent move by itself."""
+        strokes, out = params['strokes'], {}
+        options = {'name': params['name']}
+        if not params.get('smudge_overlay'):
+            options['preset'] = params['preset']     # else a copy of the view's preset, set to overlay mode above
+        selection = None
+        if params.get('region'):
+            # The stage mask clips the whole brush footprint and fades in at inner edges (stage_mask.py); the job clips
+            # to it alone, whatever the document selects, so the artist's selection is never swapped.
+            from .stage_mask import mask as stage_mask
+            x, y, w, h = params['region']
+            selection = Selection()
+            selection.setPixelData(stage_mask(params['region'], doc.width(), doc.height()).tobytes(), x, y, w, h)
+        self._creative_progress(session, 'painting', 'Painting %d strokes' % len(strokes))
+        history = hasattr(doc, 'undoIndex') and hasattr(doc, 'undoCount')
+        start = (doc.undoIndex(), doc.undoCount() - doc.undoIndex()) if history else (0, 0)
+        peak = start[0]
+        # Pen input goes as the pass gives it: paintStrokes reads per-point pressure, tilt, rotation, speed and time_ms
+        # lists in validate_pass's units and ranges, with validate_pass's margin (one brush size), well inside its caps.
+        job = node.paintStrokes(strokes, options, selection)
+        if started:
+            started()
+        for name in PEN_INPUTS:
+            if any(name in stroke for stroke in strokes):
+                # time_ms reached the brush engine but no preset has shown an effect yet (protocol 5 measurement).
+                out[name] = 'applied (not yet confirmed visually)' if name == 'time_ms' else 'applied'
+        cancelled, reported, told, deadline = False, -1, 0.0, time.monotonic() + JOB_DEADLINE_SECONDS
+        while job.state() in ('queued', 'running'):
+            QCoreApplication.processEvents()
+            if history:
+                peak = max(peak, doc.undoIndex())
+            if not cancelled and (stop_requested.is_set() or time.monotonic() > deadline):
+                job.cancel()                           # keeps the first strokesDone() strokes; the rest never paint
+                cancelled, timed_out, deadline = True, not stop_requested.is_set(), time.monotonic() + CANCEL_GRACE_SECONDS
+            elif cancelled and time.monotonic() > deadline:
+                raise RuntimeError('The stroke job did not end after it was cancelled; inspect the painting.')
+            if job.wait(JOB_POLL_MS):
+                break
+            done = job.strokesDone()
+            if done != reported and time.monotonic() - told >= RESPONSIVE_SECONDS:
+                reported, told = done, time.monotonic()
+                self._creative_progress(session, 'painting', 'Painting stroke %d of %d' % (min(done + 1, len(strokes)), len(strokes)))
+        state, done = job.state(), job.strokesDone()
+        if history:
+            peak = max(peak, doc.undoIndex())
+        if state == 'failed':
+            # The fork guarantees a refused job painted nothing: a new layer made for it is removed, and the pass is a
+            # rejected one (nothing to inspect or retry), not a partial change.
+            if new_layer:
+                self._creative_discard_layer(doc, session, result, node)
+            result.pop('layer_id', None); result.pop('group_id', None)
+            result.update(status='rejected', error_code='validation_rejected',
+                          error='Krita refused the strokes and painted nothing: ' + (job.errorString() or 'no reason given'))
+            return out
+        out['stroke_job'] = {'state': state, 'strokes': done, 'total': job.strokesTotal(), 'ms': job.elapsedMs()}
+        if state == 'cancelled' and not cancelled:
+            reason = job.cancelReason() if hasattr(job, 'cancelReason') else None
+            if reason != 'script':
+                self._creative_ended_by_krita(doc, session, result, node, new_layer, history, start, peak, reason)
+        if state == 'cancelled':
+            out.update(stopped=('The pass took too long and was stopped.' if cancelled and timed_out else 'Stopped by the artist.'),
+                       stopped_after_strokes=done, strokes_total=len(strokes))
+        # The job records what its strokes redrew on the layer: recomposite that, nothing more (empty: nothing).
+        rect = job.changedRect()
+        if rect.width() > 0 and rect.height() > 0:
+            canvas_projection.refresh(doc, [rect.x(), rect.y(), rect.width(), rect.height()])
+        return out
+
+    def _creative_ended_by_krita(self, doc, session, result, node, new_layer, history, start, peak, reason):
+        """Krita ended the job: the artist pressed Undo, or the document closed (the job's cancel reason says which, when
+        the fork reports one). The fork stops the job, lets its step land, and carries the undo out later from its event
+        loop, so the pass waits here, running events, until the undo has landed (the undo index fell, or a step can be
+        redone that could not be before), and only then raises: the painting is observed, saved and recorded after the
+        undo, never before it. With no strokes painted the undo took the step below the job (the pass layer's creation,
+        or the artist's own action), which the message says. Always raised: the pass is not recorded as painted."""
+        if reason == 'document_closed':
+            raise RuntimeError('The document was closed during the pass; its strokes are gone. Inspect the painting.')
+        landed = not history
+        deadline = time.monotonic() + UNDO_WAIT_SECONDS
+        while history and not landed and time.monotonic() < deadline:
+            QCoreApplication.processEvents()
+            index, redo = doc.undoIndex(), doc.undoCount() - doc.undoIndex()
+            landed = index < peak or index < start[0] or redo > start[1]
+            if not landed:
+                time.sleep(0.01)
+        if not landed:
+            raise RuntimeError('Krita ended the pass early (the artist pressed Undo, or the document closed), but no undo was '
+                               'seen to land. Inspect the painting.')
+        # The pass is not a painted pass: a layer made for it is dropped as a rejected pass's is, and a continuation's
+        # layer keeps the earlier passes. Either way nothing is recorded for it.
+        if new_layer:
+            self._creative_discard_layer(doc, session, result, node)
+        result.pop('layer_id', None); result.pop('group_id', None)
+        result['contribution_removed'] = True
+        raise RuntimeError('The artist pressed Undo during the pass; its strokes were undone. Inspect the painting.')
+
+    def _creative_discard_layer(self, doc, session, result, node):
+        """Remove the pass's new layer if it is still in the painting (an undo may have taken it already)."""
+        identifier = result.get('layer_id')
+        try:
+            present = any(n is node or n.uniqueId().toString() == identifier for n, _depth in self._creative_nodes(doc))
+        except Exception:
+            present = False
+        if present and not node.remove():
+            raise RuntimeError('Could not remove the unsuccessful pass layer')
+        session['layers'].discard(identifier)
+
+    def _creative_stock_strokes(self, doc, session, params, result):
+        """Stock Krita (frozen): the pass through the native helper when Krita loaded it, else stroke by stroke through
+        the Python API, under the stage mask swapped in as the document selection; then the strokes' reach recomposited."""
+        # The stage mask clips the complete brush footprint, not only
+        # its path center. Restore the artist's selection afterwards.
+        # Its inner edges fade in (stage_mask.py): a hard rectangle printed a straight band into open paint.
+        selection = doc.selection()
+        if params.get('region'):
+            from .stage_mask import mask as stage_mask
+            x, y, w, h = params['region']
+            mask = Selection()
+            mask.setPixelData(stage_mask(params['region'], doc.width(), doc.height()).tobytes(), x, y, w, h)
+            doc.setSelection(mask)
+        else:
+            doc.setSelection(None)
+        try:
+            strokes, node, responded, interrupted = params['strokes'], doc.activeNode(), time.monotonic(), None
+            # With the native helper loaded, the chunk is queued in a few calls with no view update per stroke
+            # (agent_accel.paint_strokes); without it, stroke by stroke through the Python API as before.
+            native = self._creative_native_strokes(doc, session, strokes, node)
+            # Only the helper can paint the pen (pressure, tilt, rotation, speed, time); without it the pass paints
+            # as a mouse at full pressure, and a helper before protocol 5 paints pressure alone. Each input says which.
+            for name in PEN_INPUTS:
+                if any(name in stroke for stroke in strokes):
+                    result[name] = ('ignored: Krita has not loaded the native helper' if native is None else
+                                    'ignored: the native helper predates tilt, rotation, speed and time (protocol 5)'
+                                    if name in native.get('ignored', ()) else 'applied')
+            if native is not None:
+                result['native_strokes'] = native
+                if 'stopped_after_strokes' in native:
+                    result.update(stopped='Stopped by the artist.', stopped_after_strokes=native['stopped_after_strokes'], strokes_total=len(strokes))
+                strokes = []
+            for index, stroke in enumerate(strokes):
+                # Stop ends the pass cleanly after the current stroke: a definite, shorter pass, not an uncertain one.
+                if interrupted or stop_requested.is_set():
+                    result.update(stopped=interrupted or 'Stopped by the artist.', stopped_after_strokes=index, strokes_total=len(strokes))
+                    break
+                self._creative_progress(session, 'painting', 'Painting stroke %d of %d' % (index + 1, len(strokes)))
+                # Krita renders each stroke; waiting and recompositing the whole canvas
+                # after every stroke made a pass dozens of times slower, so it happens once.
+                # The Python API paints as a mouse (cmd_curve_stroke refuses pressure): the curve alone.
+                painted = self.cmd_curve_stroke({k: v for k, v in stroke.items() if k not in PEN_INPUTS}, settle=False)
+                if painted.get('error'):
+                    raise RuntimeError(painted['error'])
+                if time.monotonic() - responded >= RESPONSIVE_SECONDS:
+                    interrupted, responded = self._creative_let_krita_respond(doc, node), time.monotonic()
+        finally:
+            doc.waitForDone()                    # every stroke done before the selection changes back
+            doc.setSelection(selection)
+        # Only the strokes' reach changed: the layer's settings were composited when it was made (a new layer,
+        # create_layer for a blended or clipped one) or are unchanged (a continuation). Recomposite that area
+        # (canvas_projection: the fork, else the helper on stock), else the whole image as before.
+        canvas_projection.refresh(doc, self._creative_stroke_rect(params))
 
     def _creative_native_strokes(self, doc, session, strokes, node):
         """Paint the pass's strokes through the native helper, or None when Krita has not loaded it."""

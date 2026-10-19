@@ -718,6 +718,360 @@ class NativePolicyTests(unittest.TestCase):
         self.assertFalse(h._creative_session['operations'])
 
 
+class FakeRect:
+    def __init__(self, x, y, w, h): self.box = (x, y, w, h)
+    def x(self): return self.box[0]
+    def y(self): return self.box[1]
+    def width(self): return self.box[2]
+    def height(self): return self.box[3]
+
+
+class FakeJob:
+    """libkis StrokeJob under the real constraint: Krita's feeder paints one window of strokes only when the event loop
+    runs (ForkHarness.pump, called from the patched processEvents); wait() never paints anything by itself.
+    krita_stops_after: Krita ends the job itself once that many strokes are painted (the artist's Undo, the document
+    closing). stuck: the job never advances."""
+    def __init__(self, owner, layer, total, error='', krita_stops_after=None, window=2, stuck=False):
+        self.owner, self.layer, self.total, self.error, self.window, self.stuck = owner, layer, total, error, window, stuck
+        self.done, self.cancels, self.waits, self.krita_stops_after = 0, 0, [], krita_stops_after
+        self.final = 'failed' if error else None
+    def pump(self):
+        if self.final: return
+        if self.stuck and not self.cancels: return
+        limit = self.total if self.krita_stops_after is None else self.krita_stops_after
+        if self.cancels:
+            self.final = 'cancelled'
+        else:
+            self.done = min(limit, self.done + self.window)
+            if self.done >= limit:
+                self.final = 'done' if limit == self.total else 'cancelled'
+        if self.final:
+            if self.done: self.owner.doc.land('Agent: ' + self.layer.name())      # the held step lands with the last stroke
+            if self.final == 'cancelled' and not self.cancels and self.owner.undo_lands: self.owner.undo_next = True
+    def state(self): return self.final or ('running' if self.done else 'queued')
+    def strokesDone(self): return self.done
+    def strokesTotal(self): return self.total
+    def changedRect(self): return FakeRect(30, 40, 50, 60) if self.done else FakeRect(0, 0, 0, 0)
+    def errorString(self): return self.error
+    def elapsedMs(self): return 7
+    def wait(self, timeout_ms=-1):
+        self.waits.append(timeout_ms)
+        return self.final is not None
+    def cancel(self):
+        self.cancels += 1
+        return self.final is None
+
+
+class FakeReasonJob(FakeJob):
+    """The fork's later cancel reason."""
+    reason = 'undo'
+    def cancelReason(self): return 'script' if self.cancels else self.reason
+
+
+class JobLayer(Layer):
+    """A fork layer: it has Node.paintStrokes and remove()."""
+    def __init__(self, identity, owner):
+        super().__init__(identity); self.owner = owner
+    def paintStrokes(self, strokes, options=None, selection=None):
+        owner = self.owner
+        owner.events.append('paintStrokes')
+        owner.job_calls.append((strokes, options, selection, self))
+        cls = FakeReasonJob if owner.job_reason else FakeJob
+        owner.job = cls(owner, self, len(strokes), owner.job_error, owner.krita_stops_after, stuck=owner.job_stuck)
+        if owner.job_reason: owner.job.reason = owner.job_reason
+        return owner.job
+    def remove(self):
+        self.owner.doc.nodes.remove(self); return True
+
+
+class NoStrokesLayer(Layer):
+    pass
+
+
+class ForkDocument(Document):
+    """Undo history as libkis exposes it: steps, and the number applied."""
+    def __init__(self): super().__init__(); self.steps = ['Earlier'] * 5; self.index = 5
+    def undoIndex(self): return self.index
+    def undoCount(self): return len(self.steps)
+    def undoText(self, i): return self.steps[i]
+    def land(self, name): del self.steps[self.index:]; self.steps.append(name); self.index += 1
+
+
+class ForkHarness(Harness):
+    def __init__(self):
+        super().__init__(); self.doc = ForkDocument(); self._creative_session['document_id'] = module.document_id(self.doc)
+        self.job_calls, self.job, self.job_error, self.krita_stops_after, self.brushes = [], None, '', None, 0
+        self.job_stuck, self.job_reason, self.undo_lands, self.undo_next, self.events = False, None, True, False, []
+        self.layer_class = JobLayer
+        self._creative_checkpoint = lambda doc, session: self.events.append('checkpoint@%d' % doc.index) or {'status': 'ok'}
+        self._creative_session['passes'] = []
+        self._craft_validate_create = lambda doc, session, params: None
+    def pump(self):
+        """One turn of Krita's event loop: a deferred Undo is carried out, then each job's feeder paints a window."""
+        if self.undo_next:
+            self.undo_next = False
+            self.doc.index -= 1
+            if self.job.done: self.job.layer.pixels = b''            # the job's step undone
+            else: self.doc.nodes.remove(self.job.layer)              # nothing painted: the step below, the layer's creation
+        if self.job: self.job.pump()
+    def cmd_set_brush(self, params): self.brushes += 1; self.events.append('set_brush'); return {'status': 'ok'}
+    def _new(self):
+        self.created_layers += 1
+        node = self.layer_class('layer-' + str(self.created_layers), self) if self.layer_class is not JobLayer else JobLayer('layer-' + str(self.created_layers), self)
+        self.doc.nodes.append(node); self.doc.active = node; self.doc.land('Add layer')
+        return node
+    def cmd_new_layer(self, params): return {'id': self._new().identity}
+    def _craft_create(self, doc, session, params): return {'layer_id': self._new().identity, 'clip': 'clipped'}
+
+
+class ForkStrokeJobTests(unittest.TestCase):
+    """On the fork a pass paints as one Node.paintStrokes job (krita-fork task 2.4): clipped by the stage mask given as
+    its selection, pen input as given, Stop as job.cancel(), and a refresh of the job's changed rect only. The fake
+    paints only while Krita's event loop runs, so a loop that stops running events cannot pass these tests."""
+
+    def setUp(self):
+        self.refreshed, self.harnesses = [], []
+        saved = module.canvas_projection.refresh
+        module.canvas_projection.refresh = lambda doc, rect=None: self.refreshed.append(rect) or 'fork'
+        pump = module.QCoreApplication.processEvents
+        module.QCoreApplication.processEvents = lambda: [h.pump() for h in self.harnesses] and None
+        constants = (module.JOB_DEADLINE_SECONDS, module.UNDO_WAIT_SECONDS, module._FORK, module.CANCEL_GRACE_SECONDS)
+        module.JOB_DEADLINE_SECONDS, module.UNDO_WAIT_SECONDS, module._FORK = 1, 0.2, True
+        def restore():
+            module.canvas_projection.refresh = saved
+            module.QCoreApplication.processEvents = pump
+            module.JOB_DEADLINE_SECONDS, module.UNDO_WAIT_SECONDS, module._FORK, module.CANCEL_GRACE_SECONDS = constants
+            module.stop_requested.clear()
+        self.addCleanup(restore)
+
+    def harness(self):
+        h = ForkHarness(); self.harnesses.append(h); return h
+
+    def _pass(self, h, strokes=3, operation_id='op-1', **extra):
+        params = request()['params']; params['strokes'] = params['strokes'] * strokes; params.update(extra)
+        return h.cmd_creative(dict(request(), params=params, operation_id=operation_id))
+
+    def test_a_pass_paints_with_one_paint_strokes_call_clipped_by_the_stage_mask(self):
+        h = self.harness(); events = []
+        h.doc.waitForDone = lambda: events.append('wait')
+        h.doc.setSelection = lambda value: events.append('selection')
+        result = self._pass(h, 3, region=[100, 150, 580, 330])
+        self.assertEqual(result['status'], 'ok', result.get('error'))
+        self.assertEqual(len(h.job_calls), 1, 'the whole pass is one job')
+        strokes, options, selection, node = h.job_calls[0]
+        self.assertEqual(len(strokes), 3)
+        self.assertEqual((options['preset'], options['name']), ('b) Basic-1', 'Field'))
+        self.assertEqual(selection.bounds, (100, 150, 580, 330))
+        self.assertEqual(len(selection.data), 580 * 330)
+        self.assertEqual(selection.data[165 * 580 + 290], 255)
+        self.assertLess(selection.data[290], 16, 'the stage mask fades in at inner edges, as on stock')
+        self.assertEqual(h.paints, 0, 'no stroke through the Python API')
+        self.assertNotIn('selection', events, "the artist's selection is never swapped")
+        self.assertNotIn('wait', events, "no Document.waitForDone: it ends the artist's open strokes")
+        self.assertEqual(h.brushes, 0, "the job takes its preset by name: the artist's brush is left alone")
+        self.assertTrue(h.job.waits and all(0 < ms <= 50 for ms in h.job.waits), 'every wait on the GUI thread is short and bounded')
+        self.assertEqual(result['stroke_job']['state'], 'done')
+        self.assertEqual((result['stroke_job']['strokes'], result['stroke_job']['total']), (3, 3))
+
+    def test_without_a_region_the_job_gets_no_selection(self):
+        h = self.harness()
+        self.assertEqual(self._pass(h)['status'], 'ok')
+        self.assertIsNone(h.job_calls[0][2], 'none paints everywhere, whatever the document selects')
+
+    def test_the_fork_path_wins_over_the_native_helper(self):
+        sent = []
+        accel = types.ModuleType('creative_test_package.agent_accel'); accel.NATIVE_STROKES = True
+        accel.paint_strokes = lambda *args, **kwargs: sent.append(args) or {'strokes': 1, 'jobs': 1, 'groups': 1, 'ms': 1}
+        prior = sys.modules.get(accel.__name__); sys.modules[accel.__name__] = accel; package.agent_accel = accel
+        def restore():
+            if prior: sys.modules[accel.__name__] = prior; package.agent_accel = prior
+            else: sys.modules.pop(accel.__name__, None); package.__dict__.pop('agent_accel', None)
+        self.addCleanup(restore)
+        h = self.harness(); result = self._pass(h)
+        self.assertEqual((sent, len(h.job_calls)), ([], 1))
+        self.assertNotIn('native_strokes', result)
+
+    def test_the_fork_is_detected_once_from_the_node_class_not_per_pass(self):
+        module._FORK = None
+        saved = module.krita_module
+        calls = []
+        class Node:
+            def __getattribute__(self, name): return object.__getattribute__(self, name)
+        class Fork:
+            def paintStrokes(self, *args): pass
+        module.krita_module = types.SimpleNamespace(Node=Fork)
+        self.addCleanup(lambda: setattr(module, 'krita_module', saved))
+        self.assertTrue(module.on_fork())
+        module.krita_module = types.SimpleNamespace(Node=object)     # cached: not asked again
+        self.assertTrue(module.on_fork())
+        module._FORK = None
+        self.assertFalse(module.on_fork(), 'stock Krita: the Node class has no paintStrokes')
+
+    def test_the_loop_runs_krita_s_events_or_nothing_paints(self):
+        h = self.harness(); module.QCoreApplication.processEvents = lambda: None
+        module.JOB_DEADLINE_SECONDS = module.CANCEL_GRACE_SECONDS = 0.05
+        result = self._pass(h, 4)
+        self.assertEqual(h.job.strokesDone(), 0)
+        self.assertEqual(h.job.cancels, 1, 'a loop that runs no events can only reach the deadline, and even a cancel needs the loop')
+        self.assertEqual(result['status'], 'partial'); self.assertIn('did not end after it was cancelled', result['error'])
+
+    def test_stop_cancels_the_job_and_reports_the_painted_prefix(self):
+        h = self.harness(); pumps = []
+        real = module.QCoreApplication.processEvents
+        def pump():
+            pumps.append(1); real()
+            if len(pumps) == 2: module.stop_requested.set()
+        module.QCoreApplication.processEvents = pump
+        result = self._pass(h, 8)
+        self.assertEqual(h.job.cancels, 1, 'Stop cancels the job once')
+        self.assertEqual(result['status'], 'ok', 'a definite, shorter pass')
+        self.assertEqual(result['stopped'], 'Stopped by the artist.')
+        self.assertEqual((result['stopped_after_strokes'], result['strokes_total']), (h.job.strokesDone(), 8))
+        self.assertTrue(0 < result['stopped_after_strokes'] < 8)
+        self.assertEqual(h._creative_session['operations']['op-1'][1]['status'], 'ok', 'recorded as done, never repainted')
+
+    def test_a_stuck_job_is_cancelled_at_the_deadline_with_a_definite_result(self):
+        h = self.harness(); h.job_stuck = True; module.JOB_DEADLINE_SECONDS = 0.05
+        result = self._pass(h, 3)
+        self.assertEqual(h.job.cancels, 1)
+        self.assertEqual(result['status'], 'ok')
+        self.assertIn('too long', result['stopped'])
+        self.assertEqual((result['stopped_after_strokes'], result['strokes_total']), (0, 3))
+
+    def test_the_artist_s_undo_mid_pass_is_not_recorded_as_a_painted_pass(self):
+        h = self.harness(); h.krita_stops_after = 4
+        result = self._pass(h, 8)
+        self.assertEqual(result['status'], 'partial')
+        self.assertEqual(result['error_code'], 'partial_change')
+        self.assertIn('pressed Undo', result['error']); self.assertIn('Inspect the painting', result['error'])
+        self.assertEqual(h.doc.index, 6, "the undo landed (the job's step is gone, the layer's creation stays) before anything observed or saved")
+        self.assertEqual(h.events[-1], 'checkpoint@6', 'the checkpoint ran after the undo landed')
+        self.assertEqual(h._creative_session['passes'], [], 'no pass entry with an after_path')
+        self.assertNotIn('layer_id', result)
+        self.assertTrue(result['contribution_removed'])
+        self.assertEqual([n.identity for n in h.doc.nodes], [], 'the empty pass layer is removed as a rejected pass is')
+        self.assertEqual(h._creative_session['layers'], set())
+
+    def test_the_artist_s_undo_before_any_stroke_does_not_undo_the_step_below_unnoticed(self):
+        h = self.harness(); h.krita_stops_after = 0
+        result = self._pass(h, 4)
+        self.assertEqual((result['status'], result['error_code']), ('partial', 'partial_change'))
+        self.assertIn('pressed Undo', result['error'])
+        self.assertEqual(h.doc.index, 5, "the undo took the layer's creation (the step below the job), which the result says")
+        self.assertEqual(h.doc.nodes, [])
+        self.assertTrue(result['contribution_removed']); self.assertEqual(h._creative_session['passes'], [])
+
+    def test_an_undo_that_never_lands_is_reported_as_not_landed(self):
+        h = self.harness(); h.krita_stops_after = 2; h.undo_lands = False
+        result = self._pass(h, 6)
+        self.assertEqual((result['status'], result['error_code']), ('partial', 'partial_change'))
+        self.assertIn('no undo was seen to land', result['error'])
+        self.assertEqual(len(h.doc.nodes), 1, 'the layer stays: its strokes may still be there')
+
+    def test_an_undo_in_a_continuation_leaves_the_earlier_passes_layer_and_records_nothing(self):
+        h = self.harness()
+        self.assertEqual(self._pass(h, 2)['status'], 'ok')
+        recorded = len(h._creative_session['passes'])
+        h.krita_stops_after = 2
+        result = self._pass(h, 6, operation_id='op-2', continue_layer_id='layer-1')
+        self.assertEqual(result['status'], 'partial'); self.assertIn('pressed Undo', result['error'])
+        self.assertEqual(len(h.doc.nodes), 1, 'the layer holds the first pass')
+        self.assertEqual(len(h._creative_session['passes']), recorded)
+
+    def test_the_jobs_cancel_reason_tells_a_closed_document_from_an_undo(self):
+        h = self.harness(); h.krita_stops_after = 2; h.job_reason = 'document_closed'
+        result = self._pass(h, 6)
+        self.assertEqual(result['status'], 'partial')
+        self.assertIn('document was closed', result['error']); self.assertNotIn('pressed Undo', result['error'])
+        h = self.harness(); h.krita_stops_after = 2; h.job_reason = 'undo'
+        self.assertIn('pressed Undo', self._pass(h, 6, operation_id='op-2')['error'])
+
+    def test_a_failed_job_is_a_rejected_pass_with_its_layer_removed(self):
+        h = self.harness(); h.job_error = 'The layer is locked.'
+        result = self._pass(h, 3)
+        self.assertEqual((result['status'], result['error_code']), ('rejected', 'validation_rejected'))
+        self.assertIn('The layer is locked.', result['error'])
+        self.assertTrue(result['reconciled'])
+        self.assertEqual(h.doc.nodes, [], 'a refused job painted nothing: the new layer is removed')
+        self.assertEqual(h._creative_session['passes'], []); self.assertEqual(self.refreshed, [])
+        self.assertNotIn('layer_id', result)
+        self.assertTrue(self._pass(h, 3).get('replayed'), 'the same operation is never painted twice')
+
+    def test_the_refresh_covers_only_the_job_s_changed_rect(self):
+        h = self.harness()
+        result = self._pass(h, 2)
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(self.refreshed, [[30, 40, 50, 60]], "Krita's own record of what the strokes changed")
+
+    def test_pen_inputs_reach_the_job_unchanged_and_are_reported(self):
+        import json
+        h = self.harness()
+        params = request()['params']
+        pen = dict(pressure=[0.2, 0.8], tilt=[[0, 0], [40, -10]], rotation=[0, 90], speed=[0, 1], time_ms=[0, 300])
+        params['strokes'] = [dict(params['strokes'][0], **pen)]
+        given = json.loads(json.dumps(params['strokes']))
+        result = h.cmd_creative(dict(request(), params=params))
+        self.assertEqual(result['status'], 'ok', result.get('error'))
+        self.assertEqual(h.job_calls[0][0], given)
+        for name in ('pressure', 'tilt', 'rotation', 'speed'):
+            self.assertEqual(result[name], 'applied')
+        self.assertEqual(result['time_ms'], 'applied (not yet confirmed visually)')
+
+    def test_the_artist_s_layer_is_active_again_as_soon_as_the_job_is_started(self):
+        h = self.harness(); artist = Layer('artist'); h.doc.nodes.append(artist); h.doc.active = artist; seen = []
+        real = module.QCoreApplication.processEvents
+        module.QCoreApplication.processEvents = lambda: seen.append(h.doc.active.identity) or real()
+        self.assertEqual(self._pass(h, 6)['status'], 'ok')
+        self.assertTrue(seen and set(seen) == {'artist'}, 'strokes the artist paints during the pass land on their own layer: %s' % seen)
+        self.assertEqual(h.job_calls[0][3].identity, 'layer-1', 'the job targets the pass layer by id')
+
+    def test_smudge_overlay_is_restored_by_name_after_the_job_ends(self):
+        h = self.harness(); h._creative_validate_smudge_overlay = lambda preset, rate=False: None
+        h.cmd_configure_brush = lambda params: h.events.append('configure') or {'status': 'ok', 'preset': 'b) Smudge'}
+        h.cmd_restore_brush = lambda params: h.events.append(('restore', params.get('preset'), h.job.final)) or {'status': 'ok'}
+        result = self._pass(h, 2, smudge_overlay=True)
+        self.assertEqual(result['status'], 'ok', result.get('error'))
+        self.assertEqual([e for e in h.events if not str(e).startswith('checkpoint')],
+                         ['set_brush', 'configure', 'paintStrokes', ('restore', 'b) Smudge', 'done')],
+                         'configure, paintStrokes, job end, restore: the job holds the view\'s live preset until it ends')
+        self.assertNotIn('preset', h.job_calls[0][1], "so the job copies the view's preset, overlay mode included")
+        self.assertNotIn('brush_restore', result)
+
+    def test_a_failed_smudge_restore_is_reported(self):
+        h = self.harness(); h._creative_validate_smudge_overlay = lambda preset, rate=False: None
+        h.cmd_configure_brush = lambda params: {'status': 'ok', 'preset': 'b) Smudge'}
+        h.cmd_restore_brush = lambda params: {'error': 'No saved settings for this brush in this session'}
+        result = self._pass(h, 2, smudge_overlay=True)
+        self.assertIn('failed', result['brush_restore']); self.assertIn('No saved settings', result['brush_restore'])
+
+    def test_a_continuation_paints_the_earlier_layer_without_activating_it(self):
+        h = self.harness()
+        self.assertEqual(self._pass(h, 2)['status'], 'ok')
+        artist = Layer('artist'); h.doc.nodes.append(artist); h.doc.active = artist
+        result = self._pass(h, 2, operation_id='op-2', continue_layer_id='layer-1')
+        self.assertEqual(result['status'], 'ok', result.get('error'))
+        self.assertEqual((len(h.job_calls), h.created_layers), (2, 1))
+        self.assertEqual(h.job_calls[1][3].identity, 'layer-1')
+        self.assertEqual(h.doc.active.identity, 'artist')
+
+    def test_a_blended_or_clipped_pass_paints_its_craft_layer_as_a_job(self):
+        h = self.harness()
+        result = self._pass(h, 2, blend_mode='multiply')
+        self.assertEqual(result['status'], 'ok', result.get('error'))
+        self.assertEqual(result['clip'], 'clipped')
+        self.assertEqual((len(h.job_calls), h.brushes, h.paints), (1, 0, 0))
+        self.assertEqual(h.job_calls[0][3].identity, result['layer_id'])
+
+    def test_a_node_without_paint_strokes_is_an_error_not_a_fall_back_to_the_stock_block(self):
+        h = self.harness(); h.layer_class = NoStrokesLayer
+        h._new = lambda: (setattr(h, 'created_layers', h.created_layers + 1), h.doc.nodes.append(NoStrokesLayer('layer-1')),
+                          setattr(h.doc, 'active', h.doc.nodes[-1]), h.doc.nodes[-1])[-1]
+        result = self._pass(h, 2)
+        self.assertEqual((result['status'], result['error_code']), ('partial', 'partial_change'))
+        self.assertIn('paintStrokes', result['error'])
+        self.assertEqual((h.paints, h.brushes, h.job_calls), (0, 0, []))
+
+
 class BackgroundCheckpointTests(unittest.TestCase):
     """With a protocol-6 native helper a checkpoint saves in the background (agent_accel.save_in_background): its result
     reports the job and claims no save; the next checkpoint, a save_status call or the end confirms it. Without the

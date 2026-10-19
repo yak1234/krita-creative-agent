@@ -99,8 +99,18 @@
   half so the artist's strokes run between them, the artist's Ctrl+Z stops the job and then undoes, Krita's own
   cancellation leaves jobs alone, bounded GUI-thread waits, Wash brushes report after their merge. TestStrokeJobs 24 and
   TestPythonStrokeJobs 6 functions; the Wash test failed once in 27 author runs and 0 in 40 lead runs (watch it).
-  Remaining: the plugin switch-over (paint_pass to paintStrokes, Stop as cancel, a bridge job registry, the companion
-  polling) and a live New Moscow measurement.)*
+  Plugin side done on `agent/plugin-jobs`: `paint_pass` paints one `Node.paintStrokes` job on the fork (stage mask as
+  the job's selection, pen input as given, Stop as `job.cancel()`, refresh of `changedRect()` only); stock keeps the
+  helper and Python paths. Ruling: no bridge job registry. The plugin stays synchronous to the bridge and polls the job
+  on the GUI thread (10 ms bounded waits with Qt events between them, since the feeder runs from the event loop); the
+  companion already follows a pass through `.progress.json`, so it needs no polling of its own. The artist's Undo
+  mid-pass is waited out (the deferred undo must land) before anything is observed, saved or recorded, and the pass is
+  then `partial_change`; a job still painting at 100 s is cancelled (the bridge gives a pass 120 s); the artist's layer
+  is active again as soon as the job starts. Remaining: the fork's cancel reason (script / undo / document closed; the
+  plugin uses `StrokeJob.cancelReason()` when it exists), the fork cloning the preset at the call (the plugin restores
+  smudge overlay mode only after the job ends until then), and the live checks in the fork: Stop mid-pass, Ctrl+Z
+  mid-pass (also before the first stroke), the artist painting during a pass, pen inputs visibly applied, and a New
+  Moscow measurement.)*
 - [x] 2.5 `Document.beginAgentMove(name)` / `endAgentMove()`: one named undo step per move, marked in the undo
   history docker; the plugin's Keep / Undo uses it. Tests: a 1400-stroke move is one step, Undo of a move rejects all
   its async passes, and earlier artist strokes stay in the history.

@@ -1,6 +1,10 @@
 """The Creative Agent's native helper (krita-native/agent-accel), when Krita loaded it: Krita internals the Python API
 lacks, built against the exact Krita it runs in.
 
+Painting: on the fork (our Krita, the product) paint_pass paints through libkis's own Node.paintStrokes stroke jobs
+(creative_tools._creative_stroke_job) and never through this helper; paint_strokes below is stock Krita 5.3.3's path,
+frozen. The helper's other calls (region refresh, selection, background save) are unchanged.
+
 The helper puts one object on the application, named `creative-agent-accel`, with invokable methods taking plain
 values; this module finds it and calls them through Qt's meta-object system, the same under PyQt5 and PyQt6. Without the
 helper (stock install, another Krita version) every call returns None and the plugin keeps its Python path.
@@ -264,9 +268,10 @@ def save_compare(doc, plugin, rounds=1, tick_ms=10, app=None):
 
 
 PAINT_GROUP = 64                          # strokes per call: Stop is checked between groups, as between strokes today
-# paint_pass paints every pass through the helper when this is on, and otherwise only passes with pen pressure, which
-# the Python API cannot paint. Measured 19 October on merged New Moscow (stroke_compare, 256 strokes, three presets):
-# identical pixels, 1.02-1.07x the speed, since Krita's brush engine is nearly all the time.
+# Stock Krita only (frozen): on the fork paint_pass paints every pass as a Node.paintStrokes job, whatever this says.
+# On stock, paint_pass paints every pass through the helper when this is on, and otherwise only passes with pen input,
+# which the Python API cannot paint. Measured 19 October on merged New Moscow (stroke_compare, 256 strokes, three
+# presets): identical pixels, 1.02-1.07x the speed, since Krita's brush engine is nearly all the time.
 NATIVE_STROKES = False
 
 

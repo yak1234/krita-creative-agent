@@ -4,7 +4,8 @@ import re
 
 MAX_PASS_STROKES = 1024
 # A stroke's optional pen input, one entry per point (the start, then each segment end), in the units Krita's tablet
-# input gives its brush engine (krita-native/agent-accel/stroke_points.h). Only the native helper paints them.
+# input gives its brush engine (krita-native/agent-accel/stroke_points.h). The fork's Node.paintStrokes reads them as
+# given; on stock Krita only the native helper paints them.
 PEN_INPUTS = ('pressure', 'tilt', 'rotation', 'speed', 'time_ms')
 MAX_STROKE_MS = 3600000
 

@@ -232,6 +232,7 @@ set(kritaimage_LIB_SRCS
    kis_image.cc
    kis_image_signal_router.cpp
    KisImageSignals.cpp
+   KisImageChangeReports.cpp
    kis_image_config.cpp
    KisImageResolutionProxy.cpp
    kis_projection_updates_filter.cpp

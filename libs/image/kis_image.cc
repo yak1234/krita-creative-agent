@@ -6,6 +6,7 @@
  */
 
 #include "kis_image.h"
+#include "KisImageChangeReports.h"
 
 #include <KoConfig.h> // WORDS_BIGENDIAN
 
@@ -2485,6 +2486,8 @@ void KisImage::KisImagePrivate::
 
 void KisImage::requestProjectionUpdate(KisNode *node, const QVector<QRect> &rects, KisProjectionUpdateFlags flags)
 {
+    KisImageChangeReports::instance()->reportNodeDirty(this, node, rects, currentLevelOfDetail());
+
     /**
      * We iterate through the filters in a reversed way. It makes the most nested filters
      * to execute first.

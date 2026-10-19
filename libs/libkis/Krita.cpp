@@ -55,6 +55,7 @@
 #include "Filter.h"
 #include "InfoObject.h"
 #include "Resource.h"
+#include "DocumentChanges.h"
 
 Krita* Krita::s_instance = 0;
 
@@ -331,6 +332,8 @@ Document* Krita::createDocument(int width, int height, const QString &name, cons
     }
 
     Q_ASSERT(document->image());
+    // Added without a notification: start its change report, so Notifier follows it (krita-fork 2.2).
+    DocumentChanges::forImage(document->image());
     Document *doc = new Document(document, true);
 
     return doc;

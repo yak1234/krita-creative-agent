@@ -4,12 +4,14 @@ set(kritalibkis_LIB_SRCS
     DockWidget.cpp
     DockWidgetFactoryBase.cpp
     Document.cpp
+    DocumentChanges.cpp
     Filter.cpp
     InfoObject.cpp
     Krita.cpp
     ManagedColor.cpp
     Node.cpp
     Notifier.cpp
+    NotifierExtras.cpp
     PaintingResources.cpp
     PresetChooser.cpp
     Preset.cpp

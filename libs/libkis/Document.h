@@ -46,6 +46,73 @@ public:
     bool operator!=(const Document &other) const;
 
 public Q_SLOTS:
+    // Change reports (krita-fork 2.2; implemented in DocumentChanges.cpp)
+
+    /**
+     * @brief revision a counter that increases every time the image changes: each recomposited area Krita reports
+     * (the updates that redraw the canvas, from the artist's strokes as well as from scripts), and each change of the
+     * image's size or colour space. Reading it costs nothing like hashing the pixels.
+     *
+     * Compare revisions of the same document only: one counter serves all documents, so a revision of another
+     * document says nothing about this one.
+     * Wait for the image (waitForDone()) before reading it if a change you made must be counted.
+     *
+     * @code
+     * before = doc.revision()
+     * # ... the artist or a script paints ...
+     * doc.waitForDone()
+     * if doc.revision() != before:
+     *     print("changed:", doc.changedRect(before))
+     * @endcode
+     *
+     * @return the current revision, at least 1
+     */
+    qint64 revision() const;
+
+    /**
+     * @brief changedRect the union of the areas of the image changed after revision \p sinceRevision, clipped to the
+     * image. An empty rect means nothing changed since then.
+     *
+     * When that history is gone (too old, or from before the document's change report began) it returns the whole
+     * image, so a caller never misses a change. Touching changes (a stroke's) share history, so a revision taken in
+     * the middle of a stroke may get a little more than changed since then, never less.
+     *
+     * @param sinceRevision a value revision() returned earlier for this document
+     * @return the changed area in image pixels
+     */
+    QRect changedRect(qint64 sinceRevision) const;
+
+    /**
+     * @brief setAgentActive marks the changes requested from now on as made by the agent ("agent") instead of the
+     * artist ("artist"), until called with false. The mark shows in Notifier.imageChanged() and
+     * Notifier.nodePixelsChanged(). It applies to the document, not to this wrapper object.
+     *
+     * A change is marked when its pixels are written and the area is asked to be redrawn, not when Krita later
+     * recomposites it: a stroke written while the switch is on stays "agent" even if the switch is off by the time
+     * the canvas updates. A stroke still being written after the switch goes off (an asynchronous stroke not waited
+     * for) is marked "artist", and anything the artist paints while it is on is marked "agent": switch it off after
+     * your work has landed (waitForDone()).
+     *
+     * The switch does not nest: true twice and false once leaves it off. It belongs to the one script driving the
+     * agent; a count would let an unbalanced script mark every later change as the agent's. Agent moves and jobs
+     * (C++) nest on their own and keep the document marked while any is open, whatever this switch says.
+     *
+     * @param active true while the agent is changing the document
+     */
+    void setAgentActive(bool active);
+
+    /**
+     * @return true while changes are marked as the agent's: setAgentActive(true) is in effect, or any agent work is
+     * open (an agent move, which implies agent-active, or an asynchronous agent job), whichever started it
+     */
+    bool agentActive() const;
+
+    /**
+     * @return "agent" while the changes are marked as the agent's, else "artist"
+     */
+    QString changeSource() const;
+
+public Q_SLOTS:
     /**
      * @brief DEPRECATED - use guidesConfig() instead
      * The horizontal guides.

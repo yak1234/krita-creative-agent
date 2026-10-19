@@ -21,6 +21,13 @@ public:
     bool operator!=(const Document &other) const;
 
 public Q_SLOTS:
+    qint64 revision() const;
+    QRect changedRect(qint64 sinceRevision) const;
+    void setAgentActive(bool active);
+    bool agentActive() const;
+    QString changeSource() const;
+
+public Q_SLOTS:
     QList<qreal> horizontalGuides() const;
     QList<qreal> verticalGuides() const;
     bool guidesVisible() const;

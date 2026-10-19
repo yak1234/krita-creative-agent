@@ -10,6 +10,7 @@
 #include "View.h"
 #include "Window.h"
 #include "Document.h"
+#include "NotifierExtras.h"
 
 struct Notifier::Private {
     Private() {}
@@ -34,6 +35,8 @@ Notifier::Notifier(QObject *parent)
     connect(KisPart::instance(), SIGNAL(sigMainWindowCreated()), SIGNAL(windowCreated()));
 
     connect(KisConfigNotifier::instance(), SIGNAL(configChanged()), SIGNAL(configurationChanged()));
+
+    new NotifierExtras(this);
 
     blockSignals(false);
 }

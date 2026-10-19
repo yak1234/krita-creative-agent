@@ -8,5 +8,8 @@ if (HAVE_PYQT${QT_MAJOR_VERSION} AND HAVE_SIP AND HAVE_PYTHONLIBS)
     add_subdirectory(sip)
     add_subdirectory(plugin)
     add_subdirectory(kritarunner)
+    if (BUILD_TESTING)
+        add_subdirectory(tests)
+    endif()
 
 endif ()

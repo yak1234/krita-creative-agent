@@ -117,6 +117,11 @@
 - [ ] 5.1 `createBrushTip` and `createPreset` from scripts, without a restart; material-stamp offers Krita-brush stamps.
 - [ ] 5.2 `mergeGroups` and `FilterMask.bake` on `KisImage::mergeMultipleLayers` and `flattenLayer`;
   `merge_agent_work` uses them.
+  *(Fork side merged 020af6a, after one review and a fix pass: `Krita.createBrushTip` / `createPreset` replace only the
+  agent's own resources (else "name (2)"), `Document.mergeGroups` and `FilterMask.bake` refuse locked or hidden parents,
+  bake keeps small layers small, both join an open agent move as one step (`KisProcessingApplicator::UndoFacadeOverride`,
+  a listed upstream edit). Lead re-ran 14 suites through agent/run-tests.sh: all pass. Remaining for 5.1 and 5.2: the
+  plugin side, material-stamp's Krita-brush stamps and `merge_agent_work` on mergeGroups / bake.)*
 - [ ] 5.3 Tools as functions: bucket and enclose-and-fill, gradient, smart patch (moved out of its tool), undoable move,
   and perspective, warp and liquify baked through the transform workers.
 

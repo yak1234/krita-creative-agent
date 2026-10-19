@@ -51,6 +51,9 @@
   (`krita-native`) into the fork's tree with their history (git subtree); build, install and test from there (the
   plugin installed into the fork's own pykrita by the build); CI runs both suites; upstream sync becomes a monthly merge
   of upstream master (AGENT-FORK.md). Stock 5.3.3 support stays frozen until the artist paints in the fork.
+  *(Merged 56c7040: the whole repository, 464 files and 204 commits, under `creative-agent/` on `krita-agent`; suites pass
+  there (Python 442, JS 392); AGENT-FORK.md switched to monthly merges, c1f3f3b; `digital_art/krita` frozen. Remaining:
+  the fork's build installs the plugin into its own pykrita, and CI.)*
 ## 2. Krita's bottleneck (`agent-speed-api`)
 - [x] 2.1 `Document.refreshProjection(QRect)`, and `setPixelData` dirtying only its rect; the plugin passes known
   bounds. Measure.

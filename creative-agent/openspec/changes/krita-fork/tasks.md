@@ -54,6 +54,11 @@
   *(Merged 56c7040: the whole repository, 464 files and 204 commits, under `creative-agent/` on `krita-agent`; suites pass
   there (Python 442, JS 392); AGENT-FORK.md switched to monthly merges, c1f3f3b; `digital_art/krita` frozen. Remaining:
   the fork's build installs the plugin into its own pykrita, and CI.)*
+- [ ] 1.6 Fork parity, first priority (the artist, 19 October): the fork must be at least as capable as stock Krita with
+  the helper. Build the native helper inside the fork's tree for Qt6, installed and loaded with the app; pen pressure,
+  tilt and speed through master's `paintPolylineStroke`; native seed selection; background save; the vetted Krita
+  actions audited for the fork's version. Live check in the fork: accel, pen, select and save probes, and an Agent-mode
+  chat.
 ## 2. Krita's bottleneck (`agent-speed-api`)
 - [x] 2.1 `Document.refreshProjection(QRect)`, and `setPixelData` dirtying only its rect; the plugin passes known
   bounds. Measure.

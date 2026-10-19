@@ -98,7 +98,10 @@
 - [ ] 2.9 libkis traps fixed: `Filter.apply` undoable and selection-aware without blocking; undo for
   `Node.setPixelData`, `move` and `setOpacity`; `Selection.contract` and `resize` corrected; painting without an active
   view refused cleanly; per-stroke overrides (mirror, selection, composite op) so the view's state never leaks into
-  agent strokes.
+  agent strokes. Also (from the 5.3 review): libkis calls that run a stroke must not end the artist's open strokes
+  (`setRequestsOtherStrokesToEnd(false)`) and must wait for their own stroke only, never `image->waitForDone()`, which
+  ends open strokes and can hang while the artist's pen is down: `DocumentHistory::runCommandStroke` and the waits in
+  `Node.cpp` and `Document.cpp`.
 - [ ] 2.6 Verify: the New Moscow and 1024×768 chunk times are within a factor of 1.5; an observe at 6000×4500 takes
   under 2 s.
 

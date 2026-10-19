@@ -30,12 +30,22 @@ export EXTRA_RESOURCE_DIRS="$root/_install/share;$root/krita/data"   # as KoTest
 export QT_QPA_PLATFORM=offscreen
 export QTEST_FUNCTION_TIMEOUT=$(( (limit + 60) * 1000 ))
 known="$root/agent/known-test-failures.txt"
+# Programs upstream itself marks broken: each krita_add_broken_unit_test( ... ) block's binary is its TEST_NAME, or else
+# its first .cpp; both names are listed.
+upstream_broken=$(cd "$root" && git ls-files '*CMakeLists.txt' | xargs awk '
+    /krita_add_broken_unit_test[ ]*\(/ { open = 1; first = 1 }
+    open && first && match($0, /[A-Za-z_0-9]+\.cpp/) { print substr($0, RSTART, RLENGTH - 4); first = 0 }
+    open && match($0, /TEST_NAME[ ]+[A-Za-z_0-9]+/) { split(substr($0, RSTART, RLENGTH), part, / +/); print part[2] }
+    open && /\)/ { open = 0 }' 2>/dev/null)
 
 run() {                                                   # run PROGRAM [FUNCTION...]
     local program="$1"; shift
     local binary="$root/_build/bin/$program"
     [ -x "$binary" ] || { echo "MISSING $program (not built: agent/build-macos.sh --tests)"; return 1; }
     local functions=("$@")
+    if [ ${#functions[@]} -eq 0 ] && grep -qx "$program" <<< "$upstream_broken"; then
+        echo "SKIP   $program (upstream registers it with krita_add_broken_unit_test; name functions to run them)"; return 0
+    fi
     if [ ${#functions[@]} -eq 0 ] && [ -f "$known" ] && grep -q "^$program::\*" "$known"; then
         echo "SKIP   $program (every function, known-test-failures.txt; name functions to run them)"; return 0
     fi

@@ -226,3 +226,11 @@ agent-hours for `super_docker_lock`, `separatebrusheraser` and `quick_brush_size
 - The licence and origin of Revamp's two folder PNGs, and the licences of most bundled plugins (headers absent).
 - The exact scheme name string and the Creative Agent dock's object name (needed for the workspace and `kritarc` keys).
 - How the stroke-preview worker threads behave under the fork's stroke code: judged from reading, not run.
+
+## 9. Context7 lookups (Qt 5 to Qt 6) and which mattered
+
+- Qt 6.8 (`/websites/doc_qt_io_qt-6_8`): `QMouseEvent::pos()` and `globalPos()` are obsolete since Qt 6.0 (use `position()` and `globalPosition().toPoint()`). Mattered: they appear in Revamp code of features rated drop/defer (`KisResourceItemListView` drag-reorder, `KisBrushTagSelectorWidget`, `WGSelectorPopup`, `WGShadeSlider`); master builds with `QT_DISABLE_DEPRECATED_BEFORE=0x050E00`, so they compile but should use the Qt 6 calls. The clipping, folder, toolbar, preset and smoothing code uses none.
+- Qt 6.8: `QMediaContent` is gone; `QMediaPlayer` uses `setSource(QUrl)` plus a `QAudioOutput`. Mattered: why `timer_watch` is "drop or rewrite audio", not a mechanical port.
+- PyQt6 (`/websites/riverbankcomputing_static_pyqt6`): `QAction` is documented under `qtgui`, `QMenu.exec()` replaces `exec_()`, scoped enums (for example `QAction.MenuRole.NoRole`). Mattered: confirms the section 6 recipe.
+- Removed classes (QRegExp, QStringRef, QDesktopWidget, QMatrix): none in Revamp's added lines, so no query was needed.
+- Krita master facts (zoom, idle interval, `useDirtyPresets`, libkis) came from the fork's source, not Context7.

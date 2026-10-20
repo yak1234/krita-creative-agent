@@ -14,11 +14,16 @@ and paints from those references, one element at a time.
 He also wants the agent to place things better. Tracing from a reference can help, but only as a painter's underdrawing,
 never as a way to turn a photo into the painting.
 
-## The rule that governs everything (the artist's)
+## The rule that governs everything (the artist's, revised 2026-10-20)
 
-A reference is looked at, never pasted. The agent never filters, stylizes, composites, or projects reference pixels onto
-the painting and calls it painting. Every mark on the painting is a brush stroke the agent chose. (Filters are fine as
-filters; they are not a way to turn a reference into the picture.)
+Everything reaches the painting through painting tools: brush strokes, the reference tools
+(`paint_reference`, `paint_reference_edges`, `paint_reference_surface`), fills and the like. Pasted, filtered or
+projected reference pixels are fine as long as they go onto the canvas through those tools. What is not wanted is a
+reference dropped onto the canvas as an image and called a painting. The reference tools are kept exactly as they are.
+
+Guided trace and the reference tools do different jobs and combine: guided trace gives placement and shape (a few
+construction lines, no colour), the reference tools give colour and light, the agent's own strokes give edges, detail
+and finish.
 
 ## Goals
 
@@ -32,8 +37,8 @@ filters; they are not a way to turn a reference into the picture.)
 
 ## Non-goals
 
-- No reference pixels in the painting: no paste, no projection, no "style transfer" of a photo, no filter that turns a
-  reference into a layer. A guide layer holds lines the agent drew, not photo pixels.
+- No reference dropped onto the canvas as an image layer (everything goes through painting tools; see the rule). A
+  guide layer holds lines the agent drew, not photo pixels.
 - Guide lines are never the final linework: the guide is hidden (or deleted) when its element is done, and nothing is
   merged from it.
 - No running anything from the folder: no scripts, no programs, no links followed out to the internet.
@@ -42,7 +47,6 @@ filters; they are not a way to turn a reference into the picture.)
 
 ## Anti-goals (would make it a failure even if it "works")
 
-- A finished painting that looks like a filtered photo of the references.
 - The guide lines showing in the final image, or the agent tracing photo outlines as the finished drawing.
 - The agent silently rewriting the artist's own brief.
 

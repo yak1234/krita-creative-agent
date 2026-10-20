@@ -7,9 +7,11 @@
 #include "kis_stroke_strategy_undo_command_based.h"
 
 #include <QMutexLocker>
+#include <QScopedPointer>
 #include "kis_image_interfaces.h"
 #include "kis_post_execution_undo_adapter.h"
 #include "commands_new/kis_saved_commands.h"
+#include "KisTouchedDevices.h"
 
 
 KisStrokeStrategyUndoCommandBased::Data::~Data()
@@ -44,7 +46,8 @@ KisStrokeStrategyUndoCommandBased(const KisStrokeStrategyUndoCommandBased &rhs)
     m_initCommand(rhs.m_initCommand),
     m_finishCommand(rhs.m_finishCommand),
     m_undoFacade(rhs.m_undoFacade),
-    m_macroCommand(0)
+    m_macroCommand(0),
+    m_touchedDevices(rhs.m_touchedDevices ? new KisTouchedDevices::Set() : nullptr)
 {
     KIS_ASSERT_RECOVER_NOOP(!rhs.m_macroCommand &&
                             !rhs.m_undo &&
@@ -57,6 +60,11 @@ void KisStrokeStrategyUndoCommandBased::setUsedWhileUndoRedo(bool value)
     setAsynchronouslyCancellable(!value);
 }
 
+void KisStrokeStrategyUndoCommandBased::setReportsTouchedDevices(bool value)
+{
+    m_touchedDevices.reset(value ? new KisTouchedDevices::Set() : nullptr);
+}
+
 void KisStrokeStrategyUndoCommandBased::executeCommand(KUndo2CommandSP command, bool undo)
 {
     if(!command) return;
@@ -65,6 +73,8 @@ void KisStrokeStrategyUndoCommandBased::executeCommand(KUndo2CommandSP command, 
         mutatedCommand->setRunnableJobsInterface(this->runnableJobsInterface());
     }
 
+    // Krita Agent: the transactions the command makes note their devices, when the stroke reports them.
+    QScopedPointer<KisTouchedDevices::Recording> recording(m_touchedDevices ? new KisTouchedDevices::Recording(m_touchedDevices) : nullptr);
     if(undo) {
         command->undo();
     } else {
@@ -95,6 +105,8 @@ void KisStrokeStrategyUndoCommandBased::finishStrokeCallback()
     if(m_macroCommand) {
         Q_ASSERT(m_undoFacade);
         postProcessToplevelCommand(m_macroCommand);
+        // Krita Agent: the step says which devices it changed, when the stroke reports them.
+        QScopedPointer<KisTouchedDevices::Report> report(m_touchedDevices ? new KisTouchedDevices::Report(m_macroCommand, m_touchedDevices->devices()) : nullptr);
         m_undoFacade->postExecutionUndoAdapter()->addMacro(m_macroCommand);
         m_macroCommand = 0;
     }

@@ -29,6 +29,7 @@ from .stroke_data import normalize_stroke, number
 from .brush_controls import control_changes
 from .precision_tools import PrecisionTools
 from .creative_tools import CreativeTools
+from .script_steps import one_step
 from .command_queue import CommandQueue
 from .bridge_config import bridge_port, output_dir
 
@@ -418,15 +419,16 @@ class KritaMCPExtension(CreativeTools, PrecisionTools, Extension):
         r, g, b = rgb
         px = bytes((b, g, r, 255))  # Krita RGBA/U8 pixelData uses BGRA
         ok = True
-        for yy in range(int(math.floor(cy - ry)), int(math.ceil(cy + ry)) + 1):
-            dy = (yy + 0.5 - cy) / ry
-            if abs(dy) >= 1.0:
-                continue
-            half = rx * math.sqrt(1.0 - dy * dy)
-            x0, x1 = int(math.floor(cx - half)), int(math.ceil(cx + half))
-            if x1 > x0:
-                if not node.setPixelData(px * (x1 - x0), x0, yy, x1 - x0, 1):
-                    ok = False
+        with one_step(doc, 'Fill ellipse'):     # one undo step for all the rows
+            for yy in range(int(math.floor(cy - ry)), int(math.ceil(cy + ry)) + 1):
+                dy = (yy + 0.5 - cy) / ry
+                if abs(dy) >= 1.0:
+                    continue
+                half = rx * math.sqrt(1.0 - dy * dy)
+                x0, x1 = int(math.floor(cx - half)), int(math.ceil(cx + half))
+                if x1 > x0:
+                    if not node.setPixelData(px * (x1 - x0), x0, yy, x1 - x0, 1):
+                        ok = False
         doc.refreshProjection()
         return {"status": "ok" if ok else "partial", "note": "some rows may have failed"} if ok else {"error": "setPixelData returned False for some rows"}
 
@@ -1425,29 +1427,30 @@ class KritaMCPExtension(CreativeTools, PrecisionTools, Extension):
             return {"error": "cells required: [[x,y,w,h,color], ...] or rect"}
         ok = True
         painted = 0
-        for c in cells:
-            if not isinstance(c, (list, tuple)) or len(c) < 5:
-                continue
-            x, y, w, h, hex_color = c[0], c[1], c[2], c[3], c[4]
-            rgb = self._hex_rgb(hex_color)
-            if rgb is None:
-                ok = False
-                continue
-            r, g, b = rgb
-            xx, yy = int(x), int(y)
-            ww, hh = int(w), int(h)
-            if ww <= 0 or hh <= 0:
-                continue
-            row = bytes((b, g, r, 255)) * ww  # BGRA for RGBA/U8
-            data = row * hh
-            try:
-                res = node.setPixelData(data, xx, yy, ww, hh)
-            except Exception:
-                res = False
-            if not res:
-                ok = False
-            else:
-                painted += 1
+        with one_step(doc, 'Paint pixels'):     # one undo step for all the cells
+            for c in cells:
+                if not isinstance(c, (list, tuple)) or len(c) < 5:
+                    continue
+                x, y, w, h, hex_color = c[0], c[1], c[2], c[3], c[4]
+                rgb = self._hex_rgb(hex_color)
+                if rgb is None:
+                    ok = False
+                    continue
+                r, g, b = rgb
+                xx, yy = int(x), int(y)
+                ww, hh = int(w), int(h)
+                if ww <= 0 or hh <= 0:
+                    continue
+                row = bytes((b, g, r, 255)) * ww  # BGRA for RGBA/U8
+                data = row * hh
+                try:
+                    res = node.setPixelData(data, xx, yy, ww, hh)
+                except Exception:
+                    res = False
+                if not res:
+                    ok = False
+                else:
+                    painted += 1
         doc.refreshProjection()
         return {"status": "ok" if ok else "partial", "painted": painted, "total": len(cells)}
 

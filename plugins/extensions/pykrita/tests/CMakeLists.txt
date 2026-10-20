@@ -9,10 +9,11 @@ kis_add_tests(
     TestPythonAgentTools.cpp
     TestPythonStrokeJobs.cpp
     TestPythonFeatureBuilders.cpp
+    TestPythonTraps.cpp
     LINK_LIBRARIES kritalibkis kritatestsdk ${PYTHON_LIBRARY}
     )
 
-foreach(test TestPythonChangeEvents TestPythonAgentMove TestPythonAgentCraft TestPythonFeatures TestPythonAgentTools TestPythonStrokeJobs TestPythonFeatureBuilders)
+foreach(test TestPythonChangeEvents TestPythonAgentMove TestPythonAgentCraft TestPythonFeatures TestPythonAgentTools TestPythonStrokeJobs TestPythonFeatureBuilders TestPythonTraps)
     target_include_directories(${test} SYSTEM PRIVATE "${PYTHON_INCLUDE_DIRS}")
     target_compile_definitions(${test} PRIVATE
         PYKRITA_TEST_MODULE="$<TARGET_FILE:python_module_PyKrita_krita>"

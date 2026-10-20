@@ -19,6 +19,7 @@
 #include <kis_types.h>
 #include <kis_stroke_job_strategy.h>
 #include <kundo2magicstring.h>
+#include <processing/KisToolFunctions.h>
 
 #include "kritalibkis_export.h"
 
@@ -116,12 +117,40 @@ public:
 
     /**
      * Runs \p command in a stroke on \p image, as KisProcessingApplicator::runSingleCommandStroke() does, with its
-     * undo going to the open macro or move if there is one.
+     * undo going to the open macro or move if there is one, and returns at once. The stroke never asks the artist's
+     * open strokes to end. Its completion says when it has run (ScriptWaits waits for it). \p pixelsOnly: the command
+     * changes only paint devices' pixels, through transactions, and the step reports which devices (KisTouchedDevices).
      */
-    static void runCommandStroke(KisImageSP image,
-                                 KUndo2Command *command,
-                                 KisStrokeJobData::Sequentiality sequentiality = KisStrokeJobData::SEQUENTIAL,
-                                 KisStrokeJobData::Exclusivity exclusivity = KisStrokeJobData::NORMAL);
+    static KisToolFunctions::CompletionSP runCommandStroke(KisImageSP image,
+                                                           KUndo2Command *command,
+                                                           KisStrokeJobData::Sequentiality sequentiality = KisStrokeJobData::SEQUENTIAL,
+                                                           KisStrokeJobData::Exclusivity exclusivity = KisStrokeJobData::NORMAL,
+                                                           bool pixelsOnly = false);
+
+    /**
+     * runCommandStroke(), then waits for that stroke only (ScriptWaits::waitForStroke()): true once it has run;
+     * false, with the stroke cancelled and a warning naming \p call, when it was held back past the wait limit.
+     */
+    static bool runCommandStrokeAndWait(KisImageSP image,
+                                        KUndo2Command *command,
+                                        const char *call,
+                                        KisStrokeJobData::Sequentiality sequentiality = KisStrokeJobData::SEQUENTIAL,
+                                        KisStrokeJobData::Exclusivity exclusivity = KisStrokeJobData::NORMAL,
+                                        bool pixelsOnly = false);
+
+    /**
+     * Runs \p command at once on this thread, for an image that is locked (Document.lock(): no stroke runs until it
+     * is unlocked), and records its undo step: in the open macro or move, else the image's history. The command is
+     * run as the first redo of a stroke would. True always.
+     */
+    static bool runCommandDirect(KisImageSP image, KUndo2Command *command);
+
+    /**
+     * For the simple property and pixel calls (opacity, name, visibility, pixel data): as runCommandStrokeAndWait(),
+     * but on a locked image the command is run at once and recorded (runCommandDirect()), so a script inside a
+     * lock block reads the new value back at once.
+     */
+    static bool runPropertyCommand(KisImageSP image, KUndo2Command *command, const char *call, bool pixelsOnly = false);
 
     /**
      * The stroke undo facade of the open macro or move on \p image, or null when none is open. Upstream operations
@@ -174,6 +203,13 @@ public:
      * returns true. Outside them it does nothing and returns false (the caller writes at once, as upstream).
      */
     static bool queuePixelWrite(KisImageSP image, KisNodeSP node, const QByteArray &data, const QRect &rect);
+
+    /**
+     * Writes \p data into \p rect of \p node's paint device as an undo step: part of the open macro or move (queued,
+     * as queuePixelWrite()), else a step of its own, "Set Pixel Data", waited for (its own stroke only). False when
+     * the node has no paint device, or the step was held back past the wait limit and cancelled.
+     */
+    static bool writePixelData(KisImageSP image, KisNodeSP node, const QByteArray &data, const QRect &rect);
 
     /**
      * A hold on the step a stroke job on \p image joins: the open macro or agent move, or else a new step of the

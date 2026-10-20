@@ -157,7 +157,7 @@ void KisToolGradient::endPrimaryAction(KoPointerEvent *event)
     if (image && resources->currentNode()->paintDevice()) {
         KUndo2MagicString actionName = kundo2_i18n("Gradient");
         KisProcessingApplicator applicator(image, resources->currentNode(),
-                                           KisProcessingApplicator::NONE,
+                                           KisProcessingApplicator::REPORTS_TOUCHED_DEVICES, // Krita Agent
                                            KisImageSignalVector(),
                                            actionName);
 

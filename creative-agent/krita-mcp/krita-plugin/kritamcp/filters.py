@@ -17,6 +17,7 @@ Krita ignores a filter mask's opacity, but its pixels are a strength map. Each m
 coverage is saved in the study folder, and fading rewrites the mask as that coverage
 times the strength, always from the saved original.
 """
+import contextlib
 import hashlib
 import os
 from krita import Krita, Selection
@@ -26,6 +27,24 @@ from . import capabilities
 FILTER_FIELDS = ('target', 'filter', 'config', 'mode', 'name', 'selection', 'area', 'stage_id', 'region', 'expected_revision', 'panel')
 MODES = ('mask', 'layer', 'copy')
 MASK_TARGETS = ('paintlayer', 'grouplayer', 'filllayer', 'clonelayer')
+
+
+@contextlib.contextmanager
+def _no_selection(doc):
+    """The document's selection cleared for the block, then put back (also when the block raises).
+
+    In the Krita Agent fork Filter.apply keeps to the document's selection (an artist's or a protection area), as the
+    filter dialog does. The copy is filtered whole here, and the area is blended in afterwards (region_raster.blend), so
+    the selection must not cut the filter itself."""
+    selected = doc.selection()
+    if selected is None:
+        yield
+        return
+    doc.setSelection(None)
+    try:
+        yield
+    finally:
+        doc.setSelection(selected)
 
 
 class FilterCraft:
@@ -151,14 +170,16 @@ class FilterCraft:
     def _filter_copy(self, doc, session, target, krita_filter, name, area, extent):
         copy, result = self._craft_edit_copy(doc, session, target, name)
         if extent is None:
-            if krita_filter.apply(copy, 0, 0, doc.width(), doc.height()) is False:
-                raise RuntimeError('Krita could not apply the filter.')
+            with _no_selection(doc):
+                if krita_filter.apply(copy, 0, 0, doc.width(), doc.height()) is False:
+                    raise RuntimeError('Krita could not apply the filter.')
         else:
             from . import region_raster
             (x, y, w, h), _pixels = extent
             original = bytes(copy.pixelData(x, y, w, h))
-            if krita_filter.apply(copy, x, y, w, h) is False:
-                raise RuntimeError('Krita could not apply the filter.')
+            with _no_selection(doc):
+                if krita_filter.apply(copy, x, y, w, h) is False:
+                    raise RuntimeError('Krita could not apply the filter.')
             doc.waitForDone()
             blended = region_raster.blend(original, bytes(copy.pixelData(x, y, w, h)), bytes(area.pixelData(x, y, w, h)), w, h)
             if copy.setPixelData(blended, x, y, w, h) is False:

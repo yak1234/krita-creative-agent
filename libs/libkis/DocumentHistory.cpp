@@ -17,6 +17,7 @@
 #include <typeinfo>
 
 #include <KisAgentHooks.h>
+#include <KisTouchedDevices.h>
 #include <KisDocument.h>
 #include <commands_new/kis_saved_commands.h>
 #include <kis_command_utils.h>
@@ -30,10 +31,12 @@
 #include <kis_transaction.h>
 #include <kis_transaction_data.h>
 #include <kis_undo_store.h>
+#include <kis_undo_adapter.h>
 #include <kundo2stack.h>
 
 #include "Document.h"
 #include "DocumentChanges.h"
+#include "ScriptWaits.h"
 
 namespace
 {
@@ -64,12 +67,18 @@ qint64 monotonicMs()
 
 /**
  * The paint devices \p command changes, as far as they can be read: transactions name their device; containers
- * (plain commands with children, composites, saved commands) are looked into. \p unknown is set when some part of it
- * cannot be read (a saved macro's commands are private, and other commands may change devices in ways not shown).
+ * (plain commands with children, composites, saved commands) are looked into, and a stroke that reports its devices
+ * (KisTouchedDevices) is taken at its word. \p unknown is set when some part of it cannot be read (a saved macro's
+ * commands are private, and other commands may change devices in ways not shown).
  */
 void collectDevices(const KUndo2Command *command, QSet<const KisPaintDevice *> &devices, bool &unknown)
 {
     if (!command) {
+        return;
+    }
+    // A stroke that changes only pixels says which devices it changed (the artist's fill, enclose-and-fill and
+    // gradient tools): its saved macro cannot be read.
+    if (KisTouchedDevices::reported(command, &devices)) {
         return;
     }
     KisSavedCommand::unwrap(command, [&](const KUndo2Command *inner) {
@@ -505,23 +514,57 @@ bool DocumentHistory::runCommandStrokeInStep(KisImageSP image, KUndo2Command *co
     return true;
 }
 
-void DocumentHistory::runCommandStroke(KisImageSP image,
-                                       KUndo2Command *command,
-                                       KisStrokeJobData::Sequentiality sequentiality,
-                                       KisStrokeJobData::Exclusivity exclusivity)
+KisToolFunctions::CompletionSP DocumentHistory::runCommandStroke(KisImageSP image,
+                                                                 KUndo2Command *command,
+                                                                 KisStrokeJobData::Sequentiality sequentiality,
+                                                                 KisStrokeJobData::Exclusivity exclusivity,
+                                                                 bool pixelsOnly)
 {
+    // As KisProcessingApplicator::runSingleCommandStroke(), but never asking the artist's open strokes to end, and
+    // into the open step if there is one.
     DocumentHistory *history = forImage(image);
     ScriptStep *step = history ? history->activeStep() : nullptr;
-    if (!step) {
-        KisProcessingApplicator::runSingleCommandStroke(image, command, sequentiality, exclusivity);
-        return;
+    if (step) {
+        step->touch();
     }
-    step->touch();
-    KisStrokeStrategyUndoCommandBased *strategy = new KisStrokeStrategyUndoCommandBased(command->text(), false, step);
-    KisStrokeId id = image->startStroke(strategy);
-    image->addJob(id,
-                  new KisStrokeStrategyUndoCommandBased::Data(KUndo2CommandSP(command), false, sequentiality, exclusivity));
-    image->endStroke(id);
+    KisToolFunctions::CompletionSP completion(new KisToolFunctions::Completion());
+    KisToolFunctions::runCommand(image, command, step, completion, sequentiality, exclusivity, pixelsOnly);
+    return completion;
+}
+
+bool DocumentHistory::runCommandStrokeAndWait(KisImageSP image,
+                                              KUndo2Command *command,
+                                              const char *call,
+                                              KisStrokeJobData::Sequentiality sequentiality,
+                                              KisStrokeJobData::Exclusivity exclusivity,
+                                              bool pixelsOnly)
+{
+    KisToolFunctions::CompletionSP completion = runCommandStroke(image, command, sequentiality, exclusivity, pixelsOnly);
+    // A locked image (Document.lock()) runs no stroke until it is unlocked: the command is queued and runs then, as
+    // the old waitForDone() (which returned at once on a locked, idle image) left it.
+    if (image->locked()) {
+        return true;
+    }
+    return ScriptWaits::waitForStroke(completion, call);
+}
+
+bool DocumentHistory::runCommandDirect(KisImageSP image, KUndo2Command *command)
+{
+    if (KisPostExecutionUndoAdapter *adapter = scriptUndoAdapter(image)) {
+        command->redo(); // post-execution: the command is recorded after it ran
+        adapter->addCommand(KUndo2CommandSP(command));
+    } else {
+        image->undoAdapter()->addCommand(command); // a legacy command: the history runs it as it is pushed
+    }
+    return true;
+}
+
+bool DocumentHistory::runPropertyCommand(KisImageSP image, KUndo2Command *command, const char *call, bool pixelsOnly)
+{
+    if (image->locked()) {
+        return runCommandDirect(image, command);
+    }
+    return runCommandStrokeAndWait(image, command, call, KisStrokeJobData::SEQUENTIAL, KisStrokeJobData::NORMAL, pixelsOnly);
 }
 
 KisStrokeUndoFacade *DocumentHistory::scriptUndoFacade(KisImageSP image, KisPaintDeviceSP device)
@@ -1102,8 +1145,21 @@ bool DocumentHistory::queuePixelWrite(KisImageSP image, KisNodeSP node, const QB
     if (!node || !node->paintDevice() || !scriptUndoAdapter(image, node->paintDevice())) {
         return false;
     }
-    runCommandStroke(image, new PixelWriteCommand(node, data, rect));
+    runCommandStroke(image, new PixelWriteCommand(node, data, rect), KisStrokeJobData::SEQUENTIAL, KisStrokeJobData::NORMAL, true);
     return true;
+}
+
+bool DocumentHistory::writePixelData(KisImageSP image, KisNodeSP node, const QByteArray &data, const QRect &rect)
+{
+    if (!image || !node || !node->paintDevice()) {
+        return false;
+    }
+    if (queuePixelWrite(image, node, data, rect)) {
+        return true;
+    }
+    // Outside a macro or move: a step of its own, waited for (its own stroke only), so the pixels are there when
+    // the call returns.
+    return runPropertyCommand(image, new PixelWriteCommand(node, data, rect), "Node.setPixelData()", true);
 }
 
 /*

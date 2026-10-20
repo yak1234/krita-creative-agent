@@ -13,6 +13,11 @@
 #include "kis_image.h"
 #include "KisToolShapeUtils.h"
 #include "DocumentHistory.h"
+#include <KoCanvasResourceProvider.h>
+#include <kis_processing_applicator.h>
+#include <brushengine/kis_paintop_preset.h>
+#include <kis_paintop_settings.h>
+#include <kis_resources_snapshot.h>
 
 
 const QStringList StrokeStyle = {
@@ -28,15 +33,31 @@ const QStringList FillStyle = {
     "Pattern"           //     KisToolShapeUtils::FillStyle::FillStylePattern
 };
 
+KoCanvasResourceProvider *PaintingResources::viewResources()
+{
+    KisMainWindow *window = KisPart::instance()->currentMainwindow();
+    KisView *view = window ? window->activeView() : nullptr;
+    if (!view || !view->viewManager() || !view->viewManager()->canvasResourceProvider()) return nullptr;
+    return view->viewManager()->canvasResourceProvider()->resourceManager();
+}
+
+bool PaintingResources::hasView()
+{
+    return viewResources() != nullptr;
+}
+
 KisFigurePaintingToolHelper PaintingResources::createHelper(KisImageWSP image,
                                                             KisNodeSP node,
                                                             const QString strokeStyleString,
                                                             const QString fillStyleString,
                                                             const QString &name)
 {
-    // need to grab the resource provider
-    KisView *activeView = KisPart::instance()->currentMainwindow()->activeView();
-    KoCanvasResourceProvider *resourceManager = activeView->viewManager()->canvasResourceProvider()->resourceManager();
+    // The brush and colours come from the active view; callers check hasView() first (Krita Agent: it was
+    // dereferenced unchecked).
+    KoCanvasResourceProvider *resourceManager = viewResources();
+    if (!resourceManager) {
+        warnScript << "PaintingResources::createHelper(): no active view";
+    }
 
     int strokeIndex = StrokeStyle.indexOf(strokeStyleString);
     if (strokeIndex == -1) {
@@ -62,6 +83,9 @@ KisFigurePaintingToolHelper PaintingResources::createHelper(KisImageWSP image,
 
     // Krita Agent: the step is named by the script, or after the open agent move, and joins the open macro or
     // agent move (its commands go to that step's undo adapter instead of the document's history).
+    // A script's stroke never ends the artist's open strokes, and takes its mirror, blending mode and alpha lock
+    // from itself (the preset's own blending mode, no mirror, no alpha lock; the opacity stays the view's Opacity), never from the view's toolbar.
+    KisProcessingApplicator::NoEndRequestsOverride noEndRequests;
     KisFigurePaintingToolHelper helper(
         DocumentHistory::scriptedStrokeName(image, name),
         image,
@@ -69,7 +93,15 @@ KisFigurePaintingToolHelper PaintingResources::createHelper(KisImageWSP image,
         strokeStyle,
         fillStyle,
         QTransform(),
-        DocumentHistory::scriptUndoAdapter(image, node ? node->paintDevice() : KisPaintDeviceSP())
+        DocumentHistory::scriptUndoAdapter(image, node ? node->paintDevice() : KisPaintDeviceSP()),
+        [](KisResourcesSnapshotSP resources) {
+            resources->setMirroring(false, false);
+            resources->setGlobalAlphaLock(false);
+            KisPaintOpPresetSP preset = resources->currentPaintOpPreset();
+            if (preset && preset->settings()) {
+                resources->setCompositeOpId(preset->settings()->paintOpCompositeOp());
+            }
+        }
     );
 
     return helper;

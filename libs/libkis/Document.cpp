@@ -3,6 +3,8 @@
  *
  *  SPDX-License-Identifier: LGPL-2.0-or-later
  */
+#include "ScriptWaits.h"
+#include <kis_processing_applicator.h>
 #include "Document.h"
 #include "DocumentHistory.h"
 #include <QPointer>
@@ -214,9 +216,11 @@ bool Document::setColorProfile(const QString &value)
     if (!d->document->image()) return false;
     const KoColorProfile *profile = KoColorSpaceRegistry::instance()->profileByName(value);
     if (!profile) return false;
-    bool retval = d->document->image()->assignImageProfile(profile);
-    d->document->image()->waitForDone();
-    return retval;
+    bool retval = false;
+    const bool done = ScriptWaits::run(d->document->image(), "Document.setColorProfile()", [&]() {
+        retval = d->document->image()->assignImageProfile(profile);
+    });
+    return retval && done;
 }
 
 bool Document::setColorSpace(const QString &colorModel, const QString &colorDepth, const QString &colorProfile)
@@ -226,12 +230,11 @@ bool Document::setColorSpace(const QString &colorModel, const QString &colorDept
     const KoColorSpace *colorSpace = KoColorSpaceRegistry::instance()->colorSpace(colorModel, colorDepth, colorProfile);
     if (!colorSpace) return false;
 
-    d->document->image()->convertImageColorSpace(colorSpace,
-                                                 KoColorConversionTransformation::IntentPerceptual,
-                                                 KoColorConversionTransformation::HighQuality | KoColorConversionTransformation::NoOptimization);
-
-    d->document->image()->waitForDone();
-    return true;
+    return ScriptWaits::run(d->document->image(), "Document.setColorSpace()", [&]() {
+        d->document->image()->convertImageColorSpace(colorSpace,
+                                                     KoColorConversionTransformation::IntentPerceptual,
+                                                     KoColorConversionTransformation::HighQuality | KoColorConversionTransformation::NoOptimization);
+    });
 }
 
 QColor Document::backgroundColor()
@@ -337,8 +340,9 @@ void Document::setResolution(int value)
     KisFilterStrategy *strategy = KisFilterStrategyRegistry::instance()->get("Bicubic");
     KIS_SAFE_ASSERT_RECOVER_RETURN(strategy);
 
-    image->scaleImage(image->size(), value / 72.0, value / 72.0, strategy);
-    image->waitForDone();
+    ScriptWaits::run(image, "Document.setResolution()", [&]() {
+        image->scaleImage(image->size(), value / 72.0, value / 72.0, strategy);
+    });
 }
 
 
@@ -444,8 +448,9 @@ void Document::setXRes(double xRes) const
     KisFilterStrategy *strategy = KisFilterStrategyRegistry::instance()->get("Bicubic");
     KIS_SAFE_ASSERT_RECOVER_RETURN(strategy);
 
-    image->scaleImage(image->size(), xRes / 72.0, image->yRes(), strategy);
-    image->waitForDone();
+    ScriptWaits::run(image, "Document.setXRes()", [&]() {
+        image->scaleImage(image->size(), xRes / 72.0, image->yRes(), strategy);
+    });
 }
 
 double Document::yRes() const
@@ -464,8 +469,9 @@ void Document::setYRes(double yRes) const
     KisFilterStrategy *strategy = KisFilterStrategyRegistry::instance()->get("Bicubic");
     KIS_SAFE_ASSERT_RECOVER_RETURN(strategy);
 
-    image->scaleImage(image->size(), image->xRes(), yRes / 72.0, strategy);
-    image->waitForDone();
+    ScriptWaits::run(image, "Document.setYRes()", [&]() {
+        image->scaleImage(image->size(), image->xRes(), yRes / 72.0, strategy);
+    });
 }
 
 
@@ -512,8 +518,9 @@ void Document::crop(int x, int y, int w, int h)
     KisImageSP image = d->document->image();
     if (!image) return;
     QRect rc(x, y, w, h);
-    image->cropImage(rc);
-    image->waitForDone();
+    ScriptWaits::run(image, "Document.crop()", [&]() {
+        image->cropImage(rc);
+    });
 }
 
 bool Document::exportImage(const QString &filename, const InfoObject &exportConfiguration)
@@ -530,8 +537,9 @@ void Document::flatten()
 {
     if (!d->document) return;
     if (!d->document->image()) return;
-    d->document->image()->flatten(0);
-    d->document->image()->waitForDone();
+    ScriptWaits::run(d->document->image(), "Document.flatten()", [&]() {
+        d->document->image()->flatten(0);
+    });
 }
 
 void Document::resizeImage(int x, int y, int w, int h)
@@ -545,8 +553,9 @@ void Document::resizeImage(int x, int y, int w, int h)
     rc.setWidth(w);
     rc.setHeight(h);
 
-    image->resizeImage(rc);
-    image->waitForDone();
+    ScriptWaits::run(image, "Document.resizeImage()", [&]() {
+        image->resizeImage(rc);
+    });
 }
 
 void Document::scaleImage(int w, int h, int xres, int yres, QString strategy)
@@ -561,8 +570,9 @@ void Document::scaleImage(int w, int h, int xres, int yres, QString strategy)
     KisFilterStrategy *actualStrategy = KisFilterStrategyRegistry::instance()->get(strategy);
     if (!actualStrategy) actualStrategy = KisFilterStrategyRegistry::instance()->get("Bicubic");
 
-    image->scaleImage(rc.size(), xres / 72.0, yres / 72.0, actualStrategy);
-    image->waitForDone();
+    ScriptWaits::run(image, "Document.scaleImage()", [&]() {
+        image->scaleImage(rc.size(), xres / 72.0, yres / 72.0, actualStrategy);
+    });
 }
 
 void Document::rotateImage(double radians)
@@ -570,8 +580,9 @@ void Document::rotateImage(double radians)
     if (!d->document) return;
     KisImageSP image = d->document->image();
     if (!image) return;
-    image->rotateImage(radians);
-    image->waitForDone();
+    ScriptWaits::run(image, "Document.rotateImage()", [&]() {
+        image->rotateImage(radians);
+    });
 }
 
 void Document::shearImage(double angleX, double angleY)
@@ -579,8 +590,9 @@ void Document::shearImage(double angleX, double angleY)
     if (!d->document) return;
     KisImageSP image = d->document->image();
     if (!image) return;
-    image->shear(angleX, angleY);
-    image->waitForDone();
+    ScriptWaits::run(image, "Document.shearImage()", [&]() {
+        image->shear(angleX, angleY);
+    });
 }
 
 bool Document::save()
@@ -837,8 +849,9 @@ bool Document::tryBarrierLock()
 void Document::refreshProjection()
 {
     if (!d->document || !d->document->image()) return;
-    d->document->image()->refreshGraphAsync();
-    d->document->image()->waitForDone();
+    ScriptWaits::run(d->document->image(), "Document.refreshProjection()", [&]() {
+        d->document->image()->refreshGraphAsync();
+    });
 
 }
 
@@ -979,7 +992,8 @@ void Document::setOwnsDocument(bool ownsDocument)
 
 bool Document::importAnimation(const QList<QString> &files, int firstFrame, int step)
 {
-    KisView *activeView = KisPart::instance()->currentMainwindow()->activeView();
+    KisMainWindow *mainWindow = KisPart::instance()->currentMainwindow();
+    KisView *activeView = mainWindow ? mainWindow->activeView() : nullptr; // (none without a window)
 
     KoUpdaterPtr updater = 0;
     if (activeView && d->document->fileBatchMode()) {

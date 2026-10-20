@@ -53,6 +53,33 @@ class Document(region_tests.Document):
     def waitForDone(self): self.log.append(('wait',))
 
 
+def result_name(doc):
+    return 'Flats'
+
+
+class MoveDocument(Document):
+    """The fork's agent moves: pixel writes made outside one are history steps of their own."""
+    def __init__(self, log):
+        super().__init__(log); self.moves, self.open, self.move_id = [], False, 0
+    def beginAgentMove(self, name):
+        if self.open: return False
+        self.open, self.move_id = True, self.move_id + 1; self.moves.append(name); return True
+    def endAgentMove(self): self.open = False; return True
+    def agentMoveOpen(self): return self.open
+    def agentMoveId(self): return self.move_id
+
+
+class StepLayer(Layer):
+    def setPixelData(self, data, x, y, w, h):
+        self.doc.writes.append(self.doc.open); return super().setPixelData(data, x, y, w, h)
+
+
+class StepDocument(MoveDocument):
+    def __init__(self, log):
+        super().__init__(log); self.writes = []
+    def createNode(self, name, kind): return StepLayer(self, name, kind)
+
+
 class ColorizeTests(region_tests.RegionSetup, unittest.TestCase):
     def setUp(self):
         super().setUp()
@@ -88,6 +115,24 @@ class ColorizeTests(region_tests.RegionSetup, unittest.TestCase):
         self.assertIn(('seed', '#3a6ea5', (0, 0, 4, 4), 16), self.log, 'the default radius is 3')
         entry = self.h._creative_session['passes'][-1]
         self.assertEqual((entry['kind'], entry['title'], entry['layer_id']), ('colorize_flats', 'Colorized flats', flats.id))
+
+    def test_pixel_write_loops_are_one_agent_move_each_never_one_step_per_strip(self):
+        self.h.doc = StepDocument(self.log)
+        self.h._creative_session.update(document_id=region_tests.native.module.document_id(self.h.doc))
+        self.line = Layer(self.h.doc, 'Line art', 'paintlayer')
+        self.line.pixels = bytearray(b''.join(LINE if i % 4 == 2 else OPEN for i in range(16)))
+        self.h.doc.root.addChildNode(self.line, None)
+        result = self.colorize({'seeds': [{'x': 0, 'y': 1, 'color': '#3a6ea5'}, {'x': 3, 'y': 1, 'color': '#d9a441'}]})
+        self.assertEqual(result['status'], 'ok')
+        doc = self.h.doc
+        self.assertTrue(doc.writes)
+        self.assertEqual([w for w in doc.writes if not w], [], 'every pixel write of the loops is inside an agent move')
+        self.assertEqual(doc.moves, ['Colorize helper', 'Colorize read', 'Colorize read', result_name(doc)])
+        self.assertFalse(doc.open, 'no move is left open')
+
+    def test_a_stock_krita_without_agent_moves_still_colorizes(self):
+        result = self.colorize({'seeds': [{'x': 0, 'y': 1, 'color': '#3a6ea5'}, {'x': 3, 'y': 1, 'color': '#d9a441'}]})
+        self.assertEqual(result['status'], 'ok')
 
     def test_a_transparent_seed_keeps_its_region_empty(self):
         self.colorize({'seeds': [{'x': 0, 'y': 0, 'color': 'transparent'}, {'x': 3, 'y': 0, 'color': '#d9a441'}], 'clip_base': False})

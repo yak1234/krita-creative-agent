@@ -15,6 +15,7 @@ from krita import ManagedColor
 from .qt_compat import QCoreApplication, QElapsedTimer
 from .qt_compat import QColor
 from .creative_validation import color as hex_colour, fields, numeric, text
+from .script_steps import one_step
 
 COLORIZE_FIELDS = ('line_layer', 'seeds', 'name', 'clip_base', 'edge_detection', 'cleanup',
                    'stage_id', 'region', 'expected_revision')
@@ -103,8 +104,9 @@ class ColorizeCraft:
             raise RuntimeError('Krita could not add the colorize helper layer.')
         helper_id = helper.uniqueId().toString()
         session['layers'].add(helper_id)
-        for y, rows, data in line_pixels:
-            helper.setPixelData(data, 0, y, width, rows)
+        with one_step(doc, 'Colorize helper'):
+            for y, rows, data in line_pixels:
+                helper.setPixelData(data, 0, y, width, rows)
 
         mask = doc.createColorizeMask('Colorize')
         if mask is None or not helper.addChildNode(mask, None):
@@ -131,10 +133,11 @@ class ColorizeCraft:
                                                    'stage_id': params.get('stage_id'), '_below': line})
         target = self._creative_node(doc, result['layer_id'])
         covered = 0
-        for (y, rows, _line), data in zip(line_pixels, flats):
-            if target.setPixelData(data, 0, y, width, rows) is False:
-                raise RuntimeError('Krita rejected the flat colours.')
-            covered += sum(1 for alpha in data[3::4] if alpha)
+        with one_step(doc, name):
+            for (y, rows, _line), data in zip(line_pixels, flats):
+                if target.setPixelData(data, 0, y, width, rows) is False:
+                    raise RuntimeError('Krita rejected the flat colours.')
+                covered += sum(1 for alpha in data[3::4] if alpha)
         helper.setVisible(False)
         doc.setActiveNode(target)
         doc.refreshProjection()
@@ -166,13 +169,15 @@ class ColorizeCraft:
 
     def _colorize_read(self, doc, helper, line_pixels, width):
         """The computed colours without the lines: clear the helper, read, put the lines back."""
-        for y, rows, data in line_pixels:
-            helper.setPixelData(bytes(len(data)), 0, y, width, rows)
+        with one_step(doc, 'Colorize read'):
+            for y, rows, data in line_pixels:
+                helper.setPixelData(bytes(len(data)), 0, y, width, rows)
         doc.refreshProjection()
         doc.waitForDone()
         flats = [bytes(helper.projectionPixelData(0, y, width, rows)) for y, rows, _data in line_pixels]
-        for y, rows, data in line_pixels:
-            helper.setPixelData(data, 0, y, width, rows)
+        with one_step(doc, 'Colorize read'):
+            for y, rows, data in line_pixels:
+                helper.setPixelData(data, 0, y, width, rows)
         if not any(any(strip[3::4]) for strip in flats):
             raise RuntimeError('Krita computed no colours. Check that the seeds sit inside closed regions.')
         return flats

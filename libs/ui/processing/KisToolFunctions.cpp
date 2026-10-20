@@ -194,13 +194,17 @@ private:
 class Stroke
 {
 public:
-    Stroke(const Target &target, const KUndo2MagicString &toolName)
+    /// \p pixelsOnly (no default, so a new tool function must decide): the stroke changes nothing but the node's
+    /// pixels (through transactions on paint devices), and reports the devices it changes. A stroke that changes
+    /// anything else (a node's offset, the layer tree) must say false: the history trusts the report.
+    Stroke(const Target &target, const KUndo2MagicString &toolName, bool pixelsOnly)
         : m_image(target.image)
     {
         KisStrokeUndoFacade *facade = target.undoFacade ? target.undoFacade : m_image.data();
         CompletingStrategy *strategy =
             new CompletingStrategy(target.name.isEmpty() ? toolName : target.name, facade, target.completion);
         strategy->setSupportsWrapAroundMode(true);
+        strategy->setReportsTouchedDevices(pixelsOnly);
         m_id = m_image->startStroke(strategy);
         if (target.completion) target.completion->setStroke(m_image, m_id);
     }
@@ -327,7 +331,7 @@ bool fill(const Target &target, const QPoint &seed, const KoColor &color, const 
     KisNodeSP node = target.node;
     KisImageSP image = target.image;
     QSharedPointer<QRect> dirtyRect(new QRect);
-    Stroke stroke(target, kundo2_i18n("Flood Fill"));
+    Stroke stroke(target, kundo2_i18n("Flood Fill"), true);
 
     if (options.area == FillOptions::WholeSelection) {
         stroke.add(atRunTime([=]() -> KUndo2Command * {
@@ -422,7 +426,7 @@ bool encloseAndFill(const Target &target, KisPixelSelectionSP enclosingMask, con
     KisResourcesSnapshotSP resources = resourcesFor(target, color);
     KisNodeSP node = target.node;
     QSharedPointer<QRect> dirtyRect(new QRect);
-    Stroke stroke(target, kundo2_i18n("Enclose and Fill"));
+    Stroke stroke(target, kundo2_i18n("Enclose and Fill"), true);
     KisPaintDeviceSP reference = referenceDevice(target, options.fill, stroke);
     KisPixelSelectionSP mask = selectionOn(target.image, enclosingMask)->pixelSelection();
 
@@ -459,7 +463,7 @@ bool gradient(const Target &target, const QPointF &start, const QPointF &end, Ko
     KisImageSP image = target.image;
     QSharedPointer<QRect> dirtyRect(new QRect);
 
-    Stroke stroke(target, kundo2_i18n("Gradient"));
+    Stroke stroke(target, kundo2_i18n("Gradient"), true);
     stroke.add(new KisCommandUtils::LambdaCommand(
                    [node, image, resources, gradient, start, end, options, dirtyRect]() -> KUndo2Command * {
                        // The selection as it is when the stroke runs, after the work queued before it.
@@ -519,7 +523,7 @@ bool smartPatch(const Target &target, KisPixelSelectionSP area, int accuracy, in
     accuracy = qBound(0, accuracy, 99);
     patchRadius = qBound(2, patchRadius, 8);
 
-    Stroke stroke(target, kundo2_i18n("Smart Patch"));
+    Stroke stroke(target, kundo2_i18n("Smart Patch"), true);
     stroke.add(new KisCommandUtils::LambdaCommand([node, mask, limit, accuracy, patchRadius]() -> KUndo2Command * {
                    KisPaintDeviceSP device = node->paintDevice();
                    KisTransaction transaction(device);
@@ -547,10 +551,29 @@ bool moveNode(const Target &target, const QPoint &position, QString *reason)
         return true;
     }
 
-    Stroke stroke(target, kundo2_i18n("Move"));
+    Stroke stroke(target, kundo2_i18n("Move"), false);
     stroke.add(new MoveNodeCommand(target.node, current, position));
     stroke.end();
     return true;
+}
+
+void runCommand(KisImageSP image,
+                KUndo2Command *command,
+                KisStrokeUndoFacade *undoFacade,
+                CompletionSP completion,
+                KisStrokeJobData::Sequentiality sequentiality,
+                KisStrokeJobData::Exclusivity exclusivity,
+                bool pixelsOnly)
+{
+    KisStrokeUndoFacade *facade = undoFacade ? undoFacade : image.data();
+    CompletingStrategy *strategy = new CompletingStrategy(command->text(), facade, completion);
+    strategy->setReportsTouchedDevices(pixelsOnly);
+    strategy->setMacroId(command->id()); // as KisProcessingApplicator::runSingleCommandStroke(): steps may merge
+    const KisStrokeId id = image->startStroke(strategy);
+    if (completion) completion->setStroke(image, id);
+    image->addJob(id, new KisStrokeStrategyUndoCommandBased::Data(KUndo2CommandSP(command), false, sequentiality,
+                                                                  exclusivity));
+    image->endStroke(id);
 }
 
 } // namespace KisToolFunctions

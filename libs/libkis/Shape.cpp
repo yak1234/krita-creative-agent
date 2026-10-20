@@ -3,6 +3,8 @@
  *
  *  SPDX-License-Identifier: LGPL-2.0-or-later
  */
+#include "ScriptWaits.h"
+#include <kis_processing_applicator.h>
 #include "DocumentHistory.h"
 #include "Shape.h"
 #include <kis_icon_utils.h>
@@ -153,13 +155,16 @@ bool Shape::remove()
 
     bool removeStatus = false;
     Document *document = Krita::instance()->activeDocument();
+    if (!document) {
+        warnScript << "Shape.remove(): refused, there is no active document or view";
+        return false;
+    }
 
     if (KisPart::instance()->viewCount(document->document()) > 0) {
         for (QPointer<KisView> view : KisPart::instance()->views()) {
             if (view && view->document() == document->document()) {
-                DocumentHistory::runCommandStroke(view->image(), view->canvasBase()->shapeController()->removeShape(d->shape)); // Krita Agent: joins an open macro or agent move
-                view->image()->waitForDone();
-                removeStatus = true;
+                // Krita Agent: joins an open macro or agent move
+                removeStatus = DocumentHistory::runCommandStrokeAndWait(view->image(), view->canvasBase()->shapeController()->removeShape(d->shape), "Shape.remove()");
                 break;
             }
         }
@@ -195,7 +200,12 @@ void Shape::select()
 {
     if (!d->shape) return;
 
-    KisView *activeView = KisPart::instance()->currentMainwindow()->activeView();
+    KisMainWindow *window = KisPart::instance()->currentMainwindow();
+    KisView *activeView = window ? window->activeView() : nullptr;
+    if (!activeView) {
+        warnScript << "Shape: refused, there is no active view";
+        return;
+    }
     KoSelection *selection = activeView->canvasBase()->shapeManager()->selection();
 
     selection->select(d->shape);
@@ -205,7 +215,12 @@ void Shape::deselect()
 {
     if (!d->shape) return;
 
-    KisView *activeView = KisPart::instance()->currentMainwindow()->activeView();
+    KisMainWindow *window = KisPart::instance()->currentMainwindow();
+    KisView *activeView = window ? window->activeView() : nullptr;
+    if (!activeView) {
+        warnScript << "Shape: refused, there is no active view";
+        return;
+    }
     KoSelection *selection = activeView->canvasBase()->shapeManager()->selection();
 
     selection->deselect(d->shape);
@@ -215,7 +230,12 @@ bool Shape::isSelected()
 {
     if (!d->shape) return false;
 
-    KisView *activeView = KisPart::instance()->currentMainwindow()->activeView();
+    KisMainWindow *window = KisPart::instance()->currentMainwindow();
+    KisView *activeView = window ? window->activeView() : nullptr;
+    if (!activeView) {
+        warnScript << "Shape: refused, there is no active view";
+        return false;
+    }
     KoSelection *selection = activeView->canvasBase()->shapeManager()->selection();
 
     return selection->isSelected(d->shape);

@@ -452,10 +452,17 @@ void TestDocumentHistory::testStrokesOutsideMoveStaySeparate()
 
 void TestDocumentHistory::testPixelWriteOutsideMoveKeepsUpstreamBehaviour()
 {
+    // Task 2.9: outside a move a pixel write is an undo step of its own ("Set Pixel Data"), waited for, and the
+    // pixels are on the layer when the call returns.
     PaintingDocument p;
     QVERIFY(p.paint->setPixelData(pixels(4, 4, Qt::red), 0, 0, 4, 4));
+    QCOMPARE(p.doc->undoCount(), 1);
+    QCOMPARE(p.doc->undoText(0), QString("Set Pixel Data"));
+    QCOMPARE(p.paint->pixelData(0, 0, 1, 1), pixels(1, 1, Qt::red));
     p.settle();
-    QCOMPARE(p.doc->undoCount(), 0);
+    QVERIFY(p.doc->setUndoIndex(0));
+    p.settle();
+    QCOMPARE(p.paint->pixelData(0, 0, 1, 1).toHex(), QByteArray("00000000"));
 }
 
 void TestDocumentHistory::testRefusals()
@@ -1088,10 +1095,9 @@ void TestDocumentHistory::testAgentStrokesWaitBehindHeldPen()
     PaintingDocument p;
     KisNodeSP artistLayer = p.addLayer("artist");
 
-    // What happens today when the agent paints while the artist holds the pen down (startStroke's behaviour,
-    // left to task 2.9): each agent stroke asks open strokes to end (Krita's tools decide whether to: freehand
-    // keeps going; transform, move, crop, line and selection tools commit, and animation playback stops), and the
-    // agent's strokes wait in the queue behind the artist's until the pen lifts. The history stays in order.
+    // The agent paints while the artist holds the pen down (task 2.9): its strokes never ask the artist's open strokes
+    // to end (transform, move, crop, line and selection tools would commit, and animation playback would stop), and
+    // wait in the queue behind the artist's until the pen lifts. The history stays in order.
     ArtistStroke held(p, artistLayer, "held");
     held.line(10);
     QSignalSpy endRequests(p.image.data(), SIGNAL(sigStrokeEndRequested()));
@@ -1099,7 +1105,7 @@ void TestDocumentHistory::testAgentStrokesWaitBehindHeldPen()
     p.line(20);
     p.line(30);
     QVERIFY(p.doc->endAgentMove());
-    QCOMPARE(endRequests.count(), 2);
+    QCOMPARE(endRequests.count(), 0);
     QTest::qWait(200);
     QCOMPARE(p.doc->undoCount(), 0); // nothing ran past the held stroke
     held.line(40);

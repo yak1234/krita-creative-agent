@@ -34,6 +34,9 @@ public:
         READ_ONLY_ACTION = 0x20, ///< Do not save undo commands into the global undo stack after the
                                  ///< action has been completed. Also, do not emit any updates and do not
                                  ///< invalidate any frames.
+        REPORTS_TOUCHED_DEVICES = 0x40, ///< Krita Agent: the action changes nothing but pixels, and reports the
+                                        ///< devices it changes with its undo step
+                                        ///< (KisStrokeStrategyUndoCommandBased::setReportsTouchedDevices())
     };
 
     Q_DECLARE_FLAGS(ProcessingFlags, ProcessingFlag)
@@ -124,6 +127,33 @@ public:
     private:
         KisStrokeUndoFacade *m_previous;
         Q_DISABLE_COPY(UndoFacadeOverride)
+    };
+
+    /**
+     * Krita Agent: while an object of this class lives, the strokes its thread starts (applicators, calls such as
+     * KisImage::cropImage(), or a tool helper's stroke) never ask the image's open strokes to end, as a stroke
+     * normally does when it starts (KisImage::startStroke()): they wait behind them instead. With no object, as before. Objects nest.
+     * Scripts use it so their operations never commit what the artist is doing.
+     */
+    class KRITAIMAGE_EXPORT NoEndRequestsOverride
+    {
+    public:
+        NoEndRequestsOverride();
+        ~NoEndRequestsOverride();
+
+        /// Whether one lives on this thread (read by KisImage::startStroke()).
+        static bool active();
+
+        /// For KisImage::startStroke(): records a stroke started on this thread while one lives.
+        static void noteStroke(KisStrokeId id);
+
+        /// The strokes started on this thread since this object was made (so a caller can cancel them).
+        QList<KisStrokeId> strokes() const;
+
+    private:
+        bool m_previous;
+        int m_first;
+        Q_DISABLE_COPY(NoEndRequestsOverride)
     };
 
 private:

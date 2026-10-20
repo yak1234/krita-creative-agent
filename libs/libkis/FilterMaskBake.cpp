@@ -10,6 +10,8 @@
 // call that applies it when Krita renders the layer (KisMask::apply), and then removed, in one undo step: one command
 // (the pixels' transaction and the mask's removal as its children) run as a stroke, which joins a script's open macro
 // or agent move (DocumentHistory::runCommandStroke).
+#include "ScriptWaits.h"
+#include <kis_processing_applicator.h>
 #include "FilterMask.h"
 
 #include <kis_command_utils.h>
@@ -93,8 +95,6 @@ bool FilterMask::bake()
     bake->addCommand(new KisImageLayerRemoveCommand(image, mask));
 
     DocumentHistory::scriptUndoAdapter(image, layer->paintDevice()); // orders the step's work on this layer, if open
-    DocumentHistory::runCommandStroke(image, bake, KisStrokeJobData::SEQUENTIAL, KisStrokeJobData::EXCLUSIVE);
-
-    image->waitForDone();
+    DocumentHistory::runCommandStrokeAndWait(image, bake, "FilterMask.bake()", KisStrokeJobData::SEQUENTIAL, KisStrokeJobData::EXCLUSIVE);
     return true;
 }

@@ -3,6 +3,8 @@
  *
  *  SPDX-License-Identifier: LGPL-2.0-or-later
  */
+#include "ScriptWaits.h"
+#include <kis_processing_applicator.h>
 #include "FillLayer.h"
 #include <kis_generator_layer.h>
 #include <kis_image.h>
@@ -61,10 +63,11 @@ bool FillLayer::setGenerator(const QString &generatorName, InfoObject *config)
             cfg->setProperty(property, config->property(property));
         }
         layer->setFilter(cfg->cloneWithResourcesSnapshot(), false);
-        if (layer->hasPendingTimedUpdates()) {
-            layer->forceUpdateTimedNode();
-        }
-        image()->waitForDone();
+        ScriptWaits::run(image(), "FillLayer.setGenerator()", [&]() {
+            if (layer->hasPendingTimedUpdates()) {
+                layer->forceUpdateTimedNode();
+            }
+        });
         return true;
     }
     return false;

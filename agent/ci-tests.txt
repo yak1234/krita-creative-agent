@@ -46,3 +46,10 @@ kis_scanline_fill_test
 kis_lazy_brush_test
 kis_colorize_mask_test
 KisWatershedWorkerTest
+TestLibkisTraps
+TestLibkisNoView
+TestPythonTraps
+kis_stroke_test
+kis_transaction_test
+kis_selection_test
+kis_paint_device_test

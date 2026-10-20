@@ -8,6 +8,8 @@
 // (Krita Agent, openspec change krita-fork, capability agent-speed-api). Kept apart from
 // Document.cpp so the upstream file carries only their declarations.
 
+#include "ScriptWaits.h"
+#include <kis_processing_applicator.h>
 #include "Document.h"
 #include "KisAgentReadLock.h"
 #include "KisAgentScaledRead.h"
@@ -313,10 +315,11 @@ void Document::refreshProjection(const QRect &rect)
     if (area.isEmpty()) return;
     area = grownByEffects(image, area);
 
-    // The same recomposition as refreshProjection(), limited to the area. The crop rect is the image, as for
-    // KisImage::refreshGraphAsync(root): clone layers read their sources' projections within it.
-    image->refreshGraphAsync(KisNodeSP(), area, image->bounds());
-    image->waitForDone();
+    ScriptWaits::run(image, "Document.refreshProjection()", [&]() {
+        // The same recomposition as refreshProjection(), limited to the area. The crop rect is the image, as for
+        // KisImage::refreshGraphAsync(root): clone layers read their sources' projections within it.
+        image->refreshGraphAsync(KisNodeSP(), area, image->bounds());
+    });
 }
 
 namespace {

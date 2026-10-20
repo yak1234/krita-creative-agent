@@ -275,6 +275,45 @@ KisProcessingApplicator::UndoFacadeOverride::~UndoFacadeOverride()
     s_undoFacadeOverride = m_previous;
 }
 
+namespace {
+/// Set by KisProcessingApplicator::NoEndRequestsOverride on this thread.
+thread_local bool s_noEndRequests = false;
+/// The strokes started while an override lives on this thread; emptied when the outermost one ends.
+thread_local QList<KisStrokeId> s_overriddenStrokes;
+}
+
+KisProcessingApplicator::NoEndRequestsOverride::NoEndRequestsOverride()
+    : m_previous(s_noEndRequests)
+    , m_first(s_overriddenStrokes.size())
+{
+    s_noEndRequests = true;
+}
+
+KisProcessingApplicator::NoEndRequestsOverride::~NoEndRequestsOverride()
+{
+    s_noEndRequests = m_previous;
+    if (!m_previous) {
+        s_overriddenStrokes.clear();
+    }
+}
+
+void KisProcessingApplicator::NoEndRequestsOverride::noteStroke(KisStrokeId id)
+{
+    if (s_noEndRequests) {
+        s_overriddenStrokes.append(id);
+    }
+}
+
+QList<KisStrokeId> KisProcessingApplicator::NoEndRequestsOverride::strokes() const
+{
+    return s_overriddenStrokes.mid(m_first);
+}
+
+bool KisProcessingApplicator::NoEndRequestsOverride::active()
+{
+    return s_noEndRequests;
+}
+
 KisProcessingApplicator::KisProcessingApplicator(KisImageWSP image,
                                                  KisNodeSP node,
                                                  ProcessingFlags flags,
@@ -308,6 +347,11 @@ KisProcessingApplicator::KisProcessingApplicator(KisImageWSP image,
 
     if (m_flags.testFlag(SUPPORTS_WRAPAROUND_MODE)) {
         strategy->setSupportsWrapAroundMode(true);
+    }
+
+    // Krita Agent: pixel-only actions report their devices.
+    if (m_flags.testFlag(REPORTS_TOUCHED_DEVICES)) {
+        strategy->setReportsTouchedDevices(true);
     }
 
     if (extraData) {

@@ -23,6 +23,7 @@ class Filter:
     def setConfiguration(self, info): self.config = info.properties()
     def apply(self, node, x, y, w, h):
         self.log.append(('apply', node.id, (x, y, w, h), node.doc.batch))
+        node.doc.seen_selection.append(node.doc.chosen)
         node.pixels = bytearray(bytes([1, 2, 3, 255]) * 16)      # the filtered copy
         return True
 
@@ -34,7 +35,9 @@ class Effect(region_tests.Layer):
 
 class Document(region_tests.Document):
     def __init__(self):
-        super().__init__(); self.batch = False; self.batch_changes = []
+        super().__init__(); self.batch = False; self.batch_changes = []; self.chosen, self.seen_selection = None, []
+    def selection(self): return self.chosen
+    def setSelection(self, selection): self.chosen = selection
     def batchmode(self): return self.batch
     def setBatchmode(self, value): self.batch = value; self.batch_changes.append(value)
     def _effect(self, name, krita_filter, selection, kind):
@@ -115,6 +118,30 @@ class FilterTests(region_tests.RegionSetup, unittest.TestCase):
         self.assertEqual(self.log, [('apply', copy.id, (0, 0, 4, 4), True)], 'the copy, in batch mode')
         run(self.h, 'review_pass', {'pass_id': 'blurred', 'action': 'reject'}, 'reject')
         self.assertEqual((copy.shown, layer.shown), (False, True))
+
+    def test_the_copy_is_filtered_whole_whatever_selection_the_artist_has_and_the_selection_comes_back(self):
+        layer = self.agent_layer()
+        artists = region_tests.Mask()
+        self.h.doc.chosen = artists
+        run(self.h, 'apply_filter', {'target': layer.id, 'filter': 'gaussian blur', 'mode': 'copy'}, 'whole')
+        area = [{'shape': 'rectangle', 'bounds': [1, 1, 2, 2]}]
+        run(self.h, 'apply_filter', {'target': layer.id, 'filter': 'gaussian blur', 'mode': 'copy', 'area': area}, 'part')
+        self.assertEqual(self.h.doc.seen_selection, [None, None], 'Filter.apply keeps to the selection: none while it runs')
+        self.assertIs(self.h.doc.chosen, artists, "the artist's selection is back")
+
+    def test_the_selection_comes_back_when_the_filter_is_refused(self):
+        layer = self.agent_layer()
+        artists = region_tests.Mask()
+        self.h.doc.chosen = artists
+        previous = filters.Krita
+        class Refusing(Filter):
+            def apply(self, node, x, y, w, h): return False
+        filters.Krita = types.SimpleNamespace(instance=lambda: types.SimpleNamespace(filter=lambda name: Refusing(name, self.log)))
+        self.addCleanup(setattr, filters, 'Krita', previous)
+        result = run(self.h, 'apply_filter', {'target': layer.id, 'filter': 'gaussian blur', 'mode': 'copy'}, 'refused')
+        self.assertNotEqual(result.get('status'), 'ok')
+        self.assertIn('could not apply', str(result))
+        self.assertIs(self.h.doc.chosen, artists, 'back also when the filter was refused')
 
     def test_an_area_limits_every_mode(self):
         layer = self.agent_layer()

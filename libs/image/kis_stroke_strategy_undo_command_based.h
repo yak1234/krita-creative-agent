@@ -22,6 +22,7 @@ class KisStrokeJob;
 class KisSavedMacroCommand;
 class KisStrokeUndoFacade;
 class KisStrokesQueueMutatedJobInterface;
+namespace KisTouchedDevices { class Set; }
 
 
 class KRITAIMAGE_EXPORT KisStrokeStrategyUndoCommandBased : public KisRunnableBasedStrokeStrategy
@@ -125,6 +126,14 @@ public:
 
     void setUsedWhileUndoRedo(bool value);
 
+    /**
+     * Krita Agent: when set, the stroke records the paint devices its commands change (their transactions) and
+     * reports them with its undo step (KisTouchedDevices), so a history that orders steps per device can read a
+     * step it cannot look into. Only for strokes whose commands change nothing but pixels: a stroke that changes
+     * layers, their order or their properties must not set it. Set *before* the stroke starts. Off by default.
+     */
+    void setReportsTouchedDevices(bool value);
+
 protected:
     void runAndSaveCommand(KUndo2CommandSP command,
                            KisStrokeJobData::Sequentiality sequentiality,
@@ -157,6 +166,8 @@ private:
     // protects done commands only
     QMutex m_mutex;
     KisSavedMacroCommand *m_macroCommand {nullptr};
+
+    QSharedPointer<KisTouchedDevices::Set> m_touchedDevices; // Krita Agent: set when the stroke reports them
 };
 
 #endif /* __KIS_STROKE_STRATEGY_UNDO_COMMAND_BASED_H */

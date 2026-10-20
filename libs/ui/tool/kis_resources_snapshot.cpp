@@ -378,6 +378,16 @@ void KisResourcesSnapshot::setMirroring(bool horizontal, bool vertical)
     m_d->mirrorMaskVertical = vertical;
 }
 
+void KisResourcesSnapshot::setCompositeOpId(const QString &id)
+{
+    m_d->compositeOpId = id;
+}
+
+void KisResourcesSnapshot::setGlobalAlphaLock(bool lock)
+{
+    m_d->globalAlphaLock = lock;
+}
+
 qreal KisResourcesSnapshot::opacity() const
 {
     return m_d->opacity;

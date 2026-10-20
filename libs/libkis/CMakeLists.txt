@@ -13,6 +13,7 @@ set(kritalibkis_LIB_SRCS
     DocumentFeatureBuilders.cpp
     Feature.cpp
     NodeAgentTools.cpp
+    ScriptWaits.cpp
     Filter.cpp
     InfoObject.cpp
     Krita.cpp

@@ -233,6 +233,7 @@ set(kritaimage_LIB_SRCS
    kis_image_signal_router.cpp
    KisImageSignals.cpp
    KisImageChangeReports.cpp
+   KisTouchedDevices.cpp
    KisFeature.cpp
    KisFeatureList.cpp
    KisFeatureCommands.cpp

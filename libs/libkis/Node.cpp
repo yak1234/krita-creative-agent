@@ -37,6 +37,8 @@
 #include <kis_meta_data_merge_strategy_registry.h>
 #include <kis_filter_strategy.h>
 #include <commands/kis_node_compositeop_command.h>
+#include <commands/kis_node_opacity_command.h>
+#include <commands/KisNodeRenameCommand.h>
 #include <commands/kis_image_layer_add_command.h>
 #include <commands/kis_image_layer_remove_command.h>
 #include <commands_new/kis_set_layer_style_command.h>
@@ -45,6 +47,7 @@
 
 #include <kis_raster_keyframe_channel.h>
 #include <kis_keyframe.h>
+#include "ScriptWaits.h"
 #include "kis_selection.h"
 
 #include "InfoObject.h"
@@ -77,6 +80,28 @@
 #include <brushengine/kis_paint_information.h>
 #include <brushengine/kis_paintop_preset.h>
 
+
+namespace {
+/// Krita Agent: sets a node's visibility, undoably (KisImageChangeVisibilityCommand is not exported).
+class NodeVisibilityCommand : public KUndo2Command
+{
+public:
+    NodeVisibilityCommand(KisNodeSP node, bool visible)
+        : KUndo2Command(kundo2_i18n("Change Visibility"))
+        , m_node(node)
+        , m_visible(visible)
+        , m_oldVisible(node->visible())
+    {
+    }
+    void redo() override { m_node->setVisible(m_visible); }
+    void undo() override { m_node->setVisible(m_oldVisible); }
+
+private:
+    KisNodeSP m_node;
+    bool m_visible;
+    bool m_oldVisible;
+};
+}
 
 struct Node::Private {
     Private() {}
@@ -193,8 +218,8 @@ void Node::setBlendingMode(QString value)
     KUndo2Command *cmd = new KisNodeCompositeOpCommand(d->node,
                                                        value);
 
-    DocumentHistory::runCommandStroke(d->image, cmd); // Krita Agent: joins an open macro or agent move
-    d->image->waitForDone();
+    // Krita Agent: joins an open macro or agent move, waits for its own stroke only
+    DocumentHistory::runCommandStrokeAndWait(d->image, cmd, "Node.setBlendingMode()");
 }
 
 
@@ -278,10 +303,8 @@ bool Node::addChildNode(Node *child, Node *above)
         cmd = new KisImageLayerAddCommand(d->image, child->node(), d->node, d->node->childCount());
     }
 
-    DocumentHistory::runCommandStroke(d->image, cmd); // Krita Agent: joins an open macro or agent move
-    d->image->waitForDone();
-
-    return true;
+    // Krita Agent: joins an open macro or agent move, waits for its own stroke only
+    return DocumentHistory::runCommandStrokeAndWait(d->image, cmd, "Node.addChildNode()");
 }
 
 bool Node::removeChildNode(Node *child)
@@ -341,9 +364,11 @@ bool Node::setColorProfile(const QString &colorProfile)
     if (!d->node->inherits("KisLayer")) return false;
     KisLayer *layer = qobject_cast<KisLayer*>(d->node.data());
     const KoColorProfile *profile = KoColorSpaceRegistry::instance()->profileByName(colorProfile);
-    bool result = d->image->assignLayerProfile(layer, profile);
-    d->image->waitForDone();
-    return result;
+    bool result = false;
+    const bool done = ScriptWaits::run(d->image, "Node.setColorProfile()", [&]() {
+        result = d->image->assignLayerProfile(layer, profile);
+    });
+    return result && done;
 }
 
 bool Node::setColorSpace(const QString &colorModel, const QString &colorDepth, const QString &colorProfile)
@@ -355,9 +380,9 @@ bool Node::setColorSpace(const QString &colorModel, const QString &colorDepth, c
     const KoColorSpace *dstCs = KoColorSpaceRegistry::instance()->colorSpace(colorModel,
                                                                              colorDepth,
                                                                              profile);
-    d->image->convertLayerColorSpace(d->node, dstCs, KoColorConversionTransformation::internalRenderingIntent(), KoColorConversionTransformation::internalConversionFlags());
-    d->image->waitForDone();
-    return true;
+    return ScriptWaits::run(d->image, "Node.setColorSpace()", [&]() {
+        d->image->convertLayerColorSpace(d->node, dstCs, KoColorConversionTransformation::internalRenderingIntent(), KoColorConversionTransformation::internalConversionFlags());
+    });
 }
 
 bool Node::animated() const
@@ -436,7 +461,12 @@ QString Node::name() const
 void Node::setName(QString name)
 {
     if (!d->node) return;
-    d->node->setName(name);
+    if (!d->image || !d->node->parent() || d->node->name() == name) {
+        d->node->setName(name);
+        return;
+    }
+    // Krita Agent: an undo step (or part of the open agent move)
+    DocumentHistory::runPropertyCommand(d->image, new KisNodeRenameCommand(d->node, d->node->name(), name), "Node.setName()");
 }
 
 
@@ -451,7 +481,12 @@ void Node::setOpacity(int value)
     if (!d->node) return;
     if (value < 0) value = 0;
     if (value > 255) value = 255;
-    d->node->setOpacity(value);
+    if (!d->image || !d->node->parent() || d->node->opacity() == value) {
+        d->node->setOpacity(value);
+        return;
+    }
+    // Krita Agent: an undo step (or part of the open agent move), like setBlendingMode()
+    DocumentHistory::runPropertyCommand(d->image, new KisNodeOpacityCommand(d->node, value), "Node.setOpacity()");
 }
 
 
@@ -541,7 +576,12 @@ bool Node::hasKeyframeAtTime(int frameNumber)
 void Node::setVisible(bool visible)
 {
     if (!d->node) return;
-    d->node->setVisible(visible);
+    if (!d->image || !d->node->parent() || d->node->visible() == visible) {
+        d->node->setVisible(visible);
+        return;
+    }
+    // Krita Agent: an undo step (or part of the open agent move)
+    DocumentHistory::runPropertyCommand(d->image, new NodeVisibilityCommand(d->node, visible), "Node.setVisible()");
 }
 
 
@@ -610,12 +650,16 @@ bool Node::setPixelData(QByteArray value, int x, int y, int w, int h)
         qWarning() << "Node::setPixelData: not enough data to write to the paint device";
         return false;
     }
-    // Krita Agent: inside a macro or agent move the write is an undoable step of it, queued after its earlier strokes.
-    if (DocumentHistory::queuePixelWrite(d->image, d->node, value, QRect(x, y, w, h))) return true;
-    dev->writeBytes((const quint8*)value.constData(), x, y, w, h);
-    // Krita Agent: recomposite only what was written, asynchronously (waitForDone() to wait for it).
-    d->node->setDirty(QRect(x, y, w, h));
-    return true;
+    // Krita Agent: an undo step of its own, or part of the open macro or agent move (queued after its earlier
+    // strokes). The write marks only its own rect dirty (the command does).
+    // A node outside the image's tree has no history to join: the write is direct. (On a locked image the write is
+    // direct too, and recorded.)
+    if (!d->image || !d->node->parent()) {
+        dev->writeBytes((const quint8*)value.constData(), x, y, w, h);
+        d->node->setDirty(QRect(x, y, w, h));
+        return true;
+    }
+    return DocumentHistory::writePixelData(d->image, d->node, value, QRect(x, y, w, h));
 }
 
 QRect Node::bounds() const
@@ -639,10 +683,8 @@ bool Node::remove()
 
     KUndo2Command *cmd = new KisImageLayerRemoveCommand(d->image, d->node);
 
-    DocumentHistory::runCommandStroke(d->image, cmd); // Krita Agent: joins an open macro or agent move
-    d->image->waitForDone();
-
-    return true;
+    // Krita Agent: joins an open macro or agent move, waits for its own stroke only
+    return DocumentHistory::runCommandStrokeAndWait(d->image, cmd, "Node.remove()");
 }
 
 Node* Node::duplicate()
@@ -689,10 +731,14 @@ Node* Node::mergeDown()
     if (!qobject_cast<KisLayer*>(d->node.data())) return 0;
     if (!d->node->prevSibling()) return 0;
 
-    d->image->mergeDown(qobject_cast<KisLayer*>(d->node.data()), KisMetaData::MergeStrategyRegistry::instance()->get("Drop"));
-    d->image->waitForDone();
-
-    return Node::createNode(d->image, d->node->prevSibling());
+    // The layer below receives the merge. A merge that was held back past the wait limit is cancelled: null then,
+    // never the layer below as if it were the result.
+    KisNodeSP below = d->node->prevSibling();
+    const bool done = ScriptWaits::run(d->image, "Node.mergeDown()", [&]() {
+        d->image->mergeDown(qobject_cast<KisLayer*>(d->node.data()), KisMetaData::MergeStrategyRegistry::instance()->get("Drop"));
+    });
+    if (!done) return 0;
+    return Node::createNode(d->image, d->node->prevSibling() ? d->node->prevSibling() : below);
 }
 
 void Node::scaleNode(QPointF origin, int width, int height, QString strategy)
@@ -706,12 +752,13 @@ void Node::scaleNode(QPointF origin, int width, int height, QString strategy)
 
     const QRect bounds(d->node->exactBounds());
 
-    d->image->scaleNode(d->node,
-                        origin,
-                        qreal(width) / bounds.width(),
-                        qreal(height) / bounds.height(),
-                        actualStrategy, 0);
-    d->image->waitForDone();
+    ScriptWaits::run(d->image, "Node.scaleNode()", [&]() {
+        d->image->scaleNode(d->node,
+                            origin,
+                            qreal(width) / bounds.width(),
+                            qreal(height) / bounds.height(),
+                            actualStrategy, 0);
+    });
 }
 
 void Node::rotateNode(double radians)
@@ -720,8 +767,9 @@ void Node::rotateNode(double radians)
     if (!qobject_cast<KisLayer*>(d->node.data())) return;
     if (!d->node->parent()) return;
 
-    d->image->rotateNode(d->node, radians, 0);
-    d->image->waitForDone();
+    ScriptWaits::run(d->image, "Node.rotateNode()", [&]() {
+        d->image->rotateNode(d->node, radians, 0);
+    });
 }
 
 void Node::cropNode(int x, int y, int w, int h)
@@ -731,8 +779,9 @@ void Node::cropNode(int x, int y, int w, int h)
     if (!d->node->parent()) return;
 
     QRect rect = QRect(x, y, w, h);
-    d->image->cropNode(d->node, rect);
-    d->image->waitForDone();
+    ScriptWaits::run(d->image, "Node.cropNode()", [&]() {
+        d->image->cropNode(d->node, rect);
+    });
 }
 
 void Node::shearNode(double angleX, double angleY)
@@ -741,8 +790,9 @@ void Node::shearNode(double angleX, double angleY)
     if (!qobject_cast<KisLayer*>(d->node.data())) return;
     if (!d->node->parent()) return;
 
-    d->image->shearNode(d->node, angleX, angleY, 0);
-    d->image->waitForDone();
+    ScriptWaits::run(d->image, "Node.shearNode()", [&]() {
+        d->image->shearNode(d->node, angleX, angleY, 0);
+    });
 }
 
 QImage Node::thumbnail(int w, int h)
@@ -795,10 +845,8 @@ bool Node::setLayerStyleFromAsl(const QString &asl)
     KisPSDLayerStyleSP newStyle = serializer.styles().first();
     KUndo2Command *cmd = new KisSetLayerStyleCommand(layer, layer->layerStyle(), newStyle);
 
-    DocumentHistory::runCommandStroke(d->image, cmd); // Krita Agent: joins an open macro or agent move
-    d->image->waitForDone();
-
-    return true;
+    // Krita Agent: joins an open macro or agent move, waits for its own stroke only
+    return DocumentHistory::runCommandStrokeAndWait(d->image, cmd, "Node.setLayerStyleFromAsl()");
 }
 
 int Node::index() const
@@ -833,9 +881,12 @@ KisNodeSP Node::node() const
 QString Node::paintAbility()
 {
     // Taken from KisTool:nodePaintAbility().
-    KisMainWindow *mainWindow = KisPart::instance()->currentMainwindow();
-    KisCanvas2 *canvas = mainWindow->activeView()->canvasBase();
-    if (canvas->resourceManager()->resource(KoCanvasResource::CurrentPaintOpPreset).isNull()) {
+    // Krita Agent: no active view means nothing to take the brush from: refused, not dereferenced.
+    KoCanvasResourceProvider *resourceManager = PaintingResources::viewResources();
+    if (!resourceManager) {
+        return "UNPAINTABLE";
+    }
+    if (resourceManager->resource(KoCanvasResource::CurrentPaintOpPreset).isNull()) {
         return "UNPAINTABLE";
     }
 
@@ -851,7 +902,7 @@ QString Node::paintAbility()
     }
     if (d->node->paintDevice()) {
 
-        KisPaintOpPresetSP currentPaintOpPreset = canvas->resourceManager()->resource(KoCanvasResource::CurrentPaintOpPreset).value<KisPaintOpPresetSP>();
+        KisPaintOpPresetSP currentPaintOpPreset = resourceManager->resource(KoCanvasResource::CurrentPaintOpPreset).value<KisPaintOpPresetSP>();
         if (currentPaintOpPreset->paintOp().id() == "mypaintbrush") {
             const KoColorSpace *colorSpace = d->node->paintDevice()->colorSpace();
             if (colorSpace->colorModelId() != RGBAColorModelID) {
@@ -868,7 +919,7 @@ QString Node::paintAbility()
 void Node::paintLine(const QPointF pointOne, const QPointF pointTwo, double pressureOne, double pressureTwo, const QString strokeStyle, const QString &name)
 {
     if (paintAbility() != "PAINT") {
-        dbgScript << "Script attempted to use Node::paintLine() on an unpaintable node, ignoring.";
+        warnScript << "Node::paintLine() refused: the node cannot be painted, or there is no active view to take the brush from.";
         return;
     }
 
@@ -887,7 +938,7 @@ void Node::paintLine(const QPointF pointOne, const QPointF pointTwo, double pres
 void Node::paintPolylineStroke(const QList<StrokePoint> &points, const QString strokeStyle, const QString &name)
 {
     if (paintAbility() != "PAINT") {
-        dbgScript << "Script attempted to use Node::paintPolylineStroke() on an unpaintable node, ignoring.";
+        warnScript << "Node::paintPolylineStroke() refused: the node cannot be painted, or there is no active view to take the brush from.";
         return;
     }
 
@@ -926,7 +977,7 @@ void Node::paintPolylineStroke(const QList<StrokePoint> &points, const QString s
 void Node::paintRectangle(const QRectF &rect, const QString strokeStyle, const QString fillStyle, const QString &name)
 {
     if (paintAbility() != "PAINT") {
-        dbgScript << "Script attempted to use Node::paintRectangle() on an unpaintable node, ignoring.";
+        warnScript << "Node::paintRectangle() refused: the node cannot be painted, or there is no active view to take the brush from.";
         return;
     }
 
@@ -941,7 +992,7 @@ void Node::paintRectangle(const QRectF &rect, const QString strokeStyle, const Q
 void Node::paintPolygon(const QList<QPointF> listPoint, const QString strokeStyle, const QString fillStyle, const QString &name)
 {
     if (paintAbility() != "PAINT") {
-        dbgScript << "Script attempted to use Node::paintPolygon() on an unpaintable node, ignoring.";
+        warnScript << "Node::paintPolygon() refused: the node cannot be painted, or there is no active view to take the brush from.";
         return;
     }
 
@@ -955,7 +1006,7 @@ void Node::paintPolygon(const QList<QPointF> listPoint, const QString strokeStyl
 void Node::paintEllipse(const QRectF &rect, const QString strokeStyle, const QString fillStyle, const QString &name)
 {
     if (paintAbility() != "PAINT") {
-        dbgScript << "Script attempted to use Node::paintEllipse() on an unpaintable node, ignoring.";
+        warnScript << "Node::paintEllipse() refused: the node cannot be painted, or there is no active view to take the brush from.";
         return;
     }
 
@@ -967,7 +1018,7 @@ void Node::paintEllipse(const QRectF &rect, const QString strokeStyle, const QSt
 void Node::paintPath(const QPainterPath &path, const QString strokeStyle, const QString fillStyle, const QString &name)
 {
     if (paintAbility() != "PAINT") {
-        dbgScript << "Script attempted to use Node::paintPath() on an unpaintable node, ignoring.";
+        warnScript << "Node::paintPath() refused: the node cannot be painted, or there is no active view to take the brush from.";
         return;
     }
 

@@ -5,6 +5,12 @@
  */
 #include "Filter.h"
 #include "DocumentHistory.h"
+#include "ScriptWaits.h"
+#include <kis_painter.h>
+#include <kis_selection.h>
+#include <kis_transaction.h>
+#include <kis_processing_applicator.h>
+#include <kis_resources_snapshot.h>
 
 #include <KoCanvasResourceProvider.h>
 
@@ -83,20 +89,101 @@ void Filter::setConfiguration(InfoObject* value)
     d->configuration = value;
 }
 
+namespace
+{
+/// Applies a filter to a rectangle of a node's paint device, within a selection, keeping the transaction to undo and
+/// redo it (Krita Agent: Filter.apply is an undo step, selection-aware, and runs as a stroke, off the caller).
+class FilterApplyCommand : public KUndo2Command
+{
+public:
+    FilterApplyCommand(KisFilterSP filter, KisFilterConfigurationSP config, KisNodeSP node, const QRect &rect,
+                       KisSelectionSP selection)
+        : KUndo2Command(kundo2_noi18n(QString("Filter \"%1\"").arg(filter->name())))
+        , m_filter(filter)
+        , m_config(config)
+        , m_node(node)
+        , m_rect(rect)
+        , m_selection(selection)
+    {
+    }
+
+    void redo() override
+    {
+        if (m_transaction) {
+            m_transaction->redo();
+            return;
+        }
+        KisPaintDeviceSP device = m_node->paintDevice();
+        if (!device || m_rect.isEmpty()) {
+            return;
+        }
+        // The filter works on a copy (it shares the tiles until one side changes); only the selected part of the
+        // result reaches the layer.
+        KisPaintDeviceSP filtered = new KisPaintDevice(*device);
+        m_filter->process(filtered, m_rect, m_config);
+        KisTransaction transaction(device);
+        KisPainter::copyAreaOptimized(m_rect.topLeft(), filtered, device, m_rect, m_selection);
+        m_transaction.reset(transaction.endAndTake());
+        m_transaction->redo(); // a transaction's first redo only marks it done: the change is already in
+        m_node->setDirty(m_rect);
+    }
+
+    void undo() override
+    {
+        if (m_transaction) {
+            m_transaction->undo();
+        }
+    }
+
+private:
+    KisFilterSP m_filter;
+    KisFilterConfigurationSP m_config;
+    KisNodeSP m_node;
+    QRect m_rect;
+    KisSelectionSP m_selection;
+    QScopedPointer<KUndo2Command> m_transaction;
+};
+}
+
 bool Filter::apply(Node *node, int x, int y, int w, int h)
 {
+    if (!node || !node->node()) return false;
     if (node->locked()) return false;
 
     KisFilterSP filter = KisFilterRegistry::instance()->value(d->name);
     if (!filter) return false;
+    if (!d->configuration) return false;
 
     KisPaintDeviceSP dev = node->paintDevice();
     if (!dev) return false;
 
-    QRect applyRect = QRect(x, y, w, h);
+    KisImageSP image = node->image();
+    QRect applyRect = QRect(x, y, w, h).normalized();
     KisFilterConfigurationSP config = static_cast<KisFilterConfiguration*>(d->configuration->configuration().data());
-    filter->process(dev, applyRect, config->cloneWithResourcesSnapshot());
-    return true;
+    KisFilterConfigurationSP snapshot = config->cloneWithResourcesSnapshot();
+
+    if (!image || !node->node()->parent()) {
+        // A node outside a document's tree: the old direct way, nothing to undo.
+        filter->process(dev, applyRect, snapshot);
+        return true;
+    }
+
+    // The selection that limits the node's tools (its own, else the image's), as the filter dialog uses it.
+    KisSelectionSP selection;
+    {
+        KisResourcesSnapshotSP resources = new KisResourcesSnapshot(image, node->node());
+        if (KisSelectionSP active = resources->activeSelection()) {
+            selection = new KisSelection(*active);
+            applyRect &= selection->selectedExactRect();
+        }
+    }
+    if (applyRect.isEmpty()) return true; // nothing selected there: nothing to filter
+
+    // An undo step of its own, or part of the open macro or agent move; waits for this stroke only.
+    DocumentHistory::scriptUndoAdapter(image, dev); // orders the step's work on this layer, if one is open
+    // (On a locked image it is run at once and recorded, so a script inside a lock block sees the result.)
+    return DocumentHistory::runPropertyCommand(image, new FilterApplyCommand(filter, snapshot, node->node(), applyRect, selection),
+                                               "Filter.apply()", true);
 }
 
 bool Filter::startFilter(Node *node, int x, int y, int w, int h)
@@ -106,51 +193,26 @@ bool Filter::startFilter(Node *node, int x, int y, int w, int h)
     KisFilterSP filter = KisFilterRegistry::instance()->value(d->name);
     if (!filter) return false;
 
-    KisImageWSP image = node->image();
+    KisImageSP image = node->image();
     if (!image) return false;
 
     KisFilterConfigurationSP filterConfig = static_cast<KisFilterConfiguration*>(d->configuration->configuration().data());
 
-    image->waitForDone();
-    QRect initialApplyRect = QRect(x, y, w, h);
-
-    QRect applyRect = initialApplyRect;
-
-    KisPaintDeviceSP paintDevice = node->paintDevice();
-    if (paintDevice && filter->needsTransparentPixels(filterConfig.data(), paintDevice->colorSpace())) {
-        applyRect |= image->bounds();
-    }
-
+    // Krita Agent: its own resources, never the active view's.
     KisResourcesSnapshotSP resources = new KisResourcesSnapshot(image, node->node());
-
-    Document *document = Krita::instance()->activeDocument();
-    if (document && KisPart::instance()->viewCount(document->document()) > 0) {
-        Q_FOREACH (QPointer<KisView> view, KisPart::instance()->views()) {
-            if (view && view->document() == document->document()) {
-                resources = new KisResourcesSnapshot(image, node->node(), view->resourceProvider()->resourceManager());
-                break;
-            }
-        }
-    }
-    delete document;
 
     // Krita Agent: a filter started in a macro or agent move joins its step.
     resources->setPostExecutionUndoAdapterOverride(DocumentHistory::scriptUndoAdapter(image, node->paintDevice()));
 
-    KisStrokeId currentStrokeId = image->startStroke(new KisFilterStrokeStrategy(filter,
-                                                                                 KisFilterConfigurationSP(filterConfig),
-                                                                                 resources));
-
-    QRect processRect = filter->changedRect(applyRect, filterConfig.data(), 0);
-    processRect &= image->bounds();
-
-    image->addJob(currentStrokeId, new KisFilterStrokeStrategy::FilterJobData());
-
-
-    image->endStroke(currentStrokeId);
-    image->waitForDone();
-
-    return true;
+    // Krita Agent: the artist's open strokes are not asked to end, and only this stroke is waited for (a stroke held
+    // back past the wait limit is cancelled).
+    return ScriptWaits::run(image, "Filter.startFilter()", [&]() {
+        KisStrokeId currentStrokeId = image->startStroke(new KisFilterStrokeStrategy(filter,
+                                                                                     KisFilterConfigurationSP(filterConfig),
+                                                                                     resources));
+        image->addJob(currentStrokeId, new KisFilterStrokeStrategy::FilterJobData());
+        image->endStroke(currentStrokeId);
+    });
 }
 
 KisFilterConfigurationSP Filter::filterConfig()

@@ -16,6 +16,7 @@
 #include "KisInterstrokeDataTransactionWrapperFactory.h"
 #include "kis_raster_keyframe_channel.h"
 #include "kis_image_config.h"
+#include "KisTouchedDevices.h"
 #include <boost/optional.hpp>
 
 //#define DEBUG_TRANSACTIONS
@@ -84,6 +85,7 @@ KisTransactionData::KisTransactionData(const KUndo2MagicString& name, KisPaintDe
     possiblyFlattenSelection(device);
     init(device);
     saveSelectionOutlineCache();
+    KisTouchedDevices::noteChanged(m_d->device.data()); // Krita Agent: a recording stroke learns what it changes
 }
 
 KisPaintDeviceSP KisTransactionData::device() const

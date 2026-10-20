@@ -20,6 +20,12 @@ namespace PaintingResources
     const QString defaultStrokeStyle = "ForegroundColor";
     const QString defaultFillStyle = "None";
 
+    /// The active view's resource provider, or null when there is no main window or view.
+    KoCanvasResourceProvider *viewResources();
+
+    /// Whether libkis can paint now: an active view supplies the brush and colours.
+    bool hasView();
+
     KisFigurePaintingToolHelper createHelper(KisImageWSP image,
                                              KisNodeSP node,
                                              const QString strokeStyle = defaultStrokeStyle,

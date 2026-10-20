@@ -2006,11 +2006,14 @@ KisStrokeId KisImage::startStroke(KisStrokeStrategy *strokeStrategy)
      * However this is purely their choice whether to end a stroke
      * or not.
      */
-    if (strokeStrategy->requestsOtherStrokesToEnd()) {
+    // Krita Agent: a script's strokes (NoEndRequestsOverride) never ask the artist's open strokes to end
+    if (strokeStrategy->requestsOtherStrokesToEnd() && !KisProcessingApplicator::NoEndRequestsOverride::active()) {
         requestStrokeEnd();
     }
 
-    return m_d->scheduler.startStroke(strokeStrategy);
+    const KisStrokeId id = m_d->scheduler.startStroke(strokeStrategy);
+    KisProcessingApplicator::NoEndRequestsOverride::noteStroke(id); // Krita Agent: a script can cancel what it started
+    return id;
 }
 
 void KisImage::KisImagePrivate::notifyProjectionUpdatedInPatches(const QRect &rc, QVector<KisRunnableStrokeJobData*> &jobs)

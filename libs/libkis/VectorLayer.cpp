@@ -3,6 +3,8 @@
  *
  *  SPDX-License-Identifier: LGPL-2.0-or-later
  */
+#include "ScriptWaits.h"
+#include <kis_processing_applicator.h>
 #include "DocumentHistory.h"
 #include "VectorLayer.h"
 #include <kis_shape_layer.h>
@@ -133,8 +135,7 @@ QList<Shape *> VectorLayer::addShapesFromSvg(const QString &svgData)
 
         KUndo2Command *cmd = new KoShapeCreateCommand(document->document()->shapeController(), originalShapes, container);
 
-        DocumentHistory::runCommandStroke(this->node()->image(), cmd); // Krita Agent: joins an open macro or agent move
-        this->node()->image()->waitForDone();
+        DocumentHistory::runCommandStrokeAndWait(this->node()->image(), cmd, "VectorLayer.addShapesFromSvg()");  // Krita Agent: joins an open macro or agent move
         delete document;
 
         std::sort(originalShapes.begin(), originalShapes.end(), KoShape::compareShapeZIndex);
@@ -227,8 +228,7 @@ Shape* VectorLayer::createGroupShape(const QString &name, QList<Shape *> shapes)
     new KoShapeCreateCommand(document->document()->shapeController(), group, container, cmd);
     new KoShapeGroupCommand(group, originalShapes, true, cmd);
 
-    DocumentHistory::runCommandStroke(this->node()->image(), cmd); // Krita Agent: joins an open macro or agent move
-    this->node()->image()->waitForDone();
+    DocumentHistory::runCommandStrokeAndWait(this->node()->image(), cmd, "VectorLayer.groupShapes()");  // Krita Agent: joins an open macro or agent move
     delete document;
 
     return new GroupShape(group);

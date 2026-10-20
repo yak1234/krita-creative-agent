@@ -7,6 +7,8 @@
 // Document's feature map (Krita Agent, openspec change krita-fork, capability canvas-features). Kept apart from
 // Document.cpp so the upstream file carries only their declarations.
 
+#include "ScriptWaits.h"
+#include <kis_processing_applicator.h>
 #include "Document.h"
 #include "DocumentHistory.h"
 #include "Feature.h"
@@ -31,10 +33,9 @@ KisImageSP imageOf(const QPointer<KisDocument> &document)
 /// Runs \p cmd as one undo step, or as part of the open macro or agent move, the way libkis Node runs its
 /// commands, and waits for it. Not through KisProcessingApplicator directly: the history would take it for the
 /// artist's work and split an open agent move around it.
-void runCommand(KisImageSP image, KUndo2Command *cmd)
+bool runCommand(KisImageSP image, KUndo2Command *cmd, const char *call)
 {
-    DocumentHistory::runCommandStroke(image, cmd);
-    image->waitForDone();
+    return DocumentHistory::runCommandStrokeAndWait(image, cmd, call);
 }
 
 /// A feature's name has to say something: not empty, not only spaces. Outer spaces are dropped (\ref
@@ -94,10 +95,11 @@ Feature *Document::addFeature(const QString &rawName,
 
     KisFeatureSP feature = new KisFeature(name, kind, pixels, featureAuthor, featureState, isProtected);
     // The mean colour is read from the composited painting, after the work already queued.
-    image->waitForDone();
+    // (the measured colour is saved in the .kra: no measuring from a picture that is not up to date)
+    if (!ScriptWaits::waitForQueuedWork(image, "Document.addFeature()")) return nullptr;
     feature->measure(image->projection());
 
-    runCommand(image, new KisAddFeatureCommand(image, feature));
+    if (!runCommand(image, new KisAddFeatureCommand(image, feature), "Document.addFeature()")) return nullptr;
     return new Feature(image, feature);
 }
 
@@ -111,8 +113,7 @@ bool Document::renameFeature(const QString &name, const QString &rawNewName)
     if (newName == name) return true;
     if (image->featureList()->featureByName(newName)) return false;
 
-    runCommand(image, new KisRenameFeatureCommand(image, feature->id(), newName));
-    return true;
+    return runCommand(image, new KisRenameFeatureCommand(image, feature->id(), newName), "Document.renameFeature()");
 }
 
 bool Document::removeFeature(const QString &name)
@@ -122,6 +123,5 @@ bool Document::removeFeature(const QString &name)
     KisFeatureSP feature = image->featureList()->featureByName(name);
     if (!feature) return false;
 
-    runCommand(image, new KisRemoveFeatureCommand(image, feature->id()));
-    return true;
+    return runCommand(image, new KisRemoveFeatureCommand(image, feature->id()), "Document.removeFeature()");
 }

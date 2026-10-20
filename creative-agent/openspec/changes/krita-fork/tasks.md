@@ -123,7 +123,7 @@
   strokes and processing carry a name instead of "Scripted Brush Stroke".
 - [x] 2.8 Change events beyond the image: node added, removed and changed, selection, undo index, modified, active
   node, tool and preset, through `Notifier`.
-- [ ] 2.9 libkis traps fixed: `Filter.apply` undoable and selection-aware without blocking; undo for
+- [x] 2.9 (branch agent/traps; see AGENT-FORK.md) libkis traps fixed: `Filter.apply` undoable and selection-aware without blocking; undo for
   `Node.setPixelData`, `move` (done in 5.3: `Node.move` is one undo step) and `setOpacity`; `Selection.contract` and `resize` corrected; painting without an active
   view refused cleanly; per-stroke overrides (mirror, selection, composite op) so the view's state never leaks into
   agent strokes. Also (from the 5.3 review): libkis calls that run a stroke must not end the artist's open strokes
@@ -132,6 +132,10 @@
   `Node.cpp` and `Document.cpp`.
   And: 2.5's `collectDevices` cannot see inside a saved macro, so an artist's fill or gradient on another layer
   during an agent move splits the move (found by 5.3's tests).
+  *(Future simplification of 2.9, from its review: a const walker on `KisSavedMacroCommand`, `LambdaCommand` and
+  `KisProcessingCommand` so `DocumentHistory` reads the transactions of any artist stroke, replacing the thread-local
+  `KisTouchedDevices` recording and the per-tool opt-ins, and covering every tool. Not done: the opt-ins work for the
+  three tools that matter and cost a few ns per stroke.)*
 - [ ] 2.6 Verify: the New Moscow and 1024×768 chunk times are within a factor of 1.5; an observe at 6000×4500 takes
   under 2 s.
 

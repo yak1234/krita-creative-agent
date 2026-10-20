@@ -266,6 +266,7 @@ void KisToolEncloseAndFill::slot_delegateTool_enclosingMaskProduced(KisPixelSele
     KisStrokeStrategyUndoCommandBased *strategy =
             new KisStrokeStrategyUndoCommandBased(kundo2_i18n("Enclose and Fill"), false, image().data());
     strategy->setSupportsWrapAroundMode(true);
+    strategy->setReportsTouchedDevices(true); // Krita Agent: it changes pixels only, and says which layers
     m_fillStrokeId = image()->startStroke(strategy);
     KIS_SAFE_ASSERT_RECOVER_RETURN(m_fillStrokeId);
 

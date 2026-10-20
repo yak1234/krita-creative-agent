@@ -26,11 +26,13 @@
 #include <KisEncloseAndFillPainter.h>
 #include <kis_gradient_painter.h>
 #include <kis_types.h>
+#include <kis_stroke_job_strategy.h>
 #include <kundo2magicstring.h>
 
 #include "kritaui_export.h"
 
 class KisStrokeUndoFacade;
+class KUndo2Command;
 
 /**
  * Krita's painting tools as functions (Krita Agent, krita-fork 5.3): bucket fill, enclose-and-fill, gradient, smart
@@ -196,6 +198,20 @@ KRITAUI_EXPORT bool smartPatch(const Target &target, KisPixelSelectionSP area, i
 /// Moves the node so that its offset becomes \p position, as an undoable step ("Move"). Moving to where it is
 /// queues nothing and returns true.
 KRITAUI_EXPORT bool moveNode(const Target &target, const QPoint &position, QString *reason = nullptr);
+
+/**
+ * Runs \p command (taking it) in a stroke of its own, as KisProcessingApplicator::runSingleCommandStroke() does,
+ * but never asking the image's open strokes to end: one undo step named after the command in \p undoFacade (the
+ * image's history when null), told to \p completion (if any) when it ends. Returns at once. \p pixelsOnly: the command
+ * changes nothing but paint devices' pixels (through transactions), and the step reports which.
+ */
+KRITAUI_EXPORT void runCommand(KisImageSP image,
+                               KUndo2Command *command,
+                               KisStrokeUndoFacade *undoFacade,
+                               CompletionSP completion,
+                               KisStrokeJobData::Sequentiality sequentiality = KisStrokeJobData::SEQUENTIAL,
+                               KisStrokeJobData::Exclusivity exclusivity = KisStrokeJobData::NORMAL,
+                               bool pixelsOnly = false);
 
 } // namespace KisToolFunctions
 

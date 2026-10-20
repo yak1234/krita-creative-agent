@@ -32,6 +32,7 @@
 #include <processing/KisToolFunctions.h>
 
 #include "DocumentHistory.h"
+#include "ScriptWaits.h"
 #include "Selection.h"
 
 namespace
@@ -273,18 +274,12 @@ bool refused(const char *call, const QString &reason)
 } // namespace
 
 /**
- * Waits for one call's stroke only, never for the whole image, and without running the event loop. A stroke queued
- * behind one the artist is still drawing cannot start, so the wait is bounded (KisToolFunctions::waitLimit()): past
- * it, the stroke is cancelled and the call refused.
+ * Waits for one call's stroke only, never for the whole image (ScriptWaits: bounded by KisToolFunctions::waitLimit(),
+ * handling events meanwhile so a held pen can lift). Past the limit the stroke is cancelled and the call refused.
  */
 static bool waitForStroke(KisToolFunctions::CompletionSP completion, const char *call)
 {
-    if (completion->wait(KisToolFunctions::waitLimit())) return true;
-    if (completion->finished()) return true;
-    completion->cancel();
-    return refused(call, QString("not done within %1 s (another stroke, such as one the artist is drawing, held it "
-                                 "back, or it was cancelled); cancelled, nothing changed")
-                             .arg(KisToolFunctions::waitLimit() / 1000.0));
+    return ScriptWaits::waitForStroke(completion, call);
 }
 
 /// A target for the tool functions: this node, \p selection, and the open macro's or move's undo, if any. Taken only
@@ -306,6 +301,8 @@ static bool runTool(KisToolFunctions::Target target, const char *call,
 {
     QString reason;
     if (!KisToolFunctions::canPaint(target, &reason)) return refused(call, reason);
+    // A locked image (Document.lock()) runs no stroke until it is unlocked: refuse instead of waiting out the limit.
+    if (target.image->locked()) return refused(call, "the document is locked (Document.lock()); unlock it first");
     target.undoFacade = DocumentHistory::scriptUndoFacade(target.image, target.node->paintDevice());
     target.completion.reset(new KisToolFunctions::Completion());
     if (!run(target, &reason)) return refused(call, reason);
@@ -496,6 +493,7 @@ bool Node::move(int x, int y)
         // Nothing to move: no step, but the same refusals.
         return KisToolFunctions::moveNode(target, QPoint(x, y), &reason) ? true : refused(call, reason);
     }
+    if (image->locked()) return refused(call, "the document is locked (Document.lock()); unlock it first");
     target.undoFacade = DocumentHistory::scriptUndoFacade(image, node->paintDevice());
     target.completion.reset(new KisToolFunctions::Completion());
     if (!KisToolFunctions::moveNode(target, QPoint(x, y), &reason)) return refused(call, reason);

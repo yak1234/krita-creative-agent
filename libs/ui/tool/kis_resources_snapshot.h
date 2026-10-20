@@ -72,6 +72,9 @@ public:
 
     void setOpacity(qreal opacity);
     void setMirroring(bool horizontal, bool vertical);
+    /// Krita Agent: a stroke's own blending mode and alpha lock, in place of the canvas's (scripts' strokes).
+    void setCompositeOpId(const QString &id);
+    void setGlobalAlphaLock(bool lock);
     qreal opacity() const;
     QString compositeOpId() const;
 

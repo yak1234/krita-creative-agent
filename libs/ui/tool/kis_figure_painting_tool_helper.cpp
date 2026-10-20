@@ -23,7 +23,8 @@ KisFigurePaintingToolHelper::KisFigurePaintingToolHelper(const KUndo2MagicString
                                                          KisToolShapeUtils::StrokeStyle strokeStyle,
                                                          KisToolShapeUtils::FillStyle fillStyle,
                                                          QTransform fillTransform,
-                                                         KisPostExecutionUndoAdapter *undoAdapterOverride)
+                                                         KisPostExecutionUndoAdapter *undoAdapterOverride,
+                                                         const std::function<void(KisResourcesSnapshotSP)> &configure)
 {
     m_strokesFacade = image.data();
 
@@ -35,6 +36,10 @@ KisFigurePaintingToolHelper::KisFigurePaintingToolHelper(const KUndo2MagicString
     setupPaintStyles(m_resources, strokeStyle, fillStyle, fillTransform);
     // Krita Agent: a script's stroke can keep its undo commands apart (DocumentHistory's agent moves).
     m_resources->setPostExecutionUndoAdapterOverride(undoAdapterOverride);
+    // Krita Agent: a script's stroke sets its own mirror, blending mode and alpha lock before it starts.
+    if (configure) {
+        configure(m_resources);
+    }
 
     KisFreehandStrokeInfo *strokeInfo = new KisFreehandStrokeInfo();
 

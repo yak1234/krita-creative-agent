@@ -86,7 +86,7 @@ public Q_SLOTS:
     int index() const;
     QUuid uniqueId() const;
 
-    void paintLine(const QPoint pointOne, const QPoint pointTwo, double pressureOne = 1.0, double pressureTwo = 1.0, const QString strokeStyle = "ForegroundColor", const QString &name = QString());
+    void paintLine(const QPointF pointOne, const QPointF pointTwo, double pressureOne = 1.0, double pressureTwo = 1.0, const QString strokeStyle = "ForegroundColor", const QString &name = QString());
     void paintPolylineStroke(const QList<StrokePoint> &points, const QString strokeStyle = "ForegroundColor", const QString &name = QString());
     void paintRectangle(const QRectF &rect, const QString strokeStyle = "ForegroundColor", const QString fillStyle = "None", const QString &name = QString());
     void paintPolygon(const QList<QPointF> points, const QString strokeStyle = "ForegroundColor", const QString fillStyle = "None", const QString &name = QString());

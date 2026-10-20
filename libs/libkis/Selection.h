@@ -87,7 +87,8 @@ public Q_SLOTS:
 
     /**
      * Make the selection's width and height smaller by the given value.
-     * This will not move the selection's top-left position.
+     * This will not move the selection's top-left position. What lies outside the smaller box is deselected; the
+     * selection's shape and partial values inside it are kept (Krita Agent: it used to add a rectangle instead).
      */
     void contract(int value);
 
@@ -153,7 +154,9 @@ public Q_SLOTS:
     void invert();
 
     /**
-     * Resize the selection to the given width and height. The top-left position will not be moved.
+     * Resize the selection to the given width and height. The top-left position will not be moved. What lies
+     * outside the box is deselected, and the area a larger box adds is selected in full (Krita Agent: it used to add
+     * a rectangle without ever removing anything).
      */
     void resize(int w, int h);
 
@@ -228,6 +231,7 @@ public Q_SLOTS:
     void setPixelData(QByteArray value, int x, int y, int w, int h);
 
 private:
+    void clipTo(const QRect &rect);
     friend class Document;
     friend class Node; // Krita Agent: Node::paintStrokes() (2.4) and the tools as functions (5.3) read a script's selection
     friend class FilterLayer;

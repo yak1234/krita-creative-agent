@@ -20,6 +20,8 @@ kis_add_tests(
     TestNodeAgentTools.cpp
     TestStrokeJobs.cpp
     TestDocumentFeatureBuilders.cpp
+    TestLibkisTraps.cpp
+    TestLibkisNoView.cpp
     LINK_LIBRARIES kritalibkis kritatestsdk
     )
 

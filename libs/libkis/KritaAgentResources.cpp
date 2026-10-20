@@ -9,6 +9,9 @@
 // editor does when it saves a preset with another tip, exposed to scripts. Both go through KisResourceModel, which
 // saves the resource in the resource folder, adds it to the resource database and resets the shared models every
 // resource chooser shows, so the new resource is listed and usable at once.
+#include <KisDocument.h>
+#include "ScriptWaits.h"
+#include <kis_processing_applicator.h>
 #include "Krita.h"
 
 #include <QDir>
@@ -305,7 +308,8 @@ Resource *Krita::createBrushTip(Document *document, const QRect &rect, const QSt
     const QRect area = rect.isEmpty() ? bounds : rect.intersected(bounds);
     if (area.isEmpty()) return nullptr;
 
-    document->waitForDone();
+    // the work already queued lands first (nothing here starts a stroke, so nothing is suppressed)
+    ScriptWaits::run(document->document()->image(), "Krita.createBrushTip()", []() {});
     const QImage image = document->projection(area.x(), area.y(), area.width(), area.height());
     return createBrushTip(image, name, application);
 }

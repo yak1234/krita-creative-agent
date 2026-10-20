@@ -18,6 +18,7 @@
 #include <kis_paint_layer.h>
 #include <kis_image.h>
 
+#include <kis_debug.h>
 #include <Node.h>
 
 struct Selection::Private {
@@ -43,6 +44,20 @@ Selection::Selection(QObject *parent)
 Selection::~Selection()
 {
     delete d;
+}
+
+/// An inverted selection (or one that is selected by default) has no bounds to contract or resize.
+static bool isUnbounded(const KisSelectionSP &selection)
+{
+    return selection->pixelSelection()->defaultPixel().opacityU8() != 0;
+}
+
+void Selection::clipTo(const QRect &rect)
+{
+    KisPixelSelectionSP pixels = d->selection->pixelSelection();
+    KisPixelSelectionSP keep = new KisPixelSelection(pixels->defaultBounds());
+    keep->select(rect);
+    pixels->applySelection(keep, SELECTION_INTERSECT);
 }
 
 bool Selection::operator==(const Selection &other) const
@@ -108,8 +123,17 @@ void Selection::clear()
 
 void Selection::contract(int value)
 {
-    if (!d->selection) return;
-    d->selection->pixelSelection()->select(QRect(x(), y(), width() - value, height() - value));
+    // Krita Agent: it selected a rectangle (adding it to what was selected, so nothing was ever removed). It now
+    // keeps what lies inside the rectangle that is \p value narrower and lower than the selection's bounds, with the
+    // same top-left corner, as documented: the shape and the partial values inside are kept, the rest is dropped.
+    if (!d->selection || value <= 0) return;
+    if (isUnbounded(d->selection)) {
+        warnScript << "Selection.contract(): refused, an inverted selection has no bounds";
+        return;
+    }
+    const QRect bounds = d->selection->selectedExactRect();
+    if (bounds.isEmpty()) return;
+    clipTo(QRect(bounds.x(), bounds.y(), qMax(0, bounds.width() - value), qMax(0, bounds.height() - value)));
 }
 
 void Selection::copy(Node *node)
@@ -230,8 +254,26 @@ void Selection::invert()
 
 void Selection::resize(int w, int h)
 {
-    if (!d->selection) return;
-    d->selection->pixelSelection()->select(QRect(x(), y(), w, h));
+    // Krita Agent: it selected a rectangle of the new size, adding it to what was selected. The bounds now become
+    // exactly w x h from the same top-left corner: what lies outside is dropped, and where the box grew, the added
+    // area is selected in full (an empty selection becomes the whole rectangle).
+    if (!d->selection || w < 0 || h < 0) return;
+    if (isUnbounded(d->selection)) {
+        warnScript << "Selection.resize(): refused, an inverted selection has no bounds";
+        return;
+    }
+    const QRect bounds = d->selection->selectedExactRect();
+    const QRect box(bounds.isEmpty() ? QPoint(0, 0) : bounds.topLeft(), QSize(w, h));
+    if (bounds.isEmpty()) {
+        if (!box.isEmpty()) d->selection->pixelSelection()->select(box);
+        return;
+    }
+    clipTo(box);
+    KisPixelSelectionSP pixels = d->selection->pixelSelection();
+    const QRegion added = QRegion(box).subtracted(QRegion(bounds));
+    for (const QRect &rect : added) {
+        pixels->select(rect);
+    }
 }
 
 void Selection::select(int x, int y, int w, int h, int value)

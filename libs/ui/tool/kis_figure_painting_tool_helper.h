@@ -7,6 +7,7 @@
 #ifndef __KIS_FIGURE_PAINTING_TOOL_HELPER_H
 #define __KIS_FIGURE_PAINTING_TOOL_HELPER_H
 
+#include <functional>
 #include "kis_types.h"
 #include "kritaui_export.h"
 #include <brushengine/kis_paint_information.h>
@@ -27,7 +28,8 @@ public:
                                 KisToolShapeUtils::StrokeStyle strokeStyle,
                                 KisToolShapeUtils::FillStyle fillStyle,
                                 QTransform fillTransform = QTransform(),
-                                KisPostExecutionUndoAdapter *undoAdapterOverride = nullptr);
+                                KisPostExecutionUndoAdapter *undoAdapterOverride = nullptr,
+                                const std::function<void(KisResourcesSnapshotSP)> &configure = nullptr);
     ~KisFigurePaintingToolHelper();
 
     void paintLine(const KisPaintInformation &pi0,

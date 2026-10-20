@@ -1022,6 +1022,10 @@ print(root.childNodes())
      * Wait for all the internal image jobs to complete and return without locking
      * the image. This function is handy for tests or other synchronous actions,
      * when one needs to wait for the result of his actions.
+     *
+     * Krita Agent: this waits for the whole image, which ends the artist's open strokes (it asks them to end) and
+     * does not return while the artist holds the pen down. A script calls it on purpose; libkis's own calls never
+     * do (they wait for their own stroke only, at most KisToolFunctions::waitLimit()).
      */
     void waitForDone();
 

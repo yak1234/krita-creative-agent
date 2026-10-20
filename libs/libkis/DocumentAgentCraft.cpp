@@ -9,6 +9,8 @@
 // layers (KisImage::mergeMultipleLayers) or on one group (KisImage::flattenLayer): each node's projection, with its
 // masks and styles, is painted into one new layer in one undo step. Inside a script's macro or agent move, that step
 // joins the open one: the merge's applicator sends its undo to the step (KisProcessingApplicator::UndoFacadeOverride).
+#include "ScriptWaits.h"
+#include <kis_processing_applicator.h>
 #include "Document.h"
 
 #include <QHash>
@@ -81,15 +83,14 @@ Node *Document::mergeGroups(const QList<Node *> &nodes)
     }
     if (merged.isEmpty()) return nullptr;
 
-    waitForDone();
+    if (!ScriptWaits::waitForQueuedWork(image, "Document.mergeGroups()")) return nullptr;
     const QList<KisNodeSP> before = nodesInOrder(image);
     QHash<const KisNode *, int> order;
     for (int i = 0; i < before.size(); i++) order[before[i].data()] = i;
     std::sort(merged.begin(), merged.end(),
               [&order](const KisNodeSP &a, const KisNodeSP &b) { return order.value(a.data()) < order.value(b.data()); });
 
-    // Inside an open macro or agent move, the merge's step joins it. The override covers only the merge call, which
-    // creates its applicator at once, never the waits (where the artist's own actions may run).
+    // Inside an open macro or agent move, the merge's step joins it.
     KisStrokeUndoFacade *scriptStep = DocumentHistory::scriptUndoFacade(image);
     if (merged.size() == 1) {
         KisNodeSP first = merged.first();
@@ -98,13 +99,17 @@ Node *Document::mergeGroups(const QList<Node *> &nodes)
             // Nothing to flatten: a plain paint layer is merged already.
             return qobject_cast<KisPaintLayer *>(layer.data()) ? Node::createNode(image, layer) : nullptr;
         }
-        KisProcessingApplicator::UndoFacadeOverride intoScriptStep(scriptStep);
-        image->flattenLayer(layer);
+        // The override covers only the merge call (it creates its applicator at once), never the wait.
+        if (!ScriptWaits::run(image, "Document.mergeGroups()", [&]() {
+                KisProcessingApplicator::UndoFacadeOverride intoScriptStep(scriptStep);
+                image->flattenLayer(layer);
+            })) return nullptr;
     } else {
-        KisProcessingApplicator::UndoFacadeOverride intoScriptStep(scriptStep);
-        image->mergeMultipleLayers(merged, merged.last());
+        if (!ScriptWaits::run(image, "Document.mergeGroups()", [&]() {
+                KisProcessingApplicator::UndoFacadeOverride intoScriptStep(scriptStep);
+                image->mergeMultipleLayers(merged, merged.last());
+            })) return nullptr;
     }
-    waitForDone();
 
     // The merged layer is the one layer that was not there before.
     QSet<const KisNode *> existed;

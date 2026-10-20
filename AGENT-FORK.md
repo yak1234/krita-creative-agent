@@ -137,6 +137,18 @@ Keep this table current: every upstream file the `krita-agent` branch changes, a
 | `libs/libkis/CMakeLists.txt`, `libs/libkis/tests/CMakeLists.txt`, `plugins/extensions/pykrita/tests/CMakeLists.txt` | Build `DocumentFeatureBuilders.cpp`; add `TestDocumentFeatureBuilders` and `TestPythonFeatureBuilders` | feature builders (6.3) |
 | `libs/libkis/DocumentAgentSpeed.cpp` | `tryReadLockWithoutEndingStrokes` moved unchanged into our `KisAgentReadLock.h` (`tryLock`, `Scoped`), shared with the builders | feature builders (6.3), scaled read (2.3) |
 | `libs/image/tests/CMakeLists.txt` | Adds `KisMagneticWorkerTest` | feature builders (6.3) |
+| `libs/image/kis_transaction_data.cpp` | One line at the end of the constructor: `KisTouchedDevices::noteChanged(device)` (a thread-local read; nothing recorded unless a stroke asked) | libkis traps (2.9, item 7) |
+| `libs/image/kis_stroke_strategy_undo_command_based.h`, `.cpp` | `setReportsTouchedDevices()` (a stroke records the devices its transactions change and reports them with its undo step); `executeCommand` and the step's hand-over each wrap one `KisTouchedDevices` scope. Off by default | libkis traps (2.9, item 7) |
+| `libs/image/kis_processing_applicator.h`, `.cpp` | `REPORTS_TOUCHED_DEVICES` flag (the applicator's strategy reports its devices); `NoEndRequestsOverride` (a thread-local read by `KisImage::startStroke`; it also lists the strokes started under it, so a script can cancel them) | libkis traps (2.9, items 6, 7) |
+| `libs/image/kis_image.cc` | `startStroke()` skips `requestStrokeEnd()` while a `NoEndRequestsOverride` lives on the thread (one condition), and tells the override which stroke it started (one call) | libkis traps (2.9, item 6) |
+| `libs/image/CMakeLists.txt` | Builds `KisTouchedDevices.cpp` | libkis traps (2.9) |
+| `plugins/tools/basictools/kis_tool_fill.cc`, `kis_tool_gradient.cc`, `plugins/tools/tool_enclose_and_fill/KisToolEncloseAndFill.cpp` | One line each: the tool's stroke reports the devices it changes (`setReportsTouchedDevices(true)`, or the applicator flag), so an agent move splits only when the artist touches a layer the move touched | libkis traps (2.9, item 7) |
+| `libs/ui/tool/kis_resources_snapshot.h`, `.cpp` | `setCompositeOpId()` and `setGlobalAlphaLock()`, so a script's stroke sets its own | libkis traps (2.9, item 5) |
+| `libs/ui/tool/kis_figure_painting_tool_helper.h`, `.cpp` | An optional last constructor argument, a function that configures the stroke's resources (mirror, blending mode, alpha lock, opacity) before it starts | libkis traps (2.9, item 5) |
+| `libs/libkis/Node.cpp`, `Document.cpp`, `Filter.cpp`, `FillLayer.cpp`, `Shape.cpp`, `VectorLayer.cpp`, `Selection.cpp`, `Selection.h`, `PaintingResources.cpp`, `.h`, `DocumentHistory.cpp`, `.h`, `NodeAgentTools.cpp`, `DocumentFeatures.cpp`, `FilterMaskBake.cpp`, `DocumentAgentCraft.cpp`, `DocumentAgentSpeed.cpp`, `KritaAgentResources.cpp`, `Document.h` | The traps: waits for the call's own stroke (`ScriptWaits`), no `waitForDone()` in libkis's own calls, undo for `setOpacity`, `setName`, `setVisible`, `setPixelData`, `Filter.apply` (selection-aware); `Selection.contract` and `resize` corrected; painting refused without a view; per-stroke overrides; `Document.waitForDone()` documented | libkis traps (2.9) |
+| `plugins/extensions/pykrita/sip/krita/Filter.sip` | `Filter.apply` returns `bool` (it was declared `void`, so Python got None for a refusal) | libkis traps (2.9) |
+| `plugins/extensions/pykrita/sip/krita/Node.sip` | `paintLine` takes `QPointF` (it was `QPoint`, though libkis takes `QPointF`) | libkis traps (2.9) |
+| `libs/libkis/CMakeLists.txt`, `libs/libkis/tests/CMakeLists.txt`, `plugins/extensions/pykrita/tests/CMakeLists.txt` | Build `ScriptWaits.cpp`; add `TestLibkisTraps`, `TestLibkisNoView`, `TestPythonTraps` | libkis traps (2.9) |
 
 Our own files for the identity: `cmake/modules/KritaAppIdentity.cmake`, `libs/global/KisAppIdentity.{h,cpp}`,
 `libs/global/config-app-identity.h.cmake`; tests `libs/global/tests/KisAppIdentityTest.{h,cpp}`,
@@ -302,10 +314,29 @@ next work reopens it as "Agent: <name> (cont.)", its end ends it, and `Document.
 the Python context manager checks so it never ends another move. The undo limit counts each step once.
 `setUndoIndex` waits at most 3 s for the image, handling input meanwhile so a held pen can lift.
 
-**startStroke's end requests (deferred to task 2.9).** Every stroke libkis starts, the agent's included, makes
-Krita ask the open strokes to end (`KisImage::startStroke` → `requestStrokeEnd`). The freehand brush keeps going
-and the agent's strokes wait behind it, but the transform, move, crop, line and selection tools commit their
-in-progress work, and animation playback stops. Per-stroke overrides in 2.9 are to turn this off for agent strokes.
+**startStroke's end requests (fixed in 2.9).** A stroke started by stock Krita makes it ask the open strokes to end
+(`KisImage::startStroke` → `requestStrokeEnd`), which commits the transform, move, crop, line and selection tools'
+in-progress work and stops animation playback. libkis's own calls no longer do: strokes of `Node.paint*`,
+`Filter.apply/startFilter`, node setters and the image operations run under `KisProcessingApplicator::
+NoEndRequestsOverride`, or their strategy says `setRequestsOtherStrokesToEnd(false)`, and they wait for their own
+stroke only (`ScriptWaits`: the call's completion, or a marker stroke queued after an operation libkis does not
+hold), at most `KisToolFunctions::waitLimit()` (60 s), handling events on the GUI thread so a held pen can lift. A
+stroke held back past the limit is cancelled and the call returns false (commands) or warns (image operations, which
+cannot be taken back and run when the artist's stroke ends). A script's public `Document.waitForDone()` is as
+upstream: it ends open strokes and waits for the whole image, and a script that reads the composited image still calls
+it first (libkis's own waits make the call's work land, not every redraw).
+
+Rules of the waits (2.9 fix round): `NoEndRequestsOverride` lives only around the upstream call that starts the
+strokes (`ScriptWaits::run`), never around the wait, where the GUI thread handles events and the artist may start a
+stroke that must ask others to end as usual. An image operation held back past the limit is cancelled (the strokes it
+started are cancelled, a warning says so, `mergeDown` and `addFeature` return null, setters return false). On a locked
+image (`Document.lock()`) the property and pixel setters and `Filter.apply` run at once and are recorded in the
+history (the open step, else the image's), so a script reads its change back inside the lock block; other commands
+queue and run on unlock, and the tool functions (`Node.fill` and the like) refuse.
+
+Our own files for the traps (2.9): `libs/image/KisTouchedDevices.{h,cpp}`, `libs/libkis/ScriptWaits.{h,cpp}`; tests
+`libs/libkis/tests/TestLibkisTraps.{h,cpp}`, `TestLibkisNoView.{h,cpp}` (a program of its own: no window can exist),
+`plugins/extensions/pykrita/tests/TestPythonTraps.{h,cpp}`; plugin side `creative-agent/krita-mcp/krita-plugin/kritamcp/script_steps.py`.
 
 Coordination with the change reports: `DocumentHistory::agentMoveHook()` opens agent work
 (`DocumentChanges::beginAgentWork()`) when a move begins or continues and ends it once the move's step has landed,

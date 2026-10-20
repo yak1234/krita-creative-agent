@@ -2,7 +2,7 @@
  * SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * The executable of the packaged "Krita Agent.app" (Contents/MacOS/krita). It does three things and then becomes Krita:
+ * The executable of the packaged "Krita Agent.app" (Contents/MacOS/krita). It does four things and then becomes Krita:
  *
  *   1. On the first run of a settings folder it writes the fork's first-run default: the Creative Agent plugin
  *      (kritamcp) is enabled in <home>/Library/Preferences/<SETTINGS_FOLDER>/kritarc, [python] group, key
@@ -14,14 +14,16 @@
  *   2. It points the libraries that would otherwise look outside the app at the app: PYTHONNOUSERSITE=1 (no packages
  *      from the user's own Python folders) and MLT's repository, data, profiles and presets (Krita sets these only
  *      for AppImage and Android).
- *   3. It execs Contents/MacOS/krita-app, the real Krita executable, with the same arguments.
+ *   3. It moves a stale copy of the Creative Agent plugin out of the settings folder's own pykrita folder (see
+ *      move_shadowing_plugin below), so the plugin inside the app is the one Krita loads.
+ *   4. It execs Contents/MacOS/krita-app, the real Krita executable, with the same arguments.
  *
  * This is a stop-gap that needs no change to Krita: a build whose shipped defaults (krita/data/kritarc, compiled in
  * as :/kconfig/<folder>/kritarc) already enable the plugin makes step 1 unnecessary. See AGENT-FORK.md, "Packaging".
  *
  * Built with -DSETTINGS_FOLDER='"KritaAgent"' (the build's KRITA_APP_SETTINGS_FOLDER). Tests build it with
- * -DKRITA_AGENT_TEST_HOOK, which adds --agent-first-run-only (do step 1 and exit) and --agent-print-env (print step 2's
- * variables and exit); the packaged launcher has neither.
+ * -DKRITA_AGENT_TEST_HOOK, which adds --agent-first-run-only (do step 1 and exit), --agent-print-env (print step 2's
+ * variables and exit) and --agent-shadow-only (do step 3 and exit); the packaged launcher has none of them.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -33,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef SETTINGS_FOLDER
@@ -41,6 +44,8 @@
 #define MARKER_NAME ".agent-first-run-1"
 #define PLUGIN_KEY "enable_kritamcp"
 #define REAL_EXECUTABLE "krita-app"
+#define PRODUCT_NAME "Krita Agent"     /* the name in messages; the product rename is this one line */
+#define BUILD_INFO_LIMIT 65536
 
 enum merge_result { MERGE_CHANGED, MERGE_PRESENT, MERGE_NO_MEMORY };
 
@@ -72,9 +77,9 @@ static int make_dirs(const char *path)
 }
 
 /* Read a whole regular file. Returns 0 and a malloc'd NUL-terminated buffer, or -1 with errno set. */
-static int read_file(const char *path, char **data, size_t *size)
+static int read_file_limited(const char *path, char **data, size_t *size, size_t limit)
 {
-    int fd = open(path, O_RDONLY);
+    int fd = open(path, O_RDONLY | O_NONBLOCK);      /* a pipe must not make us wait */
     if (fd < 0) {
         return -1;
     }
@@ -82,6 +87,11 @@ static int read_file(const char *path, char **data, size_t *size)
     if (fstat(fd, &info) != 0 || !S_ISREG(info.st_mode)) {
         close(fd);
         errno = EINVAL;
+        return -1;
+    }
+    if (limit && (size_t)info.st_size > limit) {
+        close(fd);
+        errno = EFBIG;
         return -1;
     }
     size_t capacity = (size_t)info.st_size + 1;
@@ -111,6 +121,11 @@ static int read_file(const char *path, char **data, size_t *size)
     *data = buffer;
     *size = used;
     return 0;
+}
+
+static int read_file(const char *path, char **data, size_t *size)
+{
+    return read_file_limited(path, data, size, 0);
 }
 
 /* Is `line` (`length` bytes, not NUL terminated) the group header "[python]" (a trailing CR or spaces allowed)? */
@@ -338,6 +353,167 @@ static void first_run_defaults(void)
     write_marker(marker);                                 /* only now: the file is complete and in place */
 }
 
+/* ---- Step 3: a plugin copy in the profile must not shadow the one in the app ---------------------------------------- */
+
+#define PLUGIN_NAME "kritamcp"
+#define KEEP_ENV "KRITA_AGENT_KEEP_PROFILE_PLUGIN"
+
+static int is_real_dir(const char *path)
+{
+    struct stat info;
+    return lstat(path, &info) == 0 && S_ISDIR(info.st_mode);          /* a link to a folder is not a real folder */
+}
+
+static int is_regular(const char *path)
+{
+    struct stat info;
+    return stat(path, &info) == 0 && S_ISREG(info.st_mode);
+}
+
+/* The "build_id" string of a plugin folder's build-info.json into `id`; "" when the file or the key is missing or odd. */
+static void read_build_id(const char *folder, char *id, size_t size)
+{
+    char path[PATH_MAX], *data = NULL;
+    size_t length = 0;
+    id[0] = '\0';
+    if (join(path, sizeof path, folder, "/", "build-info.json") != 0 || read_file_limited(path, &data, &length, BUILD_INFO_LIMIT) != 0) {
+        return;
+    }
+    const char *key = strstr(data, "\"build_id\"");
+    if (key) {
+        key += strlen("\"build_id\"");
+        while (*key == ' ' || *key == '\t' || *key == '\r' || *key == '\n') {
+            ++key;
+        }
+        if (*key == ':') {
+            ++key;
+            while (*key == ' ' || *key == '\t' || *key == '\r' || *key == '\n') {
+                ++key;
+            }
+            if (*key == '"') {
+                ++key;
+                size_t n = 0;
+                while (key[n] && key[n] != '"' && key[n] != '\\' && n + 1 < size) {
+                    id[n] = key[n];
+                    ++n;
+                }
+                id[n] = '\0';
+                if (key[n] != '"') {
+                    id[0] = '\0';                                 /* unterminated, escaped or too long: not an id */
+                }
+            }
+        }
+    }
+    free(data);
+}
+
+/*
+ * Krita loads Python plugins from the settings folder's own pykrita folder (<home>/Library/Application Support/<folder>/krita/
+ * pykrita) BEFORE the ones inside the app, and a plugin is found by name: an old copy of kritamcp there (left by an
+ * installer from before the plugin shipped in the app) replaces the app's plugin, with its own configuration and an
+ * old companion. In this app there is one plugin, the one inside it.
+ *
+ * So, before Krita starts, and only when all of these hold, the profile's kritamcp (and kritamcp.desktop) are RENAMED into a
+ * new sibling folder <...>/krita/pykrita-shadowed-<date>[-n]/ (never deleted, never copied, never rewritten; the artist can
+ * put them back; Krita does not scan that folder):
+ *   - this app has its own kritamcp (Contents/Resources/krita/pykrita/kritamcp/__init__.py and kritamcp.desktop);
+ *   - the profile's kritamcp is a real folder (not a link: a link is a deliberate development setup) with an __init__.py;
+ *   - its build-info.json build_id differs from the app's, or it has none (the same build shadows nothing);
+ *   - KRITA_AGENT_KEEP_PROFILE_PLUGIN is not set (a developer's escape).
+ * No other file or plugin in the profile is looked at, let alone moved. Any problem means: change nothing.
+ * Returns 1 when something was moved.
+ */
+static int move_shadowing_plugin(const char *contents)
+{
+    const char *home = home_folder();
+    const char *keep = getenv(KEEP_ENV);
+    if (!home || (keep && *keep)) {
+        return 0;
+    }
+    char bundled[PATH_MAX], bundled_init[PATH_MAX], bundled_desktop[PATH_MAX], profile[PATH_MAX], user[PATH_MAX];
+    char user_init[PATH_MAX], user_desktop[PATH_MAX], root[PATH_MAX], manifest[PATH_MAX], pykrita[PATH_MAX];
+    if (join(bundled, sizeof bundled, contents, "/Resources/krita/pykrita/", PLUGIN_NAME) != 0
+        || join(bundled_init, sizeof bundled_init, bundled, "/", "__init__.py") != 0
+        || join(bundled_desktop, sizeof bundled_desktop, contents, "/Resources/krita/pykrita/", PLUGIN_NAME ".desktop") != 0
+        || join(root, sizeof root, home, "/Library/Application Support/", SETTINGS_FOLDER) != 0
+        || join(profile, sizeof profile, root, "/krita", "") != 0
+        || join(manifest, sizeof manifest, contents, "/Resources/creative-agent-bundle/", "release-manifest.json") != 0
+        || join(pykrita, sizeof pykrita, profile, "/pykrita", "") != 0
+        || join(user, sizeof user, profile, "/pykrita/", PLUGIN_NAME) != 0
+        || join(user_init, sizeof user_init, user, "/", "__init__.py") != 0
+        || join(user_desktop, sizeof user_desktop, profile, "/pykrita/", PLUGIN_NAME ".desktop") != 0) {
+        return 0;
+    }
+    if (!is_regular(bundled_init) || !is_regular(bundled_desktop) || !is_regular(manifest)) {
+        return 0;                                                 /* not a packaged release with its own plugin */
+    }
+    if (!is_real_dir(profile) || !is_real_dir(pykrita) || !is_real_dir(user) || !is_regular(user_init)) {
+        return 0;                                                 /* a linked krita or pykrita folder is the artist's own setup */
+    }
+    char bundled_id[160], user_id[160];
+    read_build_id(bundled, bundled_id, sizeof bundled_id);
+    read_build_id(user, user_id, sizeof user_id);
+    if (!bundled_id[0]) {
+        return 0;                                                 /* cannot tell what the app's build is: change nothing */
+    }
+    if (user_id[0] && strcmp(user_id, bundled_id) == 0) {
+        return 0;
+    }
+
+    /* A new folder named for today; a second one the same day gets -2, -3 ... (mkdir fails if it exists: never reuse one). */
+    time_t now = time(NULL);
+    struct tm local;
+    char stamp[32], target[PATH_MAX], moved_dir[PATH_MAX], moved_desktop[PATH_MAX];
+    if (!localtime_r(&now, &local) || strftime(stamp, sizeof stamp, "%Y-%m-%d", &local) == 0) {
+        return 0;
+    }
+    int made = 0;
+    for (int n = 1; n < 100 && !made; ++n) {
+        char suffix[32] = "";
+        if (n > 1) {
+            snprintf(suffix, sizeof suffix, "-%d", n);
+        }
+        char name[96];
+        snprintf(name, sizeof name, "/pykrita-shadowed-%s%s", stamp, suffix);
+        if (join(target, sizeof target, profile, "", name) != 0) {
+            return 0;
+        }
+        if (mkdir(target, 0755) == 0) {
+            made = 1;
+        } else if (errno != EEXIST) {
+            return 0;
+        }
+    }
+    if (!made || join(moved_dir, sizeof moved_dir, target, "/", PLUGIN_NAME) != 0
+        || join(moved_desktop, sizeof moved_desktop, target, "/", PLUGIN_NAME ".desktop") != 0) {
+        return 0;
+    }
+    /* The .desktop first, then the folder; if the folder cannot go, the .desktop goes back and nothing has changed. */
+    struct stat info;
+    int desktop_moved = 0;
+    if (lstat(user_desktop, &info) == 0) {
+        if (rename(user_desktop, moved_desktop) != 0) {
+            rmdir(target);
+            fprintf(stderr, PRODUCT_NAME ": cannot move %s: %s\n", user_desktop, strerror(errno));
+            return 0;
+        }
+        desktop_moved = 1;
+    }
+    if (rename(user, moved_dir) != 0) {
+        int saved = errno;
+        if (desktop_moved && rename(moved_desktop, user_desktop) != 0) {
+            fprintf(stderr, PRODUCT_NAME ": %s is left in %s\n", PLUGIN_NAME ".desktop", target);
+        } else {
+            rmdir(target);
+        }
+        fprintf(stderr, PRODUCT_NAME ": cannot move the old %s plugin out of %s: %s\n", PLUGIN_NAME, user, strerror(saved));
+        return 0;
+    }
+    fprintf(stderr, PRODUCT_NAME ": an old %s plugin (build %s) in %s would have replaced the one in this app; moved it to %s\n",
+            PLUGIN_NAME, user_id[0] ? user_id : "unknown", user, target);
+    return 1;
+}
+
 /* The bundle's Contents folder and this executable's folder, from this executable's real path. */
 static int locate(char *contents, size_t size, char *directory, size_t directory_size)
 {
@@ -394,19 +570,25 @@ int main(int argc, char **argv)
         first_run_defaults();
         return 0;
     }
+    if (argc > 1 && strcmp(argv[1], "--agent-shadow-only") == 0) {
+        return locate(contents, sizeof contents, directory, sizeof directory) == 0 ? (move_shadowing_plugin(contents), 0) : 1;
+    }
     if (argc > 1 && strcmp(argv[1], "--agent-print-env") == 0) {
         return locate(contents, sizeof contents, directory, sizeof directory) == 0 && set_bundle_environment(contents, 1) == 0 ? 0 : 1;
     }
 #endif
     first_run_defaults();
+    if (locate(contents, sizeof contents, directory, sizeof directory) == 0) {
+        move_shadowing_plugin(contents);
+    }
     if (locate(contents, sizeof contents, directory, sizeof directory) != 0
         || join(real, sizeof real, directory, "/", REAL_EXECUTABLE) != 0
         || set_bundle_environment(contents, 0) != 0) {
-        fprintf(stderr, "Krita Agent: cannot find its own path\n");
+        fprintf(stderr, PRODUCT_NAME ": cannot find its own path\n");
         return 1;
     }
     argv[0] = real;
     execv(real, argv);
-    fprintf(stderr, "Krita Agent: cannot start %s: %s\n", real, strerror(errno));
+    fprintf(stderr, PRODUCT_NAME ": cannot start %s: %s\n", real, strerror(errno));
     return 1;
 }

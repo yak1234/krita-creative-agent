@@ -1225,6 +1225,11 @@ class CreativeAgentDocker(DockWidget):
         self.diagnostics = QLabel(''); self.diagnostics.setWordWrap(True); self.diagnostics.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.diagnostics.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.diagnostics.setObjectName('muted'); connection.addRow(self.diagnostics)
+        self.profile_notice = QLabel(''); self.profile_notice.setWordWrap(True); self.profile_notice.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.profile_notice.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred); self.profile_notice.setAccessibleName('Plugin copy warning')
+        self.profile_notice.setTextFormat(Qt.TextFormat.PlainText)      # paths in it are text, never markup
+        self.profile_notice.hide(); connection.addRow(self.profile_notice)
+        self.refresh_profile_notice()
         details_row = QHBoxLayout()
         self.diagnostics_toggle = QPushButton('Show diagnostics'); self.diagnostics_toggle.setCheckable(True)
         self.diagnostics_toggle.setAccessibleName('Show connection diagnostics'); details_row.addWidget(self.diagnostics_toggle)
@@ -1555,7 +1560,7 @@ class CreativeAgentDocker(DockWidget):
         else: status = 'Connected · build verification unavailable'
         self.connection_status.setText(status)
         # Deliberately include version metadata only, never model keys or config.
-        report = {'status': status, 'compatible': event.get('compatible'), 'ui': ui_build,
+        report = {'status': status, 'compatible': event.get('compatible'), 'ui': ui_build, 'plugin_copy': self.profile_notice_lines(),
                   'companion': companion, 'bridge': {key: bridge[key] for key in ('version', 'creative_version', 'protocol_version', 'build', 'error') if key in bridge}}
         self.diagnostics_text.setPlainText(json.dumps(report, ensure_ascii=False, indent=2))
         self.send({'type': 'diagnostic_ui', 'connection': report})
@@ -2195,6 +2200,26 @@ class CreativeAgentDocker(DockWidget):
         """The artist's or first-run config in <AppData> when there is one, else the one in the plugin folder."""
         return bundled_release.resolve_config(os.path.dirname(os.path.abspath(__file__)), self.app_data())
 
+    def profile_notice_lines(self):
+        """What the launcher and the first config did about an old plugin copy in the profile (bundled_release.shadow_notices), plus
+        a line when this very plugin runs from the profile instead of the app. Plain text, no dialog."""
+        app_data = self.app_data()
+        if app_data is None:
+            return []
+        try:
+            lines = bundled_release.shadow_notices(app_data)
+            app_plugin = os.path.join(os.path.dirname(QCoreApplication.applicationDirPath()), 'Resources', 'krita', 'pykrita', 'kritamcp')
+            running = bundled_release.profile_plugin_notice(os.path.dirname(os.path.abspath(__file__)), app_data, app_plugin)
+            return ([running] if running else []) + lines
+        except Exception:
+            return []
+
+    def refresh_profile_notice(self):
+        lines = self.profile_notice_lines()
+        self.profile_notice.setText('\n'.join(lines))
+        self.profile_notice.setVisible(bool(lines))
+        return lines
+
     def install_bundled_release(self):
         """In the packaged app: verify the companion inside it and copy it to <AppData> once (bundled_release.py)."""
         bundled = bundled_release.bundled_dir(os.path.dirname(os.path.abspath(__file__)))
@@ -2206,6 +2231,7 @@ class CreativeAgentDocker(DockWidget):
         node = node_runtime.node_path(spec, runtimes) if spec else ''
         bundled_release.ensure_installed(bundled, app_data, runtimes, node, bridge_url='http://127.0.0.1:%d' % bridge_port('', QCoreApplication.organizationName()),
                                          cache_dir=os.path.join(os.path.expanduser('~/Library/Caches'), os.path.basename(str(app_data)), 'creative-agent'))
+        self.refresh_profile_notice()                                         # the data copy may just have happened
 
     def fetch_node_runtime(self, config):
         if getattr(self, 'runtime_fetch', None) and self.runtime_fetch['thread'].is_alive():

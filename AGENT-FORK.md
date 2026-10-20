@@ -582,6 +582,44 @@ the MLT ones only for AppImage and Android). It is built with the build's settin
 cache), and without test hooks. The bridge port needs nothing: `bridge_config.py` takes 5679 for an app with a settings folder.
 A later build that ships the key in `krita/data/kritarc` makes the key part unnecessary.
 
+**One plugin: a stale profile copy must not shadow the app's (found 20 October).** Krita lists Python plugins from the settings
+folder's own pykrita folder (`~/Library/Application Support/KritaAgent/krita/pykrita`, user data location) before the ones in the
+app, and picks a plugin by name. A `kritamcp` copy left there by the old installer (build ec6fec2c..., no `feature_guard.py`, a
+`creative-agent-config.json` naming an old companion) therefore ran instead of the app's, and the packaged companion then refused
+it ("needs the matching Creative Agent build"). For stock Krita a profile copy is the only way to install; for the fork there is one
+plugin, the one in the app. Rules, all in `agent/app-launcher.c` (`move_shadowing_plugin`, run on every start before `exec`):
+
+- Only `kritamcp` and `kritamcp.desktop` are looked at, and only when the app has its own (`Contents/Resources/krita/pykrita/kritamcp/__init__.py`
+  and `kritamcp.desktop`), the profile's `kritamcp` is a real folder (a link is a developer's setup: left alone) with an
+  `__init__.py`, and its `build-info.json` `build_id` differs from the app's or is missing/unreadable (the same build shadows
+  nothing). `KRITA_AGENT_KEEP_PROFILE_PLUGIN=1` in the environment turns it off (a developer running a profile copy on purpose).
+- It also needs a release app (`Resources/creative-agent-bundle/release-manifest.json`), a readable, non-empty `build_id` in the app's own
+  `build-info.json` (otherwise it cannot tell what is stale and changes nothing), and real (not linked) `krita/` and `krita/pykrita/`
+  folders. `build-info.json` is read without blocking (a pipe is not waited for) and only up to 64 KB.
+- What happens: both are **renamed** (never copied, rewritten or deleted) into a new sibling `krita/pykrita-shadowed-<yyyy-mm-dd>[-n]/`,
+  which Krita does not scan; a second stale copy the same day gets `-2`. Any failure means nothing changes. The launcher logs one
+  line to stderr. Putting the copy back is `mv` of the two names.
+- Why this option (over changing pykrita's discovery in C++, or an environment variable or kritarc key): it needs no rebuild of
+  Krita, it is fully tested against a temporary HOME with the real launcher (`ShadowingPluginTests` in
+  `tests/test_package_app.py`), and it removes the cause (the old config inside the copy, which `resolve_config` prefers over
+  `<AppData>/creative-agent-config.json`) instead of masking the module while the stale config and `__pycache__` stay live. A
+  discovery patch in `PythonPluginManager`/`KoResourcePaths` would have been upstream-file churn, untestable without the multi-hour
+  build, and it would not have stopped the old config from winning. It remains a possible later belt-and-braces change.
+- **Data.** The old config's `data_dir` was `~/Library/Application Support/Creative Agent/KritaAgent/data` (chats, model endpoints,
+  capabilities, `records.sqlite`); the app's first-run config uses `<AppData>/creative-agent/data`. When `bundled_release.ensure_installed`
+  writes that first config and `<AppData>/creative-agent/data` does not exist, it **copies** the data folder the old config named
+  (the config still in the profile's pykrita, else the newest moved one) through a staging folder and one rename, skipping
+  `companion.lock` and `active-session.json`. The original is never touched; an existing new data folder is never merged into. The
+  old `data_dir` must look like ours (named `data`, with `records.sqlite` or a `chats` folder) and must not be, contain or lie inside
+  `<AppData>` or the new data folder, nor be the home folder or any ancestor of it. It is measured first without following links and
+  copied only up to 50 000 entries and 500 MB (the copy runs on the GUI thread); above that the note and the panel say `too large for an
+  automatic copy` with the `cp -R` line to run by hand. The
+  outcome (copied or failed) is recorded in `<AppData>/creative-agent/data-carried-from.json`.
+- **Visible.** The panel's connection section shows plain text (no dialog) while a `pykrita-shadowed-*` folder or a data-carry note
+  exists, and when the running plugin itself was loaded from the profile although the app has a different one; the same lines are
+  `plugin_copy` in the connection diagnostics report (`bundled_release.shadow_notices`, `profile_plugin_notice`).
+- `package-app.sh --check` is unchanged: it inspects the bundle, and the launcher only gained a function.
+
 **Signing.** `KRITA_AGENT_SIGN_IDENTITY="<keychain identity name>"` signs with that identity (hardened runtime plus
 `packaging/macos/entitlements.plist`); otherwise ad hoc. An identity that is not in the keychain stops with one line saying so and
 that the bundle is left as the build step signed it (ad hoc, runnable). Everything is signed inside-out: libraries and plugins,
@@ -758,7 +796,7 @@ release task (1.3).
 - `creative-agent/CMakeLists.txt` installs the Python plugin (`creative-agent/krita-mcp/krita-plugin/kritamcp` and its `.desktop` file) into
   `share/krita/pykrita` with the build (option `KRITA_AGENT_PLUGIN`, on by default): a build is usable without a separate install
   step. A copy in the artist's own pykrita folder (what `scripts/install.py --krita fork` writes) is found first and shadows it: remove
-  it to run the shipped one. Enabling the plugin on a fresh settings folder belongs to the new-install defaults (task 3.3).
+  it to run the shipped one (the packaged app's launcher does this for the artist: see "One plugin" under Packaging). Enabling the plugin on a fresh settings folder belongs to the new-install defaults (task 3.3).
 - `agent/ci.sh` runs every suite we own (plugin Python, companion JS and typecheck, then the C++ programs in `agent/ci-tests.txt` through
   `agent/run-tests.sh`); it is what a CI service runs and what a merge needs green. `--no-cpp` needs no build.
 - Commits in this repository carry the artist's identity (repository config). Commits made before 19 October evening carry the machine's

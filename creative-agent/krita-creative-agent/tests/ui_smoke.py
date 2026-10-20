@@ -30,6 +30,17 @@ identity_module = sys.modules['creative_ui_test.creative_document_identity']
 app = QApplication([])
 panel = module.CreativeAgentDocker(); panel.resize(440, 820); panel.show()
 assert panel.source.currentData() == 'current', 'startup without a document must not imply a request for a new painting'
+# The warning about an old plugin copy in the profile: hidden when nothing happened, plain text (no dialog) when something did.
+assert panel.profile_notice.textFormat() == Qt.TextFormat.PlainText
+assert panel.profile_notice.isHidden() and panel.refresh_profile_notice() == [], 'no profile copy found: no warning'
+_profile = Path(tempfile.mkdtemp(prefix='creative-ui-profile-'))
+(_profile / 'krita' / 'pykrita-shadowed-2026-10-20' / 'kritamcp').mkdir(parents=True)
+(_profile / 'krita' / 'pykrita-shadowed-2026-10-20' / 'kritamcp' / 'build-info.json').write_text(json.dumps({'build_id': 'ec6fec2c' + '0' * 56}))
+panel.app_data = lambda: _profile
+_lines = panel.refresh_profile_notice()
+assert not panel.profile_notice.isHidden() and 'ec6fec2c0000' in panel.profile_notice.text() and 'not deleted' in panel.profile_notice.text(), _lines
+shutil.rmtree(_profile, True); del panel.app_data
+assert panel.refresh_profile_notice() == [] and panel.profile_notice.isHidden()
 def settle():
     for _ in range(8): app.processEvents()
 commands = []

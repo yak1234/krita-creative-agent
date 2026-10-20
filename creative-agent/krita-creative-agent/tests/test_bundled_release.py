@@ -299,5 +299,252 @@ class BundledReleaseTests(unittest.TestCase):
         self.assertTrue(folder.is_dir())
 
 
+class StaleProfileCopyTests(unittest.TestCase):
+    """An old kritamcp in the profile (installed by the old installer) kept its data folder outside <AppData>. When the app
+    writes its first config, that data is COPIED over; and the panel can say what happened. Temporary folders only."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='krita-agent-test-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = pathlib.Path(self.temp.name)
+        self.bundled, self.manifest = make_release(self.root)
+        self.app_data = self.root / 'home' / 'Library' / 'Application Support' / 'KritaAgent'
+        self.runtimes = self.root / 'runtimes'
+        self.old_data = self.root / 'home' / 'Library' / 'Application Support' / 'Creative Agent' / 'KritaAgent' / 'data'
+        self.new_data = self.app_data / 'creative-agent' / 'data'
+        self.config_file = self.app_data / 'creative-agent-config.json'
+
+    def make_old_data(self):
+        for name, text in {'chats/one.json': '{"title": "Sky"}', 'models/endpoints.json': '{"x": 1}', 'records.sqlite': 'SQLITE',
+                           'capabilities.json': '{}', 'companion.lock': '1234', 'active-session.json': '{"s": 1}',
+                           'chats/deep/companion.lock': 'x'}.items():
+            path = self.old_data / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+
+    def old_config(self, where, data_dir=None):
+        (where).mkdir(parents=True, exist_ok=True)
+        (where / bundled_release.CONFIG_NAME).write_text(json.dumps({'data_dir': str(data_dir or self.old_data), 'companion': '/old/main.mjs'}))
+
+    def shadowed(self, name='pykrita-shadowed-2026-10-20'):
+        return self.app_data / 'krita' / name / 'kritamcp'
+
+    def install(self):
+        return bundled_release.ensure_installed(self.bundled, self.app_data, self.runtimes, self.runtimes / 'node')
+
+    def tree(self, root):
+        return {str(p.relative_to(root)): p.read_text() for p in sorted(pathlib.Path(root).rglob('*')) if p.is_file()}
+
+    def test_the_data_of_the_moved_copy_is_copied_not_moved_and_the_runtime_files_are_skipped(self):
+        self.make_old_data()
+        self.old_config(self.shadowed())
+        before = self.tree(self.old_data)
+        self.install()
+        self.assertEqual(self.tree(self.old_data), before)                       # the original is exactly as it was
+        copied = self.tree(self.new_data)
+        self.assertEqual(copied, {k: v for k, v in before.items() if not k.endswith(('companion.lock', 'active-session.json'))})
+        self.assertEqual(json.loads(self.config_file.read_text())['data_dir'], str(self.new_data))
+        note = bundled_release.carried_data_note(self.app_data)
+        self.assertEqual((note['result'], note['from'], note['to']), ('copied', str(self.old_data), str(self.new_data)))
+        self.assertEqual(sorted(p.name for p in (self.app_data / 'creative-agent').iterdir()),
+                         sorted([self.manifest['build_id'], 'data', bundled_release.CARRIED_NOTE]))        # no staging folder left
+
+    def test_the_old_config_still_in_the_profile_folder_is_used_too_and_the_live_one_wins(self):
+        self.make_old_data()
+        other = self.root / 'other' / 'data'
+        (other / 'chats').mkdir(parents=True)
+        (other / 'chats' / 'x.json').write_text('older')
+        self.old_config(self.shadowed(), other)
+        self.old_config(self.app_data / 'krita' / 'pykrita' / 'kritamcp')
+        self.install()
+        self.assertIn('chats/one.json', self.tree(self.new_data))
+
+    def test_the_newest_moved_copy_with_a_data_folder_that_exists_is_chosen(self):
+        self.make_old_data()
+        self.old_config(self.shadowed('pykrita-shadowed-2026-10-01'), self.root / 'gone')
+        self.old_config(self.shadowed('pykrita-shadowed-2026-10-02'))
+        os.utime(self.shadowed('pykrita-shadowed-2026-10-02') / bundled_release.CONFIG_NAME, (2e9, 2e9))
+        self.install()
+        self.assertIn('records.sqlite', self.tree(self.new_data))
+
+    def test_nothing_is_copied_when_the_new_data_exists_or_there_is_no_old_data_or_the_config_is_not_new(self):
+        self.make_old_data()
+        self.old_config(self.shadowed())
+        self.new_data.mkdir(parents=True)
+        (self.new_data / 'mine.json').write_text('new')
+        self.install()
+        self.assertEqual(self.tree(self.new_data), {'mine.json': 'new'})                      # never merged into, never replaced
+        self.assertIsNone(bundled_release.carried_data_note(self.app_data))
+        shutil.rmtree(self.app_data)
+        shutil.rmtree(self.old_data)                                                          # the old data is gone
+        self.old_config(self.shadowed())
+        self.install()
+        self.assertFalse(self.new_data.exists())
+        self.assertIsNone(bundled_release.carried_data_note(self.app_data))
+
+    def test_a_second_start_with_a_config_already_written_copies_nothing_more(self):
+        self.make_old_data()
+        self.old_config(self.shadowed())
+        self.install()
+        (self.old_data / 'chats' / 'two.json').write_text('later')
+        self.install()
+        self.assertNotIn('chats/two.json', self.tree(self.new_data))
+
+    def test_damaged_or_odd_old_configs_are_ignored(self):
+        self.make_old_data()
+        (self.shadowed()).mkdir(parents=True)
+        (self.shadowed() / bundled_release.CONFIG_NAME).write_text('{nope')
+        for value in (None, 7, '', [], {}):
+            folder = self.shadowed('pykrita-shadowed-2026-10-1%d' % len(str(value)))
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / bundled_release.CONFIG_NAME).write_text(json.dumps({'data_dir': value}))
+        self.install()                                                                        # does not raise
+        self.assertFalse(self.new_data.exists())
+
+    def test_the_old_data_folder_being_the_new_one_or_a_file_is_not_copied(self):
+        self.new_data.parent.mkdir(parents=True, exist_ok=True)
+        self.old_config(self.shadowed(), self.new_data)
+        self.install()
+        self.assertFalse(self.new_data.exists())
+        file = self.root / 'a-file'
+        file.write_text('x')
+        self.old_config(self.shadowed('pykrita-shadowed-2026-10-21'), file)
+        self.install()
+        self.assertFalse(self.new_data.exists())
+
+    def test_a_failing_copy_leaves_no_half_data_and_the_install_still_works(self):
+        self.make_old_data()
+        self.old_config(self.shadowed())
+        original = shutil.copytree
+        def broken(source, *args, **kwargs):
+            if pathlib.Path(source) != self.old_data:
+                return original(source, *args, **kwargs)
+            raise shutil.Error([('a', 'b', 'disk full')])
+        shutil.copytree = broken
+        try:
+            config = self.install()
+        finally:
+            shutil.copytree = original
+        self.assertTrue(config.is_file())
+        self.assertFalse(self.new_data.exists())
+        self.assertEqual([p.name for p in (self.app_data / 'creative-agent').iterdir() if p.name.startswith('.data-copy-')], [])
+        note = bundled_release.carried_data_note(self.app_data)
+        self.assertEqual(note['result'], 'failed')
+        self.assertTrue(self.old_data.is_dir())
+
+    # -- review fixes: a bounded, plausible source
+    def home(self):
+        return self.root / 'home'
+
+    def test_a_data_dir_that_is_not_ours_is_never_copied(self):
+        self.make_old_data()
+        crowded = self.root / 'bigdir'
+        (crowded / 'data').mkdir(parents=True)
+        (crowded / 'data' / 'records.sqlite').write_text('x')
+        (crowded / 'data' / 'chats').mkdir()
+        looks_ok_but_named = self.root / 'notes'
+        (looks_ok_but_named / 'chats').mkdir(parents=True)
+        for name, target in {'root': '/', 'home': self.home(), 'application support': self.app_data.parent, 'app data': self.app_data,
+                             'inside app data': self.app_data / 'creative-agent', 'the parent of the data': self.old_data.parent,
+                             'wrong name': looks_ok_but_named, 'a parent holding data': crowded}.items():
+            with self.subTest(name):
+                shutil.rmtree(self.app_data, ignore_errors=True)
+                self.old_config(self.shadowed(), target)
+                os.environ['HOME'], saved = str(self.home()), os.environ.get('HOME')
+                try:
+                    self.install()
+                finally:
+                    os.environ['HOME'] = saved
+                self.assertFalse(self.new_data.exists(), name)
+                self.assertTrue(self.old_data.is_dir())
+
+    def test_a_folder_that_is_not_data_by_content_is_not_copied(self):
+        empty = self.root / 'x' / 'data'
+        empty.mkdir(parents=True)
+        (empty / 'photo.png').write_text('x')
+        self.old_config(self.shadowed(), empty)
+        self.install()
+        self.assertFalse(self.new_data.exists())
+
+    def test_a_too_large_tree_is_not_copied_and_the_note_says_how_to_copy_it_by_hand(self):
+        self.make_old_data()
+        self.old_config(self.shadowed())
+        for limit in ('MAX_CARRY_FILES', 'MAX_CARRY_BYTES'):
+            with self.subTest(limit):
+                shutil.rmtree(self.app_data, ignore_errors=True)
+                self.old_config(self.shadowed())
+                saved = getattr(bundled_release, limit)
+                setattr(bundled_release, limit, 3 if limit == 'MAX_CARRY_FILES' else 5)
+                try:
+                    self.install()
+                finally:
+                    setattr(bundled_release, limit, saved)
+                self.assertFalse(self.new_data.exists())
+                note = bundled_release.carried_data_note(self.app_data)
+                self.assertEqual(note['result'], 'failed')
+                self.assertIn('too large for an automatic copy', note['error'])
+                self.assertIn('cp -R', note['by_hand'])
+                self.assertIn(str(self.old_data), note['by_hand'])
+                text = '\n'.join(bundled_release.shadow_notices(self.app_data))
+                self.assertIn('cp -R', text)
+                self.assertTrue(self.old_data.is_dir())
+
+    def test_the_walk_does_not_follow_links_and_stops_early(self):
+        self.make_old_data()
+        (self.old_data / 'loop').symlink_to(self.old_data)                    # a cycle must not hang or recurse
+        self.old_config(self.shadowed())
+        self.install()
+        self.assertTrue((self.new_data / 'loop').is_symlink())               # copied as a link
+        self.assertIn('records.sqlite', self.tree(self.new_data))
+
+    def test_the_default_thresholds_are_small_enough_for_the_gui_thread(self):
+        self.assertLessEqual(bundled_release.MAX_CARRY_FILES, 50000)
+        self.assertLessEqual(bundled_release.MAX_CARRY_BYTES, 500 * 1024 * 1024)
+
+    # -- what the panel shows
+    def test_notices_say_what_was_moved_and_copied_and_nothing_when_nothing_happened(self):
+        self.assertEqual(bundled_release.shadow_notices(self.app_data), [])
+        self.make_old_data()
+        folder = self.shadowed()
+        folder.mkdir(parents=True)
+        (folder / 'build-info.json').write_text(json.dumps({'build_id': 'ec6fec2c' + '0' * 56}))
+        self.old_config(folder)
+        self.install()
+        lines = bundled_release.shadow_notices(self.app_data)
+        text = '\n'.join(lines)
+        self.assertIn('ec6fec2c0000', text)
+        self.assertIn(str(folder.parent), text)
+        self.assertIn('moved', text)
+        self.assertIn('not deleted', text)
+        self.assertIn('copied', text)
+        self.assertIn(str(self.old_data), text)
+
+    def test_a_copy_without_build_info_is_named_as_such(self):
+        folder = self.shadowed()
+        folder.mkdir(parents=True)
+        self.assertIn('no build id', '\n'.join(bundled_release.shadow_notices(self.app_data)))
+
+    def test_a_plugin_running_from_the_profile_while_the_app_has_its_own_is_reported(self):
+        app_plugin = self.root / 'Krita Agent.app' / 'Contents' / 'Resources' / 'krita' / 'pykrita' / 'kritamcp'
+        app_plugin.mkdir(parents=True)
+        (app_plugin / '__init__.py').write_text('x')
+        (app_plugin / 'build-info.json').write_text(json.dumps({'build_id': 'b' * 64}))
+        profile_plugin = self.app_data / 'krita' / 'pykrita' / 'kritamcp'
+        profile_plugin.mkdir(parents=True)
+        (profile_plugin / 'build-info.json').write_text(json.dumps({'build_id': 'a' * 64}))
+        text = bundled_release.profile_plugin_notice(profile_plugin, self.app_data, app_plugin)
+        self.assertIn('aaaaaaaaaaaa', text)
+        self.assertIn('bbbbbbbbbbbb', text)
+        self.assertIn('profile', text)
+        self.assertIsNone(bundled_release.profile_plugin_notice(app_plugin, self.app_data, app_plugin))        # running the app's own
+        (profile_plugin / 'build-info.json').write_text(json.dumps({'build_id': 'b' * 64}))
+        self.assertIsNone(bundled_release.profile_plugin_notice(profile_plugin, self.app_data, app_plugin))    # same build: no shadow
+        self.assertIsNone(bundled_release.profile_plugin_notice(profile_plugin, None, app_plugin))             # stock Krita
+        self.assertIsNone(bundled_release.profile_plugin_notice(profile_plugin, self.app_data, self.root / 'none'))   # no app plugin
+        dev = self.root / 'checkout' / 'kritamcp'
+        dev.mkdir(parents=True)
+        self.assertIsNone(bundled_release.profile_plugin_notice(dev, self.app_data, app_plugin))               # not in the profile
+
+
 if __name__ == '__main__':
     unittest.main()

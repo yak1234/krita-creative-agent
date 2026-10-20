@@ -18,13 +18,22 @@ names absolute paths, so on first use this module:
      follows a newer build, keeps every key it does not own (and the artist's edits), and is never moved back by an older app;
   4. best-effort, removes other build copies (never the one the config points at, never `data/`) and day-old leftovers.
 
+An old installer also put a copy of this plugin (with its own config and data folder) in the profile's pykrita folder, which Krita
+reads before the app's; the launcher (agent/app-launcher.c) renames such a copy to `<AppData>/krita/pykrita-shadowed-<date>/`. When
+step 3 writes the first config here and there is no data folder yet, the data folder the old config named (chats, model endpoints,
+records) is COPIED to the new place (never moved or deleted; the lock and active-session files are skipped), and the panel can say
+what happened (`shadow_notices`, `profile_plugin_notice`).
+
 Node itself is not bundled: the config names the managed runtime, which the panel fetches once, SHA-256 verified, on the first
-"Connect assistant" (node_runtime.py). Standard library only; no Qt (the caller passes the folders). The copy of a few megabytes
-runs on the GUI thread, once per build, at the first "Connect assistant"; later presses only read the manifest.
+"Connect assistant" (node_runtime.py). Standard library only; no Qt (the caller passes the folders). The companion copy of a few megabytes
+runs on the GUI thread, once per build, at the first "Connect assistant"; later presses only read the manifest. The data copy is bounded
+(MAX_CARRY_FILES, MAX_CARRY_BYTES, measured first without following links): a larger old data folder is not copied, and the
+note and the panel say how to copy it by hand.
 """
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import tempfile
 import time
@@ -37,6 +46,12 @@ COMPLETE = '.complete'
 # What a build owns in the config it manages; everything else (the artist's paintings folder, bridge address, unknown keys) is kept.
 OWNED_KEYS = ('companion', 'node', 'node_runtime', 'node_runtimes', 'build_id', 'protocol_version', 'managed_by', 'built_at')
 LEFTOVER_AGE = 86400
+SHADOW_PREFIX = 'pykrita-shadowed-'  # the launcher's folder for a stale plugin copy, beside <AppData>/krita/pykrita (Krita never scans it)
+CARRIED_NOTE = 'data-carried-from.json'
+RUNTIME_ONLY = ('companion.lock', 'active-session.json')   # state of a running companion: never carried over
+# The copy runs on the GUI thread at the first "Connect assistant", so it is bounded: above this the artist copies by hand.
+MAX_CARRY_FILES = 50000
+MAX_CARRY_BYTES = 500 * 1024 * 1024
 
 
 class BundledReleaseError(ValueError):
@@ -197,6 +212,168 @@ def read_existing_config(config):
         raise
 
 
+def read_build_id(plugin_folder):
+    """The build id in a plugin folder's build-info.json, or '' (no file, damaged, not a string)."""
+    try:
+        value = json.loads((Path(plugin_folder) / 'build-info.json').read_text()).get('build_id')
+        return value if isinstance(value, str) else ''
+    except (OSError, ValueError, AttributeError):
+        return ''
+
+
+def old_config_candidates(app_data):
+    """Configs an old installer left in the profile, best first: the one still in the profile's pykrita/kritamcp, then the ones
+    inside folders the launcher moved aside (newest first)."""
+    krita = Path(app_data) / 'krita'
+    found = [krita / 'pykrita' / 'kritamcp' / CONFIG_NAME]
+    try:
+        moved = [p / 'kritamcp' / CONFIG_NAME for p in krita.iterdir() if p.name.startswith(SHADOW_PREFIX)]
+        found += sorted((p for p in moved if p.is_file()), key=lambda p: (p.stat().st_mtime, str(p)), reverse=True)
+    except OSError:
+        pass
+    return found
+
+
+def _related(a, b):
+    """Is `a` the same as `b`, inside it, or an ancestor of it (both resolved)?"""
+    return a == b or b in a.parents or a in b.parents
+
+
+def plausible_data_dir(path, app_data, new_data):
+    """Is `path` something we may copy: our own kind of data folder, nowhere near the places that hold everything else? Refused: the
+    new data or <AppData> (or anything inside or above them), the home folder or any ancestor of it ("/", Application Support), a
+    folder not named `data`, and one with neither `records.sqlite` nor a `chats` folder."""
+    try:
+        resolved = Path(path).resolve()
+        home = Path(os.path.expanduser('~')).resolve()
+        if _related(resolved, Path(app_data).resolve()) or _related(resolved, Path(new_data).resolve()):
+            return False
+        if resolved == home or resolved in home.parents:
+            return False
+        return resolved.name == 'data' and ((resolved / 'records.sqlite').is_file() or (resolved / 'chats').is_dir())
+    except (OSError, RuntimeError):
+        return False
+
+
+def measure(source, max_files, max_bytes):
+    """(files, bytes) of what would be copied, or None as soon as either bound is passed. Links are counted, never followed, so a
+    cycle cannot loop; the walk stops early, so a huge tree costs no more than the bound."""
+    files = size = 0
+    pending = [str(source)]
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                if entry.name in RUNTIME_ONLY:
+                    continue
+                files += 1
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(entry.path)
+                else:
+                    size += entry.stat(follow_symlinks=False).st_size
+                if files > max_files or size > max_bytes:
+                    return None
+    return files, size
+
+
+def old_data_dir(app_data, new_data):
+    """The data folder an old config names that exists, is a real folder and is not `new_data`, else None."""
+    for config in old_config_candidates(app_data):
+        try:
+            value = json.loads(config.read_text()).get('data_dir')
+            if not isinstance(value, str) or not value.strip():
+                continue
+            path = Path(os.path.expanduser(value))
+            if path.is_absolute() and path.is_dir() and not path.is_symlink() and plausible_data_dir(path, app_data, new_data):
+                return path
+        except (OSError, ValueError, AttributeError):
+            continue
+    return None
+
+
+def _skip_runtime_files(_folder, names):
+    return [name for name in names if name in RUNTIME_ONLY]
+
+
+def carry_old_data(app_data, parent):
+    """Copy the old data folder to `<parent>/data` when that does not exist yet. COPY only: the original is never changed, and
+    the new folder appears whole through one rename or not at all. Records what happened in `<parent>/data-carried-from.json`.
+    Never raises: the install does not depend on it."""
+    data = Path(parent) / 'data'
+    if data.exists() or data.is_symlink():
+        return
+    source = old_data_dir(app_data, data)
+    if source is None:
+        return
+    note = {'from': str(source), 'to': str(data), 'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
+    note['by_hand'] = 'cp -R %s %s   (then delete companion.lock and active-session.json from the copy if present)' % (shlex.quote(str(source)), shlex.quote(str(data)))
+    stage = None
+    try:
+        if measure(source, MAX_CARRY_FILES, MAX_CARRY_BYTES) is None:
+            raise OSError('too large for an automatic copy (over %d files or %d MB)' % (MAX_CARRY_FILES, MAX_CARRY_BYTES // (1024 * 1024)))
+        stage = Path(tempfile.mkdtemp(prefix='.data-copy-', dir=str(parent)))
+        shutil.copytree(source, stage / 'data', symlinks=True, ignore=_skip_runtime_files)
+        os.rename(stage / 'data', data)
+        note['result'] = 'copied'
+    except (OSError, shutil.Error) as error:
+        note['result'] = 'failed'
+        note['error'] = (str(error) if not getattr(error, 'strerror', None) else error.strerror)[:300]
+    finally:
+        if stage is not None:
+            shutil.rmtree(stage, ignore_errors=True)
+    try:
+        write_atomically(Path(parent) / CARRIED_NOTE, json.dumps(note, indent=2) + '\n')
+    except OSError:
+        pass
+
+
+def carried_data_note(app_data):
+    """What `carry_old_data` did, as a dict, or None when it did nothing."""
+    try:
+        note = json.loads((Path(app_data) / 'creative-agent' / CARRIED_NOTE).read_text())
+        return note if isinstance(note, dict) and note.get('result') in ('copied', 'failed') else None
+    except (OSError, ValueError):
+        return None
+
+
+def shadow_notices(app_data):
+    """Plain lines for the panel: an old plugin copy the launcher moved out of the profile (with its build and where it is), and
+    the data copied from it. Empty when nothing happened. Shown as text, never a dialog."""
+    lines = []
+    if app_data is None:
+        return lines
+    try:
+        moved = sorted((p for p in (Path(app_data) / 'krita').iterdir() if p.name.startswith(SHADOW_PREFIX) and (p / 'kritamcp').is_dir()),
+                       key=lambda p: p.name, reverse=True)
+    except OSError:
+        moved = []
+    for folder in moved[:3]:
+        build = read_build_id(folder / 'kritamcp')
+        lines.append('An older Creative Agent plugin (%s) was in your profile and would have replaced the one built into this app. '
+                     'It was moved, not deleted, to %s.' % ('build ' + build[:12] if build else 'no build id', folder))
+    note = carried_data_note(app_data)
+    if note and note['result'] == 'copied':
+        lines.append('Your chats and model settings were copied (the originals were not touched) from %s to %s.' % (note.get('from'), note.get('to')))
+    elif note:
+        lines.append('Your chats and model settings could not be copied from %s (%s). They are untouched there. To copy them by hand, quit Krita and run: %s'
+                     % (note.get('from'), note.get('error', 'unknown error'), note.get('by_hand', 'cp -R <old data folder> <new data folder>')))
+    return lines
+
+
+def profile_plugin_notice(plugin_dir, app_data, app_plugin):
+    """A line when THIS plugin was loaded from the profile's pykrita folder while the app carries its own, different one (the
+    launcher leaves a link or an escape-variable copy alone), else None."""
+    if app_data is None or app_plugin is None or not (Path(app_plugin) / '__init__.py').is_file():
+        return None
+    folder = Path(os.path.abspath(plugin_dir))
+    if (Path(app_data) / 'krita' / 'pykrita') not in folder.parents:
+        return None
+    mine, bundled = read_build_id(folder), read_build_id(app_plugin)
+    if mine and mine == bundled:
+        return None
+    return ('This plugin was loaded from your profile folder (%s, %s), not from the app (%s). The copy in the profile hides the app\'s plugin.'
+            % (folder, 'build ' + mine[:12] if mine else 'no build id', 'build ' + bundled[:12] if bundled else 'no build id'))
+
+
 def prune(parent, app_data, keep_build, protected_paths):
     """Best effort: other 64-hex build copies (not `keep_build`, not one a config points into) and `.release-*` / `.config-*`
     leftovers a day old. Never `data/`, never anything else."""
@@ -207,7 +384,7 @@ def prune(parent, app_data, keep_build, protected_paths):
             is_build = len(name) == 64 and all(c in '0123456789abcdef' for c in name)
             if is_build and name != keep_build and not any(name in str(p) for p in protected_paths):
                 shutil.rmtree(entry, ignore_errors=True)
-            elif name.startswith('.release-') and now - entry.stat().st_mtime > LEFTOVER_AGE:
+            elif name.startswith(('.release-', '.data-copy-')) and now - entry.stat().st_mtime > LEFTOVER_AGE:
                 shutil.rmtree(entry, ignore_errors=True)
         for entry in Path(app_data).iterdir():
             if entry.name.startswith('.config-') and now - entry.stat().st_mtime > LEFTOVER_AGE:
@@ -250,6 +427,7 @@ def ensure_installed(bundled, app_data, runtimes, node, paintings_dir=None, brid
     built_at = build_time(bundled, manifest)
     settings = settings_for(manifest, app_data, runtimes, node, paintings, bridge_url, cache_dir or app_data / 'cache', built_at)
     if existing is None:
+        carry_old_data(app_data, parent)                # before the config names the new data folder
         write_atomically(config, json.dumps(settings, indent=2) + '\n')
         final = settings
     elif existing.get('managed_by') == MANAGED and existing.get('build_id') != manifest['build_id'] and built_at > str(existing.get('built_at', '')):

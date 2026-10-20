@@ -427,6 +427,248 @@ class FirstRunDefaultsTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_CC, 'needs macOS and a C compiler')
+class ShadowingPluginTests(unittest.TestCase):
+    """A kritamcp copy in the profile's pykrita folder would be loaded BEFORE the plugin inside the app (verified on the
+    artist's machine). The launcher renames it aside, only under the narrow conditions in app-launcher.c, never deleting."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='krita-agent-test-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = pathlib.Path(self.temp.name)
+        self.macos = self.root / 'Krita Agent.app' / 'Contents' / 'MacOS'
+        self.macos.mkdir(parents=True)
+        shutil.copy2(build_launcher(self.root), self.macos / 'krita-hook')          # once: rewriting a running-before binary gets it killed
+        shutil.copy2(build_launcher(self.root, hook=False), self.macos / 'krita')
+        self.home = self.root / 'home'
+        self.profile = self.home / 'Library' / 'Application Support' / 'KritaAgent' / 'krita'
+        self.user = self.profile / 'pykrita'
+        self.user.mkdir(parents=True)
+
+    def bundle_plugin(self, build_id='b' * 64, info=True, manifest=True):
+        folder = self.root / 'Krita Agent.app' / 'Contents' / 'Resources' / 'krita' / 'pykrita'
+        if manifest:
+            release = folder.parents[1] / 'creative-agent-bundle'
+            release.mkdir(parents=True, exist_ok=True)
+            (release / 'release-manifest.json').write_text('{}')
+        (folder / 'kritamcp').mkdir(parents=True)
+        (folder / 'kritamcp' / '__init__.py').write_text('bundled\n')
+        (folder / 'kritamcp.desktop').write_text('[Desktop Entry]\n')
+        if info:
+            (folder / 'kritamcp' / 'build-info.json').write_text(json.dumps({'version': '1', 'build_id': build_id}))
+        return folder
+
+    def user_plugin(self, build_id='a' * 64, info=True, desktop=True):
+        folder = self.user / 'kritamcp'
+        folder.mkdir()
+        (folder / '__init__.py').write_text('old\n')
+        (folder / 'creative-agent-config.json').write_text('{"data_dir": "/old"}\n')
+        if info:
+            (folder / 'build-info.json').write_text('{\n  "build_id" :  "%s"\n}\n' % build_id)
+        if desktop:
+            (self.user / 'kritamcp.desktop').write_text('[Desktop Entry]\nName=old\n')
+        return folder
+
+    def other_plugin(self):
+        (self.user / 'scripter').mkdir()
+        (self.user / 'scripter' / '__init__.py').write_text('theirs\n')
+        (self.user / 'scripter.desktop').write_text('[Desktop Entry]\nName=theirs\n')
+
+    def start(self, **extra):
+        env = {'PATH': '/usr/bin:/bin', 'HOME': str(self.home), 'CFFIXED_USER_HOME': str(self.home), **extra}
+        return run(self.macos / 'krita-hook', '--agent-shadow-only', env=env, timeout=20)
+
+    def shadowed(self):
+        return sorted(p.name for p in self.profile.iterdir() if p.name.startswith('pykrita-shadowed-'))
+
+    def snapshot(self):
+        return sorted((str(p.relative_to(self.profile)), p.read_bytes() if p.is_file() else None) for p in self.profile.rglob('*'))
+
+    def test_an_old_copy_with_another_build_is_renamed_aside_whole_and_nothing_else_moves(self):
+        self.bundle_plugin()
+        old = self.user_plugin()
+        self.other_plugin()
+        before = {str(p.relative_to(old)): p.read_bytes() for p in old.rglob('*') if p.is_file()}
+        result = self.start()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(old.exists())
+        self.assertFalse((self.user / 'kritamcp.desktop').exists())
+        names = self.shadowed()
+        self.assertEqual(len(names), 1)
+        self.assertRegex(names[0], r'^pykrita-shadowed-\d{4}-\d{2}-\d{2}$')
+        moved = self.profile / names[0]
+        self.assertEqual({str(p.relative_to(moved / 'kritamcp')): p.read_bytes() for p in (moved / 'kritamcp').rglob('*') if p.is_file()}, before)
+        self.assertEqual((moved / 'kritamcp.desktop').read_text(), '[Desktop Entry]\nName=old\n')
+        self.assertEqual(sorted(p.name for p in moved.iterdir()), ['kritamcp', 'kritamcp.desktop'])
+        self.assertEqual((self.user / 'scripter' / '__init__.py').read_text(), 'theirs\n')          # another plugin: untouched
+        self.assertTrue((self.user / 'scripter.desktop').exists())
+        self.assertIn('a' * 64, result.stderr)                                                          # logged, with the old build
+        self.assertIn(names[0], result.stderr)
+
+    def test_a_copy_without_build_info_is_old_too(self):
+        self.bundle_plugin()
+        self.user_plugin(info=False)
+        self.assertEqual(self.start().returncode, 0)
+        self.assertEqual(len(self.shadowed()), 1)
+        self.assertFalse((self.user / 'kritamcp').exists())
+
+    def test_a_damaged_build_info_counts_as_no_build_id(self):
+        self.bundle_plugin()
+        old = self.user_plugin()
+        (old / 'build-info.json').write_text('{"build_id": "abc')
+        self.start()
+        self.assertEqual(len(self.shadowed()), 1)
+
+    def test_the_same_build_shadows_nothing_and_stays(self):
+        self.bundle_plugin(build_id='c' * 64)
+        self.user_plugin(build_id='c' * 64)
+        before = self.snapshot()
+        self.start()
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.shadowed(), [])
+
+    def test_a_link_a_file_or_a_folder_without_init_is_left_alone(self):
+        self.bundle_plugin()
+        checkout = self.root / 'checkout' / 'kritamcp'
+        checkout.mkdir(parents=True)
+        (checkout / '__init__.py').write_text('dev\n')
+        os.symlink(checkout, self.user / 'kritamcp')                                                    # a developer's link
+        before = self.snapshot()
+        self.start()
+        self.assertEqual(self.snapshot(), before)
+        os.unlink(self.user / 'kritamcp')
+        (self.user / 'kritamcp').write_text('a file\n')
+        before = self.snapshot()
+        self.start()
+        self.assertEqual(self.snapshot(), before)
+        os.unlink(self.user / 'kritamcp')
+        (self.user / 'kritamcp').mkdir()
+        (self.user / 'kritamcp' / 'notes.txt').write_text('no package\n')
+        before = self.snapshot()
+        self.start()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_an_app_without_its_own_plugin_moves_nothing(self):
+        self.user_plugin()                                                                              # no bundle_plugin()
+        before = self.snapshot()
+        self.start()
+        self.assertEqual(self.snapshot(), before)
+        folder = self.bundle_plugin()
+        (folder / 'kritamcp.desktop').unlink()                                                          # half a plugin is none
+        self.start()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_the_developers_escape_variable_keeps_the_copy(self):
+        self.bundle_plugin()
+        self.user_plugin()
+        before = self.snapshot()
+        self.start(KRITA_AGENT_KEEP_PROFILE_PLUGIN='1')
+        self.assertEqual(self.snapshot(), before)
+
+    def test_no_profile_at_all_creates_nothing(self):
+        self.bundle_plugin()
+        shutil.rmtree(self.profile.parent)
+        self.assertEqual(self.start().returncode, 0)
+        self.assertFalse(self.profile.parent.exists())
+
+    def test_a_second_stale_copy_the_same_day_gets_its_own_folder_and_the_first_is_kept(self):
+        self.bundle_plugin()
+        self.user_plugin(build_id='1' * 64)
+        self.start()
+        self.user_plugin(build_id='2' * 64)
+        result = self.start()
+        names = self.shadowed()
+        self.assertEqual(len(names), 2)
+        ids = sorted(json.loads((self.profile / n / 'kritamcp' / 'build-info.json').read_text())['build_id'] for n in names)
+        self.assertEqual(ids, ['1' * 64, '2' * 64])
+        self.start()                                                                                    # nothing left to move
+        self.assertEqual(self.shadowed(), names)
+
+    def test_the_packaged_launcher_moves_the_copy_before_it_starts_krita_and_still_passes_the_arguments(self):
+        self.bundle_plugin()
+        self.user_plugin()
+        compile_c(self.macos, 'krita-app', '#include <stdio.h>\nint main(int c, char **v) { for (int i = 1; i < c; ++i) puts(v[i]); return 7; }\n')
+        env = {'PATH': '/usr/bin:/bin', 'HOME': str(self.home), 'CFFIXED_USER_HOME': str(self.home)}
+        result = run(self.macos / 'krita', 'one', env=env)
+        self.assertEqual((result.returncode, result.stdout), (7, 'one\n'))
+        self.assertFalse((self.user / 'kritamcp').exists())
+        self.assertEqual(len(self.shadowed()), 1)
+        result = run(self.macos / 'krita', '--agent-shadow-only', env=env)                              # no hook in the real one
+        self.assertEqual(result.stdout, '--agent-shadow-only\n')
+
+    # -- review fixes: the bundle must be a release with a readable build id, and the profile folders real
+    def test_a_bundle_without_a_readable_build_id_moves_nothing(self):
+        for text in (None, '', '{}', '{"build_id": ""}', '{"build_id": "abc', '{"build_id": 7}'):
+            with self.subTest(text):
+                shutil.rmtree(self.root / 'Krita Agent.app' / 'Contents' / 'Resources', ignore_errors=True)
+                folder = self.bundle_plugin(info=False)
+                if text is not None:
+                    (folder / 'kritamcp' / 'build-info.json').write_text(text)
+                shutil.rmtree(self.user, ignore_errors=True)
+                self.user.mkdir(parents=True)
+                self.user_plugin()
+                before = self.snapshot()
+                self.assertEqual(self.start().returncode, 0)
+                self.assertEqual(self.snapshot(), before)
+
+    def test_an_app_that_is_not_a_release_moves_nothing(self):
+        self.bundle_plugin(manifest=False)
+        self.user_plugin()
+        before = self.snapshot()
+        self.start()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_a_linked_pykrita_or_krita_folder_is_left_alone(self):
+        self.bundle_plugin()
+        self.user_plugin()
+        real = self.root / 'elsewhere'
+        self.user.rename(real)
+        os.symlink(real, self.user)
+        before = sorted(str(p.relative_to(real)) for p in real.rglob('*'))
+        self.start()
+        self.assertEqual(sorted(str(p.relative_to(real)) for p in real.rglob('*')), before)
+        self.assertEqual(self.shadowed(), [])
+        os.unlink(self.user)
+        real.rename(self.user)
+        moved = self.root / 'krita-real'
+        self.profile.rename(moved)
+        os.symlink(moved, self.profile)
+        before = sorted(str(p.relative_to(moved)) for p in moved.rglob('*'))
+        self.start()
+        self.assertEqual(sorted(str(p.relative_to(moved)) for p in moved.rglob('*')), before)
+
+    def test_a_build_info_that_is_a_pipe_or_huge_does_not_hang_or_count_as_an_id(self):
+        self.bundle_plugin()
+        old = self.user_plugin()
+        (old / 'build-info.json').unlink()
+        os.mkfifo(old / 'build-info.json')
+        result = self.start()                                                    # must return (run has no timeout: guard it)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(len(self.shadowed()), 1)                                # no readable id: stale
+        bundle = self.root / 'Krita Agent.app' / 'Contents' / 'Resources' / 'krita' / 'pykrita' / 'kritamcp' / 'build-info.json'
+        bundle.unlink()
+        os.mkfifo(bundle)
+        self.user_plugin()
+        before = self.snapshot()
+        self.start()
+        self.assertEqual(self.snapshot(), before)                                # the app's id unreadable: nothing moves
+        bundle.unlink()
+        bundle.write_text(json.dumps({'build_id': 'b' * 64, 'pad': 'x' * 70000}))
+        self.start()
+        self.assertEqual(self.snapshot(), before)                                # over 64 KB: not read, so no id, so nothing moves
+
+    def test_if_the_folder_cannot_be_moved_the_desktop_file_goes_back(self):
+        self.bundle_plugin()
+        old = self.user_plugin()
+        os.chmod(old, 0o555)                                                     # a folder that cannot be renamed away
+        self.addCleanup(lambda: os.path.isdir(old) and os.chmod(old, 0o755))
+        before = self.snapshot()
+        self.start()
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.shadowed(), [])
+        self.assertTrue((self.user / 'kritamcp.desktop').is_file())
+
+
+@unittest.skipUnless(HAVE_CC, 'needs macOS and a C compiler')
 class InstallScriptTests(unittest.TestCase):
     INSTALL = str(AGENT / 'install-app.sh')
 

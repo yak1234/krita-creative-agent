@@ -54,6 +54,19 @@ def default_locations(system=None, environ=None, home=None, krita='stock'):
             'cache': home / 'Library/Caches/Creative Agent' / folder}
 
 
+def shadowed_bundled_plugin(destination, krita, home=None, applications=None):
+    """The installed Krita Agent.app that a plugin installed into the fork's pykrita folder would shadow, or None. The packaged app
+    carries the plugin; a copy in the user's own pykrita folder is found first and hides it (and every later update of the app).
+    macOS compares paths without regard to case."""
+    if krita != 'fork' or platform.system() != 'Darwin': return None
+    home = Path(home or Path.home())
+    fork = default_locations(home=home, krita='fork')['destination']
+    if str(Path(destination).expanduser().resolve()).lower() != str(fork.resolve()).lower(): return None
+    for folder in applications or (Path('/Applications'), home / 'Applications'):
+        if (Path(folder) / 'Krita Agent.app').is_dir(): return Path(folder) / 'Krita Agent.app'
+    return None
+
+
 def verify_bundle(bundle):
     manifest = json.loads((bundle / 'release-manifest.json').read_text())
     if manifest.get('version') != '1.0.0' or manifest.get('protocol_version') != 2:
@@ -97,7 +110,9 @@ def seed_settings(source, destination):
             shutil.copy2(source / name, destination / name)
 
 
-def install(bundle, destination, runtime_destination, project, krita='stock'):
+def install(bundle, destination, runtime_destination, project, krita='stock', allow_shadow=False, home=None, applications=None):
+    shadowed = None if allow_shadow else shadowed_bundled_plugin(destination, krita, home, applications)
+    if shadowed: raise ValueError('%s carries the plugin: a copy in %s would hide it. Update the app instead, choose another --destination, or pass --allow-shadow.' % (shadowed, destination))
     bundle, destination, runtime_destination, project = map(lambda p: Path(p).expanduser().resolve(), (bundle, destination, runtime_destination, project))
     target = krita_target(krita)
     manifest = verify_bundle(bundle)
@@ -178,11 +193,12 @@ def main():
     parser.add_argument('--project', type=Path, required=True, help='Existing folder for ordinary artwork files')
     parser.add_argument('--krita', choices=sorted(KRITA_TARGETS), default='stock',
                         help='stock: the installed Krita (default). fork: the Qt6 fork (own pykrita, bridge port 5679, records)')
+    parser.add_argument('--allow-shadow', action='store_true', help='install into the fork even though Krita Agent.app is installed (it would hide the app\'s own plugin)')
     parser.add_argument('--destination', type=Path, help="Krita's pykrita folder (default: the chosen Krita's)")
     parser.add_argument('--runtime-destination', type=Path, default=default_locations()['runtime_destination'])
     args = parser.parse_args()
     destination = args.destination or default_locations(krita=args.krita)['destination']
-    try: result = install(args.bundle, destination, args.runtime_destination, args.project, krita=args.krita)
+    try: result = install(args.bundle, destination, args.runtime_destination, args.project, krita=args.krita, allow_shadow=args.allow_shadow)
     except (ValueError, OSError, KeyError) as error: raise SystemExit(str(error))
     print(json.dumps(result, indent=2))
     print('Files staged. Save your work, then reload Krita when ready. The running panel has not been changed or verified.')

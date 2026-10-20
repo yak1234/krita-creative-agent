@@ -6,7 +6,7 @@ replaces the plugin folder and never this one, and the Python version in the nam
 Qt6 fork) from loading packages built for this one. A plugin may also carry `_vendor/<os>-<machine>/` itself.
 scripts/install-python-packages.py installs the pinned set (krita-mcp/krita-plugin/python-packages.txt).
 
-Both folders are appended to sys.path, so Krita's own packages (PyQt5) always win. Krita.app allows native libraries
+The plugin's own folder is used when it exists, the shared one only otherwise; both are appended to sys.path, so Krita's own packages (PyQt) always win. Krita.app allows native libraries
 from outside the bundle (com.apple.security.cs.disable-library-validation). Plugin code imports a package where it is
 used and keeps a working fallback when it is missing.
 """
@@ -30,13 +30,20 @@ def shared_root(runtimes_root=None):
 
 def add_vendor_path(root=os.path.dirname(os.path.abspath(__file__)), shared=None):
     """Append the plugin's own vendor folder and the shared one to sys.path, once each. Returns the last added, or None."""
-    found = None
-    for path in (os.path.join(root, '_vendor', platform_tag()), shared or shared_root()):
-        if os.path.isdir(path):
-            if path not in sys.path:
-                sys.path.append(path)
-            found = path
-    return found
+    own = os.path.join(root, '_vendor', platform_tag())
+    if os.path.isdir(own):
+        # A plugin that carries its packages (the packaged app: inside the signed bundle) uses only those. The shared folder
+        # is writable by the user and Krita Agent loads native code from outside its signature (disable-library-validation):
+        # it is never searched when the plugin has its own.
+        if own not in sys.path:
+            sys.path.append(own)
+        return own
+    path = shared or shared_root()
+    if os.path.isdir(path):
+        if path not in sys.path:
+            sys.path.append(path)
+        return path
+    return None
 
 
 def versions():

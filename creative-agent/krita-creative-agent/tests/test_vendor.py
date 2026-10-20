@@ -39,6 +39,16 @@ class VendorTests(unittest.TestCase):
         self.assertEqual(vendor.add_vendor_path(self.root, shared), shared)
         self.assertEqual(sys.path[-1], shared)
 
+    def test_a_plugin_that_carries_its_packages_never_reads_the_shared_user_writable_folder(self):
+        # The packaged app ships numpy & co. inside the signed bundle (disable-library-validation is on: a folder anyone can
+        # write to must not also be searched for native libraries).
+        own = os.path.join(self.root, '_vendor', vendor.platform_tag())
+        shared = os.path.join(self.root, 'shared')
+        os.makedirs(own); os.makedirs(shared)
+        self.assertEqual(vendor.add_vendor_path(self.root, shared), own)
+        self.assertIn(own, sys.path)
+        self.assertNotIn(shared, sys.path)
+
     def test_the_tag_names_os_and_machine(self):
         self.assertRegex(vendor.platform_tag(), r'^(macos|linux|windows)-[a-z0-9_]+$')
 

@@ -10,10 +10,12 @@ from .qt_compat import sip, enum_value
 from krita import DockWidget, DockWidgetFactory, DockWidgetFactoryBase, Krita, Selection
 from .creative_document_identity import document_id, open_documents
 from . import node_runtime
+from . import bundled_release
+from .bridge_config import bridge_port
 from .command_queue import stop_requested
 from .protection import ProtectionCraft
 from .reference_parts import part_image, crop_image, opaque_bounds
-from .qt_compat import Qt, QProcess, QProcessEnvironment, QUrl, QTimer, pyqtSignal, QEvent, QSize, QRectF, scoped
+from .qt_compat import Qt, QProcess, QProcessEnvironment, QUrl, QTimer, pyqtSignal, QEvent, QSize, QRectF, scoped, QCoreApplication, QStandardPaths
 from .qt_compat import QDesktopServices, QPixmap, QTextCursor, QTextDocument, QTextBlockFormat, QTextCharFormat, QFont, QIcon, QKeySequence, QPalette, QColor, QPainter, QPen
 from .qt_compat import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QInputDialog,
                             QComboBox, QLineEdit, QPlainTextEdit, QTextBrowser,
@@ -2130,8 +2132,26 @@ class CreativeAgentDocker(DockWidget):
         if hasattr(self, 'canvas_button'): self.render_context()
 
 
+    def app_data(self):
+        """~/Library/Application Support/KritaAgent in the fork (the app's settings folder), None in stock Krita."""
+        return bundled_release.app_data_dir(QStandardPaths.writableLocation(scoped(QStandardPaths, 'StandardLocation', 'GenericDataLocation')),
+                                            QCoreApplication.organizationName())
+
     def config_path(self):
-        return os.path.join(os.path.dirname(__file__), 'creative-agent-config.json')
+        """The artist's or first-run config in <AppData> when there is one, else the one in the plugin folder."""
+        return bundled_release.resolve_config(os.path.dirname(os.path.abspath(__file__)), self.app_data())
+
+    def install_bundled_release(self):
+        """In the packaged app: verify the companion inside it and copy it to <AppData> once (bundled_release.py)."""
+        bundled = bundled_release.bundled_dir(os.path.dirname(os.path.abspath(__file__)))
+        app_data = self.app_data()
+        if bundled is None or app_data is None:
+            return
+        spec = json.loads((bundled / 'release-manifest.json').read_text()).get('node_runtime')
+        runtimes = node_runtime.default_root()
+        node = node_runtime.node_path(spec, runtimes) if spec else ''
+        bundled_release.ensure_installed(bundled, app_data, runtimes, node, bridge_url='http://127.0.0.1:%d' % bridge_port('', QCoreApplication.organizationName()),
+                                         cache_dir=os.path.join(os.path.expanduser('~/Library/Caches'), os.path.basename(str(app_data)), 'creative-agent'))
 
     def fetch_node_runtime(self, config):
         if getattr(self, 'runtime_fetch', None) and self.runtime_fetch['thread'].is_alive():
@@ -2164,8 +2184,8 @@ class CreativeAgentDocker(DockWidget):
         if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
             return
         try:
-            with open(self.config_path()) as stream:
-                config = json.load(stream)
+            self.install_bundled_release()
+            config = bundled_release.load_config(self.config_path())          # a clear message naming the file if it is damaged
             # A managed Node runtime is fetched once, in the background, then the companion starts.
             if config.get('node_runtime') and not os.environ.get(node_runtime.OVERRIDE) and not node_runtime.is_ready(config['node_runtime'], config.get('node_runtimes')):
                 self.fetch_node_runtime(config); return

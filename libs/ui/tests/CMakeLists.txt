@@ -215,3 +215,9 @@ kis_add_test(KisFeatureMirrorTest.cpp
     TEST_NAME KisFeatureMirrorTest
     LINK_LIBRARIES kritaui kritatestsdk
     )
+
+# Krita Agent's About-box text (KisAboutAgent)
+kis_add_test(KisAboutAgentTest.cpp
+    TEST_NAME KisAboutAgentTest
+    LINK_LIBRARIES kritaui kritatestsdk
+    )

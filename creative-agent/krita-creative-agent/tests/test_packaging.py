@@ -191,4 +191,21 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(windows['destination'], Path('/roaming/krita/pykrita')); self.assertEqual(windows['runtime_destination'], Path('/local/Creative Agent/releases'))
 
 
+class ShadowTests(unittest.TestCase):
+    def test_a_plugin_in_the_forks_folder_would_hide_the_packaged_apps_own(self):
+        if platform.system() != 'Darwin': self.skipTest('the packaged app is macOS only')
+        with tempfile.TemporaryDirectory() as root:
+            home, applications = Path(root) / 'home', Path(root) / 'Applications'
+            fork = installer.default_locations(home=home, krita='fork')['destination']
+            self.assertIsNone(installer.shadowed_bundled_plugin(fork, 'fork', home, [applications]), 'no packaged app installed')
+            (applications / 'Krita Agent.app').mkdir(parents=True)
+            self.assertEqual(installer.shadowed_bundled_plugin(fork, 'fork', home, [applications]), applications / 'Krita Agent.app')
+            self.assertIsNone(installer.shadowed_bundled_plugin(fork, 'stock', home, [applications]), 'stock Krita has no packaged plugin')
+            self.assertIsNone(installer.shadowed_bundled_plugin(Path(root) / 'elsewhere', 'fork', home, [applications]))
+            with self.assertRaises(ValueError) as raised:
+                installer.install(Path(root) / 'bundle', fork, Path(root) / 'releases', Path(root), krita='fork', home=home, applications=[applications])
+            self.assertIn('carries the plugin', str(raised.exception))
+            self.assertFalse(fork.exists(), 'nothing was created')
+
+
 if __name__ == '__main__': unittest.main()

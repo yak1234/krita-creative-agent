@@ -63,3 +63,4 @@ krita-deps-management/
 /upstream-ci-utilities
 /branch-corrected-deps.yml
 /*.log
+/_package

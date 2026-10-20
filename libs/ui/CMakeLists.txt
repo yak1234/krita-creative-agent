@@ -52,6 +52,7 @@ set(kritaui_LIB_SRCS
     canvas/KisCanvasState.cpp
 
     dialogs/kis_about_application.cpp
+    dialogs/KisAboutAgent.cpp
     dialogs/kis_dlg_adjustment_layer.cc
     dialogs/kis_dlg_filter.cpp
     dialogs/kis_dlg_generator_layer.cpp

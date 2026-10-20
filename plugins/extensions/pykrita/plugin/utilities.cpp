@@ -307,7 +307,10 @@ bool Python::setPath(const QStringList& scriptPaths)
 #if defined Q_OS_WIN
     bool runningInBundle = false;
 #elif defined Q_OS_MAC
-    bool runningInBundle = KoResourcePaths::getApplicationRoot().toLower().contains("krita.app");
+    // Krita Agent: any app bundle, not only one called krita.app ("Krita Agent.app/Contents/"); the install tree's own
+    // bundle (".../bin/krita.app/..") as before.
+    const QString applicationRoot = KoResourcePaths::getApplicationRoot().toLower();
+    bool runningInBundle = applicationRoot.contains("krita.app") || applicationRoot.contains(".app/contents");
 #else
     bool runningInBundle = (!qgetenv("APPDIR").isNull() &&
                              KoResourcePaths::getApplicationRoot().contains(qgetenv("APPDIR")));

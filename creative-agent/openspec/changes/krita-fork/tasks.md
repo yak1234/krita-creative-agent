@@ -50,6 +50,16 @@
   `/Applications` without a dependency on the build tree, signed with one stable identity: that also ends macOS asking
   again for Documents access after every rebuild. Priority, with 1.5.)*
   *(19 October evening: packaging scripts done on agent/package (agent/package-app.sh, install-app.sh, app-launcher.c, licence notices; 679 Mach-O files checked, signature verifies, headless imports of krita, PyQt6, kritamcp, numpy, cv2 pass), under review. Open: the Node companion and its runtime are NOT in the app (task 1.3b: without them the agent panel cannot run on a clean machine); the About box needs a rebuild; the source URL must default to https://github.com/yak1234/krita-creative-agent now that it is public; repackage and install to ~/Applications after the main rebuild; live checks.)*
+  *(Packaging built 19-20 October: `agent/package-app.sh`, `agent/install-app.sh`, AGENT-FORK.md "Packaging".)*
+  **OPEN (needs the artist and an Apple Developer account): other artists' Macs.** The app is signed ad hoc or with a local
+  self-signed certificate. That is enough for this Mac (no quarantine flag), but an app that arrives by download carries
+  `com.apple.quarantine`, and Gatekeeper rejects ad-hoc and self-signed apps that carry it ("cannot be opened because the
+  developer cannot be verified"). Handing the fork to other artists needs a Developer ID Application certificate, the
+  hardened runtime (already on for a named identity), notarisation (`notarytool`) and a stapled ticket, and the disk image.
+  The entitlements stay: `allow-jit` (Qt's QML/JavaScript engine and PyQt/sip JIT need writable-executable memory) and
+  `disable-library-validation` (the vendored numpy and OpenCV and Python's extension modules are signed by other parties or
+  by us ad hoc: with a Team ID the hardened runtime would refuse to load libraries signed by anyone else; with ad-hoc or
+  self-signed code there is no Team ID to match).
 - [x] 1.4 Upstream policy written down: the list of files we edit, the rebase cadence, and what is offered upstream.
   *(`AGENT-FORK.md` in the fork, 09ef936.)*
 

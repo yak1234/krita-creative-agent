@@ -1,6 +1,6 @@
 /** Verified, rollback-safe release installation. No external package dependencies. */
 import {createHash} from 'node:crypto';
-import {createReadStream} from 'node:fs';
+import {createReadStream, lstatSync} from 'node:fs';
 import {access, chmod, cp, link, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile} from 'node:fs/promises';
 import {homedir} from 'node:os';
 import {basename, dirname, isAbsolute, join, relative, resolve, sep} from 'node:path';
@@ -29,8 +29,22 @@ export function defaultLocations(platform = process.platform, env = process.env,
     const data = env.XDG_DATA_HOME || join(home, '.local', 'share'), cache = env.XDG_CACHE_HOME || join(home, '.cache');
     return {destination: join(data, 'krita', 'pykrita'), runtimeDestination: join(data, 'creative-agent', 'releases'), cacheDestination: join(cache, 'creative-agent')};
   }
-  return {destination: join(home, 'Library/Application Support/krita/pykrita'), runtimeDestination: join(home, 'Library/Application Support/Creative Agent/releases'),
+  // The fork's own pykrita folder (Krita Agent keeps its per-user data in ~/Library/Application Support/KritaAgent), never the
+  // stock Krita's: the stock folder needs an explicit --destination.
+  return {destination: join(home, 'Library/Application Support/KritaAgent/krita/pykrita'), runtimeDestination: join(home, 'Library/Application Support/Creative Agent/releases'),
     cacheDestination: join(home, 'Library/Caches/Creative Agent')};
+}
+
+/**
+ * The installed Krita Agent.app that a plugin installed into the fork's pykrita folder would shadow, or null. The packaged app
+ * carries the plugin; a copy in the user's own pykrita folder is found first and would hide it (and every later update of the app).
+ * macOS compares paths without regard to case.
+ */
+export function shadowedBundledPlugin(destination, home = homedir(), applications) {
+  applications = applications || ['/Applications', join(home, 'Applications')];
+  const same = (a, b) => resolve(a).toLowerCase() === resolve(b).toLowerCase();
+  if (!same(destination, defaultLocations('darwin', {}, home).destination)) return null;
+  return applications.map(folder => join(folder, 'Krita Agent.app')).find(app => { try { return lstatSync(app).isDirectory(); } catch { return false; } }) || null;
 }
 
 export async function sha256(path) {
@@ -168,7 +182,9 @@ export async function pruneInstalls({runtimeDestination, current, previous, keep
 
 export async function installRelease({bundle, project, destination = defaultLocations().destination,
   runtimeDestination = defaultLocations().runtimeDestination,
-  cacheDestination = defaultLocations().cacheDestination, keepReleases = 2, keepBackups = 5}, hooks = {}) {
+  cacheDestination = defaultLocations().cacheDestination, keepReleases = 2, keepBackups = 5, allowShadow = false, applications, home = homedir()}, hooks = {}) {
+  const shadowed = allowShadow ? null : shadowedBundledPlugin(resolve(destination), home, applications);
+  if (shadowed) throw new Error(shadowed + ' carries the plugin: a copy in ' + resolve(destination) + ' would hide it. Update the app instead, or choose another --destination, or pass --allow-shadow.');
   bundle = await realpath(bundle); project = await realpath(project);
   if (!(await lstat(project)).isDirectory()) throw new Error('Choose an existing folder for your paintings.');
   const manifest = await verifyBundle(bundle);
@@ -246,6 +262,7 @@ async function main() {
   const args = process.argv.slice(2); const options = {};
   for (let index = 0; index < args.length; index++) {
     if (args[index] === '--verify') options.verify = true;
+    else if (args[index] === '--allow-shadow') options.allowShadow = true;
     else if (['--bundle','--project','--destination','--runtime-destination'].includes(args[index])) {
       const value = args[++index]; if (!value || value.startsWith('--')) throw new Error('An installer path is missing.');
       options[args[index - 1].slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = value;

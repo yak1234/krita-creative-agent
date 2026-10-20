@@ -11,7 +11,8 @@ renderer is retained as an opt-in fallback for per-call hardness control.
 from krita import *
 from . import vendor
 vendor.add_vendor_path()                        # numpy and other native packages the plugin ships (vendor.py)
-from .qt_compat import QTimer, QThread, pyqtSignal, QPointF, QPoint, QRectF, QByteArray, QBuffer, QIODevice, QCoreApplication
+from .qt_compat import QTimer, QThread, pyqtSignal, QPointF, QPoint, QRectF, QByteArray, QBuffer, QIODevice, QCoreApplication, QStandardPaths, scoped
+from . import bundled_release
 from .qt_compat import QColor, QPainterPath, QImage
 from .qt_compat import QMessageBox
 import json
@@ -161,8 +162,9 @@ class PaintRequestHandler(BaseHTTPRequestHandler):
 def server_port():
     """The port this Krita's bridge listens on: the bridge_url in this plugin folder's creative-agent-config.json, else
     5678 in stock Krita and 5679 in a Krita with its own settings folder (the fork), so both can run at once."""
-    return bridge_port(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'creative-agent-config.json'),
-                       QCoreApplication.organizationName())
+    organization = QCoreApplication.organizationName()
+    app_data = bundled_release.app_data_dir(QStandardPaths.writableLocation(scoped(QStandardPaths, 'StandardLocation', 'GenericDataLocation')), organization)
+    return bridge_port(bundled_release.resolve_config(os.path.dirname(os.path.abspath(__file__)), app_data), organization)
 
 
 class ServerThread(QThread):

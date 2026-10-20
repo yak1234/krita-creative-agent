@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {dirname, join} from 'node:path';
-import {canonicalInventory, defaultLocations, installRelease, runtimeKey, sha256, verifyBundle} from '../scripts/install-release.mjs';
+import {canonicalInventory, defaultLocations, installRelease, runtimeKey, shadowedBundledPlugin, sha256, verifyBundle} from '../scripts/install-release.mjs';
 
 // The fixture is a release for the OS running the test, so the same tests run on macOS, Windows and Linux.
 const KEY = runtimeKey(), NODE = process.platform === 'win32' ? 'node.exe' : 'bin/node';
@@ -167,4 +167,24 @@ test('runtime keys and default folders follow each OS',()=>{
   const windows = defaultLocations('win32',{APPDATA:join('/','roaming'),LOCALAPPDATA:join('/','local')},home);
   assert.equal(windows.destination,join('/','roaming','krita','pykrita')); assert.equal(windows.runtimeDestination,join('/','local','Creative Agent','releases'));
   assert.equal(defaultLocations('darwin',{},home).runtimeDestination,join(home,'Library/Application Support/Creative Agent/releases'));
+});
+
+test('the default plugin folder is the fork\'s, never stock Krita\'s, and a plugin there would shadow the packaged app\'s',async()=>{
+  const home = await mkdtemp(join(tmpdir(),'creative-shadow-'));
+  try {
+    const darwin = defaultLocations('darwin',{},home).destination;
+    assert.equal(darwin,join(home,'Library/Application Support/KritaAgent/krita/pykrita'));
+    assert.ok(!darwin.includes(join('Application Support','krita')+'/'),'not stock Krita\'s folder');
+    const applications = join(home,'Applications');
+    assert.equal(shadowedBundledPlugin(darwin,home,[applications]),null,'no packaged app, nothing to shadow');
+    await mkdir(join(applications,'Krita Agent.app'),{recursive:true});
+    assert.equal(shadowedBundledPlugin(darwin,home,[applications]),join(applications,'Krita Agent.app'));
+    assert.equal(shadowedBundledPlugin(darwin.toUpperCase().replace(home.toUpperCase(),home),home,[applications]),join(applications,'Krita Agent.app'),'a different case is the same folder on macOS');
+    assert.equal(shadowedBundledPlugin(join(home,'Library/Application Support/krita/pykrita'),home,[applications]),null,'another Krita\'s folder is the artist\'s business');
+    const f = await fixture();
+    try {
+      await assert.rejects(installRelease({bundle:f.bundle,project:f.project,destination:darwin,runtimeDestination:join(home,'releases'),cacheDestination:join(home,'cache'),home,applications:[applications]}),/carries the plugin/);
+      await assert.rejects(stat(darwin),'nothing was installed');
+    } finally { await cleanup(f); }
+  } finally { await rm(home,{recursive:true,force:true}); }
 });

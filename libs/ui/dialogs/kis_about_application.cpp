@@ -16,6 +16,7 @@
 #include <kis_debug.h>
 #include <kis_global.h>
 
+#include "KisAboutAgent.h"
 #include "kis_splash_screen.h"
 #include "ui_wdgaboutapplication.h"
 #include <KisPortingUtils.h>
@@ -37,7 +38,8 @@ public:
 KisAboutApplication::KisAboutApplication(QWidget *parent)
     : KoDialog(parent)
 {
-    setWindowTitle(i18n("About Krita"));
+    const QString agentTitle = KisAboutAgent::windowTitle();   // empty for stock Krita
+    setWindowTitle(agentTitle.isEmpty() ? i18n("About Krita") : agentTitle);
     setButtons(KoDialog::Close);
 
     WdgAboutApplication *wdgTab = new WdgAboutApplication(this);
@@ -185,6 +187,12 @@ KisAboutApplication::KisAboutApplication(QWidget *parent)
                            "<p>Krita’s GNU GPL license guarantees you this freedom. Nobody is ever permitted to take it away, in contrast "
                            "to trial or educational versions of commercial software that will forbid your work in commercial situations.</p>"
                            "<br/><hr/><pre>");
+    // Krita Agent: its name, commit and source offer, at the top of the tab (nothing for stock Krita)
+    const QString agentLicense = KisAboutAgent::licenseHtml();
+    const int bodyAt = license.indexOf("<body>");
+    if (!agentLicense.isEmpty() && bodyAt >= 0) {
+        license.insert(bodyAt + 6, agentLicense);
+    }
 
     QFile licenseFile(":/LICENSE");
     Q_ASSERT(licenseFile.exists());

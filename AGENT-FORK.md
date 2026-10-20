@@ -149,6 +149,10 @@ Keep this table current: every upstream file the `krita-agent` branch changes, a
 | `plugins/extensions/pykrita/sip/krita/Filter.sip` | `Filter.apply` returns `bool` (it was declared `void`, so Python got None for a refusal) | libkis traps (2.9) |
 | `plugins/extensions/pykrita/sip/krita/Node.sip` | `paintLine` takes `QPointF` (it was `QPoint`, though libkis takes `QPointF`) | libkis traps (2.9) |
 | `libs/libkis/CMakeLists.txt`, `libs/libkis/tests/CMakeLists.txt`, `plugins/extensions/pykrita/tests/CMakeLists.txt` | Build `ScriptWaits.cpp`; add `TestLibkisTraps`, `TestLibkisNoView`, `TestPythonTraps` | libkis traps (2.9) |
+| `libs/ui/dialogs/kis_about_application.cpp` | Window title and the top of the "Your Rights" tab come from our `KisAboutAgent` (name, version and commit, GPL-3.0-or-later notice, source offer); both empty for stock Krita. **Needs a rebuild to show** | packaging (1.3) |
+| `libs/ui/CMakeLists.txt` | Builds `dialogs/KisAboutAgent.cpp` | packaging (1.3) |
+| `plugins/extensions/pykrita/plugin/utilities.cpp` | `Python::setPath`: `runningInBundle` is also true for an app bundle not called `krita.app` (`.app/contents` in the root). **Needs a rebuild to take effect** | packaging (1.3) |
+| `libs/ui/tests/CMakeLists.txt` | Adds `KisAboutAgentTest` | packaging (1.3) |
 
 Our own files for the identity: `cmake/modules/KritaAppIdentity.cmake`, `libs/global/KisAppIdentity.{h,cpp}`,
 `libs/global/config-app-identity.h.cmake`; tests `libs/global/tests/KisAppIdentityTest.{h,cpp}`,
@@ -434,6 +438,163 @@ particular:
 
 Kept in the fork (not offered): the built-in agent panel and project view, Krita-Revamp's interface port and the
 Photoshop-style defaults, the canvas feature map until it has proven itself, and our branding.
+
+## Packaging: a self-contained Krita Agent.app (krita-fork 1.3)
+
+`_install/bin/krita.app` is a shell: its executable loads about 1.3 GB of libraries, Qt frameworks and resources from
+`_install/lib` and `_install/share` by rpath, so it cannot be moved. `agent/package-app.sh` makes `Krita Agent.app`, which
+stands alone (about 800 MB), from a finished build, and `agent/install-app.sh` puts it in place. **The app is arm64-only**
+(the architecture is read from the build's main executable, not from the machine; anything else is refused).
+
+    agent/package-app.sh [INSTALL_DIR] [--out DIR] [--source DIR] [--release DIR] [--source-url URL]
+                         [--allow-dirty] [--allow-stale-build] [--allow-unpublished] [--no-sign]
+    agent/package-app.sh --check|--verify|--smoke|--sizes "Krita Agent.app"
+    agent/install-app.sh [--to ~/Applications] [--dry-run] "Krita Agent.app"
+
+It only reads `_install`, never builds, and refuses to run while a build is installing (a half-written tree). The work is in
+`agent/package_app.py` (packaging, checks, signing) and `agent/package_notices.py` (the build record and the licence texts);
+both are plain functions, tested by `creative-agent/krita-creative-agent/tests/test_package_app.py` on fake bundles.
+
+**Which commit.** THE commit of the app is the one the Krita executable reports (`krita --version`), because that is what the
+binaries were built from. The script refuses unless that commit is the source checkout's HEAD (`--allow-stale-build`), neither
+the source nor this checkout has uncommitted changes (`--allow-dirty`), and the commit is in `public/main` (`--allow-unpublished`;
+the public hash comes from `<git-dir>/publish-map`, because local and public hashes differ). Each allowance is written into
+the app (`notes:` in BUILD.txt, `KritaAgentNotes` in Info.plist, the README and the About box). The source offer names the
+public repository, `https://github.com/yak1234/krita-creative-agent` (branch main), and the exact public commit, with the local
+commit beside it. That repository carries the fork's whole source tree at that commit (Krita's tree at its base plus ours,
+replayed onto the published main line), which is why the address is the corresponding source; no personal email is in the app.
+`Resources/BUILD.txt` is the one place the About box reads.
+
+**Output folders.** The bundle in `--out` is deleted and made again, so the script refuses (before writing anything) an output
+folder that is, in any spelling (case, links, relative paths), `/Applications` or `~/Applications`, a system folder, the home
+folder itself, the inside of an app, or one that contains (or lies inside) the install tree; and it only replaces a
+`Krita Agent.app` whose Info.plist is ours. `install-app.sh` makes the same checks for its destination (plus Documents, Desktop,
+Downloads and iCloud/CloudStorage, which macOS protects with prompts), refuses while the installed copy is running, and puts the
+old copy back if the second move fails.
+
+**Layout** (what Krita's own lookups need: `KoResourcePaths::getInstallationPrefix` finds `Contents/` because
+`Contents/Resources/kritaplugins` exists; `KoJsonTrader` finds `Contents/PlugIns`; Qt finds `PlugIns` and `Resources/qml` by
+itself; `Python::setPath` finds `Frameworks/Python.framework` and `Resources/krita-python-libs` through `Contents/share`):
+
+| Folder | Holds |
+|---|---|
+| `MacOS/krita` | our launcher (`agent/app-launcher.c`): first-run default, bundle environment, then `exec`s `krita-app` |
+| `MacOS/krita-app`, `kritarunner`, `ffmpeg`, `ffprobe` | the real executables (rpath `@executable_path/../Frameworks`) |
+| `Frameworks` | Krita's, KDE's and third-party dylibs, the Qt frameworks, `Python.framework` (one architecture, without pip, tests, Tk) |
+| `PlugIns` | Qt plugins (`platforms/`, `imageformats/` ...), Krita's plugins (`kritaplugins/*.so`, flat, as upstream), `mlt/` |
+| `Resources` | `share` (krita, color, icons, locale ...), `qml`, `translations`, `etc/fonts`, `krita-python-libs`, `LICENSES/`, `BUILD.txt` |
+| `Resources/krita/pykrita/kritamcp/_vendor/macos-arm64` | numpy, OpenCV (headless), psutil, xxhash for the bundle's Python version |
+| `share -> Resources`, `etc -> Resources/etc` | the symlinks Krita's root-relative paths go through |
+
+`Frameworks` holds only libraries and frameworks, because codesign treats everything in it as code (a Python package folder
+there fails signing): that is why `krita-python-libs` lives in `Resources`. Every Mach-O file has the rpaths that left the
+bundle replaced by one that leads to `Frameworks`; install names become `@rpath/...`; the closure of dependencies is copied
+from `_install/lib`. Wheels' own `.dylibs` links are left as they are. Every `.pyc` is written at packaging time, with
+the stored file names of `/Applications/Krita Agent.app`, hash-based and **unchecked**: Python never writes into the signed
+bundle, and editing a `.py` inside an installed app has no effect (the `.pyc` wins) and would break the signature anyway.
+The fontconfig file loses upstream's CI cache-folder entry.
+
+**Checks** (`--check`, `--verify`, `--smoke`, and all of them at the end of every packaging run):
+- no Mach-O file refers to a path outside the system, or to `_install` / `forks/`; every `@rpath`, `@loader_path` and
+  `@executable_path` dependency resolves to a file inside the bundle; no rpath leaves the bundle; no symlink leaves it;
+- the strings of every Mach-O file and the text of every other file are scanned for `/_install`, `/_build`, the forks folder
+  and the packaging account's home folder. Harmless: source-file names the compiler recorded, upstream's CI paths
+  (`/Users/gitlab/...`, other projects' build paths are not ours), and two compile-time constants of Krita's build that do nothing
+  on macOS (`PYKRITA_PYTHON_LIBRARY`, the version header's build folder); they change with a rebuild;
+- the layout above is complete, `codesign --verify --deep --strict` passes;
+- a headless smoke test imports `krita`, `PyQt6`, `kritamcp`, numpy, cv2, psutil and xxhash through `kritarunner`, starts MLT's
+  factory and makes a producer, and fails on any `sys.path` entry outside the bundle and the temporary home. It runs **from a
+  temporary copy**, in `env -i`, with the launcher's environment, with `CFFIXED_USER_HOME` set to a temporary home (Qt on
+  macOS ignores `$HOME`) and, inside `sandbox-exec`, with the install tree, the source tree and the forks folder made
+  unreadable: a bundle that still needs them fails.
+**Nothing is executed from a bundle whose signatures do not all verify**: on Apple silicon an edited, unsigned Mach-O is killed by
+the kernel and macOS shows a "quit unexpectedly" dialog. Every file the script edits is signed at once, frameworks are sealed as
+units, and `require_runnable()` refuses (with a message) before the version query, the bytecode step and the smoke test.
+
+**The Creative Agent companion in the app.** `--release DIR` (the output of `krita-creative-agent/scripts/build-release.py`; with
+none given the script builds one from this checkout, which needs `npm ci` there and, the first time, a network for the pinned
+Node used only to validate it) puts `companion/` (pure JavaScript, JSON and wasm) and `release-manifest.json` in
+`Resources/creative-agent-bundle` (a name of its own: `creative-agent` is where the copies go in the user's folder), with a `bundle-info.json` that records when the app was built; the plugin's own verifier checks them against each other at packaging time. On the first "Connect
+assistant" the plugin (`kritamcp/bundled_release.py`) checks the files against the manifest again, copies the companion through a
+temporary folder and one rename (a `.complete` marker is written first: a copy without it is broken and is replaced) to
+`~/Library/Application Support/KritaAgent/creative-agent/<build_id>/`, and writes
+`~/Library/Application Support/KritaAgent/creative-agent-config.json`. **A config next to the plugin wins** (the dev fork and
+`install.py --krita fork` write one there); the AppData one serves the packaged app, which ships none. It holds the companion path, the managed Node runtime (`node_runtime`, `node_runtimes`), the bridge address, data and cache
+folders and an absolute `paintings_dir` (default `<AppData>/paintings`, no macOS prompt; change it in the file). A complete install is
+never touched or re-hashed; the manifest is hashed only when copying. A config the artist or the installer made is never replaced (a
+file that cannot be read or is damaged is left alone and named in the message). A config this module wrote follows a newer build
+(by the app's build time, so an older app opened later does not move it back), keeps every key it does not own (the paintings
+folder, the bridge address, unknown keys), and other build copies and day-old leftovers are removed. The paintings folder can be
+changed in that file (`paintings_dir`, `project_root`); the README in the app says so. The copy runs on the GUI thread, once per
+build, at the first "Connect assistant". Node itself is **not** bundled: the existing one-time, SHA-256-verified download on the
+first "Connect assistant" stays. `scripts/install-release.mjs` and `scripts/install.py` default to the fork's own pykrita folder
+and refuse to install a second copy of the plugin there while Krita Agent.app is installed (it would be found first and hide the
+app's), unless `--allow-shadow`; stock Krita's folder needs an explicit `--destination`. The plugin of a package is the one the
+build installed (`ninja install` copies it from this tree): after merging plugin changes, install before packaging, or use
+`--overlay-plugin DIR` (stamped into the notices) to take it from the checkout.
+
+**Python packages.** `vendor.py` reads `kritamcp/_vendor/<os>-<machine>/`, so the packages are installed there (`uv pip install
+--target`, wheels only, the bundle's Python version, from `python-packages.txt`). A plugin that carries that folder uses only
+it: the shared `~/Library/Application Support/Creative Agent/python/...` folder is user-writable and, with
+`disable-library-validation` on, must not also be searched for native code. `--packages DIR` uses a ready folder (offline).
+
+**First run and environment.** The plugin is enabled by `[python] enable_kritamcp=true` in
+`~/Library/Preferences/KritaAgent/kritarc`. A build's shipped defaults (`krita/data/kritarc`) are compiled in, so changing them
+needs a rebuild; without one, the executable `MacOS/krita` is a small C launcher that, once per settings folder (marker
+`.agent-first-run-1` beside kritarc), merges that one key into kritarc and `exec`s `krita-app`. It never overrides a value the
+artist set (`key=`, `key =`, `key[$i]=` all count), never repeats, keeps CRLF line ends, a byte order mark, the file mode and a
+symlinked kritarc; any problem (unreadable file, a folder named kritarc, read-only file or folder) means nothing is changed and no
+marker is written; the marker comes only after the new file is fsynced and renamed into place. The launcher also sets
+`PYTHONNOUSERSITE=1` and `MLT_REPOSITORY`, `MLT_DATA`, `MLT_PROFILES_PATH`, `MLT_PRESETS_PATH` to the bundle's folders (Krita sets
+the MLT ones only for AppImage and Android). It is built with the build's settings folder (`-DSETTINGS_FOLDER`, from the CMake
+cache), and without test hooks. The bridge port needs nothing: `bridge_config.py` takes 5679 for an app with a settings folder.
+A later build that ships the key in `krita/data/kritarc` makes the key part unnecessary.
+
+**Signing.** `KRITA_AGENT_SIGN_IDENTITY="<keychain identity name>"` signs with that identity (hardened runtime plus
+`packaging/macos/entitlements.plist`); otherwise ad hoc. An identity that is not in the keychain stops with one line saying so and
+that the bundle is left as the build step signed it (ad hoc, runnable). Everything is signed inside-out: libraries and plugins,
+then each framework as a unit, then the app. The two entitlements: `allow-jit` because Qt's QML/JavaScript engine and the Python
+extension modules need writable-executable memory under the hardened runtime; `disable-library-validation` because the vendored
+numpy and OpenCV, PyQt and Python's extensions are not signed by the same Team ID as the app (there is none: ad hoc or
+self-signed), and the hardened runtime would otherwise refuse to load them. macOS remembers "allow access to Documents/Desktop"
+per code identity. An ad-hoc signature is identified by the hash of the code, so **every rebuild is a new app to macOS and it asks
+again**; a certificate-based signature is identified by the certificate, which does not change, so the answer sticks. Make the
+certificate once (the script never creates one):
+
+1. Keychain Access -> menu Keychain Access -> Certificate Assistant -> Create a Certificate...
+   Name `Krita Agent Local`, Identity Type `Self Signed Root`, Certificate Type `Code Signing`, Create.
+2. Check: `security find-identity -p codesigning` lists `Krita Agent Local` (if it shows `CSSMERR_TP_NOT_TRUSTED`, open the
+   certificate in Keychain Access -> Trust -> Code Signing: Always Trust).
+3. Package with it: `KRITA_AGENT_SIGN_IDENTITY="Krita Agent Local" agent/package-app.sh`, then `agent/install-app.sh`.
+   The first launch asks once for permission to use the key (Always Allow) and for Documents.
+
+(The same can be done in a shell with `openssl req -x509 ... -addext extendedKeyUsage=codeSigning`, `openssl pkcs12 -export` and
+`security import ... -T /usr/bin/codesign`; the steps above are the dependable way and were not run here.) **Other artists' Macs
+are open work** (tasks.md 1.3): Gatekeeper rejects ad-hoc and self-signed apps that arrive with the quarantine flag; they need a
+Developer ID certificate and notarisation.
+
+**Licences and source.** `Resources/LICENSES/` holds `README.txt` (what the app is, the GPL-3.0-or-later notice, the commit and
+where the source is), `THIRD-PARTY-NOTICES.txt` and the SPDX texts from `LICENSES/`, upstream's `credits`, `developers` and
+`libraries` lists, and the vendored packages' own licence files (`python-packages/`). The notices are derived from what is
+shipped, not written by hand: FFmpeg's licence, version and codec libraries from the shipped `libavutil`'s own strings (it reports
+LGPL, so the notice says LGPL, names LAME, libvpx, libaom, OpenH264, Opus, Vorbis, Theora and libwebp with their licences and
+sources, and points at FFmpeg's release tarball and the krita-deps-management recipe); Qt's version and the LGPL-3.0 rights
+(replacing the frameworks and re-signing, reverse engineering for debugging, the recipe and `ext_qt` patches of the pinned
+krita-deps-management commit); each wheel's full `License-Expression`, the libraries it carries (`.dylibs`: OpenBLAS,
+libgfortran/libquadmath/libgcc with the runtime exception, FFmpeg inside OpenCV ...) and its licence files, including
+`LICENSES_bundled.txt` and `LICENSE-3RD-PARTY.txt`. The About box (`KisAboutAgent`, a few lines in `kis_about_application.cpp`,
+`KisAboutAgentTest`) shows the name, the compiled version and commit, the licence notice, and the exact source commit and address
+from BUILD.txt; it is C++ and **appears only after the next build**.
+
+**C++ edits for packaging (take effect at the next rebuild; none is needed to run the packaged app).** `libs/ui/dialogs/
+KisAboutAgent.{h,cpp}` and its test (new files), two edits in `kis_about_application.cpp`, one line each in `libs/ui/CMakeLists.txt`
+and `libs/ui/tests/CMakeLists.txt`; and `plugins/extensions/pykrita/plugin/utilities.cpp`: `Python::setPath`'s `runningInBundle`
+tests for `krita.app` in the path, which is false for `Krita Agent.app`; it now also accepts `.app/Contents`. Python starts
+without it (it finds its prefix through the framework), so after the rebuild check that it still does and that
+`sys.path` has the bundle's `lib-dynload` and `site-packages` entries.
+
+**Known limits.** The process is `krita-app` in Activity Monitor (the launcher `exec`s). Editing files inside the installed app
+is not supported.
 
 ## Licence
 

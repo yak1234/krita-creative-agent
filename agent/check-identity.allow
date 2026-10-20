@@ -13,3 +13,4 @@ libs/widgetutils/xmlgui/kxmlguiclient.cpp: QStandardPaths::locate(QStandardPaths
 libs/resources/KoResourcePaths.cpp: return QStandardPaths::GenericDataLocation; -- "genericdata" only finds KDE's shared color schemes, writes nothing
 libs/image/kis_transform_mask.cpp: KIS_DUMP_DEVICE_2( -- debug dump names ending in "src", not config files
 plugins/extensions/buginfo/DlgAndroidLogcatDumper.cpp: "/krita-logcatdump.log" -- Android only, where each app id has its own storage
+creative-agent/krita-mcp/krita-plugin/kritamcp/bundled_release.py: GenericDataLocation and the organization name -- reads the fork's OWN settings folder (<GenericData>/<organization>), the same way bridge_config.py takes its port from the organization name; empty organization (stock Krita) returns before touching anything

@@ -214,8 +214,10 @@ class LayoutTests(unittest.TestCase):
             (contents / path).parent.mkdir(parents=True, exist_ok=True)
             (contents / path).write_text('x')
         release = pathlib.Path(root) / 'rel'
-        bundled, _ = make_release(release)                                              # a valid companion in Resources/creative-agent
+        bundled, manifest = make_release(release)                                       # a valid companion in Resources/creative-agent
         shutil.copytree(bundled, contents / 'Resources' / 'creative-agent-bundle')
+        (contents / 'Resources/krita/pykrita/kritamcp/build-info.json').write_text(
+            json.dumps({'build_id': manifest['build_id'], 'protocol_version': manifest.get('protocol_version', 2)}))
         os.symlink('3.13', contents / 'Frameworks/Python.framework/Versions/Current')
         os.symlink('Resources', contents / 'share')
         os.symlink('Resources/etc', contents / 'etc')
@@ -239,6 +241,18 @@ class LayoutTests(unittest.TestCase):
             self.assertIn('no KritaAgentBuild', problems)
             (bundle / 'Contents/Resources/creative-agent-bundle/companion/src/main.mjs').write_text('tampered')   # the companion must match its manifest
             self.assertIn('the bundled companion', ' | '.join(package_app.layout_problems(bundle)))
+
+    def test_a_plugin_that_does_not_carry_the_companions_build_id_is_a_problem(self):
+        # The packaged app once shipped a plugin with no build-info.json: it said 'development-unverified' and the companion
+        # refused it ("Reload the matching Creative Agent build") on every first run.
+        with tempfile.TemporaryDirectory(prefix='krita-agent-test-') as root:
+            bundle = self.make_complete(root)
+            info = bundle / 'Contents/Resources/krita/pykrita/kritamcp/build-info.json'
+            self.assertEqual(package_app.layout_problems(bundle), [])
+            info.write_text(json.dumps({'build_id': 'f' * 64, 'protocol_version': 2}))
+            self.assertIn('plugin build id', ' | '.join(package_app.layout_problems(bundle)))
+            info.unlink()
+            self.assertIn('plugin build id', ' | '.join(package_app.layout_problems(bundle)))
 
 
 def build_launcher(directory, hook=True, folder='KritaAgent'):

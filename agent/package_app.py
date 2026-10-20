@@ -288,6 +288,16 @@ def layout_problems(bundle):
             module.verify_companion(contents / 'Resources/creative-agent-bundle')
         except module.BundledReleaseError as error:
             problems.append('the bundled companion: %s' % error)
+        # The companion refuses a bridge whose build id differs from its own (runtime.mjs): the plugin in the app must carry
+        # the release's, or the panel says "Reload the matching Creative Agent build" on every first run.
+        try:
+            expected = json.loads((contents / 'Resources/creative-agent-bundle/release-manifest.json').read_text())
+            actual = json.loads((contents / 'Resources/krita/pykrita/kritamcp/build-info.json').read_text())
+            if actual.get('build_id') != expected.get('build_id') or actual.get('protocol_version') != expected.get('protocol_version', 2):
+                problems.append('the plugin build id %s (protocol %s) is not the companion\'s %s (protocol %s)' % (
+                    str(actual.get('build_id'))[:12], actual.get('protocol_version'), str(expected.get('build_id'))[:12], expected.get('protocol_version', 2)))
+        except (OSError, ValueError):
+            problems.append('the plugin build id cannot be read (kritamcp/build-info.json is missing or invalid): the companion would refuse it')
     vendor = list((contents / 'Resources/krita/pykrita/kritamcp/_vendor').glob('*/numpy/__init__.py'))
     if not vendor:
         problems.append('no vendored numpy under kritamcp/_vendor/<os>-<machine>')

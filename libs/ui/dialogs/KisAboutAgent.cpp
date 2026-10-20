@@ -43,6 +43,22 @@ QString KisAboutAgent::windowTitle()
     return i18n("About %1", KisAppIdentity::displayName());
 }
 
+QString KisAboutAgent::aboutActionText()
+{
+    if (KisAppIdentity::settingsFolder().isEmpty()) {
+        return QString();
+    }
+    return i18n("&About %1", KisAppIdentity::displayName());
+}
+
+QString KisAboutAgent::shortDescription()
+{
+    if (KisAppIdentity::settingsFolder().isEmpty()) {
+        return QString();
+    }
+    return i18n("%1 is based on Krita, the full-featured digital art studio", KisAppIdentity::displayName());
+}
+
 QString KisAboutAgent::licenseHtml()
 {
     if (KisAppIdentity::settingsFolder().isEmpty()) {
@@ -64,7 +80,9 @@ QString KisAboutAgent::licenseHtmlFromRecord(const QString &record)
     const bool published = !publicCommit.isEmpty() && !publicCommit.startsWith(QStringLiteral("not published"));
 
     QString html = i18n("<h1 align=\"center\"><b>%1</b></h1>", KisAppIdentity::displayName().toHtmlEscaped());
-    html += i18n("<p>%1 is a fork of Krita with the Creative Agent built in. This build is <b>%2</b>.</p>",
+    // The upstream credit stays: this is Krita's work, with its link and its licence below.
+    html += i18n("<p>%1 is based on <a href=\"https://krita.org\">Krita</a>, the free digital painting program, and is a fork "
+                 "of it with the Creative Agent built in. This build is <b>%2</b>.</p>",
                  KisAppIdentity::displayName().toHtmlEscaped(),
                  KritaVersionWrapper::versionString(true).toHtmlEscaped());
     html += i18n("<p>It is free software, released under the GNU General Public License, version 3 or any later "
@@ -80,9 +98,9 @@ QString KisAboutAgent::licenseHtmlFromRecord(const QString &record)
             html += i18n("<p>This build: %1.</p>", notes.toHtmlEscaped());
         }
     } else {
-        html += i18n("<p><b>Corresponding source:</b> the Krita Agent git repository, at the commit named in the version "
+        html += i18n("<p><b>Corresponding source:</b> the %1 git repository, at the commit named in the version "
                      "above. A packaged app names the exact commit and the address of the repository here (this build "
-                     "has no Resources/BUILD.txt).</p>");
+                     "has no Resources/BUILD.txt).</p>", KisAppIdentity::displayName().toHtmlEscaped());
     }
     html += i18n("<p>The licence texts and the notices of every component are in the application's "
                  "<i>Contents/Resources/LICENSES</i> folder (README.txt and THIRD-PARTY-NOTICES.txt).</p><hr/>");

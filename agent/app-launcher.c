@@ -2,7 +2,7 @@
  * SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * The executable of the packaged "Krita Agent.app" (Contents/MacOS/krita). It does four things and then becomes Krita:
+ * The executable of the packaged "Toska.app" (Contents/MacOS/krita). It does four things and then becomes Krita:
  *
  *   1. On the first run of a settings folder it writes the fork's first-run default: the Creative Agent plugin
  *      (kritamcp) is enabled in <home>/Library/Preferences/<SETTINGS_FOLDER>/kritarc, [python] group, key
@@ -44,7 +44,7 @@
 #define MARKER_NAME ".agent-first-run-1"
 #define PLUGIN_KEY "enable_kritamcp"
 #define REAL_EXECUTABLE "krita-app"
-#define PRODUCT_NAME "Krita Agent"     /* the name in messages; the product rename is this one line */
+#define PRODUCT_NAME "Toska"     /* the name in messages; the product rename is this one line */
 #define BUILD_INFO_LIMIT 65536
 
 enum merge_result { MERGE_CHANGED, MERGE_PRESENT, MERGE_NO_MEMORY };

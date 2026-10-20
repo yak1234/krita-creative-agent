@@ -525,7 +525,7 @@ class StaleProfileCopyTests(unittest.TestCase):
         self.assertIn('no build id', '\n'.join(bundled_release.shadow_notices(self.app_data)))
 
     def test_a_plugin_running_from_the_profile_while_the_app_has_its_own_is_reported(self):
-        app_plugin = self.root / 'Krita Agent.app' / 'Contents' / 'Resources' / 'krita' / 'pykrita' / 'kritamcp'
+        app_plugin = self.root / 'Toska.app' / 'Contents' / 'Resources' / 'krita' / 'pykrita' / 'kritamcp'
         app_plugin.mkdir(parents=True)
         (app_plugin / '__init__.py').write_text('x')
         (app_plugin / 'build-info.json').write_text(json.dumps({'build_id': 'b' * 64}))

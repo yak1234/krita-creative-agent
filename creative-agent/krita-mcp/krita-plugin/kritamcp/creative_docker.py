@@ -7,6 +7,7 @@ import time
 import threading
 import uuid
 from .qt_compat import sip, enum_value
+from .product_name import product_name
 from krita import DockWidget, DockWidgetFactory, DockWidgetFactoryBase, Krita, Selection
 from .creative_document_identity import document_id, open_documents
 from . import node_runtime
@@ -374,9 +375,9 @@ class ReferencePreview(ImagePreview):
         self.layout().insertWidget(self.layout().count() - 1, note)
         # A part or a crop of this reference, made with Krita's selection tools: the agent follows only that.
         parts = QHBoxLayout(); self.part_buttons = []
-        for text, kind in (('Select a part in Krita…', 'part'), ('Crop in Krita…', 'crop')):
+        for text, kind in (('Select a part in %s…' % product_name(), 'part'), ('Crop in %s…' % product_name(), 'crop')):
             button = QPushButton(text); button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-            button.setToolTip('Opens a copy in Krita; select with any selection tool, then Use this part.')
+            button.setToolTip('Opens a copy in %s; select with any selection tool, then Use this part.' % product_name())
             button.clicked.connect(lambda _checked=False, value=kind: (self.reject(), parent.start_part(reference, value)))
             parts.addWidget(button); self.part_buttons.append(button)
         self.layout().insertLayout(self.layout().count() - 1, parts)
@@ -428,7 +429,7 @@ class ProtectionDialog(QDialog):
         actions = QHBoxLayout(); self.actions = []
         for text, slot, tip in (('Ask the agent…', panel.ask_to_protect, 'Describe what to protect; the agent marks it for you to keep.'),
                                 ('Paint over it', panel.paint_protection, 'Paint red over what to protect; the eraser takes it away.'),
-                                ('Use my selection', panel.protect_selection, 'Protect what is selected in Krita now.')):
+                                ('Use my selection', panel.protect_selection, 'Protect what is selected in %s now.' % product_name())):
             button = QPushButton(text); button.setToolTip(tip); button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             button.clicked.connect(lambda _checked=False, act=slot: (self.close(), act())); actions.addWidget(button); self.actions.append(button)
         layout.addLayout(actions)
@@ -1133,7 +1134,7 @@ class CreativeAgentDocker(DockWidget):
         layout.addLayout(workspace_row)
         self.use_canvas_button = QPushButton('Use this canvas as painting target')
         self.use_canvas_button.setObjectName('footerAction')
-        self.use_canvas_button.setToolTip('Keep this conversation and plan, and work on the attached Krita painting. Nothing paints until you Resume.')
+        self.use_canvas_button.setToolTip('Keep this conversation and plan, and work on the attached painting. Nothing paints until you Resume.')
         self.use_canvas_button.clicked.connect(lambda: self.send({'type': 'use_attached_canvas'}))
         self.use_canvas_button.hide(); layout.addWidget(self.use_canvas_button)
 
@@ -1168,7 +1169,7 @@ class CreativeAgentDocker(DockWidget):
         form.addRow('Work on', self.source); form.addRow('Name', self.name); form.addRow('Size', size); form.addRow('Approach', self.experiment)
         self.map_button = QPushButton('Attach construction map…'); self.map_button.clicked.connect(lambda: self.attach('map')); form.addRow(self.map_button)
         appearance = settings_section('Appearance')
-        self.theme_selector = QComboBox(); self.theme_selector.addItems(['Match Krita', 'Dark', 'Light'])
+        self.theme_selector = QComboBox(); self.theme_selector.addItems(['Match %s' % product_name(), 'Dark', 'Light'])
         self.theme_selector.currentIndexChanged.connect(self.set_theme); appearance.addRow('Theme', self.theme_selector)
         self.text_size = QSpinBox(); self.text_size.setRange(13, 20); self.text_size.setValue(14); self.text_size.setSuffix(' px')
         self.text_size.setAccessibleName('Chat text size'); self.text_size.valueChanged.connect(self.set_text_size); appearance.addRow('Text size', self.text_size)
@@ -1186,7 +1187,7 @@ class CreativeAgentDocker(DockWidget):
         self.generic_settings.setContentsMargins(0, 0, 0, 0); self.generic_settings.setVerticalSpacing(7)
         self.generic_settings.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows); self.generic_settings.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         execution.addRow(self.generic_settings_host)
-        craft_note = QLabel('The painter uses the full Krita toolset: layers, selections, fills, filters, masks and gradients, then brush strokes.')
+        craft_note = QLabel('The painter uses the full %s toolset: layers, selections, fills, filters, masks and gradients, then brush strokes.' % product_name())
         craft_note.setWordWrap(True); craft_note.setObjectName('muted'); execution.addRow(craft_note)
         # Decision endpoint and model: OpenRouter (live list), OpenAI, TypeSafe, or a custom System One endpoint.
         self.decision_endpoint = QComboBox(); self.decision_endpoint.setAccessibleName('Decision endpoint')
@@ -1311,8 +1312,8 @@ class CreativeAgentDocker(DockWidget):
         # Shown only while the companion keeps the screen awake for a painting run (Settings: Screen).
         self.awake_indicator = QLabel('☕ Screen awake'); self.awake_indicator.setObjectName('muted')
         self.awake_indicator.setAccessibleName('Keeping the screen awake while painting')
-        self.awake_indicator.setToolTip('Keeping the screen awake while this run paints: Krita can only paint while its window is active. '
-                                        'It stops when the run pauses or ends. Turn it off in Settings: Screen.')
+        self.awake_indicator.setToolTip('Keeping the screen awake while this run paints: %s can only paint while its window is active. '
+                                        'It stops when the run pauses or ends. Turn it off in Settings: Screen.' % product_name())
         self.awake_indicator.hide(); activity.addWidget(self.awake_indicator)
         self.elapsed = QLabel(''); self.elapsed.setObjectName('muted'); self.elapsed.setAccessibleDescription('Activity elapsed time'); activity.addWidget(self.elapsed)
         layout.addLayout(activity)
@@ -1719,17 +1720,17 @@ class CreativeAgentDocker(DockWidget):
                 if not restored: self.locate_missing_painting()
                 return False
             window = instance.activeWindow()
-            if not window: raise RuntimeError('Open a Krita window before returning to the painting.')
+            if not window: raise RuntimeError('Open a %s window before returning to the painting.' % product_name())
             if document is None:
                 document = instance.openDocument(filename)
-                if not document: raise RuntimeError('Krita could not open this painting. Your other documents are still open.')
+                if not document: raise RuntimeError('%s could not open this painting. Your other documents are still open.' % product_name())
             # Reuse a view in any window, including an unsaved in-memory target.
             views = instance.views()
             view = next((view for view in views if identity(view.document()) == identity(document) and view.window() == window), None)
             if view is None: view = next((view for view in views if identity(view.document()) == identity(document)), None)
             if view is not None: window = view.window()
             else: view = window.addView(document)
-            if not view: raise RuntimeError('The painting opened, but Krita could not show its view.')
+            if not view: raise RuntimeError('The painting opened, but %s could not show its view.' % product_name())
             window.showView(view); window.activate()
             self.context_command('inspect')
             self.status.setText('Painting opened · conversation paused' if restored else 'Painting focused. Use Start painting when you are ready.')
@@ -1770,7 +1771,7 @@ class CreativeAgentDocker(DockWidget):
             self.canvas_button.setIcon(QIcon())
             self.canvas_button.setText('＋  Add current canvas')
             self.canvas_button.setAccessibleName('Add current canvas')
-            self.canvas_button.setToolTip('Attach the active Krita document as visual context')
+            self.canvas_button.setToolTip('Attach the active %s document as visual context' % product_name())
             self.context_hint.setText('Canvas not included' if not selected else context.get('error') or 'No open canvas · attach a reference or start a painting')
         self.canvas_refresh.setVisible(selected and bool(canvas))
         self.canvas_remove.setVisible(selected and bool(canvas))
@@ -2125,7 +2126,7 @@ class CreativeAgentDocker(DockWidget):
             elif has and self.mode_auto and not (self.study_active or self.goal) and self.chat_mode == 'agent':
                 self.set_default_mode('ask'); self.mode_auto = False
             if self.had_document and not has and (self.study_active or self.goal) and not self.busy:
-                self.status.setText('The painting was closed in Krita. Use Return to painting to open it again, or start a new chat.')
+                self.status.setText('The painting was closed in %s. Use Return to painting to open it again, or start a new chat.' % product_name())
             if has != self.had_document: self.had_document = has; self.update_controls()
         except (AttributeError, RuntimeError, ReferenceError):
             pass
@@ -2725,7 +2726,7 @@ class CreativeAgentDocker(DockWidget):
         previous = window.activeView() if window else None
         doc = app.openDocument(copy)
         if doc is None:
-            os.remove(copy); self.status.setText('Krita could not open this reference.'); return
+            os.remove(copy); self.status.setText('%s could not open this reference.' % product_name()); return
         if (doc.colorModel(), doc.colorDepth()) != ('RGBA', 'U8'):             # a part is cut from 8-bit RGBA pixels
             doc.setColorSpace('RGBA', 'U8', 'sRGB-elle-V2-srgbtrc.icc')
         if window: window.addView(doc)
@@ -2824,7 +2825,7 @@ class CreativeAgentDocker(DockWidget):
         except ValueError as error:
             self.status.setText(str(error)); return False
         if not done:
-            self.status.setText("Krita did not change the protection of '%s'." % name); return False
+            self.status.setText("%s did not change the protection of '%s'." % (product_name(), name)); return False
         self.status.setText("'%s' is %s." % (name, 'protected' if value else 'no longer protected'))
         return True
 

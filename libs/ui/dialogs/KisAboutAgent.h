@@ -11,7 +11,7 @@
 #include "kritaui_export.h"
 
 /**
- * What the About dialog says about a build with its own identity (KRITA_APP_SETTINGS_FOLDER: Krita Agent): the
+ * What the About dialog says about a build with its own identity (KRITA_APP_SETTINGS_FOLDER: Toska, which began as Krita Agent): the
  * name, the commit the build came from, the licence and where the corresponding source is. For stock Krita
  * (no settings folder) every function returns an empty string and the dialog is exactly upstream's.
  *
@@ -21,8 +21,15 @@
  */
 namespace KisAboutAgent
 {
-/// The About window's title ("About Krita Agent"), or an empty string for stock Krita.
+/// The About window's title ("About Toska"), or an empty string for stock Krita.
 KRITAUI_EXPORT QString windowTitle();
+
+/// The Help menu's About entry ("&About Toska"), or an empty string for stock Krita (whose entry says "&About Krita").
+KRITAUI_EXPORT QString aboutActionText();
+
+/// The one-line description for KAboutData ("Toska is based on Krita, the full-featured digital art studio"), or an empty
+/// string for stock Krita.
+KRITAUI_EXPORT QString shortDescription();
 
 /// An HTML block for the top of the "Your Rights" tab, or an empty string for stock Krita.
 KRITAUI_EXPORT QString licenseHtml();

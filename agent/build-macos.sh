@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Build Krita Agent (this fork) for macOS on Qt6 with only the Command Line Tools (no Xcode), one architecture.
+# Build Toska (the Krita fork with the Creative Agent) for macOS on Qt6 with only the Command Line Tools (no Xcode), one architecture.
 #   agent/build-macos.sh            fetch dependencies if needed, configure if needed, build and install into _install
 #   agent/build-macos.sh --deps     fetch dependencies again
 #   agent/build-macos.sh --tests    configure with Krita's tests (BUILD_TESTING=ON; only when _build is configured anew)

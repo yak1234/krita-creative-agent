@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Package the fork's install tree as one self-contained "Krita Agent.app" that can be opened from the Desktop or
+# Package the fork's install tree as one self-contained "Toska.app" that can be opened from the Desktop or
 # /Applications, without the build tree. It never writes into the install tree and never builds.
 #
 #   agent/package-app.sh [INSTALL_DIR] [--out DIR] [--packages DIR] [--source DIR] [--release DIR] [--source-url URL]
@@ -10,7 +10,7 @@
 #   agent/package-app.sh --check BUNDLE        self-containment and layout checks on a bundle (also: --verify, --sizes, --smoke: headless imports from a temporary copy)
 #
 #   INSTALL_DIR   the finished build (default: the main checkout's _install, next to this worktree's folder)
-#   --out DIR     where "Krita Agent.app" is made (default: ./_package; never /Applications: agent/install-app.sh does that)
+#   --out DIR     where "Toska.app" is made (default: ./_package; never /Applications: agent/install-app.sh does that)
 #   --packages    a folder with numpy, OpenCV, psutil and xxhash for the bundle's Python (default: installed with uv from
 #                 creative-agent/krita-mcp/krita-plugin/python-packages.txt, for the Python version found in the bundle)
 #   --source DIR  the git checkout the install was built from (default: INSTALL_DIR's parent). The commit the Krita executable

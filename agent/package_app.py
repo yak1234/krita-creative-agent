@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Package the fork's install tree (_install) as one self-contained "Krita Agent.app".
+"""Package the fork's install tree (_install) as one self-contained "Toska.app".
 
 Driven by agent/package-app.sh (see its header and AGENT-FORK.md, "Packaging"). Python 3.9 compatible, standard library
 only, because the script runs with the Command Line Tools' /usr/bin/python3.
@@ -36,7 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))      # -I does not put 
 import package_notices as notices  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-APP_NAME = 'Krita Agent.app'
+PRODUCT_NAME = 'Toska'                      # what the artist sees: Dock, menu bar, window titles, prompts (the artist named it 2026-10-20)
+APP_NAME = PRODUCT_NAME + '.app'
 BUNDLE_ID = 'local.kritaagent'
 SETTINGS_FOLDER = 'KritaAgent'
 PLUGIN_KEY = 'enable_kritamcp'
@@ -409,7 +410,7 @@ def install_architecture(install):
     if len(archs) != 1:
         raise Refused('%s has architectures %r: the app is built for one (arm64)' % (main, archs))
     if archs[0] != 'arm64':
-        raise Refused('the build is %s: Krita Agent is arm64-only' % archs[0])
+        raise Refused('the build is %s: Toska is arm64-only' % archs[0])
     return archs[0]
 
 
@@ -449,7 +450,7 @@ def check_output_folder(out, install, source=None, home=None, applications=None)
 
 
 def safe_to_replace(bundle):
-    """An existing Krita Agent.app that this script made (the bundle id says so), or nothing."""
+    """An existing Toska.app that this script made (the bundle id says so), or nothing."""
     plist = Path(bundle) / 'Contents' / 'Info.plist'
     if not os.path.lexists(bundle):
         return True
@@ -458,6 +459,21 @@ def safe_to_replace(bundle):
             return plistlib.load(stream).get('CFBundleIdentifier') == BUNDLE_ID
     except (OSError, ValueError, plistlib.InvalidFileException):
         return False
+
+
+def user_visible_strings(plist):
+    """The strings macOS shows for this app (menu bar and Dock name, copyright line, access prompts), set on an Info.plist
+    dict. The product is Toska; the bundle id, the executable and the KritaAgent* build keys are internal and unchanged."""
+    plist['CFBundleName'] = PRODUCT_NAME
+    plist['CFBundleDisplayName'] = PRODUCT_NAME
+    plist['NSHumanReadableCopyright'] = (PRODUCT_NAME + ' is free software, GPL-3.0-or-later, based on Krita (GPL-2.0-or-later, https://krita.org) '
+                                         'and built with the Creative Agent (GPL-3.0). Licences and source: see Resources/LICENSES.')
+    # What macOS shows in its access prompts.
+    for key, what in (('NSDocumentsFolderUsageDescription', 'Documents'), ('NSDesktopFolderUsageDescription', 'Desktop'),
+                      ('NSDownloadsFolderUsageDescription', 'Downloads')):
+        plist[key] = '%s opens and saves your artwork in your %s folder.' % (PRODUCT_NAME, what)
+    plist['NSRemovableVolumesUsageDescription'] = PRODUCT_NAME + ' opens and saves your artwork on removable volumes.'
+    return plist
 
 
 class Packager:
@@ -516,7 +532,7 @@ class Packager:
     # -- steps
     def start(self):
         if not safe_to_replace(self.bundle):
-            raise Refused('%s exists and is not a Krita Agent.app made by this script: not deleting it' % self.bundle)
+            raise Refused('%s exists and is not a Toska.app made by this script: not deleting it' % self.bundle)
         if self.bundle.exists():
             shutil.rmtree(self.bundle)
         for folder in (self.macos, self.frameworks, self.resources, self.plugins):
@@ -776,17 +792,9 @@ class Packager:
         with open(original, 'rb') as stream:
             plist = plistlib.load(stream)
         plist['CFBundleIdentifier'] = BUNDLE_ID
-        plist['CFBundleName'] = 'Krita Agent'
-        plist['CFBundleDisplayName'] = 'Krita Agent'
         plist['CFBundleExecutable'] = 'krita'
         plist.update(notices.plist_entries(self.record))
-        plist['NSHumanReadableCopyright'] = ('Krita Agent is free software, GPL-3.0-or-later, built from Krita (GPL-2.0-or-later) '
-                                             'and the Creative Agent (GPL-3.0). Licences and source: see Resources/LICENSES.')
-        # What macOS shows in its access prompts.
-        for key, what in (('NSDocumentsFolderUsageDescription', 'Documents'), ('NSDesktopFolderUsageDescription', 'Desktop'),
-                          ('NSDownloadsFolderUsageDescription', 'Downloads')):
-            plist[key] = 'Krita Agent opens and saves your artwork in your %s folder.' % what
-        plist['NSRemovableVolumesUsageDescription'] = 'Krita Agent opens and saves your artwork on removable volumes.'
+        user_visible_strings(plist)
         with open(path, 'wb') as stream:
             plistlib.dump(plist, stream)
         return plist
@@ -797,7 +805,7 @@ class Packager:
         "    bundle, folders = args[0], args[1:]\n"
         "    mode = py_compile.PycInvalidationMode.UNCHECKED_HASH\n"
         "    ok = all([compileall.compile_dir(f, quiet=1, workers=1, invalidation_mode=mode, stripdir=bundle,\n"
-        "                                     prependdir='/Applications/Krita Agent.app') for f in folders])\n"
+        "                                     prependdir='/Applications/Toska.app') for f in folders])\n"
         "    sys.stderr.write('compiled-ok\\n' if ok else 'compile-failed\\n')\n")
 
     def compile_python(self):
@@ -1010,10 +1018,10 @@ def write_notices(packager):
         shutil.copy2(companion_licences, licences / 'Creative-Agent-companion-THIRD-PARTY-LICENSES.txt')
     statement = notices.source_statement(record)
     extra = ('\nTHIS BUILD: ' + '; '.join(record['notes']) + '\n') if record['notes'] else ''
-    readme = f"""Krita Agent {record['commit'][:12]}
+    readme = f"""Toska {record['commit'][:12]}
 =====================================================================================================
 
-Krita Agent is a fork of Krita (https://krita.org) with the Creative Agent built in. It is free software, distributed
+Toska is based on Krita (https://krita.org), the free digital painting program, and is a fork of it with the Creative Agent built in. It is free software, distributed
 under the GNU General Public License, version 3 or (at your option) any later version (GPL-3.0-or-later). It is a
 combined work: Krita is GPL-2.0-or-later (libraries LGPL-2.0-or-later), the Creative Agent is GPL-3.0, and the work
 as a whole is distributed under the GPL-3.0-or-later. You may use, study, change and share it under those terms.
@@ -1034,7 +1042,7 @@ YOUR PAINTINGS
   ~/Library/Application Support/KritaAgent/creative-agent-config.json; an update of the app keeps what you set there.
 
 WHAT IS INSIDE (THIRD-PARTY-NOTICES.txt has every component and its licence)
-  Krita Agent                GPL-3.0-or-later   (Krita GPL-2.0-or-later, libraries LGPL-2.0-or-later)
+  Toska                      GPL-3.0-or-later   (Krita GPL-2.0-or-later, libraries LGPL-2.0-or-later)
   Creative Agent plugin      GPL-3.0            (Resources/krita/pykrita/kritamcp)
   Vendored Python packages   {', '.join('%s (%s)' % (n, l) for n, v, l, f, c in wheels)}
   Creative Agent companion   GPL-3.0 (JavaScript bundle in Resources/creative-agent; its npm packages: Creative-Agent-companion-THIRD-PARTY-LICENSES.txt)
@@ -1044,8 +1052,8 @@ WHAT IS INSIDE (THIRD-PARTY-NOTICES.txt has every component and its licence)
     (licences / 'README.txt').write_text(readme)
 
     qt = notices.qt_notice(packager.frameworks, packager.source, record)
-    lines = ['THIRD-PARTY NOTICES for Krita Agent %s' % record['commit'][:12], '=' * 100, '',
-             'Krita Agent (this application): GPL-3.0-or-later (GPL-3.0-or-later.txt).',
+    lines = ['THIRD-PARTY NOTICES for Toska %s' % record['commit'][:12], '=' * 100, '',
+             'Toska (this application): GPL-3.0-or-later (GPL-3.0-or-later.txt).',
              'Krita: GPL-2.0-or-later with libraries under LGPL-2.0-or-later; credits in Krita-credits.txt and Krita-developers.txt',
              '  (upstream\'s own notice files, unchanged); source files carry SPDX licence lines and the texts are in this folder.',
              'Creative Agent (plugin kritamcp, companion, native helper): GPL-3.0 (Creative-Agent-plugin-LICENSE).', '',

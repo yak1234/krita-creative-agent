@@ -198,8 +198,14 @@ class ShadowTests(unittest.TestCase):
             home, applications = Path(root) / 'home', Path(root) / 'Applications'
             fork = installer.default_locations(home=home, krita='fork')['destination']
             self.assertIsNone(installer.shadowed_bundled_plugin(fork, 'fork', home, [applications]), 'no packaged app installed')
-            (applications / 'Krita Agent.app').mkdir(parents=True)
-            self.assertEqual(installer.shadowed_bundled_plugin(fork, 'fork', home, [applications]), applications / 'Krita Agent.app')
+            (applications / 'Toska.app').mkdir(parents=True)
+            self.assertEqual(installer.shadowed_bundled_plugin(fork, 'fork', home, [applications]), applications / 'Toska.app')
+            (applications / 'Toska.app').rmdir()
+            (applications / 'Krita Agent.app').mkdir()
+            self.assertEqual(installer.shadowed_bundled_plugin(fork, 'fork', home, [applications]), applications / 'Krita Agent.app',
+                             'an app still under its old name carries the plugin too')
+            (applications / 'Krita Agent.app').rmdir()
+            (applications / 'Toska.app').mkdir()
             self.assertIsNone(installer.shadowed_bundled_plugin(fork, 'stock', home, [applications]), 'stock Krita has no packaged plugin')
             self.assertIsNone(installer.shadowed_bundled_plugin(Path(root) / 'elsewhere', 'fork', home, [applications]))
             with self.assertRaises(ValueError) as raised:

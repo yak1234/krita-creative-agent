@@ -1,13 +1,18 @@
-# Krita Agent
+# Toska
+
+<p align="center"><img src="creative-agent/docs/branding/toska-logo.png" alt="Toska" width="480"></p>
 
 **Agentic painting inside Krita.** This repository is a fork of [Krita](https://krita.org) (master, Qt6) with an AI painter built
 in: you chat with it in a panel, it makes one substantial move at a time on reversible layers, you keep it, undo it or correct it,
-and an independent visual reviewer checks the result against your reference. Krita Agent adds the parts of Krita's engine that a
+and an independent visual reviewer checks the result against your reference. Toska adds the parts of Krita's engine that a
 script needs to paint well (pen pressure, tilt and speed, async stroke jobs, one-step agent moves, named regions of the canvas,
 undoable tools), and ships the agent with the app.
 
-> Status: pre-alpha, built and run on macOS (Apple silicon). "Krita Agent" is a working name. Krita is a trademark of the
-> Krita Foundation; this is an independent fork and is not affiliated with or endorsed by the Krita project.
+> Status: pre-alpha, built and run on macOS (Apple silicon). Toska was called "Krita Agent" while it was being made; the
+> repository, the settings folder (`KritaAgent`) and the app's bundle identifier (`local.kritaagent`) keep that name for now (see
+> AGENT-FORK.md, "Product name: Toska"). Toska is based on Krita, the free digital painting program by the Krita developers
+> ([krita.org](https://krita.org)), and is distributed under the GNU GPL, as Krita is. Krita is a trademark of the Krita
+> Foundation; Toska is an independent fork and is not affiliated with or endorsed by the Krita project.
 
 ## What is in this repository
 
@@ -30,7 +35,7 @@ agent/fetch-deps.sh            # once: the dependency tree and tools
 agent/build-macos.sh --tests   # configure, build and install into _install (a full build takes hours)
 agent/run-tests.sh TestDocument TestStrokeJobs   # C++ tests, safely (see the header of the script)
 agent/ci.sh                    # every suite we own: plugin Python, companion JS and typecheck, C++ programs
-agent/run.sh                   # start Krita Agent (its own settings folder and bridge port; never stock Krita's)
+agent/run.sh                   # start Toska (its own settings folder and bridge port; never stock Krita's)
 ```
 
 ## How changes get here

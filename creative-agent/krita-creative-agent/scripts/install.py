@@ -55,7 +55,7 @@ def default_locations(system=None, environ=None, home=None, krita='stock'):
 
 
 def shadowed_bundled_plugin(destination, krita, home=None, applications=None):
-    """The installed Krita Agent.app that a plugin installed into the fork's pykrita folder would shadow, or None. The packaged app
+    """The installed Toska.app (or its old name, Krita Agent.app) that a plugin installed into the fork's pykrita folder would shadow, or None. The packaged app
     carries the plugin; a copy in the user's own pykrita folder is found first and hides it (and every later update of the app).
     macOS compares paths without regard to case."""
     if krita != 'fork' or platform.system() != 'Darwin': return None
@@ -63,7 +63,8 @@ def shadowed_bundled_plugin(destination, krita, home=None, applications=None):
     fork = default_locations(home=home, krita='fork')['destination']
     if str(Path(destination).expanduser().resolve()).lower() != str(fork.resolve()).lower(): return None
     for folder in applications or (Path('/Applications'), home / 'Applications'):
-        if (Path(folder) / 'Krita Agent.app').is_dir(): return Path(folder) / 'Krita Agent.app'
+        for name in ('Toska.app', 'Krita Agent.app'):
+            if (Path(folder) / name).is_dir(): return Path(folder) / name
     return None
 
 
@@ -193,7 +194,7 @@ def main():
     parser.add_argument('--project', type=Path, required=True, help='Existing folder for ordinary artwork files')
     parser.add_argument('--krita', choices=sorted(KRITA_TARGETS), default='stock',
                         help='stock: the installed Krita (default). fork: the Qt6 fork (own pykrita, bridge port 5679, records)')
-    parser.add_argument('--allow-shadow', action='store_true', help='install into the fork even though Krita Agent.app is installed (it would hide the app\'s own plugin)')
+    parser.add_argument('--allow-shadow', action='store_true', help='install into the fork even though Toska.app is installed (it would hide the app\'s own plugin)')
     parser.add_argument('--destination', type=Path, help="Krita's pykrita folder (default: the chosen Krita's)")
     parser.add_argument('--runtime-destination', type=Path, default=default_locations()['runtime_destination'])
     args = parser.parse_args()

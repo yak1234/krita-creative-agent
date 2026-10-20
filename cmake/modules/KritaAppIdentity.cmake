@@ -73,7 +73,7 @@ if (KRITA_APP_SETTINGS_FOLDER MATCHES "[/\\\\\"]" OR KRITA_APP_SETTINGS_FOLDER M
                         "without '/', '\\' or '\"'")
 endif()
 
-# The other values default from the folder (empty cache value: derived). "KritaAgent" gives "Krita Agent",
+# The other values default from the folder (empty cache value: derived). "KritaAgent" gives "Toska" (see below),
 # kritaagent.local and local.kritaagent; no folder gives upstream's "Krita", krita.org and org.krita.
 set(KRITA_APP_DISPLAY_NAME "" CACHE STRING "Application name shown to the user (empty: from the settings folder)")
 set(KRITA_APP_ORGANIZATION_DOMAIN "" CACHE STRING "Organization domain (empty: from the settings folder)")
@@ -84,6 +84,13 @@ set(KRITA_BUILD_MACOS_INTEGRATION "AUTO" CACHE STRING
 
 if (KRITA_APP_SETTINGS_FOLDER)
     string(REGEX REPLACE "([a-z0-9])([A-Z])" "\\1 \\2" _identity_display_name "${KRITA_APP_SETTINGS_FOLDER}")
+    # The product the artist sees is Toska (named 2026-10-20). Its settings folder and bundle id are still the ones it
+    # started with, "KritaAgent" and local.kritaagent: renaming them moves the artist's profile, a later migration
+    # (AGENT-FORK.md, "Product name: Toska"). So this folder, and only this one, shows as Toska. Any other folder keeps
+    # the name derived from it, which is what a differently named build or a test identity wants.
+    if (KRITA_APP_SETTINGS_FOLDER STREQUAL "KritaAgent")
+        set(_identity_display_name "Toska")
+    endif()
     string(TOLOWER "${KRITA_APP_SETTINGS_FOLDER}" _identity_id)
     string(REGEX REPLACE "[^a-z0-9-]" "" _identity_id "${_identity_id}")
     if (NOT _identity_id)

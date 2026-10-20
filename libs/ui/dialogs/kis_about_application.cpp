@@ -187,7 +187,7 @@ KisAboutApplication::KisAboutApplication(QWidget *parent)
                            "<p>Krita’s GNU GPL license guarantees you this freedom. Nobody is ever permitted to take it away, in contrast "
                            "to trial or educational versions of commercial software that will forbid your work in commercial situations.</p>"
                            "<br/><hr/><pre>");
-    // Krita Agent: its name, commit and source offer, at the top of the tab (nothing for stock Krita)
+    // Toska: its name, commit and source offer, at the top of the tab (nothing for stock Krita)
     const QString agentLicense = KisAboutAgent::licenseHtml();
     const int bodyAt = license.indexOf("<body>");
     if (!agentLicense.isEmpty() && bodyAt >= 0) {

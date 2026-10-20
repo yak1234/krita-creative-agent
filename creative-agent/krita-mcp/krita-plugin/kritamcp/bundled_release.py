@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The Creative Agent companion that ships inside the packaged Krita Agent.app, copied out on first use.
+"""The Creative Agent companion that ships inside the packaged Toska.app, copied out on first use.
 
 The app (agent/package-app.sh --release) carries `Contents/Resources/creative-agent-bundle/{companion/, release-manifest.json,
 bundle-info.json}`: pure JavaScript, JSON and wasm, signed with the app and never written to. (The name differs from the

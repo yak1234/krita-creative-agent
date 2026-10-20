@@ -1,7 +1,9 @@
-# Krita Agent: how this fork stays close to upstream
+# Toska (formerly Krita Agent): how this fork stays close to upstream
 
-This is a fork of [KDE/krita](https://invent.kde.org/graphics/krita) `master`, built on Qt6. "Krita Agent" is a working
-name; the artist chooses the final one (it is set in one place, `cmake/modules/KritaAppIdentity.cmake`). The built
+This is a fork of [KDE/krita](https://invent.kde.org/graphics/krita) `master`, built on Qt6. The artist named the product
+**Toska** on 2026-10-20 (what that changed and what it did not: "Product name: Toska" below; the name is set in one place,
+`cmake/modules/KritaAppIdentity.cmake`). "Krita Agent" is the working name: it is still in internal identifiers, code
+comments and this document's older sections. The built
 application is GPL-3.0-or-later: it is a combined work of files under several compatible licences, distributed as a
 whole under the GPL-3.0-or-later. Each new file takes the licence of the Krita library or folder it lives in, so it can
 be offered upstream as it is: `LGPL-2.0-or-later` in `libs/libkis` and its tests, `GPL-2.0-or-later` in `libs/image`
@@ -386,9 +388,9 @@ other identity values (display name, organization domain, bundle id and name, `K
 derived from the folder unless set, so an empty folder gives `Krita`, `krita.org`, `org.krita` and the integration
 extensions on.
 
-| | Stock Krita (macOS) | Krita Agent (macOS) |
+| | Stock Krita (macOS) | Toska (macOS) |
 |---|---|---|
-| Bundle identifier | `org.krita` | `local.kritaagent` (placeholder until the name is chosen) |
+| Bundle identifier | `org.krita` | `local.kritaagent` (the working name, kept on purpose: see "Product name: Toska") |
 | Organization domain | `krita.org` | `kritaagent.local` |
 | Config (`kritarc`, `kritadisplayrc`, `kritashortcutsrc`, ...) | `~/Library/Preferences/` | `~/Library/Preferences/KritaAgent/` |
 | Resources, resource database, Python plugins | `~/Library/Application Support/krita/` | `~/Library/Application Support/KritaAgent/krita/` |
@@ -471,17 +473,17 @@ particular:
 Kept in the fork (not offered): the built-in agent panel and project view, Krita-Revamp's interface port and the
 Photoshop-style defaults, the canvas feature map until it has proven itself, and our branding.
 
-## Packaging: a self-contained Krita Agent.app (krita-fork 1.3)
+## Packaging: a self-contained Toska.app (krita-fork 1.3)
 
 `_install/bin/krita.app` is a shell: its executable loads about 1.3 GB of libraries, Qt frameworks and resources from
-`_install/lib` and `_install/share` by rpath, so it cannot be moved. `agent/package-app.sh` makes `Krita Agent.app`, which
+`_install/lib` and `_install/share` by rpath, so it cannot be moved. `agent/package-app.sh` makes `Toska.app` (it was `Krita Agent.app`), which
 stands alone (about 800 MB), from a finished build, and `agent/install-app.sh` puts it in place. **The app is arm64-only**
 (the architecture is read from the build's main executable, not from the machine; anything else is refused).
 
     agent/package-app.sh [INSTALL_DIR] [--out DIR] [--source DIR] [--release DIR] [--source-url URL]
                          [--allow-dirty] [--allow-stale-build] [--allow-unpublished] [--no-sign]
-    agent/package-app.sh --check|--verify|--smoke|--sizes "Krita Agent.app"
-    agent/install-app.sh [--to ~/Applications] [--dry-run] "Krita Agent.app"
+    agent/package-app.sh --check|--verify|--smoke|--sizes "Toska.app"
+    agent/install-app.sh [--to ~/Applications] [--dry-run] "Toska.app"
 
 It only reads `_install`, never builds, and refuses to run while a build is installing (a half-written tree). The work is in
 `agent/package_app.py` (packaging, checks, signing) and `agent/package_notices.py` (the build record and the licence texts);
@@ -500,7 +502,7 @@ replayed onto the published main line), which is why the address is the correspo
 **Output folders.** The bundle in `--out` is deleted and made again, so the script refuses (before writing anything) an output
 folder that is, in any spelling (case, links, relative paths), `/Applications` or `~/Applications`, a system folder, the home
 folder itself, the inside of an app, or one that contains (or lies inside) the install tree; and it only replaces a
-`Krita Agent.app` whose Info.plist is ours. `install-app.sh` makes the same checks for its destination (plus Documents, Desktop,
+`Toska.app` whose Info.plist is ours. `install-app.sh` makes the same checks for its destination (plus Documents, Desktop,
 Downloads and iCloud/CloudStorage, which macOS protects with prompts), refuses while the installed copy is running, and puts the
 old copy back if the second move fails.
 
@@ -522,7 +524,7 @@ itself; `Python::setPath` finds `Frameworks/Python.framework` and `Resources/kri
 there fails signing): that is why `krita-python-libs` lives in `Resources`. Every Mach-O file has the rpaths that left the
 bundle replaced by one that leads to `Frameworks`; install names become `@rpath/...`; the closure of dependencies is copied
 from `_install/lib`. Wheels' own `.dylibs` links are left as they are. Every `.pyc` is written at packaging time, with
-the stored file names of `/Applications/Krita Agent.app`, hash-based and **unchecked**: Python never writes into the signed
+the stored file names of `/Applications/Toska.app`, hash-based and **unchecked**: Python never writes into the signed
 bundle, and editing a `.py` inside an installed app has no effect (the `.pyc` wins) and would break the signature anyway.
 The fontconfig file loses upstream's CI cache-folder entry.
 
@@ -560,7 +562,7 @@ folder, the bridge address, unknown keys), and other build copies and day-old le
 changed in that file (`paintings_dir`, `project_root`); the README in the app says so. The copy runs on the GUI thread, once per
 build, at the first "Connect assistant". Node itself is **not** bundled: the existing one-time, SHA-256-verified download on the
 first "Connect assistant" stays. `scripts/install-release.mjs` and `scripts/install.py` default to the fork's own pykrita folder
-and refuse to install a second copy of the plugin there while Krita Agent.app is installed (it would be found first and hide the
+and refuse to install a second copy of the plugin there while Toska.app (or the old Krita Agent.app) is installed (it would be found first and hide the
 app's), unless `--allow-shadow`; stock Krita's folder needs an explicit `--destination`. The plugin of a package is the one the
 build installed (`ninja install` copies it from this tree): after merging plugin changes, install before packaging, or use
 `--overlay-plugin DIR` (stamped into the notices) to take it from the checkout.
@@ -659,12 +661,89 @@ from BUILD.txt; it is C++ and **appears only after the next build**.
 **C++ edits for packaging (take effect at the next rebuild; none is needed to run the packaged app).** `libs/ui/dialogs/
 KisAboutAgent.{h,cpp}` and its test (new files), two edits in `kis_about_application.cpp`, one line each in `libs/ui/CMakeLists.txt`
 and `libs/ui/tests/CMakeLists.txt`; and `plugins/extensions/pykrita/plugin/utilities.cpp`: `Python::setPath`'s `runningInBundle`
-tests for `krita.app` in the path, which is false for `Krita Agent.app`; it now also accepts `.app/Contents`. Python starts
+tests for `krita.app` in the path, which is false for `Toska.app`; it now also accepts `.app/Contents`. Python starts
 without it (it finds its prefix through the framework), so after the rebuild check that it still does and that
 `sys.path` has the bundle's `lib-dynload` and `site-packages` entries.
 
 **Known limits.** The process is `krita-app` in Activity Monitor (the launcher `exec`s). Editing files inside the installed app
 is not supported.
+
+## Product name: Toska
+
+The artist named the product **Toska** on 2026-10-20. This was a staged rename of what the artist sees; nothing the artist's
+profile is keyed by moved. The product name is always spelled Toska. In texts the artist reads, "Krita" now means upstream or the
+stock app (and the `.kra` file format), never this fork.
+
+**Renamed (user-visible).**
+
+| Where | Was | Now |
+|---|---|---|
+| App display name, `KisAppIdentity::displayName()` (`CFBundleName`, so the menu-bar title and the Dock name; KAboutData; window titles; the About window and Help menu entry) | Krita Agent | Toska (`cmake/modules/KritaAppIdentity.cmake`: the folder `KritaAgent` shows as Toska; any other folder keeps its derived name) |
+| Packaged bundle folder | `Krita Agent.app` | `Toska.app` (`agent/package_app.py`: `APP_NAME`) |
+| Info.plist of the package | `CFBundleName`, `CFBundleDisplayName`, copyright and access prompts (Documents, Desktop, Downloads, removable volumes) said Krita Agent | Toska; the copyright line says "based on Krita (https://krita.org)" |
+| About window title, "Your Rights" tab, Help menu entry | About Krita Agent; "is a fork of Krita"; "&About Krita" | About Toska; "is based on Krita" with a link to krita.org and the GPL text; "&About Toska" (`KisAboutAgent`) |
+| KAboutData short description | Krita is the full-featured digital art studio | Toska is based on Krita, the full-featured digital art studio (identity builds only) |
+| `Resources/BUILD.txt` first line, `LICENSES/README.txt`, `THIRD-PARTY-NOTICES.txt`, re-signing command in the Qt notice | Krita Agent | Toska |
+| Launcher messages (`app-launcher.c`) | `Krita Agent: cannot start ...` | `Toska: cannot start ...` |
+| Creative Agent panel texts that named the app (Select a part in ..., Match ..., Open a ... window, closed in ..., ...) | Krita | the application's display name: Toska in the fork, Krita in stock (`kritamcp/product_name.py`) |
+| `README.md`, `agent/*.sh` headers, `install-app.sh` messages | Krita Agent | Toska |
+
+**Kept on purpose.**
+
+- Internal identifiers, until the migration below: the settings folder `KritaAgent` and its paths (`~/Library/Application
+  Support/KritaAgent`, `~/Library/Preferences/KritaAgent`, `~/Library/Caches/KritaAgent`), `KRITA_APP_SETTINGS_FOLDER`, the bundle
+  id `local.kritaagent` and the organization domain `kritaagent.local`, the bridge port 5679, config keys and `kritarc` keys,
+  environment variable names (`KRITA_AGENT_*`), the process and executable names `krita` / `krita-app`, the Python package
+  `kritamcp`, the Info.plist build keys `KritaAgentBuild`, `KritaAgentPublicCommit`, ..., the `krita_actions.json` key
+  `KritaAgent <release>`, the repository and branch names (`krita-agent`, `krita-creative-agent`).
+- Credit and licence: the About box says it is based on Krita (link, GPL, "Krita is GPL-2.0-or-later"), `krita.org` stays the
+  homepage, copyright lines and the SPDX holder "Krita Agent contributors" in the identity files are not touched, Krita's
+  trademark note stays in `README.md`.
+- Krita's own names where they are about upstream or the format: file type names (`Krita File`, `Krita Archival File`, the
+  `.kra` open filter "Krita paintings"), "Krita Handbook", the Krita Website link and the support-Krita links in the About box,
+  Krita's own `i18nc("@title:window", "Krita")` message-box titles (hundreds of upstream strings: left to keep merges small;
+  a macOS dialog title is not the app name), the Python plugin's name "Krita MCP Bridge" in the plugin manager.
+- The self-signed certificate name `Krita Agent Local` in the signing recipe above: it is a name in the artist's keychain, not
+  something we ship; any name works with `KRITA_AGENT_SIGN_IDENTITY`. Renaming it means making a new certificate and a new
+  "allow access" answer for macOS, so it waits for the migration.
+- "Krita Agent" in code comments, `// Krita Agent` markers on upstream edits (grep keys), test names and this document's older
+  sections.
+
+**Live check, not guaranteed.** Whether the native macOS items "About Toska", "Hide Toska" and "Quit Toska" use the display name is
+to be seen in the running app: Qt builds them from the application name, and `QCoreApplication::applicationName` stays `krita`
+(KAboutData's component name, which the data and translation lookups depend on). The bundle name drives the menu-bar title and the
+Dock name; the Help-menu entry and the About window are ours and follow `displayName()`.
+
+**The installed app.** `agent/install-app.sh` installs `Toska.app` and then removes an old `Krita Agent.app` in the destination, `/Applications` and `~/Applications` when its
+bundle id is `local.kritaagent` (two apps with one bundle id confuse Launch Services), and refuses, before changing anything, while any of them is running. It prints one line to remake the Dock icon and the Desktop link (`ln -s ~/Applications/Toska.app ~/Desktop/Toska`) and names `~/Desktop/Krita Agent` if it is a link to a removed app (never touched). `/Applications/krita.app` is never read or changed.
+Settings, resources and paintings are outside the bundle and are not touched. The Dock icon pinned from the old app has to be
+dragged again from Toska.app. macOS asks for Documents/Desktop access once more per code identity as it does after every
+ad-hoc rebuild. `scripts/install.py` and `install-release.mjs` look for both names when they guard against shadowing the
+bundled plugin.
+
+**Logo.** `creative-agent/docs/branding/toska-logo.png` (the artist's logo, 2172 x 724, transparent), `toska-emblem.png` (the
+T emblem alone, a 1024 x 1024 square with margin, the lettering cleared) and `Toska.icns` (the PNGs total about 2.6 MB: no lossless PNG optimiser (oxipng, optipng, zopflipng) is installed here, so they are not recompressed; run one over them if the repository size matters) (made from the emblem with
+`sips`/`iconutil` sizes 16 to 512 @2x; transparent background, check it in the Dock and Finder). **TODO, not wired yet:** the app
+still shows Krita's icon. To use it: copy `Toska.icns` over `Contents/Resources/krita.icns` in `agent/package_app.py` (the
+bundle's `CFBundleIconFile` is `krita`) and in `krita/CMakeLists.txt` for the install-tree app, plus the in-app splash and
+About-box pictures (`krita/pics`, `libs/ui` resources), which still show Krita's artwork. The artist decides whether the icon
+wants an opaque rounded background.
+
+**Later migration (a separate task, with a profile move).** Rename the internal identifiers together, once, so nothing is
+half-moved: (1) settings folder `KritaAgent` -> `Toska` (`KRITA_APP_SETTINGS_FOLDER`; config, resources, caches, logs, autosaves,
+`creative-agent-config.json`, the paintings folder and the companion's data folder move with it); (2) bundle id `local.kritaagent`
+-> a new one (`local.toska`) with the organization domain; macOS defaults and privacy answers are keyed by it, so they are asked
+again; (3) the port, `KRITA_AGENT_*` variables and `kritamcp` stay unless there is a reason. Plan: first launch of the new app
+finds `~/Library/{Application Support,Preferences,Caches}/KritaAgent`, asks, and moves (or copies, then renames the old folder
+`KritaAgent.migrated`) never overwriting anything in `Toska`; the `KritaAgent` branch of `KisAppIdentity`'s display-name special
+case is deleted and the display name derives from the folder; the check `agent/check-identity.sh`, the tests that name
+`KritaAgent` (`test_package_app.py`, `test_bridge_config.py`, `test_native_craft.py`, `test_packaging.py`) and `krita_actions.json`'s
+key move at the same commit; the artist's profile is backed up first, and Krita must be closed (never while painting).
+
+**Needs a rebuild to show (C++).** `libs/ui/dialogs/KisAboutAgent.{h,cpp}` (+ `KisAboutAgentTest`), `libs/ui/KisMainWindow.cpp`
+(the About entry's text), `krita/main.cc` (the description), and a CMake configure for the display name: rebuild `kritaui`, `krita`
+and `KisAboutAgentTest`, then `agent/run-tests.sh KisAboutAgentTest KisAppIdentityTest`. The Python parts (`kritamcp`) and the packager
+need no build.
 
 ## Ported from Krita-Revamp (task 3.1, layers docker)
 

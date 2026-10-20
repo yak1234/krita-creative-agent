@@ -93,7 +93,7 @@ def build_record(source, built_from, packaging_root=ROOT, source_url=DEFAULT_SOU
 
 
 def record_text(record):
-    return ('Krita Agent\n'
+    return ('Toska\n'
             'build commit: %(commit)s\n'
             'public commit: %(public_commit)s\n'
             'source: %(source)s\n'
@@ -264,7 +264,7 @@ def qt_notice(frameworks, source, record):
         'Lesser General Public License, version 3 (LGPL-3.0-only.txt; the GPL-3.0 text next to it).',
         '  Your rights under the LGPL-3.0: you may replace these Qt frameworks with a modified or other build of the same Qt',
         '  version and use this application with it. To do so: put your frameworks in Contents/Frameworks (same names), then sign the',
-        '  app again, because macOS refuses a changed bundle:  codesign --force --deep --sign - "Krita Agent.app"  (or with your',
+        '  app again, because macOS refuses a changed bundle:  codesign --force --deep --sign - "Toska.app"  (or with your',
         '  own identity; the entitlements are in packaging/macos/entitlements.plist of the source). You may also reverse engineer',
         '  this application as far as needed to debug such changes.',
         '  Corresponding Qt source: this Qt is built from the recipe and patches of krita-deps-management%s%s (%s), the dependency set the' %

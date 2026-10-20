@@ -58,7 +58,7 @@ tip=""
 if git rev-parse --verify -q refs/publish/main > /dev/null; then tip="$(git rev-parse refs/publish/main)"; fi
 if [ -z "$tip" ]; then
     snapshot_msg="$(mktemp)"
-    printf 'Krita master at %s (upstream snapshot)\n\nThe tree of https://invent.kde.org/graphics/krita at the commit this fork started from.\nKrita'"'"'s own history is not repeated here (it is about 10 GB); it stays at that address. Krita Agent'"'"'s\ncommits follow, one per merge or change on the main line.\n' "$(git rev-parse --short "$base")" > "$snapshot_msg"
+    printf 'Krita master at %s (upstream snapshot)\n\nThe tree of https://invent.kde.org/graphics/krita at the commit this fork started from.\nKrita'"'"'s own history is not repeated here (it is about 10 GB); it stays at that address. Toska'"'"'s\ncommits follow, one per merge or change on the main line.\n' "$(git rev-parse --short "$base")" > "$snapshot_msg"
     tip="$(GIT_AUTHOR_NAME="$artist_name" GIT_AUTHOR_EMAIL="$artist_email" GIT_AUTHOR_DATE="$(git log -1 --format=%aI "$base")" \
            GIT_COMMITTER_NAME="$artist_name" GIT_COMMITTER_EMAIL="$artist_email" GIT_COMMITTER_DATE="$(git log -1 --format=%cI "$base")" \
            git commit-tree "$base^{tree}" -F "$snapshot_msg")"

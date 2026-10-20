@@ -108,6 +108,7 @@
 #include <KisScopedPerformanceLogger.h>
 #include <KisUsageLogger.h>
 #include <brushengine/kis_paintop_settings.h>
+#include "dialogs/KisAboutAgent.h"
 #include "dialogs/kis_about_application.h"
 #include "dialogs/kis_delayed_save_dialog.h"
 #include "dialogs/kis_dlg_preferences.h"
@@ -547,6 +548,15 @@ KisMainWindow::KisMainWindow(QUuid uuid)
             actions->addAction(switchLanguageAction->objectName(), switchLanguageAction);
         }
         if (aboutAppAction) {
+            // A build with its own identity (Toska) says "About Toska"; stock Krita keeps upstream's text
+            const QString aboutAppText = KisAboutAgent::aboutActionText();
+            if (!aboutAppText.isEmpty()) {
+                aboutAppAction->setText(aboutAppText);
+                QString plain = aboutAppText;
+                plain.remove(QLatin1Char('&'));
+                aboutAppAction->setToolTip(plain);
+                aboutAppAction->setIconText(plain);
+            }
             actions->addAction(aboutAppAction->objectName(), aboutAppAction);
         }
         if (aboutKdeAction) {

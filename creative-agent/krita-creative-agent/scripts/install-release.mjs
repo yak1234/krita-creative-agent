@@ -29,14 +29,14 @@ export function defaultLocations(platform = process.platform, env = process.env,
     const data = env.XDG_DATA_HOME || join(home, '.local', 'share'), cache = env.XDG_CACHE_HOME || join(home, '.cache');
     return {destination: join(data, 'krita', 'pykrita'), runtimeDestination: join(data, 'creative-agent', 'releases'), cacheDestination: join(cache, 'creative-agent')};
   }
-  // The fork's own pykrita folder (Krita Agent keeps its per-user data in ~/Library/Application Support/KritaAgent), never the
+  // The fork's own pykrita folder (Toska keeps its per-user data in ~/Library/Application Support/KritaAgent), never the
   // stock Krita's: the stock folder needs an explicit --destination.
   return {destination: join(home, 'Library/Application Support/KritaAgent/krita/pykrita'), runtimeDestination: join(home, 'Library/Application Support/Creative Agent/releases'),
     cacheDestination: join(home, 'Library/Caches/Creative Agent')};
 }
 
 /**
- * The installed Krita Agent.app that a plugin installed into the fork's pykrita folder would shadow, or null. The packaged app
+ * The installed Toska.app (or its old name, Krita Agent.app) that a plugin installed into the fork's pykrita folder would shadow, or null. The packaged app
  * carries the plugin; a copy in the user's own pykrita folder is found first and would hide it (and every later update of the app).
  * macOS compares paths without regard to case.
  */
@@ -44,7 +44,7 @@ export function shadowedBundledPlugin(destination, home = homedir(), application
   applications = applications || ['/Applications', join(home, 'Applications')];
   const same = (a, b) => resolve(a).toLowerCase() === resolve(b).toLowerCase();
   if (!same(destination, defaultLocations('darwin', {}, home).destination)) return null;
-  return applications.map(folder => join(folder, 'Krita Agent.app')).find(app => { try { return lstatSync(app).isDirectory(); } catch { return false; } }) || null;
+  return applications.flatMap(folder => ['Toska.app', 'Krita Agent.app'].map(name => join(folder, name))).find(app => { try { return lstatSync(app).isDirectory(); } catch { return false; } }) || null;
 }
 
 export async function sha256(path) {

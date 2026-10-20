@@ -42,6 +42,7 @@
 #include <KoConfig.h>
 #include <KoResourcePaths.h>
 #include <KisAppIdentity.h>
+#include <dialogs/KisAboutAgent.h>
 #include <kis_config.h>
 #include <kis_debug.h>
 #include <kis_image_config.h>
@@ -722,7 +723,8 @@ if (!qEnvironmentVariableIsEmpty("KRITA_OPENGL_DEBUG")) {
     KAboutData aboutData("krita",
                             KisAppIdentity::settingsFolder().isEmpty() ? i18n("Krita") : KisAppIdentity::displayName(),
                             KritaVersionWrapper::versionString(true),
-                            i18n("Krita is the full-featured digital art studio"),
+                            KisAboutAgent::shortDescription().isEmpty() ? i18n("Krita is the full-featured digital art studio")
+                                                                        : KisAboutAgent::shortDescription(),
                             KAboutLicense::GPL,
                             i18nc("@info:credit", "© 1999–2026 The Krita Developers"));
     aboutData.setHomepage(QStringLiteral("https://krita.org"));

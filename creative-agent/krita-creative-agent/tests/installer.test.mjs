@@ -177,9 +177,15 @@ test('the default plugin folder is the fork\'s, never stock Krita\'s, and a plug
     assert.ok(!darwin.includes(join('Application Support','krita')+'/'),'not stock Krita\'s folder');
     const applications = join(home,'Applications');
     assert.equal(shadowedBundledPlugin(darwin,home,[applications]),null,'no packaged app, nothing to shadow');
+    await mkdir(join(applications,'Toska.app'),{recursive:true});
+    assert.equal(shadowedBundledPlugin(darwin,home,[applications]),join(applications,'Toska.app'));
     await mkdir(join(applications,'Krita Agent.app'),{recursive:true});
-    assert.equal(shadowedBundledPlugin(darwin,home,[applications]),join(applications,'Krita Agent.app'));
-    assert.equal(shadowedBundledPlugin(darwin.toUpperCase().replace(home.toUpperCase(),home),home,[applications]),join(applications,'Krita Agent.app'),'a different case is the same folder on macOS');
+    assert.equal(shadowedBundledPlugin(darwin,home,[applications]),join(applications,'Toska.app'),'the new name wins');
+    await rm(join(applications,'Toska.app'),{recursive:true});
+    assert.equal(shadowedBundledPlugin(darwin,home,[applications]),join(applications,'Krita Agent.app'),'an app under its old name carries the plugin too');
+    await rm(join(applications,'Krita Agent.app'),{recursive:true});
+    await mkdir(join(applications,'Toska.app'),{recursive:true});
+    assert.equal(shadowedBundledPlugin(darwin.toUpperCase().replace(home.toUpperCase(),home),home,[applications]),join(applications,'Toska.app'),'a different case is the same folder on macOS');
     assert.equal(shadowedBundledPlugin(join(home,'Library/Application Support/krita/pykrita'),home,[applications]),null,'another Krita\'s folder is the artist\'s business');
     const f = await fixture();
     try {

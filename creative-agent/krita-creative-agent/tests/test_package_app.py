@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
 AGENT = pathlib.Path(os.environ.get('KRITA_AGENT_TEST_AGENT_DIR') or REPO / 'agent')   # another copy of agent/: to see a test fail on old code
@@ -51,7 +52,7 @@ class FakeBundle:
 
     def __init__(self, root):
         self.root = pathlib.Path(root)
-        self.app = self.root / 'Krita Agent.app'
+        self.app = self.root / 'Toska.app'
         self.contents = self.app / 'Contents'
         self.frameworks = self.contents / 'Frameworks'
         self.macos = self.contents / 'MacOS'
@@ -70,7 +71,7 @@ class FakeBundle:
         self.main = self.macos / 'krita'
         with open(self.contents / 'Info.plist', 'wb') as stream:
             plistlib.dump({'CFBundleIdentifier': 'local.kritaagent', 'CFBundleExecutable': 'krita',
-                           'CFBundleName': 'Krita Agent', 'KritaAgentBuild': 'abc'}, stream)
+                           'CFBundleName': 'Toska', 'KritaAgentBuild': 'abc'}, stream)
 
     def sign(self):
         package_app.sign_bundle(self.app, None, log=lambda *_: None)
@@ -203,7 +204,7 @@ class SigningTests(unittest.TestCase):
 
 class LayoutTests(unittest.TestCase):
     def make_complete(self, root):
-        contents = pathlib.Path(root) / 'Krita Agent.app' / 'Contents'
+        contents = pathlib.Path(root) / 'Toska.app' / 'Contents'
         for path in ('MacOS/krita', 'MacOS/krita-app', 'MacOS/kritarunner', 'Resources/kritaplugins/a.xmlgui',
                      'Resources/krita/pykrita/kritamcp/__init__.py', 'Resources/krita/pykrita/kritamcp.desktop',
                      'Resources/krita/pykrita/kritamcp/_vendor/macos-arm64/numpy/__init__.py', 'Resources/LICENSES/README.txt',
@@ -404,7 +405,7 @@ class FirstRunDefaultsTests(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in folder.iterdir()), ['.agent-first-run-1', 'kritarc'])
 
     def test_the_packaged_launcher_has_no_test_hooks_and_starts_the_real_executable_with_the_same_arguments(self):
-        macos = self.root / 'Krita Agent.app' / 'Contents' / 'MacOS'
+        macos = self.root / 'Toska.app' / 'Contents' / 'MacOS'
         macos.mkdir(parents=True)
         shutil.copy2(build_launcher(self.root, hook=False), macos / 'krita')
         compile_c(macos, 'krita-app', '#include <stdio.h>\n#include <stdlib.h>\nint main(int c, char **v) { for (int i = 1; i < c; ++i) puts(v[i]);'
@@ -413,17 +414,17 @@ class FirstRunDefaultsTests(unittest.TestCase):
         env = {'PATH': '/usr/bin:/bin', 'HOME': str(home), 'CFFIXED_USER_HOME': str(home)}
         result = run(macos / 'krita', '--agent-first-run-only', 'a b', env=env)         # the hook is not there: passed through
         self.assertEqual(result.returncode, 7)
-        contents = (self.root / 'Krita Agent.app' / 'Contents').resolve()
+        contents = (self.root / 'Toska.app' / 'Contents').resolve()
         self.assertEqual(result.stdout.split('\n')[:4], ['--agent-first-run-only', 'a b', '1', str(contents / 'PlugIns/mlt')])
         self.assertTrue((home / 'Library/Preferences/KritaAgent/kritarc').exists())
 
     def test_the_environment_the_launcher_sets_is_what_the_python_side_expects(self):
-        macos = self.root / 'Krita Agent.app' / 'Contents' / 'MacOS'
+        macos = self.root / 'Toska.app' / 'Contents' / 'MacOS'
         macos.mkdir(parents=True)
         shutil.copy2(self.launcher, macos / 'krita')
         result = run(macos / 'krita', '--agent-print-env', env={'PATH': '/usr/bin:/bin'})
         printed = dict(line.split('=', 1) for line in result.stdout.splitlines())
-        self.assertEqual(printed, package_app.launcher_environment((self.root / 'Krita Agent.app' / 'Contents').resolve()))
+        self.assertEqual(printed, package_app.launcher_environment((self.root / 'Toska.app' / 'Contents').resolve()))
 
 
 @unittest.skipUnless(HAVE_CC, 'needs macOS and a C compiler')
@@ -435,7 +436,7 @@ class ShadowingPluginTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='krita-agent-test-')
         self.addCleanup(self.temp.cleanup)
         self.root = pathlib.Path(self.temp.name)
-        self.macos = self.root / 'Krita Agent.app' / 'Contents' / 'MacOS'
+        self.macos = self.root / 'Toska.app' / 'Contents' / 'MacOS'
         self.macos.mkdir(parents=True)
         shutil.copy2(build_launcher(self.root), self.macos / 'krita-hook')          # once: rewriting a running-before binary gets it killed
         shutil.copy2(build_launcher(self.root, hook=False), self.macos / 'krita')
@@ -445,7 +446,7 @@ class ShadowingPluginTests(unittest.TestCase):
         self.user.mkdir(parents=True)
 
     def bundle_plugin(self, build_id='b' * 64, info=True, manifest=True):
-        folder = self.root / 'Krita Agent.app' / 'Contents' / 'Resources' / 'krita' / 'pykrita'
+        folder = self.root / 'Toska.app' / 'Contents' / 'Resources' / 'krita' / 'pykrita'
         if manifest:
             release = folder.parents[1] / 'creative-agent-bundle'
             release.mkdir(parents=True, exist_ok=True)
@@ -599,7 +600,7 @@ class ShadowingPluginTests(unittest.TestCase):
     def test_a_bundle_without_a_readable_build_id_moves_nothing(self):
         for text in (None, '', '{}', '{"build_id": ""}', '{"build_id": "abc', '{"build_id": 7}'):
             with self.subTest(text):
-                shutil.rmtree(self.root / 'Krita Agent.app' / 'Contents' / 'Resources', ignore_errors=True)
+                shutil.rmtree(self.root / 'Toska.app' / 'Contents' / 'Resources', ignore_errors=True)
                 folder = self.bundle_plugin(info=False)
                 if text is not None:
                     (folder / 'kritamcp' / 'build-info.json').write_text(text)
@@ -644,7 +645,7 @@ class ShadowingPluginTests(unittest.TestCase):
         result = self.start()                                                    # must return (run has no timeout: guard it)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(len(self.shadowed()), 1)                                # no readable id: stale
-        bundle = self.root / 'Krita Agent.app' / 'Contents' / 'Resources' / 'krita' / 'pykrita' / 'kritamcp' / 'build-info.json'
+        bundle = self.root / 'Toska.app' / 'Contents' / 'Resources' / 'krita' / 'pykrita' / 'kritamcp' / 'build-info.json'
         bundle.unlink()
         os.mkfifo(bundle)
         self.user_plugin()
@@ -679,27 +680,128 @@ class InstallScriptTests(unittest.TestCase):
         self.fake.sign()
         self.home = pathlib.Path(self.temp.name) / 'home'
         self.target = pathlib.Path(self.temp.name) / 'Applications'
+        self.system_apps = pathlib.Path(self.temp.name) / 'SystemApplications'      # stands in for /Applications: never the real one
+
+    def make_old_app(self, folder, bundle_id='local.kritaagent'):
+        old = folder / 'Krita Agent.app'
+        (old / 'Contents' / 'MacOS').mkdir(parents=True)
+        with open(old / 'Contents' / 'Info.plist', 'wb') as stream:
+            plistlib.dump({'CFBundleIdentifier': bundle_id}, stream)
+        return old
 
     def install(self, *args, **kwargs):
-        env = {'PATH': '/usr/bin:/bin', 'HOME': str(self.home)}
+        env = {'PATH': '/usr/bin:/bin', 'HOME': str(self.home), 'KRITA_AGENT_APPLICATIONS_DIR': str(self.system_apps)}
         return run('/bin/zsh', self.INSTALL, *args, env=env, **kwargs)
 
     def test_installs_and_replaces_in_place_without_leftovers(self):
         result = self.install('--to', self.target, self.fake.app)
         self.assertEqual(result.returncode, 0, result.stderr)
-        installed = self.target / 'Krita Agent.app'
+        installed = self.target / 'Toska.app'
         self.assertTrue((installed / 'Contents/MacOS/krita').exists())
         (installed / 'OLD-MARK').write_text('old')                                   # something only the old copy has
         result = self.install('--to', self.target, self.fake.app)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((installed / 'OLD-MARK').exists())
-        self.assertEqual([p.name for p in self.target.iterdir()], ['Krita Agent.app'])   # no staging or old copy left
+        self.assertEqual([p.name for p in self.target.iterdir()], ['Toska.app'])   # no staging or old copy left
         self.assertTrue(package_app.verify_signature(installed)[0])
+
+    def test_the_old_name_is_replaced_by_the_new_app_and_never_left_beside_it(self):
+        old = self.target / 'Krita Agent.app'
+        (old / 'Contents').mkdir(parents=True)
+        with open(old / 'Contents' / 'Info.plist', 'wb') as stream:
+            plistlib.dump({'CFBundleIdentifier': 'local.kritaagent'}, stream)
+        (self.target / 'Notes.txt').write_text('mine')
+        result = self.install('--to', self.target, self.fake.app)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(p.name for p in self.target.iterdir()), ['Notes.txt', 'Toska.app'])   # one app with the bundle id
+
+    def test_the_old_app_in_the_other_applications_folder_is_replaced_too(self):
+        # a plain install goes to one folder; the old app may be in the other (the system one, or ~/Applications)
+        user_old = self.make_old_app(self.home / 'Applications')
+        system_old = self.make_old_app(self.system_apps)
+        stock = self.system_apps / 'krita.app'
+        (stock / 'Contents').mkdir(parents=True)
+        (stock / 'MARK').write_text('stock')
+        result = self.install('--to', self.target, self.fake.app)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.target / 'Toska.app').is_dir())
+        self.assertFalse(user_old.exists())
+        self.assertFalse(system_old.exists())
+        self.assertEqual((stock / 'MARK').read_text(), 'stock')                       # never the stock Krita
+
+    def test_the_old_app_in_another_folder_that_is_not_ours_stays(self):
+        other = self.make_old_app(self.home / 'Applications', bundle_id='org.example.other')
+        self.assertEqual(self.install('--to', self.target, self.fake.app).returncode, 0)
+        self.assertTrue(other.is_dir())
+
+    def test_a_running_old_app_in_another_folder_stops_the_install_and_nothing_is_changed(self):
+        old = self.make_old_app(self.home / 'Applications')
+        sleeper = compile_c(self.temp.name, 'sleeper', '#include <unistd.h>\nint main(void) { sleep(60); return 0; }\n')
+        shutil.copy2(sleeper, old / 'Contents' / 'MacOS' / 'sleeper')
+        process = subprocess.Popen([str(old / 'Contents' / 'MacOS' / 'sleeper')])
+        try:
+            result = self.install('--to', self.target, self.fake.app)
+        finally:
+            process.kill()
+            process.wait()
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertTrue(old.is_dir())
+        self.assertFalse((self.target / 'Toska.app').exists())
+
+    def test_removing_the_old_app_says_to_remake_the_desktop_link_and_dock_icon(self):
+        old = self.make_old_app(self.home / 'Applications')
+        (self.home / 'Desktop').mkdir(parents=True)
+        link = self.home / 'Desktop' / 'Krita Agent'
+        os.symlink(old, link)
+        result = self.install('--to', self.target, self.fake.app)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('ln -s ~/Applications/Toska.app ~/Desktop/Toska', result.stdout + result.stderr)
+        self.assertIn('Dock', result.stdout + result.stderr)
+        self.assertIn(str(link), result.stdout + result.stderr)                        # a link to the removed app is named
+        self.assertTrue(os.path.islink(link))                                          # and left alone
+
+    def test_a_desktop_link_to_something_else_is_not_mentioned(self):
+        self.make_old_app(self.home / 'Applications')
+        (self.home / 'Desktop').mkdir(parents=True)
+        link = self.home / 'Desktop' / 'Krita Agent'
+        os.symlink('/usr/bin', link)
+        result = self.install('--to', self.target, self.fake.app)
+        self.assertNotIn(str(link), result.stdout + result.stderr)
+
+    def test_no_old_app_no_remake_line(self):
+        result = self.install('--to', self.target, self.fake.app)
+        self.assertNotIn('Desktop', result.stdout + result.stderr)
+
+    def test_an_app_under_the_old_name_that_is_not_ours_is_left_alone(self):
+        other = self.target / 'Krita Agent.app'
+        (other / 'Contents').mkdir(parents=True)
+        with open(other / 'Contents' / 'Info.plist', 'wb') as stream:
+            plistlib.dump({'CFBundleIdentifier': 'org.example.other'}, stream)
+        self.assertEqual(self.install('--to', self.target, self.fake.app).returncode, 0)
+        self.assertEqual(sorted(p.name for p in self.target.iterdir()), ['Krita Agent.app', 'Toska.app'])
+
+    def test_the_old_name_running_stops_the_install(self):
+        old = self.target / 'Krita Agent.app'
+        macos = old / 'Contents' / 'MacOS'
+        macos.mkdir(parents=True)
+        with open(old / 'Contents' / 'Info.plist', 'wb') as stream:
+            plistlib.dump({'CFBundleIdentifier': 'local.kritaagent'}, stream)
+        sleeper = compile_c(self.temp.name, 'sleeper', '#include <unistd.h>\nint main(void) { sleep(60); return 0; }\n')
+        shutil.copy2(sleeper, macos / 'sleeper')
+        process = subprocess.Popen([str(macos / 'sleeper')])
+        try:
+            result = self.install('--to', self.target, self.fake.app)
+        finally:
+            process.kill()
+            process.wait()
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertTrue(old.is_dir())
+        self.assertFalse((self.target / 'Toska.app').exists())
 
     def test_removes_quarantine_from_the_installed_copy(self):
         run('xattr', '-w', 'com.apple.quarantine', '0081;00000000;Safari;', self.fake.main)
         self.assertEqual(self.install('--to', self.target, self.fake.app).returncode, 0)
-        attributes = run('xattr', '-rl', self.target / 'Krita Agent.app').stdout
+        attributes = run('xattr', '-rl', self.target / 'Toska.app').stdout
         self.assertNotIn('com.apple.quarantine', attributes)
 
     def test_refuses_folders_macos_protects_in_any_spelling_and_through_links(self):
@@ -735,12 +837,12 @@ class InstallScriptTests(unittest.TestCase):
         (user_apps / 'krita.app').mkdir(parents=True)
         self.assertEqual(self.install('--to', user_apps, self.fake.app).returncode, 0)
         self.assertTrue((user_apps / 'krita.app').is_dir())                             # untouched
-        self.assertEqual(sorted(p.name for p in user_apps.iterdir()), ['Krita Agent.app', 'krita.app'])
+        self.assertEqual(sorted(p.name for p in user_apps.iterdir()), ['Toska.app', 'krita.app'])
 
     def test_refuses_while_the_installed_app_is_running(self):
         self.assertEqual(self.install('--to', self.target, self.fake.app).returncode, 0)
         sleeper = compile_c(self.temp.name, 'sleeper', '#include <unistd.h>\nint main(void) { sleep(60); return 0; }\n')
-        installed = self.target / 'Krita Agent.app' / 'Contents' / 'MacOS' / 'sleeper'
+        installed = self.target / 'Toska.app' / 'Contents' / 'MacOS' / 'sleeper'
         shutil.copy2(sleeper, installed)
         process = subprocess.Popen([str(installed)])
         self.addCleanup(process.wait)
@@ -762,9 +864,9 @@ class InstallScriptTests(unittest.TestCase):
     def test_the_running_check_ignores_case(self):
         self.assertEqual(self.install('--to', self.target, self.fake.app).returncode, 0)
         sleeper = compile_c(self.temp.name, 'sleeper', '#include <unistd.h>\nint main(void) { sleep(60); return 0; }\n')
-        installed = self.target / 'Krita Agent.app' / 'Contents' / 'MacOS' / 'sleeper'
+        installed = self.target / 'Toska.app' / 'Contents' / 'MacOS' / 'sleeper'
         shutil.copy2(sleeper, installed)
-        shouting = pathlib.Path(str(installed).replace('Krita Agent.app', 'KRITA AGENT.APP'))
+        shouting = pathlib.Path(str(installed).replace('Toska.app', 'TOSKA.APP'))
         process = subprocess.Popen([str(shouting)])                                  # the same file, started by another spelling
         self.addCleanup(process.wait)
         self.addCleanup(process.kill)
@@ -780,8 +882,8 @@ class InstallScriptTests(unittest.TestCase):
         result = self.install('--to', self.target, self.fake.app)
         self.assertEqual(result.returncode, 4)
         self.assertIn('interrupted install', result.stderr)
-        self.assertEqual((self.target / 'Krita Agent.app' / 'Contents' / 'MARK').read_text(), 'the old app')   # restored, not lost
-        self.assertEqual(sorted(p.name for p in self.target.iterdir()), ['Krita Agent.app'])
+        self.assertEqual((self.target / 'Toska.app' / 'Contents' / 'MARK').read_text(), 'the old app')   # restored, not lost
+        self.assertEqual(sorted(p.name for p in self.target.iterdir()), ['Toska.app'])
 
     def test_refuses_something_that_is_not_the_packaged_app(self):
         other = pathlib.Path(self.temp.name) / 'Other.app'
@@ -793,8 +895,8 @@ class InstallScriptTests(unittest.TestCase):
         (self.fake.contents / 'Frameworks' / 'extra.txt').write_text('breaks the seal')
         result = self.install('--to', self.target, self.fake.app)
         self.assertEqual(result.returncode, 4)
-        self.assertTrue((self.target / 'Krita Agent.app' / 'Contents/MacOS/krita').exists())
-        self.assertEqual([p.name for p in self.target.iterdir()], ['Krita Agent.app'])
+        self.assertTrue((self.target / 'Toska.app' / 'Contents/MacOS/krita').exists())
+        self.assertEqual([p.name for p in self.target.iterdir()], ['Toska.app'])
 
     def test_help_prints_the_usage_lines(self):
         result = self.install('-h')
@@ -952,6 +1054,45 @@ class DerivedNoticeTests(unittest.TestCase):
                 self.assertIn(needed, text)
 
 
+class ProductNameTests(unittest.TestCase):
+    """What the artist sees is Toska; internal identifiers keep their names until the profile migration (AGENT-FORK.md)."""
+
+    def test_the_bundle_is_toska_and_the_info_plist_strings_say_so(self):
+        self.assertEqual(package_app.APP_NAME, 'Toska.app')
+        self.assertEqual(package_app.BUNDLE_ID, 'local.kritaagent')          # internal: the artist's profile is keyed by it
+        self.assertEqual(package_app.SETTINGS_FOLDER, 'KritaAgent')
+        plist = package_app.user_visible_strings({'CFBundleIdentifier': package_app.BUNDLE_ID})
+        self.assertEqual((plist['CFBundleName'], plist['CFBundleDisplayName']), ('Toska', 'Toska'))
+        self.assertEqual(plist['CFBundleIdentifier'], 'local.kritaagent')
+        shown = [v for k, v in plist.items() if k != 'CFBundleIdentifier']
+        self.assertFalse([v for v in shown if 'Krita Agent' in v], shown)
+        for key in ('NSDocumentsFolderUsageDescription', 'NSDesktopFolderUsageDescription', 'NSDownloadsFolderUsageDescription',
+                    'NSRemovableVolumesUsageDescription'):
+            self.assertTrue(plist[key].startswith('Toska '), key)
+        # the upstream credit stays
+        self.assertIn('based on Krita', plist['NSHumanReadableCopyright'])
+        self.assertIn('https://krita.org', plist['NSHumanReadableCopyright'])
+        self.assertIn('GPL-3.0-or-later', plist['NSHumanReadableCopyright'])
+
+    def test_the_build_record_and_the_notices_name_toska_and_keep_the_credit(self):
+        record = {'commit': 'c' * 40, 'public_commit': 'p' * 40, 'source': 'https://example.org/r', 'branch': 'main',
+                  'built_from': 'c' * 40, 'head': 'c' * 40, 'notes': [], 'date': '2026-10-20'}
+        text = notices.record_text(record)
+        self.assertTrue(text.startswith('Toska\n'))
+        self.assertNotIn('Krita Agent', text)
+        self.assertEqual(notices.parse_record(text)['build commit'], 'c' * 40)
+        source = (AGENT / 'package_app.py').read_text() + (AGENT / 'package_notices.py').read_text()
+        self.assertNotIn('Krita Agent', source.replace("'Krita Agent.app'", ''))   # no old name in a string, but the legacy folder name
+        self.assertIn('is based on Krita (https://krita.org)', source)
+
+    def test_the_resigning_command_in_the_qt_notice_names_the_new_bundle(self):
+        with mock.patch.object(notices, 'deps_recipe', return_value=('https://example.org/deps', 'abc', 'main')), \
+             mock.patch.object(notices, 'qt_facts', return_value='6.0'):
+            lines = notices.qt_notice(pathlib.Path('/nonexistent'), pathlib.Path('/nonexistent'), {'commit': 'c' * 40, 'public_commit': 'p' * 40,
+                                      'source': 'https://example.org/r', 'branch': 'main', 'built_from': '', 'head': '', 'notes': [], 'date': 'x'})
+        self.assertTrue(any('"Toska.app"' in line for line in lines), lines)
+
+
 class OutputFolderTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='krita-agent-test-')
@@ -996,7 +1137,7 @@ class OutputFolderTests(unittest.TestCase):
         package_app.check_output_folder(self.root / 'elsewhere' / '_package', self.install, self.root / 'src', home=self.home)
 
     def test_only_a_bundle_made_by_this_script_is_ever_replaced(self):
-        bundle = self.root / 'out' / 'Krita Agent.app'
+        bundle = self.root / 'out' / 'Toska.app'
         self.assertTrue(package_app.safe_to_replace(bundle))
         (bundle / 'Contents').mkdir(parents=True)
         self.assertFalse(package_app.safe_to_replace(bundle))                             # no plist: not ours
@@ -1096,7 +1237,7 @@ class ReferenceScanTests(unittest.TestCase):
 
 
 class SigningOrderTests(unittest.TestCase):
-    TOP = '/x/Krita Agent.app'
+    TOP = '/x/Toska.app'
 
     def files(self):
         top = self.TOP + '/Contents/'
@@ -1114,7 +1255,7 @@ class SigningOrderTests(unittest.TestCase):
         self.assertEqual(by_owner['Share.xpc'], ['Share'])
         self.assertEqual(by_owner['QtCore.framework'], ['QtCore'])
         self.assertEqual(by_owner['a.so'], ['a.so'])                                # loose files are their own group (parallel)
-        self.assertNotIn('Krita Agent.app', by_owner)                               # the top bundle is not a nested one
+        self.assertNotIn('Toska.app', by_owner)                               # the top bundle is not a nested one
 
     def test_nested_bundles_are_sealed_innermost_first(self):
         order = [os.path.basename(d) for d in package_app.nested_bundles(self.files(), self.TOP)]
@@ -1142,7 +1283,7 @@ class HeadlessHelperTests(unittest.TestCase):
         self.assertEqual(str(folder), '/h/Library/Application Support/KritaAgent/kritarunner/krita/pykrita')
 
     def test_sys_path_entries_outside_the_bundle_and_home_and_a_leaked_pythonpath_are_problems(self):
-        copy, home, poison = '/t/Krita Agent.app', '/t/home', '/t/poison'
+        copy, home, poison = '/t/Toska.app', '/t/home', '/t/poison'
         good = [copy + '/Contents/Resources/krita-python-libs', copy + '/Contents/Frameworks/Python.framework/Versions/3.13/lib/python3.13',
                 home + '/Library/Application Support/KritaAgent/kritarunner/krita/pykrita', '']
         self.assertEqual(package_app.sys_path_problems(good, copy, home, poison), [])

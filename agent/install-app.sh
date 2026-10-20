@@ -2,24 +2,30 @@
 # SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Put a packaged "Krita Agent.app" (agent/package-app.sh) in place, replacing an older copy.
+# Put a packaged "Toska.app" (agent/package-app.sh) in place, replacing an older copy.
 #
 #   agent/install-app.sh [--to DIR] [--dry-run] [BUNDLE]
 #
-#   BUNDLE      the app to install (default: ./_package/Krita Agent.app)
+#   BUNDLE      the app to install (default: ./_package/Toska.app)
 #   --to DIR    where to put it (default: /Applications if you can write there, else ~/Applications)
 #   --dry-run   say what would happen and change nothing
 #
 # - Never installs into Documents, Desktop, Downloads, iCloud Drive or ~/Library/CloudStorage (macOS asks for access each
 #   time an app in them is opened), into another app, or into a system folder. Every check is made on the canonical path and
 #   without regard to case (APFS is case-insensitive).
-# - Never touches the stock Krita: the app is always "Krita Agent.app"; a folder that holds a krita.app is refused unless
+# - Never touches the stock Krita: the app is always "Toska.app"; a folder that holds a krita.app is refused unless
 #   it is /Applications or ~/Applications, and that krita.app is never read or changed.
 # - Refuses while the installed copy is running. The old copy is moved aside and only deleted after the new one is in
 #   place; if the second move fails, the old app is put back.
+# - The app used to be called "Krita Agent.app" (same bundle id, local.kritaagent). After the new copy is in place, an old
+#   "Krita Agent.app" is removed from the destination, /Applications and ~/Applications, so two apps never share the bundle
+#   id; a running old copy stops the install before anything changes. Settings, resources and paintings are not in the
+#   bundle and are untouched. It then says to remake the Dock icon and the Desktop link, and names ~/Desktop/Krita Agent
+#   if it is a link to a removed app (it never touches that link).
 # - Removes the quarantine attribute (com.apple.quarantine) from the installed copy.
 set -euo pipefail
-NAME="Krita Agent.app"
+NAME="Toska.app"
+LEGACY_NAME="Krita Agent.app"                 # the name before the rename: same bundle id, replaced by the new app
 bundle="" to="" dry=0
 while (( $# )); do
   case $1 in
@@ -65,14 +71,35 @@ target="$to/$NAME"
 if [[ -e $target ]]; then
   ps -axo command= | while IFS= read -r line; do
     # /var, /tmp and /etc are links to /private/...: a process may have been started by either name
-    # (APFS does not tell Krita Agent.app from KRITA AGENT.APP: neither do we)
+    # (APFS does not tell Toska.app from TOSKA.APP: neither do we)
     if [[ ${(L)line#/private} == "${(L)target#/private}/contents/macos/"* ]]; then
-      echo "$target is running: quit Krita Agent first" >&2
+      echo "$target is running: quit Toska first" >&2
       exit 3
     fi
   done
 fi
+# The old name, wherever it is: the destination, /Applications and ~/Applications (a plain install goes to only one of
+# them). Only an exact "Krita Agent.app" whose bundle id says it is this app counts; krita.app is never looked at.
+system_apps=${KRITA_AGENT_APPLICATIONS_DIR:-/Applications}   # the variable stands in for /Applications in tests
+legacies=()
+for folder in "$to" "${system_apps:A}" "$apps_user"; do
+  candidate="$folder/$LEGACY_NAME"
+  [[ -d $candidate ]] || continue
+  /usr/bin/grep -q 'local\.kritaagent' "$candidate/Contents/Info.plist" 2>/dev/null || continue
+  (( ${legacies[(Ie)$candidate]} )) && continue
+  legacies+=("$candidate")
+done
+# none of them may be running
+for legacy in $legacies; do
+  ps -axo command= | while IFS= read -r line; do
+    if [[ ${(L)line#/private} == "${(L)legacy#/private}/contents/macos/"* ]]; then
+      echo "$legacy is running: quit it first" >&2
+      exit 3
+    fi
+  done
+done
 echo "installing $bundle -> $target"
+for legacy in $legacies; do echo "replacing the old $legacy (the same app under its old name)"; done
 (( dry )) && exit 0
 
 mkdir -p "$to"
@@ -113,3 +140,21 @@ else
   mv "$staging" "$target"
 fi
 echo "installed $target"
+if (( $#legacies )); then
+  for legacy in $legacies; do
+    rm -rf "$legacy" && echo "removed the old $legacy"
+  done
+  echo "Remake your shortcuts to Toska: drag Toska.app to the Dock again, and the Desktop link, e.g.  ln -s ~/Applications/Toska.app ~/Desktop/Toska"
+  # the old Desktop link, if there is one and it pointed at an app that is gone: named, never touched (lstat of this one path)
+  old_link="$HOME/Desktop/Krita Agent"
+  if [[ -L $old_link ]]; then
+    link_target=$(readlink "$old_link" 2>/dev/null || true)
+    for legacy in $legacies; do
+      # /var, /tmp and /etc are links into /private: compare without it, and without regard to case
+      if [[ ${(L)link_target#/private} == ${(L)legacy#/private} ]]; then
+        echo "$old_link pointed at the old app: delete or replace it (left as it is)"
+        break
+      fi
+    done
+  fi
+fi

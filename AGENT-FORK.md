@@ -742,6 +742,13 @@ it is unchanged.
   by the truthiness of a folder name) and `NOT ANDROID`. `krita/CMakeLists.txt` picks the qrc by it, and
   `libs/global/config-app-identity.h` passes it to `KisAppIdentity::hasOwnSplash()`, which all three splash branches
   (title and logo, layout, credit in `getImageSource()`) read. So the qrc and the C++ never disagree.
+- *Old build folders.* A build folder configured before the rename kept `KRITA_APP_DISPLAY_NAME` and
+  `KRITA_MACOS_BUNDLE_NAME` = `Krita Agent` in its `CMakeCache.txt` (an older module wrote its derived name there, and
+  CMake keeps cache values), so it showed "Krita Agent" with Toska's splash; `KisSplashBannerLayoutTest` caught it.
+  `KritaAppIdentity.cmake` now resets exactly that value, once, for the folder `KritaAgent` (one STATUS line says so) and
+  derives Toska; any other value someone set, and any other folder, is kept
+  (`creative-agent/krita-creative-agent/tests/test_app_identity_name_cache.py`). The C++ test compares `hasOwnSplash()`
+  with CMake's rule (the folder) and separately refuses the stale name, so a builder's own display name does not fail it.
 - *Artwork.* The painting and the logo are artwork owned by the artist, licence to be decided: no SPDX licence line
   claims them (`banner.svg` has none; `make_banner.py`, which is code, is GPL-3.0-or-later), and
   `krita/data/splash/toska/README.md` says so beside them. Both PNGs keep the sRGB chunk the artist's sources carry.

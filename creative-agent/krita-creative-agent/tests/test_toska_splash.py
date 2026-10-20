@@ -324,6 +324,8 @@ class ToskaSplashSelectionTest(unittest.TestCase):
         test = LAYOUT_TEST.read_text()
         self.assertIn('QTEST_MAIN(KisSplashBannerLayoutTest)', test)
         self.assertNotIn('QTEST_GUILESS_MAIN', test)
+        # compared with CMake's rule (the folder), not the display name a builder may choose
+        self.assertIn('QCOMPARE(KisAppIdentity::hasOwnSplash(), toskaFolder);', test)
 
 
 if __name__ == '__main__':

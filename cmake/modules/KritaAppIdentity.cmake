@@ -89,6 +89,29 @@ if (DEFINED KRITA_APP_SETTINGS_FOLDER AND "${KRITA_APP_SETTINGS_FOLDER}" STREQUA
     set(_identity_is_toska TRUE)
 endif()
 
+# One-time migration of build folders configured before the rename: an older version of this file wrote its derived
+# name "Krita Agent" into the cache, and CMake keeps a cache value, so those folders stayed "Krita Agent" (window
+# titles, the About box, KAboutData, the menu bar) while KRITA_APP_OWN_SPLASH said Toska. Only that exact old default,
+# and only for the folder named Toska, is reset to empty (derived again: Toska); any other value someone set is kept.
+if (_identity_is_toska)
+    set(_identity_reset_names)
+    if ("$CACHE{KRITA_APP_DISPLAY_NAME}" STREQUAL "Krita Agent")
+        set(KRITA_APP_DISPLAY_NAME "" CACHE STRING "Application name shown to the user (empty: from the settings folder)" FORCE)
+        unset(KRITA_APP_DISPLAY_NAME)
+        list(APPEND _identity_reset_names KRITA_APP_DISPLAY_NAME)
+    endif()
+    if ("$CACHE{KRITA_MACOS_BUNDLE_NAME}" STREQUAL "Krita Agent")
+        set(KRITA_MACOS_BUNDLE_NAME "" CACHE STRING "macOS bundle name shown in the menu bar (empty: the display name)" FORCE)
+        unset(KRITA_MACOS_BUNDLE_NAME)
+        list(APPEND _identity_reset_names KRITA_MACOS_BUNDLE_NAME)
+    endif()
+    if (_identity_reset_names)
+        string(REPLACE ";" ", " _identity_reset_names "${_identity_reset_names}")
+        message(STATUS "App identity: reset the old derived name \"Krita Agent\" in the cache (${_identity_reset_names}); "
+                       "this build is named Toska")
+    endif()
+endif()
+
 # KRITA_APP_OWN_SPLASH (0 or 1) is the one value that decides Toska's splash screen: krita/CMakeLists.txt picks
 # krita/data/splash/splash-toska.qrc by it, and config-app-identity.h hands it to KisAppIdentity::hasOwnSplash(), which
 # every splash branch in libs/ui/kis_splash_screen.cpp reads. Only the build named Toska, and never Android (whose

@@ -88,12 +88,21 @@ void KisSplashBannerLayoutTest::testShippedBannerHasALogoFrameAndAPicture()
 
 void KisSplashBannerLayoutTest::testOwnSplashOnlyInTheBuildNamedToska()
 {
-    // KRITA_APP_OWN_SPLASH is computed by cmake/modules/KritaAppIdentity.cmake: the build named Toska, never Android
+    // KRITA_APP_OWN_SPLASH is computed by cmake/modules/KritaAppIdentity.cmake: the settings folder is the string
+    // "KritaAgent" (the build named Toska), never on Android. Compared with that rule, not with the display name, so a
+    // name a builder chose (KRITA_APP_DISPLAY_NAME) does not fail it
+    const bool toskaFolder = KisAppIdentity::settingsFolder() == QStringLiteral("KritaAgent");
 #ifdef Q_OS_ANDROID
     QVERIFY(!KisAppIdentity::hasOwnSplash());
 #else
-    QCOMPARE(KisAppIdentity::hasOwnSplash(), KisAppIdentity::displayName() == QStringLiteral("Toska"));
+    QCOMPARE(KisAppIdentity::hasOwnSplash(), toskaFolder);
 #endif
+    // The stale-cache bug this test found: a build folder configured before the rename kept the old derived name
+    // "Krita Agent" in its CMake cache while the splash said Toska (KritaAppIdentity.cmake now resets it)
+    if (toskaFolder) {
+        QVERIFY2(KisAppIdentity::displayName() != QStringLiteral("Krita Agent"),
+                 "the CMake cache still holds the old derived name: re-run CMake configure");
+    }
 }
 
 QTEST_MAIN(KisSplashBannerLayoutTest)

@@ -145,3 +145,24 @@ and finish.
   only `PLAN.md`, `NOTES.md` and backups. Protection stays the artist's: the agent proposes protecting a finished
   element, the artist confirms with one click. Guided trace is its own setting ("Draw guides from references"), on by
   default in project-folder work; "Follow a construction map" stays for maps the artist draws.
+
+## Future idea (not in v1): Luna checks the guide
+
+Raised by the artist 2026-10-20, to build after guided trace has been tried live. Luna stays a checker, never the one
+that draws: placing lines needs exact positions, which image models are weak at; the painter keeps drawing them from
+the reference mapping.
+
+- **When.** Once after `draw_guide`, before the element is painted (a wrong guide wastes the whole move), and optionally
+  once after the element (did the painting follow its guide). This look includes the guides on purpose; every other
+  Luna look stays guide-free.
+- **Aligned with how Luna is used today (luna-visual-decisions).** Only the question shapes Luna measured well:
+  naming the main difference from a reference (4/4), locating a difference in a 3×3 grid (9/9), and specific named
+  choices ("horizon: higher / lower / same as the goal"). Never a general "is this guide good?" or reject question:
+  that shape was 59% on planted flaws.
+- **Wrong answers, both ways.** A missed problem costs no more than today (the guide is drawn as if unchecked). A false
+  alarm is capped: Luna's finding is advice passed to the painter, never an automatic undo; at most one redraw per
+  guide; a finding below the answer's confidence threshold is recorded, not acted on.
+- **Same setting.** Follows "Luna decisions": Off does nothing, Evaluate only records and shows it, Guide agent passes
+  findings to the painter.
+- **Before it is built.** A small labelled set (guides drawn right and wrong against goal images) measures its
+  false-alarm and miss rates first, as was done for the failure checklist.

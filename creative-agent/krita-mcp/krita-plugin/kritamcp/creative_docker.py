@@ -13,7 +13,7 @@ from .creative_document_identity import document_id, open_documents
 from . import node_runtime
 from . import bundled_release
 from .bridge_config import bridge_port
-from .command_queue import stop_requested
+from .command_queue import stop_requested, command_executing
 from .protection import ProtectionCraft
 from .feature_guard import FeatureCraft
 from .reference_parts import part_image, crop_image, opaque_bounds
@@ -401,13 +401,22 @@ class ProtectionDialog(QDialog):
     listed and changed in Krita. Three ways to add one, easiest first."""
     DETAILS = {'agent': 'made by the agent · you approved', 'artist': 'made by you'}
 
-    def __init__(self, panel, areas):
+    def __init__(self, panel, areas, features=()):
         super().__init__(panel)
         self.setWindowTitle('Protected areas'); self.setMinimumWidth(320)
         layout = QVBoxLayout(self)
         intro = QLabel('The agent never changes these. Anything it paints into them is removed, and it tells you.')
         intro.setWordWrap(True); intro.setObjectName('muted'); layout.addWidget(intro)
         self.rows = []
+        # Our Krita's protected features: listed here too; the panel's Protected section protects and unprotects them.
+        for feature in sorted((f for f in features if f.get('protected')), key=lambda f: f['name'].casefold()):
+            row = QHBoxLayout()
+            swatch = QLabel('◆'); swatch.setStyleSheet('color:#e5484d'); row.addWidget(swatch)
+            detail = '%s · untick it in the Protected list to let the agent change it' % (feature.get('kind') or 'feature')
+            label = QLabel('%s\n%s' % (feature['name'], detail)); label.setTextFormat(Qt.TextFormat.PlainText); label.setWordWrap(True); row.addWidget(label, 1)
+            layout.addLayout(row)
+            self.rows.append({'name': feature['name'], 'detail': detail, 'show': None, 'remove': None})
+        areas = list(areas)
         for area in areas:
             row = QHBoxLayout()
             swatch = QLabel('◆'); swatch.setStyleSheet('color:#e5484d'); row.addWidget(swatch)
@@ -415,7 +424,7 @@ class ProtectionDialog(QDialog):
             # A lock keeps a layer's own pixels and settings; the agent may still paint on new layers above it.
             detail = ('%d layers · never edited by the agent, but it may paint over them' % area.get('count', 0)) if automatic else self.DETAILS.get(area.get('by'), '')
             if area.get('state') == 'pending': detail = 'proposed by the agent · it keeps out; Keep to make it yours'
-            label = QLabel('%s\n%s' % (area['name'], detail)); label.setWordWrap(True); row.addWidget(label, 1)
+            label = QLabel('%s\n%s' % (area['name'], detail)); label.setTextFormat(Qt.TextFormat.PlainText); label.setWordWrap(True); row.addWidget(label, 1)
             show = remove = None
             if not automatic:
                 show = QPushButton('👁'); show.setCheckable(True); show.setAccessibleName('Show %s in red' % area['name'])
@@ -424,7 +433,7 @@ class ProtectionDialog(QDialog):
                 remove.clicked.connect(lambda _checked=False, entry=area: (panel.remove_protection(entry), self.close())); row.addWidget(remove)
             layout.addLayout(row)
             self.rows.append({'name': area['name'], 'detail': detail, 'show': show, 'remove': remove})
-        if not areas:
+        if not self.rows:
             empty = QLabel('Nothing is protected yet.'); empty.setObjectName('muted'); layout.addWidget(empty)
         actions = QHBoxLayout(); self.actions = []
         for text, slot, tip in (('Ask the agent…', panel.ask_to_protect, 'Describe what to protect; the agent marks it for you to keep.'),
@@ -439,6 +448,85 @@ class ProtectionDialog(QDialog):
         for row in self.rows:
             if row['show'] is not None and row['show'].isChecked(): row['show'].setChecked(False)
         super().closeEvent(event)
+
+
+class FeaturesSection(QFrame):
+    """The panel's Protected section (krita-fork 6.6): the painting's features, protected first and by name, each with a
+    box the artist ticks to protect it. Every widget of the section is made here, so a restyle touches this class only.
+    It shows what it is given (`show_rows`); the panel reads the document and changes protection."""
+    EMPTY = 'No features yet: select an area and use the shield to protect it'
+
+    def __init__(self, on_toggle):
+        super().__init__(); self.setObjectName('featuresSection')
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)            # its own height; the chat takes the rest
+        self.on_toggle = on_toggle; self.rows = []; self.builds = 0; self.locked = False; self.structure = None
+        layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(2)
+        header = QHBoxLayout(); header.setSpacing(6)
+        self.toggle = QToolButton(); self.toggle.setObjectName('featuresToggle'); self.toggle.setText('Protected')
+        self.toggle.setCheckable(True); self.toggle.setChecked(True); self.toggle.setAccessibleName('Show or hide the protected features')
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon); self.toggle.setArrowType(Qt.ArrowType.DownArrow)
+        self.toggle.toggled.connect(self.expand); header.addWidget(self.toggle)
+        self.summary = QLabel(''); self.summary.setObjectName('muted'); header.addWidget(self.summary, 1)
+        layout.addLayout(header)
+        self.body = QWidget(); body = QVBoxLayout(self.body); body.setContentsMargins(4, 0, 0, 0); body.setSpacing(0)
+        self.empty = QLabel(self.EMPTY); self.empty.setObjectName('muted'); self.empty.setWordWrap(True); body.addWidget(self.empty)
+        self.list = QWidget(); self.list_layout = QVBoxLayout(self.list); self.list_layout.setContentsMargins(0, 0, 6, 0); self.list_layout.setSpacing(0)
+        self.scroll = QScrollArea(); self.scroll.setWidgetResizable(True); self.scroll.setWidget(self.list); self.scroll.setMaximumHeight(132)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); body.addWidget(self.scroll)
+        self.list.setObjectName('featuresList'); self.list.setAutoFillBackground(False); self.scroll.viewport().setAutoFillBackground(False)
+        layout.addWidget(self.body)
+
+    def expand(self, on):
+        self.toggle.setArrowType(Qt.ArrowType.DownArrow if on else Qt.ArrowType.RightArrow); self.body.setVisible(on)
+
+    @staticmethod
+    def structure_of(rows):
+        return tuple(sorted((str(r['name']), str(r.get('kind') or '')) for r in rows))
+
+    def present(self, rows):
+        """Show the rows: rebuilt and sorted when names or kinds changed, else only the boxes change, in place, so a row
+        never jumps under the pointer and the clicked box keeps the focus."""
+        if self.structure_of(rows) != self.structure: self.show_rows(rows)
+        else: self.set_flags(rows)
+        self.show()
+
+    def set_flags(self, rows):
+        flags = {str(r['name']): bool(r['protected']) for r in rows}
+        for row in self.rows:
+            check = row['check']
+            if check.isChecked() != flags.get(row['name'], check.isChecked()):
+                check.blockSignals(True); check.setChecked(flags[row['name']]); check.blockSignals(False)
+        self.summary.setText('%d of %d' % (sum(flags.values()), len(flags)) if flags else '')
+        self.set_locked(self.locked)
+
+    def show_rows(self, rows):
+        """Rebuild the list from feature rows ({'name', 'kind', 'protected'}); the order is the section's own."""
+        self.builds += 1; self.structure = self.structure_of(rows)
+        for row in self.rows:
+            row['widget'].hide(); row['widget'].deleteLater()          # deleteLater: a box may be mid-click
+        self.rows = []
+        ordered = sorted(rows, key=lambda r: (not r['protected'], r['name'].casefold(), r['name']))
+        for entry in ordered:
+            widget = QWidget(); line = QHBoxLayout(widget); line.setContentsMargins(0, 1, 0, 1); line.setSpacing(6)
+            check = QCheckBox(entry['name'].replace('&', '&&')); check.setChecked(bool(entry['protected'])); check.setAccessibleName('Protect %s' % entry['name'])
+            check.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed); check.setMinimumWidth(0)
+            check.toggled.connect(lambda on, name=entry['name']: self.on_toggle(name, on)); line.addWidget(check, 1)
+            kind = QLabel(entry.get('kind') or ''); kind.setTextFormat(Qt.TextFormat.PlainText); kind.setObjectName('muted'); line.addWidget(kind)
+            self.list_layout.addWidget(widget)
+            self.rows.append({'name': entry['name'], 'check': check, 'kind': kind, 'widget': widget})
+        self.empty.setVisible(not self.rows); self.scroll.setVisible(bool(self.rows))
+        protected = sum(1 for r in ordered if r['protected'])
+        self.summary.setText('%d of %d' % (protected, len(ordered)) if ordered else '')
+        self.set_locked(self.locked)
+
+    def set_locked(self, locked):
+        """While the agent paints the boxes wait, like the shield: a change inside its move would join its undo step."""
+        self.locked = locked
+        for row in self.rows:
+            row['check'].setEnabled(not locked)
+            row['check'].setToolTip('Pause to change protection' if locked else
+                                    ('Protected: the agent never changes it. Untick to let it.' if row['check'].isChecked() else
+                                     'Tick to protect it: the agent then never changes it.'))
 
 
 class CharacterDelegate(QStyledItemDelegate):
@@ -1300,6 +1388,9 @@ class CreativeAgentDocker(DockWidget):
         self.move_keep = QPushButton('Keep'); self.move_keep.setObjectName('primaryAction'); self.move_keep.setToolTip('Keep this move and paint the next one')
         self.move_keep.clicked.connect(lambda: self.move_command('keep')); move_actions.addWidget(self.move_keep)
         move_layout.addLayout(move_actions); layout.addWidget(self.move_bar); self.move_bar.hide(); self.current_move = None
+        # Protected: the painting's features, each with a box the artist ticks to protect it (our Krita only).
+        self.feature_changing = False
+        self.features_section = FeaturesSection(self.toggle_feature); self.features_section.hide(); layout.addWidget(self.features_section)
         activity = QHBoxLayout(); activity.setSpacing(6)
         self.activity_dot = QLabel(''); self.activity_dot.setObjectName('activityDot'); activity.addWidget(self.activity_dot)
         self.status = QLabel('Connecting…'); self.status.setWordWrap(True); self.status.setObjectName('muted')
@@ -1521,6 +1612,8 @@ class CreativeAgentDocker(DockWidget):
             QTabBar::tab:selected { color: %(text)s; background: %(surface)s; border-bottom: 2px solid %(accent)s; }
             QTabBar::tab:hover { background: %(raised)s; }
             QCheckBox { color: %(text)s; font-size: 12px; }
+            QWidget#featuresList { background: transparent; }
+            QToolButton#featuresToggle { background: transparent; color: %(text)s; font-size: 12px; font-weight: 500; padding: 0; }
             QHeaderView::section { background: %(raised)s; color: %(text)s; border: none; padding: 7px; font-size: 11px; }
             QTableCornerButton::section { background: %(raised)s; border: none; }
         ''' % c
@@ -2130,6 +2223,7 @@ class CreativeAgentDocker(DockWidget):
             if has != self.had_document: self.had_document = has; self.update_controls()
         except (AttributeError, RuntimeError, ReferenceError):
             pass
+        self.refresh_features()
 
     def poll_canvas_metadata(self):
         if not self.isVisible(): return
@@ -2186,6 +2280,7 @@ class CreativeAgentDocker(DockWidget):
                 self.canvas_context['state'] = 'stale'
                 self.render_context()
             self.context_timer.start(120)
+            self.refresh_features()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2792,7 +2887,7 @@ class CreativeAgentDocker(DockWidget):
         doc = self.protection_document()
         if doc is None:
             self.status.setText('Open your painting to protect parts of it.'); return None
-        dialog = ProtectionDialog(self, self.protection._protect_list(doc))
+        dialog = ProtectionDialog(self, self.protection._protect_list(doc), self.feature_rows())
         if modal: dialog.exec()
         else: dialog.show()
         return dialog
@@ -2809,10 +2904,65 @@ class CreativeAgentDocker(DockWidget):
             self.paint_protection(area)
 
     def feature_rows(self):
-        """The painting's features for the panel's list (name, kind, protected, author, state); empty without our Krita.
-        The list itself is task 4.x's UI: this is its data."""
-        doc = self.protection_document()
-        return self.features._feature_list(doc) if doc is not None else []
+        """The painting's features for the Protected section (name, kind, protected); empty without our Krita, without a
+        painting, or when the document is gone."""
+        try:
+            doc = self.protection_document()
+            return self.features._feature_list(doc, brief=True) if doc is not None else []
+        except (AttributeError, RuntimeError, ReferenceError):
+            return []
+
+    def feature_wait_reason(self, doc=None):
+        """Why the artist's protection controls must wait now, or None. Krita's own state decides, not only the panel's
+        busy flag: Keep and Undo of a move, and any bridge command, write inside an agent move without a busy event, and
+        a change made then would join the agent's undo step."""
+        reason = 'Pause to change protection: the agent is working on the painting.'
+        if self.busy or self.feature_changing or self.protection_editing is not None or command_executing.is_set():
+            return reason
+        try:
+            doc = doc if doc is not None else self.protection_document()
+            if doc is not None and any(bool(getattr(doc, check)()) for check in ('agentMoveOpen', 'agentActive') if hasattr(doc, check)):
+                return reason
+        except (AttributeError, RuntimeError, ReferenceError):
+            pass
+        return None
+
+    def refresh_features(self):
+        """Follow the painting's features in the Protected section: on every canvas poll, document change, new chat and
+        protection change. One features() read of names, kinds and flags (no pixels); the rows are rebuilt only when names
+        or kinds change, otherwise the boxes are set in place. Hidden with no painting and in stock Krita."""
+        if not hasattr(self, 'features_section') or not hasattr(self, 'features'): return
+        try:
+            doc = self.protection_document()
+            ready = doc is not None and self.features._feature_ready(doc)
+            rows = self.features._feature_list(doc, brief=True) if ready else None
+        except (AttributeError, RuntimeError, ReferenceError):
+            rows = None                                   # a closed or deleted document
+        if rows is None:
+            self.features_section.structure = None; self.features_section.hide(); return
+        self.features_section.present(rows)
+        self.features_section.set_locked(self.feature_wait_reason(doc) is not None)
+
+    def toggle_feature(self, name, value):
+        """The artist ticked or unticked a feature's box: the only caller of set_feature_protected. Refused while the agent
+        works; the boxes are locked during the call, so a second click (or a nested event loop) cannot re-enter. The list
+        then shows what Krita has: a refused change puts the box back."""
+        reason = self.feature_wait_reason()
+        if reason is not None:
+            self.status.setText(reason); self.refresh_features(); return False
+        focused = QApplication.focusWidget()              # locking disables the box, which drops its focus
+        self.feature_changing = True; self.features_section.set_locked(True)
+        try:
+            done = self.set_feature_protected(name, value)
+        finally:
+            self.feature_changing = False
+            self.refresh_features()
+            if focused is not None and any(r['check'] is focused for r in self.features_section.rows) and focused.isEnabled():
+                focused.setFocus()
+        if done and any(r['name'] == name and r['protected'] != bool(value) for r in self.feature_rows()):
+            self.status.setText("%s did not change the protection of '%s': it was busy. Please try again." % (product_name(), name))
+            done = False
+        return done
 
     def set_feature_protected(self, name, value):
         """The artist protects or unprotects a feature from the panel. Only the panel calls this: the companion has no
@@ -2825,7 +2975,7 @@ class CreativeAgentDocker(DockWidget):
         except ValueError as error:
             self.status.setText(str(error)); return False
         if not done:
-            self.status.setText("%s did not change the protection of '%s'." % (product_name(), name)); return False
+            self.status.setText("%s did not change the protection of '%s': it was busy. Please try again." % (product_name(), name)); return False
         self.status.setText("'%s' is %s." % (name, 'protected' if value else 'no longer protected'))
         return True
 
@@ -2857,6 +3007,9 @@ class CreativeAgentDocker(DockWidget):
 
     def protect_selection(self):
         doc = self.protection_document()
+        reason = self.feature_wait_reason(doc)
+        if reason is not None and doc is not None:
+            self.status.setText(reason); return
         selection = doc.selection() if doc is not None else None
         bounds = self.selection_bounds(selection, doc) if doc is not None else None
         if bounds is None:
@@ -2870,6 +3023,7 @@ class CreativeAgentDocker(DockWidget):
                 self.features._feature_add_protected(doc, name, selection)
             except ValueError as error:
                 self.status.setText(str(error)); return
+            self.refresh_features()
             self.status.setText("'%s' is protected." % name.strip()[:60]); return
         self.protection._protect_add(doc, selection.duplicate(), name.strip()[:60], 'artist', 'active', bounds)
         self.status.setText("'%s' is protected." % name.strip()[:60])
@@ -2920,6 +3074,7 @@ class CreativeAgentDocker(DockWidget):
                                            'How many AI-generated images the painter may use in this chat. 0 paints everything by hand.')
         self.protect_button.setEnabled(not self.busy and self.protection_editing is None)
         self.protect_button.setToolTip('Pause to change protection' if self.busy else 'Protected areas: what the agent must never change')
+        self.features_section.set_locked(self.feature_wait_reason() is not None)
         for control in (self.source, self.name, self.experiment): control.setEnabled(not self.study_active and not self.busy)
         self.model.setEnabled(not self.busy and not self.pending_model_change)
         self.provider_filter.setEnabled(not self.busy and not self.pending_model_change)

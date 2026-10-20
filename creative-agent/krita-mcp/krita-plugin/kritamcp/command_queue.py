@@ -12,6 +12,10 @@ TIMEOUT_CODE = "timeout"
 # stroke. Cleared when the panel sees the run end (busy false) or a new session begins.
 stop_requested = threading.Event()
 
+# Set on Krita's main thread while the bridge executes a command (a stroke pass handles clicks between its strokes):
+# the panel's protection controls wait until it is clear, so an artist's change never lands inside the agent's work.
+command_executing = threading.Event()
+
 
 class CommandQueue:
     """Thread-safe command queue for passing commands from HTTP thread to main thread."""

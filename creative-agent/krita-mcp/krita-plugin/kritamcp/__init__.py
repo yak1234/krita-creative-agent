@@ -33,7 +33,7 @@ from .creative_tools import CreativeTools
 from .script_steps import one_step
 from .creative_validation import command_error
 from .stamp_names import list_presets
-from .command_queue import CommandQueue
+from .command_queue import CommandQueue, command_executing
 from .bridge_config import bridge_port, output_dir
 
 BRIDGE_VERSION = "2.3.0"
@@ -232,10 +232,12 @@ class KritaMCPExtension(CreativeTools, PrecisionTools, Extension):
                 return
             command_id, command = item
             self._executing = True
+            command_executing.set()
             try:
                 result = self.execute_command(command)
             finally:
                 self._executing = False
+                command_executing.clear()
             command_queue.set_result(command_id, result)
 
     def execute_command(self, command):

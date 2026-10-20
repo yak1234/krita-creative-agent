@@ -277,10 +277,13 @@ class FeatureCraft:
                                                            'the feature ' + names + ' is' if names.count("'") == 2 else 'the features ' + names + ' are'))
 
     # ----- the features list --------------------------------------------------------------------------------------------------
-    def _feature_list(self, doc):
-        """Every feature: name, kind, protected, author and state. Empty without the fork."""
+    def _feature_list(self, doc, brief=False):
+        """Every feature: name, kind, protected, author and state (`brief`: name, kind and protected only, for the panel's
+        poll). Empty without the fork."""
         if not self._feature_ready(doc):
             return []
+        if brief:
+            return [{'name': f.name(), 'kind': f.kind(), 'protected': bool(f.isProtected())} for f in doc.features()]
         return [{'name': f.name(), 'kind': f.kind(), 'protected': bool(f.isProtected()), 'author': f.author(), 'state': f.state()}
                 for f in doc.features()]
 

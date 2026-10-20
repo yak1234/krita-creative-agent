@@ -1012,3 +1012,32 @@ Plugin only (`creative-agent/krita-mcp/krita-plugin/kritamcp/creative_docker.py`
   transcript and says the painting was closed and how to return to it; the companion's own checks still guard painting.
 - Test: `uv run -q --with pyqt5 python tests/ui_panel_no_document.py` in `creative-agent/krita-creative-agent` (a standalone UI
   script like `ui_smoke.py`; it stubs `krita` for the whole process, so it is not in `unittest discover`).
+
+## The Protected section of the panel (task 6.6)
+Plugin only (`creative_docker.py`: `FeaturesSection`, `refresh_features`, `toggle_feature`); no upstream file and no companion change.
+- **What the artist sees.** Above the status line, a collapsible "Protected" header with "2 of 5", then one row per feature of the
+  active painting: a box with the feature's name (ticked = protected) and its kind in small text, protected first, then by name;
+  at most about six rows before it scrolls. A painting with no features shows "No features yet: select an area and use the
+  shield to protect it". With no painting open, or in stock Krita (no `Document.features`), the section is hidden.
+- **Changing protection.** Ticking or unticking calls `set_feature_protected(name, value)`, the method's only caller; the status line
+  says "'Sky' is protected." or why not (the app's name through `product_name()`), and the list is read again, so a box Krita
+  refused goes back. The companion has no way to it (`feature_guard.PANEL_ONLY`, refused in `cmd_creative`; `handle_event` never
+  touches protection). The boxes wait ("Pause to change protection") while the agent works, judged by Krita's state, not only the
+  panel's busy flag: `Document.agentMoveOpen()` or `agentActive()` (Keep and Undo of a move write inside a move with no busy event),
+  a bridge command running (`command_queue.command_executing`), the panel busy or a toggle in progress (the boxes are locked
+  around `setProtected`, so a second click or a nested event loop cannot re-enter). A change made then would join the agent's
+  undo step. "Use my selection" waits on the same rule. A refused change, or one Krita said yes to but did not make, says
+  "Toska did not change the protection of 'Sky': it was busy. Please try again.
+- **Refresh.** On every canvas poll (once a second while the panel is visible), document switch, new chat, the shield's "Use my
+  selection" and each toggle. libkis exposes no feature revision to Python (`Document.revision()` counts pixel changes), so the
+  poll reads name, kind and protected only (one `features()` read, no pixels, no author or state). The rows are rebuilt and
+  re-sorted only when names or kinds change (or after the section was hidden, e.g. no painting open); a flag change sets the boxes in place (signals blocked),
+  so a row never jumps under the pointer and the clicked box keeps the focus. Names are shown as plain text (`&` doubled in the
+  box, plain-text labels in the section and the dialog).
+- **The Protected areas dialog** (the shield) keeps its annotation-based areas and now also lists the protected features (name,
+  kind, "untick it in the Protected list ..."), so a feature made with "Use my selection" no longer looks missing there.
+- **Live checks** (not verifiable offscreen): the section's look in the docked panel in both themes and at the narrowest dock width;
+  ticking a box on a real painting protects it (then a whole-canvas pass leaves it alone) and Ctrl+Z restores the box within a
+  second; the boxes are disabled during a pass and enabled after; switching between two open paintings swaps the list; "Use my
+  selection" adds a ticked row at once; a painting with 30 features scrolls and the poll stays smooth.
+- Test: `uv run -q --with pyqt5 python tests/ui_panel_features.py` and the same with `--with pyqt6` (both in ci.sh's panel UI group).

@@ -8,6 +8,7 @@
 #include <QMutexLocker>
 #include <QReadWriteLock>
 
+#include <KisAgentHooks.h>
 #include <KisDocument.h>
 #include <KisImageChangeReports.h>
 #include <kis_image.h>
@@ -93,6 +94,18 @@ QAtomicInteger<int> s_reportCount {0};
 
 DocumentChanges *DocumentChanges::registry()
 {
+    // The brush preset session storage must not save the agent's brush changes as the artist's tweaks: it asks.
+    static const bool probeInstalled = [] () {
+        KisAgentHooks::setAgentWorkProbe([] () {
+            QReadLocker locker(&s_reportsLock);
+            for (DocumentChanges *changes : std::as_const(s_reports)) {
+                if (changes->agentActive()) return true;
+            }
+            return false;
+        });
+        return true;
+    }();
+    Q_UNUSED(probeInstalled);
     static DocumentChanges *s_registry = [] () {
         DocumentChanges *registry = new DocumentChanges();
         // Every node's redraw request, from any thread: recorded straight into the image's report.

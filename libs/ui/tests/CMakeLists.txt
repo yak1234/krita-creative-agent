@@ -226,3 +226,10 @@ kis_add_test(KisAboutAgentTest.cpp
     TEST_NAME KisAboutAgentTest
     LINK_LIBRARIES kritaui kritatestsdk
     )
+
+# Krita Agent: the brush preset session storage ported from Krita-Revamp (krita-fork 3.1): tweaks persist, keyed by
+# resource id and MD5, in the build's own settings folder; refused while the agent works; run in a temporary home.
+kis_add_test(TestPresetSessionStorage.cpp
+    TEST_NAME TestPresetSessionStorage
+    LINK_LIBRARIES kritaui kritatestsdk
+    )

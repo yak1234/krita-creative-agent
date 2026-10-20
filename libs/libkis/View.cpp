@@ -29,7 +29,20 @@
 #include "ManagedColor.h"
 
 #include "LibKisUtils.h"
+#include <KisPaintOpPresetSessionStorage.h>
 
+
+namespace {
+/// Krita Agent: a script is about to change the brush through the view's resources, which the derived resources write
+/// into the view's preset (size, opacity, flow, pattern size, blending mode). That is not the artist's tweak and must
+/// never be saved as one (KisPaintOpPresetSessionStorage).
+void noteScriptBrushChange(KisView *view)
+{
+    if (view && view->resourceProvider()) {
+        KisPaintOpPresetSessionStorage::instance()->markScriptChanged(view->resourceProvider()->currentPreset());
+    }
+}
+}
 
 struct View::Private {
     Private() {}
@@ -201,6 +214,8 @@ Resource *View::currentBrushPreset() const
 
 void View::setCurrentBrushPreset(Resource *resource)
 {
+    // Krita Agent: a script gets the preset as saved, never with the artist's stored tweaks loaded into it
+    KisPaintOpPresetSessionStorage::ScriptSelection selecting(KisPaintOpPresetSessionStorage::instance());
     activateResource(resource);
 }
 
@@ -235,6 +250,7 @@ QString View::currentBlendingMode() const
 void View::setCurrentBlendingMode(const QString &blendingMode)
 {
     if (!d->view) return;
+    noteScriptBrushChange(d->view);
     d->view->resourceProvider()->setCurrentCompositeOp(blendingMode);
 }
 
@@ -275,6 +291,7 @@ qreal View::paintingOpacity() const
 void View::setPaintingOpacity(qreal opacity)
 {
     if (!d->view) return;
+    noteScriptBrushChange(d->view);
     d->view->resourceProvider()->setOpacity(opacity);
 }
 
@@ -287,6 +304,7 @@ qreal View::brushSize() const
 void View::setBrushSize(qreal brushSize)
 {
     if (!d->view) return;
+    noteScriptBrushChange(d->view);
     d->view->resourceProvider()->setSize(brushSize);
 }
 
@@ -299,6 +317,7 @@ qreal View::brushFade() const
 void View::setBrushFade(qreal brushFade)
 {
     if (!d->view) return;
+    noteScriptBrushChange(d->view);
     d->view->resourceProvider()->setFade(brushFade);
 }
 
@@ -311,6 +330,7 @@ qreal View::brushRotation() const
 void View::setBrushRotation(qreal brushRotation)
 {
     if (!d->view) return;
+    noteScriptBrushChange(d->view);
     d->view->resourceProvider()->setBrushRotation(brushRotation);
 }
 
@@ -347,6 +367,7 @@ qreal View::paintingFlow() const
 void View::setPaintingFlow(qreal flow)
 {
     if (!d->view) return;
+    noteScriptBrushChange(d->view);
     d->view->resourceProvider()->setFlow(flow);
 }
 
@@ -359,6 +380,7 @@ qreal View::patternSize() const
 void View::setPatternSize(qreal size)
 {
     if (!d->view) return;
+    noteScriptBrushChange(d->view);
     d->view->resourceProvider()->setPatternSize(size);
 }
 
@@ -375,6 +397,7 @@ void View::setEraserMode(bool value)
     if (!d->view) {
         return;
     }
+    noteScriptBrushChange(d->view);
     d->view->resourceProvider()->setEraserMode(value);
 }
 

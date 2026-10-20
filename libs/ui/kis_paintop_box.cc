@@ -79,6 +79,7 @@
 #include "KisResourceLoaderRegistry.h"
 #include "kis_acyclic_signal_connector.h"
 #include "KisMainWindow.h"
+#include "KisPaintOpPresetSessionStorage.h"
 
 
 KisPaintopBox::KisPaintopBox(KisViewManager *viewManager, QWidget *parent, const char *name)
@@ -91,7 +92,6 @@ KisPaintopBox::KisPaintopBox(KisViewManager *viewManager, QWidget *parent, const
 
     setObjectName(name);
     KisConfig cfg(true);
-    m_dirtyPresetsEnabled = cfg.useDirtyPresets();
     m_eraserBrushSizeEnabled = cfg.useEraserBrushSize();
     m_eraserBrushOpacityEnabled = cfg.useEraserBrushOpacity();
 
@@ -503,7 +503,6 @@ KisPaintopBox::KisPaintopBox(KisViewManager *viewManager, QWidget *parent, const
     connect(m_presetsEditor       , SIGNAL(defaultPresetClicked())             , SLOT(slotSetupDefaultPreset()));
     connect(m_presetsEditor       , SIGNAL(signalResourceSelected(KoResourceSP )), SLOT(resourceSelected(KoResourceSP )));
     connect(m_presetsEditor       , SIGNAL(reloadPresetClicked())              , SLOT(slotReloadPreset()));
-    connect(m_presetsEditor       , SIGNAL(dirtyPresetToggled(bool))           , SLOT(slotDirtyPresetToggled(bool)));
     connect(m_presetsEditor       , SIGNAL(eraserBrushSizeToggled(bool))       , SLOT(slotEraserBrushSizeToggled(bool)));
     connect(m_presetsEditor       , SIGNAL(eraserBrushOpacityToggled(bool))       , SLOT(slotEraserBrushOpacityToggled(bool)));
 
@@ -632,17 +631,6 @@ void KisPaintopBox::resourceSelected(KoResourceSP resource)
     KisPaintOpPresetSP preset = resource.dynamicCast<KisPaintOpPreset>();
 
     if (preset && preset->valid() && preset != m_resourceProvider->currentPreset()) {
-        if (!m_dirtyPresetsEnabled) {
-            KisSignalsBlocker blocker(m_optionWidget);
-            Q_UNUSED(blocker);
-
-            KisPaintOpPresetResourceServer *rserver = KisResourceServerProvider::instance()->paintOpPresetServer();
-
-            if (!rserver->reloadResource(preset)) {
-                qWarning() << "failed to reload the preset.";
-            }
-        }
-
         dbgResources << "resourceSelected: preset" << preset << (preset ? QString("%1").arg(preset->valid()) : "");
         setCurrentPaintop(preset);
 
@@ -664,6 +652,13 @@ void KisPaintopBox::setCurrentPaintop(KisPaintOpPresetSP preset)
         }
     }
     Q_ASSERT(preset);
+
+    // Krita-Revamp (b908ad5): the artist's tweaks of this preset from earlier sessions come back (the preset is dirty
+    // until Reload or Save). Here, not in resourceSelected(), so the brush the last session ended with gets them at
+    // startup too. Krita Agent: nothing is loaded while an agent works or a script selects the preset, nor over a
+    // preset already changed in memory (KisPaintOpPresetSessionStorage::loadTweaks).
+    KisPaintOpPresetSessionStorage::instance()->loadTweaks(preset);
+
     const KoID& paintop = preset->paintOp();
     m_presetConnections.clear();
 
@@ -1066,6 +1061,17 @@ void KisPaintopBox::slotCanvasResourceChanged(int key, const QVariant &value)
             setSliderValue("flow", m_resourceProvider->flow());
         }
 
+        if (key == KoCanvasResource::Size || key == KoCanvasResource::Opacity || key == KoCanvasResource::Flow
+            || key == KoCanvasResource::BrushRotation) {
+            // The artist's change by a shortcut or a tablet button, not by a slider: a tweak too. Not when nothing
+            // changed (selecting a preset reports these), in eraser mode (its own size), or for a script's change
+            // (the storage refuses those).
+            KisPaintOpPresetSP current = m_resourceProvider->currentPreset();
+            if (current && current->isDirty() && !m_resourceProvider->eraserMode() && !m_blockUpdate) {
+                KisPaintOpPresetSessionStorage::instance()->saveTweaks(current);
+            }
+        }
+
         if (key == KoCanvasResource::EraserMode) {
             m_eraseAction->setChecked(value.toBool());
         }
@@ -1237,6 +1243,9 @@ void KisPaintopBox::sliderChanged(int n)
         propertiesProxy->setProperty("FlowValue", flow);
         propertiesProxy->setProperty("Texture/Pattern/Scale", patternsize);
         m_presetsEditor->readOptionSetting(m_resourceProvider->currentPreset()->settings());
+
+        // Krita-Revamp (681ef9f): the artist's slider change is a tweak that persists (refused while an agent works)
+        KisPaintOpPresetSessionStorage::instance()->saveTweaks(m_resourceProvider->currentPreset());
     } else {
         m_resourceProvider->setOpacity(opacity);
     }
@@ -1412,6 +1421,9 @@ void KisPaintopBox::slotReloadPreset()
 
     // Presets that just have been created cannot be reloaded.
     if (preset && preset->resourceId() > -1) {
+        // Krita-Revamp (b908ad5): the stored tweaks of this preset go with the reload
+        KisPaintOpPresetSessionStorage::instance()->clearTweaks(preset);
+
         const bool result = rserver->reloadResource(preset);
         KIS_SAFE_ASSERT_RECOVER_NOOP(result && "couldn't reload preset");
     }
@@ -1437,6 +1449,10 @@ void KisPaintopBox::slotGuiChangedCurrentPreset() // Called only when UI is chan
 
         m_presetsEditor->writeOptionSetting(const_cast<KisPaintOpSettings*>(preset->settings().data()));
     }
+
+    // Krita-Revamp (b908ad5): the tweak persists across restarts (refused while an agent works, or for a preset a
+    // script changed)
+    KisPaintOpPresetSessionStorage::instance()->saveTweaks(preset);
 
     // we should also update the preset strip to update the status of the "dirty" mark
     m_presetsEditor->resourceSelected(m_resourceProvider->currentPreset());
@@ -1486,18 +1502,6 @@ void KisPaintopBox::slotDropLockedOption(KisPropertiesConfigurationSP p)
         }
     }
 }
-void KisPaintopBox::slotDirtyPresetToggled(bool value)
-{
-    if (!value) {
-        slotReloadPreset();
-        m_presetsEditor->resourceSelected(m_resourceProvider->currentPreset());
-        m_presetsEditor->updateViewSettings();
-    }
-    m_dirtyPresetsEnabled = value;
-    KisConfig cfg(false);
-    cfg.setUseDirtyPresets(m_dirtyPresetsEnabled);
-}
-
 void KisPaintopBox::slotEraserBrushSizeToggled(bool value)
 {
     m_eraserBrushSizeEnabled = value;

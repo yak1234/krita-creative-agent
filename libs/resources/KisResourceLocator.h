@@ -159,6 +159,15 @@ Q_SIGNALS:
     /// \see storageResynchronized
     void storagesBulkSynchronizationFinished();
 
+public:
+    /**
+     * @brief Krita Agent: a new copy of \p resource as its storage holds it, whatever unsaved changes the cached
+     * object carries. The cached \p resource is not touched (unlike reloadResource()).
+     * @return the stored copy, or null when the resource is not in a storage yet (resourceId() < 0) or cannot be
+     *         loaded from it
+     */
+    KoResourceSP loadStoredCopy(const KoResourceSP resource);
+
 private:
 
     friend class KisAllTagsModel;

@@ -636,12 +636,15 @@ void KisConfig::setColorSamplerPreviewCirclePosition(KisConfig::ColorSamplerPrev
 
 bool KisConfig::useDirtyPresets(bool defaultValue) const
 {
-   return (defaultValue ? false : m_cfg.readEntry("useDirtyPresets", true));
+    // Krita-Revamp (b908ad5): preset tweaks are always kept, and persist (KisPaintOpPresetSessionStorage), so this is
+    // always true. The "Temporarily Save Tweaks To Presets" checkbox is gone.
+    Q_UNUSED(defaultValue);
+    return true;
 }
 void KisConfig::setUseDirtyPresets(bool value)
 {
-    m_cfg.writeEntry("useDirtyPresets",value);
-    KisConfigNotifier::instance()->notifyConfigChanged();
+    // Kept for callers of the old option; tweaks are always saved now.
+    Q_UNUSED(value);
 }
 
 bool KisConfig::useEraserBrushSize(bool defaultValue) const

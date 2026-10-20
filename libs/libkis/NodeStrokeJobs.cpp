@@ -12,6 +12,7 @@
 #include "StrokeJob.h"
 #include "StrokeJobShared.h"
 #include "DocumentHistory.h"
+#include "StrokeJobBrush.h"
 
 #include <QColor>
 #include <QCoreApplication>
@@ -33,6 +34,7 @@
 #include <KisImageChangeReports.h>
 #include <KisMainWindow.h>
 #include <KisPart.h>
+#include <KisResourceLocator.h>
 #include <KisResourceTypes.h>
 #include <KisView.h>
 #include <KisViewManager.h>
@@ -269,8 +271,11 @@ KisDocument *documentOf(KisImageSP image)
     return nullptr;
 }
 
+KisPaintOpPresetSP s_viewPresetForTesting;
+
 KisPaintOpPresetSP viewPreset()
 {
+    if (s_viewPresetForTesting) return s_viewPresetForTesting;
     KisMainWindow *window = KisPart::instance()->currentMainwindow();
     KisView *view = window ? window->activeView() : nullptr;
     if (!view || !view->viewManager()) return KisPaintOpPresetSP();
@@ -678,6 +683,52 @@ void StrokeJobFeeder::finish()
     deleteLater();
 }
 
+// ---- the brush as saved -----------------------------------------------------------------------------------------------
+
+void StrokeJobBrush::setViewPresetForTesting(KisPaintOpPresetSP preset)
+{
+    s_viewPresetForTesting = preset;
+}
+
+namespace {
+struct Saved {
+    QString md5;
+    int version = 0;
+    KisPaintOpPresetSP copy;
+};
+struct Cache {
+    Cache()
+    {
+        if (QCoreApplication::instance()) {
+            QObject::connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, QCoreApplication::instance(),
+                             [this] () { saved.clear(); });
+        }
+    }
+    QHash<int, Saved> saved;
+};
+Q_GLOBAL_STATIC(Cache, cache)
+}
+
+KisPaintOpPresetSP StrokeJobBrush::savedPreset(KisPaintOpPresetSP preset)
+{
+    if (!preset || preset->resourceId() < 0) return preset; // not in a storage: nothing saved to go back to
+
+    const QString md5 = preset->md5Sum(false);
+    const int version = preset->version();
+    const Saved cached = cache->saved.value(preset->resourceId());
+    if (cached.copy && !md5.isEmpty() && cached.md5 == md5 && cached.version == version) return cached.copy;
+
+    KisPaintOpPresetSP copy = KisResourceLocator::instance()->loadStoredCopy(preset).dynamicCast<KisPaintOpPreset>();
+    if (!copy || !copy->valid()) {
+        qWarning() << "Krita Agent: the saved version of brush preset" << preset->name()
+                   << "could not be loaded; paintStrokes uses the preset as it is now in Krita";
+        return preset;
+    }
+    if (cache->saved.size() >= 16) cache->saved.clear();
+    if (!md5.isEmpty()) cache->saved.insert(preset->resourceId(), Saved{md5, version, copy});
+    return copy;
+}
+
 // ---- Node::paintStrokes ---------------------------------------------------------------------------------------------
 
 StrokeJob *Node::paintStrokes(const QVariantList &strokes, const QVariantMap &options, Selection *selection)
@@ -713,7 +764,8 @@ StrokeJob *Node::paintStrokes(const QVariantList &strokes, const QVariantMap &op
         if (!why.isEmpty()) return refuse(why);
     }
 
-    // The brush: the preset named, else the active view's (its preset only: none of the view's other state).
+    // The brush: the preset named, else the active view's (its preset only: none of the view's other state), as
+    // saved (see below).
     KisPaintOpPresetSP base;
     const QString presetName = options.value(QStringLiteral("preset")).toString();
     if (!presetName.isEmpty()) {
@@ -724,6 +776,10 @@ StrokeJob *Node::paintStrokes(const QVariantList &strokes, const QVariantMap &op
         base = viewPreset();
         if (!base) return refuse(QStringLiteral("no preset given, and no active view to take one from"));
     }
+    // The preset as saved, never the tweaks the artist has made to it (in this session, or kept from an earlier one by
+    // the brush preset session storage): an agent's stroke must not depend on them. "useViewTweaks" asks for the
+    // tweaked preset on purpose.
+    if (!options.value(QStringLiteral("useViewTweaks")).toBool()) base = StrokeJobBrush::savedPreset(base);
     if (base->paintOp().id() == QLatin1String("mypaintbrush") && device->colorSpace()->colorModelId() != RGBAColorModelID) {
         return refuse(QStringLiteral("MyPaint brushes paint RGBA layers only"));
     }
@@ -732,6 +788,18 @@ StrokeJob *Node::paintStrokes(const QVariantList &strokes, const QVariantMap &op
         : base->settings()->paintOpCompositeOp();
     if (!device->colorSpace()->hasCompositeOp(compositeOp)) {
         return refuse(QStringLiteral("unknown blending mode \"%1\"").arg(compositeOp));
+    }
+
+    QVariantMap presetProperties;
+    if (options.contains(QStringLiteral("presetProperties"))) {
+        presetProperties = options.value(QStringLiteral("presetProperties")).toMap();
+        for (auto it = presetProperties.constBegin(); it != presetProperties.constEnd(); ++it) {
+            const QMetaType::Type type = QMetaType::Type(it.value().userType());
+            if (type != QMetaType::Bool && type != QMetaType::Int && type != QMetaType::Double && type != QMetaType::QString
+                && type != QMetaType::LongLong && type != QMetaType::UInt) {
+                return refuse(QStringLiteral("presetProperties \"%1\" is not a number, string or boolean").arg(it.key()));
+            }
+        }
     }
 
     // Every stroke is read before any is queued: a job paints all its strokes or is refused whole.
@@ -792,6 +860,10 @@ StrokeJob *Node::paintStrokes(const QVariantList &strokes, const QVariantMap &op
     feeder->inputs = inputs;
     feeder->enforceProtection = !allowProtected;
     feeder->basePreset = base->clone().dynamicCast<KisPaintOpPreset>(); // the view's own object may change later
+    // "presetProperties": settings of this job's own copy of the brush (the saved copy is never changed)
+    for (auto it = presetProperties.constBegin(); it != presetProperties.constEnd(); ++it) {
+        feeder->basePreset->settings()->setProperty(it.key(), it.value());
+    }
     feeder->compositeOp = compositeOp;
     feeder->clip = selection && selection->selection() ? new KisSelection(*selection->selection()) : nullptr;
     feeder->hold = hold;

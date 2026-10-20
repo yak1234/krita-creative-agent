@@ -150,6 +150,7 @@ set(kritaui_LIB_SRCS
     kis_selection_actions_panel_button.cpp
     KisDecorationsManager.cpp
     kis_paintop_box.cc
+    KisPaintOpPresetSessionStorage.cpp
     kis_paintop_option.cpp
     kis_paintop_options_model.cpp
     kis_paintop_settings_widget.cpp

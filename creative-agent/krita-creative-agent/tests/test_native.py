@@ -1025,24 +1025,30 @@ class ForkStrokeJobTests(unittest.TestCase):
         self.assertTrue(seen and set(seen) == {'artist'}, 'strokes the artist paints during the pass land on their own layer: %s' % seen)
         self.assertEqual(h.job_calls[0][3].identity, 'layer-1', 'the job targets the pass layer by id')
 
-    def test_smudge_overlay_is_restored_by_name_after_the_job_ends(self):
+    def test_smudge_overlay_goes_to_the_job_as_preset_properties_and_never_touches_the_view_s_brush(self):
         h = self.harness(); h._creative_validate_smudge_overlay = lambda preset, rate=False: None
-        h.cmd_configure_brush = lambda params: h.events.append('configure') or {'status': 'ok', 'preset': 'b) Smudge'}
-        h.cmd_restore_brush = lambda params: h.events.append(('restore', params.get('preset'), h.job.final)) or {'status': 'ok'}
+        for name in ('cmd_set_brush', 'cmd_configure_brush', 'cmd_restore_brush'):
+            setattr(h, name, lambda params, name=name: h.events.append(name) or {'status': 'ok', 'preset': 'b) Smudge'})
         result = self._pass(h, 2, smudge_overlay=True)
         self.assertEqual(result['status'], 'ok', result.get('error'))
-        self.assertEqual([e for e in h.events if not str(e).startswith('checkpoint')],
-                         ['set_brush', 'configure', 'paintStrokes', ('restore', 'b) Smudge', 'done')],
-                         'configure, paintStrokes, job end, restore: the job holds the view\'s live preset until it ends')
-        self.assertNotIn('preset', h.job_calls[0][1], "so the job copies the view's preset, overlay mode included")
+        self.assertEqual([e for e in h.events if not str(e).startswith('checkpoint')], ['paintStrokes'],
+                         "the view's brush is not selected, configured or restored")
+        options = h.job_calls[0][1]
+        self.assertTrue(options['preset'])
+        self.assertEqual(options['presetProperties'], {'MergedPaint': True})
+        self.assertNotIn('useViewTweaks', options)
         self.assertNotIn('brush_restore', result)
 
-    def test_a_failed_smudge_restore_is_reported(self):
+    def test_smudge_rate_goes_with_the_overlay_properties(self):
         h = self.harness(); h._creative_validate_smudge_overlay = lambda preset, rate=False: None
-        h.cmd_configure_brush = lambda params: {'status': 'ok', 'preset': 'b) Smudge'}
-        h.cmd_restore_brush = lambda params: {'error': 'No saved settings for this brush in this session'}
-        result = self._pass(h, 2, smudge_overlay=True)
-        self.assertIn('failed', result['brush_restore']); self.assertIn('No saved settings', result['brush_restore'])
+        result = self._pass(h, 2, smudge_overlay=True, smudge_rate=0.5)
+        self.assertEqual(result['status'], 'ok', result.get('error'))
+        self.assertEqual(h.job_calls[0][1]['presetProperties'], {'MergedPaint': True, 'SmudgeRateValue': 0.5})
+
+    def test_a_pass_without_overlay_has_no_preset_properties(self):
+        h = self.harness()
+        self.assertEqual(self._pass(h, 2)['status'], 'ok')
+        self.assertNotIn('presetProperties', h.job_calls[0][1])
 
     def test_a_continuation_paints_the_earlier_layer_without_activating_it(self):
         h = self.harness()

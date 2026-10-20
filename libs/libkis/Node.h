@@ -766,7 +766,14 @@ public Q_SLOTS:
      * @param options a map of:
      * <ul>
      * <li>"preset": the name of a brush preset in the resource database; when not given, a copy of the active
-     *     view's current preset (refused without one);</li>
+     *     view's current preset (refused without one). Either way the preset is used AS SAVED: the version its
+     *     storage holds, never the artist's tweaks to it (unsaved changes in the view, or tweaks Krita keeps between
+     *     sessions), so a stroke does not depend on yesterday's tweaking. Only its size, opacity, flow and blending
+     *     mode follow the job's options;</li>
+     * <li>"presetProperties": a map of preset settings (numbers, strings, booleans) set on the job's own copy of the
+     *     brush, for example {"MergedPaint": true} for a colour-smudge brush; the preset itself is not changed;</li>
+     * <li>"useViewTweaks": true to use the preset as it is now in Krita, with the artist's unsaved tweaks (the
+     *     spacing, dynamics and textures they set); false (the default) for the saved preset;</li>
      * <li>"compositeOp": the blending mode id (for example "normal", "multiply"); the preset's own when not
      *     given. Erasing is "erase": the view's eraser mode never applies;</li>
      * <li>"name": the undo step's name ("Scripted Brush Strokes" when not given);</li>

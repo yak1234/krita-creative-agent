@@ -652,23 +652,23 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             elif operation in TOOL_OPERATIONS:
                 result.update(self._tool_apply(doc, session, operation, params, result))
             elif operation == 'paint_pass':
-                # The fork paints a pass as one stroke job (Node.paintStrokes) that takes its preset by name and needs no
-                # view, so the artist's brush is left alone; smudge overlay mode is set on the view's preset, which the
-                # job then copies. Stock Krita paints with the view's brush, as before.
+                # The fork paints a pass as one stroke job (Node.paintStrokes) that takes its preset by name, as saved, and
+                # needs no view, so the artist's brush is left alone; smudge overlay mode goes to the job as
+                # presetProperties (set on the job's own copy). Stock Krita paints with the view's brush, as before.
                 stroke_job = on_fork()
-                if not stroke_job or params.get('smudge_overlay'):
+                if not stroke_job:
                     brush = self.cmd_set_brush({'preset': params['preset']})
                     if brush.get('error'):
                         raise RuntimeError(brush['error'])
-                if params.get('smudge_overlay'):
-                    # Overlay mode smudges the merged image onto this pass's own empty layer;
-                    # without it a smudge brush only mixes that empty layer and paints nothing.
-                    # smudge_rate: how far a stroke carries paint (1 drags its first colour the whole way).
-                    overlay = self.cmd_configure_brush({'properties': dict({'MergedPaint': True},
-                        **({'SmudgeRateValue': params['smudge_rate']} if 'smudge_rate' in params else {}))})
-                    if overlay.get('error'):
-                        raise RuntimeError(overlay['error'])
-                    smudge_restore, smudge_preset = True, overlay.get('preset')
+                    if params.get('smudge_overlay'):
+                        # Overlay mode smudges the merged image onto this pass's own empty layer;
+                        # without it a smudge brush only mixes that empty layer and paints nothing.
+                        # smudge_rate: how far a stroke carries paint (1 drags its first colour the whole way).
+                        overlay = self.cmd_configure_brush({'properties': dict({'MergedPaint': True},
+                            **({'SmudgeRateValue': params['smudge_rate']} if 'smudge_rate' in params else {}))})
+                        if overlay.get('error'):
+                            raise RuntimeError(overlay['error'])
+                        smudge_restore, smudge_preset = True, overlay.get('preset')
                 if params.get('continue_layer_id'):
                     node = self._creative_node(doc, params['continue_layer_id'])
                     if not stroke_job:
@@ -1821,8 +1821,11 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         The job's undo step is its own, named after the pass, or joins an open agent move by itself."""
         strokes, out = params['strokes'], {}
         options = {'name': params['name']}
-        if not params.get('smudge_overlay'):
-            options['preset'] = params['preset']     # else a copy of the view's preset, set to overlay mode above
+        options['preset'] = params['preset']
+        if params.get('smudge_overlay'):
+            # Overlay mode on the job's own copy of the saved preset; the view's preset is never touched.
+            options['presetProperties'] = dict({'MergedPaint': True},
+                **({'SmudgeRateValue': params['smudge_rate']} if 'smudge_rate' in params else {}))
         if selection is None and params.get('region'):
             # The stage mask clips the whole brush footprint and fades in at inner edges (stage_mask.py); the job clips
             # to it alone, whatever the document selects, so the artist's selection is never swapped.

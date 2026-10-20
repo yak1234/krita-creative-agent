@@ -669,6 +669,44 @@ Behaviour to know with the clipping mask view ON (default OFF):
 - Group rows show a static folder icon instead of the group's composite thumbnail, at any height.
 
 Not ported on purpose: Revamp's `layer_kit` plugin; its selection sync (selecting the top clipped layer also selects the hidden wrapper group, which would make Delete remove the whole stack); the Alt+click isolate gesture (bb9cc08); the properties button row (48ba22a); the narrow docker (c94e713). libs/image is untouched, there is no `.kra` change, and libkis `Node.setInheritAlpha` (the plugin's `clip_to`) does not pass through any of the changed paths.
+## Ported from Krita-Revamp (task 3.1, brush batch: preset persistence)
+
+Source: Krita-Revamp (branch revamp-5.2.14, GPL-3.0; author "10zindraws" / "Tenzin Rangdol"). Commits b908ad5 and the sliderChanged part
+of 681ef9f; their SPDX lines stay in `KisPaintOpPresetSessionStorage.*`. The smoothing slider (6b) and stroke previews (3) are parked.
+
+- A brush tweak (any setting) is stored as settings XML in `presetTweaksrc` (the build's own settings folder, through
+  `KisAppIdentity::configFileName`) under `Preset_<resourceId>_<md5>`; loaded when the preset is selected (preset dirty); cleared by
+  Reload and by Save (all MD5s of the resource; Save-as-new keeps the original's). The "Temporarily save tweaks" checkbox is gone.
+- Agent gate. Finding: `View.setBrushSize/setPaintingOpacity/setPaintingFlow/setBrushRotation/setPatternSize/setBrushFade/
+  setEraserMode/setCurrentBlendingMode` write into the view's preset (derived resources, `kis_derived_resources.cpp`), and
+  `Preset.fromXML` (configure_brush) changes it in memory. They do not reach `sliderChanged` (slider signals are blocked), but whether
+  the option widget then calls `slotGuiChangedCurrentPreset` could not be excluded by reading. The plugin's own flows (paint passes,
+  set_brush, configure_brush, the eraser toggles) mostly run OUTSIDE an agent move and never call `setAgentActive`, so the probe
+  (`KisAgentHooks::agentWorkOpen`: an open agent move, an asynchronous stroke job, or `Document.setAgentActive`) is only one guard.
+  The storage therefore also:
+  - marks a preset a script changes (`markScriptChanged`, called BEFORE the change by every View brush setter above and by
+    `Preset.fromXML`, with a snapshot of its settings XML and a log line) and saves nothing for it while its settings differ from the
+    snapshot; the mark ends when the settings are back as they were (restore_brush), when stored tweaks replace them, or on Reload/Save;
+  - loads nothing while a script selects a preset (`View.setCurrentBrushPreset` holds a `ScriptSelection`) or an agent works, and never
+    over a preset that is dirty (newer memory state wins).
+- Tweaks load in `setCurrentPaintop(preset)`, so the brush the last session ended with has its tweaks at startup; the stored XML leaves
+  out `EraserMode` and `CompositeOp`. Size, opacity, flow and rotation changes by shortcut are saved too (when the preset is dirty and not
+  in eraser mode); scripts' changes are refused by the marks.
+- The "Temporarily Save Tweaks To Presets" checkbox is removed and `useDirtyPresets` is always true: tweaks are always kept and always
+  persist (before, switching presets with the box unticked reloaded the preset from disk, dropping tweaks).
+- `Node.paintStrokes` uses the preset AS SAVED (`KisResourceLocator::loadStoredCopy`), unless `useViewTweaks: true`. The plugin's
+  smudge overlay passes `presetProperties` ({MergedPaint, SmudgeRateValue}), applied to the job's own copy; it no longer touches the
+  view's brush on the fork. `StrokeJobBrush::setViewPresetForTesting` is exported only so the tests (separate binaries) can supply a
+  view preset; it is not in any shipped header.
+
+Upstream files edited: `libs/resources/KisResourceLocator.h/.cpp` (public `loadStoredCopy`), `libs/ui/kis_paintop_box.cc/.h`,
+`kis_config.cc` (useDirtyPresets always true), `dialogs/KisDlgSavePreset.cpp`, `forms/wdgpaintopsettings.ui`,
+`widgets/kis_paintop_presets_editor.cpp/.h`, `widgets/kis_preset_chooser.cpp`, `libs/ui/CMakeLists.txt`,
+`libs/ui/tests/CMakeLists.txt` (adds `TestPresetSessionStorage`), `libs/libkis/View.cpp`, `Preset.cpp`, `DocumentChanges.cpp`,
+`NodeStrokeJobs.cpp`, `Node.h`, `libs/libkis/tests/TestStrokeJobs.*`.
+
+Live look: tweak a brush size/spacing, quit, reopen: the tweak and the dirty mark are back; Reload clears it; Save clears it. Run an
+Agent-mode chat after tweaking: strokes use the saved brush and `presetTweaksrc` is unchanged.
 
 ## Licence
 

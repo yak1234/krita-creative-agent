@@ -23,6 +23,9 @@
 #include <Node.h>
 #include <Selection.h>
 #include <StrokeJob.h>
+#include <StrokeJobBrush.h>
+#include <Preset.h>
+#include <Resource.h>
 #include <DocumentChanges.h>
 
 #include <QThread>
@@ -30,9 +33,11 @@
 
 #include <KisDocument.h>
 #include <KisGlobalResourcesInterface.h>
+#include <KisPaintOpPresetSessionStorage.h>
 #include <KisPart.h>
 #include <KisResourceTypes.h>
 #include <KoColorSpaceRegistry.h>
+#include <KoCompositeOpRegistry.h>
 #include <brushengine/kis_paintop_preset.h>
 #include <brushengine/kis_paintop_settings.h>
 #include <kis_image.h>
@@ -1108,7 +1113,7 @@ void TestStrokeJobs::testBrushIsFixedAtTheCall()
         strokes << QVariantMap{{"points", QVariantList{QVariant(QVariantList{20 + 8 * (i % 20), 20 + 18 * (i / 20)})}},
                                {"size", i < 32 ? 12.0 : 13.0}};
     }
-    QScopedPointer<StrokeJob> job(d.paint->paintStrokes(strokes, {{"preset", name}}));
+    QScopedPointer<StrokeJob> job(d.paint->paintStrokes(strokes, {{"preset", name}, {"useViewTweaks", true}}));
     QVERIFY(job);
     QVERIFY2(job->state() != "failed", qPrintable(job->errorString()));
     // The view's brush changes after the call (a different tool, or a toggle the plugin restores later).
@@ -1158,6 +1163,151 @@ void TestStrokeJobs::testUndoBetweenTopUpsUndoesTheJob()
     d.image->waitForDone();
     QCOMPARE(areaCount(d.alpha(), QRect(0, 0, 620, 285)), 0);
     QVERIFY(areaCount(d.alpha(), QRect(0, 285, 620, 15)) > 0);
+}
+
+void TestStrokeJobs::testPaintsTheSavedBrushNotTheViewsTweaks()
+{
+    const QString name = pressurePreset();
+    QVERIFY(!name.isEmpty());
+    KisPaintOpPresetSP live = KisGlobalResourcesInterface::instance()->source(ResourceType::PaintOpPresets)
+                                  .bestMatch(QString(), QString(), name).dynamicCast<KisPaintOpPreset>();
+    QVERIFY(live);
+    QVERIFY(live->resourceId() >= 0);
+    struct Restore {
+        KisPaintOpPresetSP preset; QString op; bool dirty;
+        ~Restore()
+        {
+            StrokeJobBrush::setViewPresetForTesting(KisPaintOpPresetSP());
+            preset->settings()->setPaintOpCompositeOp(op);
+            preset->setDirty(dirty);
+        }
+    } restore {live, live->settings()->paintOpCompositeOp(), live->isDirty()};
+
+    auto painted = [] (const QVariantMap &options, QString *error) {
+        JobDocument d(200, 100);
+        QScopedPointer<StrokeJob> job(d.paint->paintStrokes({line({{20, 50}, {180, 50}}, 20)}, options));
+        if (!job || !settle(job.data()) || job->state() != "done") {
+            *error = job ? job->state() + ": " + job->errorString() : QString("no job");
+            return -1;
+        }
+        d.image->waitForDone();
+        return areaCount(d.alpha(), QRect(0, 0, 200, 100));
+    };
+    QString error;
+    const int saved = painted({{"preset", name}}, &error);
+    QVERIFY2(saved > 0, qPrintable(error));
+
+    // The artist's tweak, as Krita's session storage loads it into the preset when it is selected: this brush erases.
+    live->settings()->setPaintOpCompositeOp(COMPOSITE_ERASE);
+    live->setDirty(true);
+
+    // Named: the preset as saved, unless the tweaked one is asked for
+    QCOMPARE(painted({{"preset", name}}, &error), saved);
+    QCOMPARE(painted({{"preset", name}, {"useViewTweaks", false}}, &error), saved);
+    QCOMPARE(painted({{"preset", name}, {"useViewTweaks", true}}, &error), 0); // erases an empty layer: nothing
+    QCOMPARE(error, QString());
+
+    // Not named: the view's preset, as saved, unless its tweaks are asked for
+    StrokeJobBrush::setViewPresetForTesting(live);
+    QCOMPARE(painted({}, &error), saved);
+    QCOMPARE(painted({{"useViewTweaks", true}}, &error), 0);
+    QCOMPARE(error, QString());
+
+    // The job never touches the view's own preset
+    QCOMPARE(live->settings()->paintOpCompositeOp(), QString(COMPOSITE_ERASE));
+    QVERIFY(live->isDirty());
+
+    // A preset not in the database has no saved version: the preset itself
+    KisPaintOpPresetSP unsaved = live->clone().dynamicCast<KisPaintOpPreset>();
+    unsaved->setResourceId(-1);
+    QCOMPARE(StrokeJobBrush::savedPreset(unsaved).data(), unsaved.data());
+    QVERIFY(StrokeJobBrush::savedPreset(live).data() != live.data());
+    QCOMPARE(StrokeJobBrush::savedPreset(live)->settings()->paintOpCompositeOp(), restore.op);
+}
+
+void TestStrokeJobs::testAgentPassLeavesStoredTweaksAlone()
+{
+    const QString name = pressurePreset();
+    QVERIFY(!name.isEmpty());
+    KisPaintOpPresetSP live = KisGlobalResourcesInterface::instance()->source(ResourceType::PaintOpPresets)
+                                  .bestMatch(QString(), QString(), name).dynamicCast<KisPaintOpPreset>();
+    QVERIFY(live);
+    QVERIFY(live->resourceId() >= 0);
+    KisPaintOpPresetSessionStorage *storage = KisPaintOpPresetSessionStorage::instance();
+    const qreal size = live->settings()->paintOpSize();
+    const bool dirty = live->isDirty();
+    struct Restore {
+        KisPaintOpPresetSessionStorage *storage; KisPaintOpPresetSP preset; qreal size; bool dirty;
+        ~Restore()
+        {
+            preset->settings()->setPaintOpSize(size);
+            preset->setDirty(dirty);
+            storage->clearTweaks(preset);
+        }
+    } restore {storage, live, size, dirty};
+
+    auto fileContent = [storage] () {
+        storage->sync();
+        QFile file(storage->filePath());
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+    };
+
+    // The artist's tweak, stored
+    live->settings()->setPaintOpSize(size + 7);
+    QVERIFY(storage->saveTweaks(live));
+    const QByteArray before = fileContent();
+    QVERIFY(!before.isEmpty());
+    QVERIFY(storage->hasTweaks(live));
+
+    // An agent pass: a move with a job, the brush changed from the script as the plugin does (size through the
+    // preset, Preset.fromXML), and Krita's GUI trying to store the result as the artist's tweak.
+    JobDocument d(200, 100);
+    QVERIFY(d.doc->beginAgentMove("brush"));
+    QScopedPointer<StrokeJob> job(d.paint->paintStrokes({line({{20, 50}, {180, 50}}, 20)}, {{"preset", name}}));
+    QVERIFY(job);
+    QVERIFY2(job->state() != "failed", qPrintable(job->errorString()));
+    live->settings()->setPaintOpSize(size + 70);
+    QVERIFY(!storage->saveTweaks(live));          // Krita's slotGuiChangedCurrentPreset / sliderChanged while the agent works
+    QVERIFY(d.doc->endAgentMove());
+    QVERIFY(settle(job.data()));
+    QCOMPARE(job->state(), QString("done"));
+    d.image->waitForDone();
+
+    QScopedPointer<Resource> resource(new Resource(live, ResourceType::PaintOpPresets));
+    Preset script(resource.data());
+    script.fromXML(script.toXML());               // the plugin's configure_brush / restore_brush
+    QVERIFY(storage->isScriptChanged(live));
+    live->settings()->setPaintOpSize(size + 80);
+    QVERIFY(!storage->saveTweaks(live));          // after the pass: still the script's change, not the artist's
+
+    QCOMPARE(fileContent(), before);
+    QVERIFY(storage->hasTweaks(live));
+}
+
+void TestStrokeJobs::testPresetPropertiesApplyToTheJobsCopyOnly()
+{
+    const QString name = pressurePreset();
+    QVERIFY(!name.isEmpty());
+    KisPaintOpPresetSP live = KisGlobalResourcesInterface::instance()->source(ResourceType::PaintOpPresets)
+                                  .bestMatch(QString(), QString(), name).dynamicCast<KisPaintOpPreset>();
+    QVERIFY(live);
+    const QString before = live->settings()->toXML();
+    const bool dirty = live->isDirty();
+    JobDocument d(200, 100);
+    QScopedPointer<StrokeJob> job(d.paint->paintStrokes({line({{20, 50}, {180, 50}}, 20)},
+                                                        {{"preset", name}, {"presetProperties", QVariantMap{{"MergedPaint", true}}}}));
+    QVERIFY(job);
+    QVERIFY2(job->state() != "failed", qPrintable(job->errorString()));
+    QVERIFY(settle(job.data()));
+    d.image->waitForDone();
+    QCOMPARE(live->settings()->toXML(), before);          // the view's preset is untouched
+    QCOMPARE(live->isDirty(), dirty);
+    QVERIFY(!StrokeJobBrush::savedPreset(live)->settings()->getBool("MergedPaint")); // so is the saved copy
+
+    QScopedPointer<StrokeJob> bad(d.paint->paintStrokes({line({{20, 50}, {180, 50}}, 20)},
+                                                        {{"preset", name}, {"presetProperties", QVariantMap{{"MergedPaint", QVariantList{1}}}}}));
+    QCOMPARE(bad->state(), QString("failed"));
+    QVERIFY(bad->errorString().contains("presetProperties"));
 }
 
 KISTEST_TEMPORARY_HOME_MAIN(TestStrokeJobs)

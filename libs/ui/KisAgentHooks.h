@@ -27,7 +27,14 @@ public:
     /// docker) or before it is saved.
     using DocumentEvent = void (*)(KisDocument *document);
 
+    /// True while an agent move, an asynchronous stroke job or the script's agent switch (Document.setAgentActive) is
+    /// open on any document (libkis's DocumentChanges::agentActive()). The plugin's own flows (paint passes, brush
+    /// selection) are not covered by it unless they run inside a move. Used by the brush preset session storage, which must not save the agent's
+    /// brush changes as the artist's tweaks. GUI thread.
+    using AgentWorkProbe = bool (*)();
+
     static void setBeforeAddCommand(BeforeAddCommand hook);
+    static void setAgentWorkProbe(AgentWorkProbe probe);
     /// Before a macro opens on \p document's undo stack through its undo store (everything added until it ends
     /// becomes its child), and after it ends. GUI thread.
     static void setBeforeBeginMacro(DocumentEvent hook);
@@ -35,6 +42,8 @@ public:
     static void setBeforeHistoryMove(DocumentEvent hook);
     static void setBeforeSave(DocumentEvent hook);
 
+    /// False without a probe (nothing is the agent's).
+    static bool agentWorkOpen();
     static void beforeAddCommand(KisDocument *document, const KUndo2Command *command);
     static void beforeBeginMacro(KisDocument *document);
     static void afterEndMacro(KisDocument *document);

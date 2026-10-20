@@ -788,6 +788,21 @@ bool KisResourceLocator::reloadResource(const QString &resourceType, const KoRes
     return true;
 }
 
+KoResourceSP KisResourceLocator::loadStoredCopy(const KoResourceSP resource)
+{
+    // Krita Agent: SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
+    if (!resource || resource->resourceId() < 0) return KoResourceSP();
+
+    KisResourceStorageSP storage = d->safeGetStorage(makeStorageLocationAbsolute(resource->storageLocation()));
+    if (!storage) return KoResourceSP();
+
+    KoResourceSP copy = resource->clone();
+    if (!copy || !storage->loadVersionedResource(copy)) return KoResourceSP();
+    copy->setMD5Sum(storage->resourceMd5(resource->resourceType().first + "/" + resource->filename()));
+    copy->setDirty(false);
+    return copy;
+}
+
 QMap<QString, QVariant> KisResourceLocator::metaDataForResource(int id) const
 {
     return KisResourceCacheDb::metaDataForId(id, "resources");

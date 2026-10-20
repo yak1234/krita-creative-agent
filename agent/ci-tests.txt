@@ -19,6 +19,7 @@ TestKritaAgentResources
 TestDocumentAgentCraft
 TestFilterMaskBake
 TestStrokeJobs
+TestPresetSessionStorage
 TestNodeAgentTools
 KisFeatureListTest
 KisFeatureImageCommandTest

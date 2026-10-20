@@ -6,6 +6,8 @@
 #include "Preset.h"
 #include <QDomDocument>
 
+#include <KisPaintOpPresetSessionStorage.h>
+
 struct Preset::Private {
     KisPaintOpPresetSP preset {0};
 };
@@ -41,6 +43,8 @@ void Preset::fromXML(const QString &xml)
         return;
     }
 
+    // Krita Agent: a script's change is not the artist's tweak (KisPaintOpPresetSessionStorage)
+    KisPaintOpPresetSessionStorage::instance()->markScriptChanged(d->preset);
     d->preset->fromXML(xmlDoc.documentElement(),d->preset->resourcesInterface());
     d->preset->setDirty(true);
 }

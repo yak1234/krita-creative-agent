@@ -19,6 +19,7 @@
 #include "KisResourceServerProvider.h"
 #include <kis_paintop_preset_icon_library.h>
 #include <KisResourceUserOperations.h>
+#include "KisPaintOpPresetSessionStorage.h"
 
 #include <kstandardguiitem.h>
 
@@ -202,7 +203,12 @@ void KisPresetSaveWidget::savePreset()
         }
 
         // this helps updating the thumbnail in the big label in the editor
-        if (success) Q_EMIT resourceSelected(curPreset);
+        if (success) {
+            // Krita-Revamp (b908ad5): the saved version is the baseline now, the stored tweaks go. (Saving as a new
+            // preset keeps the original's tweaks: the original is still tweaked.)
+            KisPaintOpPresetSessionStorage::instance()->clearTweaks(curPreset);
+            Q_EMIT resourceSelected(curPreset);
+        }
     }
 
 

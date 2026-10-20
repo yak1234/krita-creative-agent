@@ -14,11 +14,23 @@ std::atomic<KisAgentHooks::DocumentEvent> s_beforeHistoryMove {nullptr};
 std::atomic<KisAgentHooks::DocumentEvent> s_beforeSave {nullptr};
 std::atomic<KisAgentHooks::DocumentEvent> s_beforeBeginMacro {nullptr};
 std::atomic<KisAgentHooks::DocumentEvent> s_afterEndMacro {nullptr};
+std::atomic<KisAgentHooks::AgentWorkProbe> s_agentWorkProbe {nullptr};
 }
 
 void KisAgentHooks::setBeforeAddCommand(BeforeAddCommand hook)
 {
     s_beforeAddCommand = hook;
+}
+
+void KisAgentHooks::setAgentWorkProbe(AgentWorkProbe probe)
+{
+    s_agentWorkProbe = probe;
+}
+
+bool KisAgentHooks::agentWorkOpen()
+{
+    AgentWorkProbe probe = s_agentWorkProbe;
+    return probe && probe();
 }
 
 void KisAgentHooks::setBeforeHistoryMove(DocumentEvent hook)

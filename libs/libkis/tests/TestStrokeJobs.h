@@ -43,6 +43,9 @@ private Q_SLOTS:
     void testBrushIsFixedAtTheCall();
     void testUndoBetweenTopUpsUndoesTheJob();
     void testOffGuiThreadRefusedAndALoneStartDabs();
+    void testPaintsTheSavedBrushNotTheViewsTweaks();
+    void testAgentPassLeavesStoredTweaksAlone();
+    void testPresetPropertiesApplyToTheJobsCopyOnly();
 };
 
 #endif

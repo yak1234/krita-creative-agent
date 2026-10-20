@@ -15,6 +15,7 @@ public Q_SLOTS:
     double progress() const;
     QRect changedRect() const;
     QString errorString() const;
+    QStringList keptOut() const;
     QString cancelReason() const;
     QString name() const;
     int elapsedMs() const;

@@ -20,6 +20,9 @@
 
 #include <kis_debug.h>
 #include <Node.h>
+#include <KisFeatureList.h>
+#include <KisFeatureProtection.h>
+#include "DocumentHistory.h"
 
 struct Selection::Private {
     Private() {}
@@ -163,8 +166,16 @@ void Selection::cut(Node* node)
     if (node->node()->exactBounds().isEmpty()) return;
     if (!node->node()->hasEditablePaintDevice()) return;
     KisPaintDeviceSP dev = node->node()->paintDevice();
+    // Krita Agent (krita-fork 6.5): an agent's cut leaves the protected features alone. A cut that is refused for
+    // its layer's sake leaves the clipboard as it was, so this comes before the copy.
+    KisSelectionSP selection = d->selection;
+    if (KisImageSP protectedBy = DocumentHistory::protectionFor(node->node()->image())) {
+        if (!KisFeatureProtection::whyNotCanvasAligned(protectedBy, node->node()).isEmpty()) return;
+        protectedBy->featureList()->recordKeptOut(KisFeatureProtection::keptOutOf(protectedBy, selection->selectedExactRect(), selection));
+        selection = KisFeatureProtection::guardSelection(protectedBy, selection);
+    }
     copy(node);
-    dev->clearSelection(d->selection);
+    dev->clearSelection(selection);
     node->node()->setDirty(d->selection->selectedExactRect());
 }
 
@@ -178,11 +189,17 @@ void Selection::paste(Node *destination, int x, int y)
     KisPaintDeviceSP src = KisClipboard::instance()->clip(defaultBounds, false);
     KisPaintDeviceSP dst = destination->node()->paintDevice();
     if (!dst || !src) return;
+    KisSelectionSP selection = d->selection;
+    if (KisImageSP protectedBy = DocumentHistory::protectionFor(destination->node()->image())) {
+        if (!KisFeatureProtection::whyNotCanvasAligned(protectedBy, destination->node()).isEmpty()) return;
+        protectedBy->featureList()->recordKeptOut(KisFeatureProtection::keptOutOf(protectedBy, selection->selectedExactRect(), selection));
+        selection = KisFeatureProtection::guardSelection(protectedBy, selection);
+    }
     KisPainter::copyAreaOptimized(QPoint(x, y),
                                   src,
                                   dst,
                                   src->exactBounds(),
-                                  d->selection);
+                                  selection);
     destination->node()->setDirty();
 }
 

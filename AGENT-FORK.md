@@ -149,6 +149,19 @@ Keep this table current: every upstream file the `krita-agent` branch changes, a
 | `plugins/extensions/pykrita/sip/krita/Filter.sip` | `Filter.apply` returns `bool` (it was declared `void`, so Python got None for a refusal) | libkis traps (2.9) |
 | `plugins/extensions/pykrita/sip/krita/Node.sip` | `paintLine` takes `QPointF` (it was `QPoint`, though libkis takes `QPointF`) | libkis traps (2.9) |
 | `libs/libkis/CMakeLists.txt`, `libs/libkis/tests/CMakeLists.txt`, `plugins/extensions/pykrita/tests/CMakeLists.txt` | Build `ScriptWaits.cpp`; add `TestLibkisTraps`, `TestLibkisNoView`, `TestPythonTraps` | libkis traps (2.9) |
+| `libs/image/CMakeLists.txt`, `libs/image/tests/CMakeLists.txt` | Build `KisFeatureProtection.cpp` and `KisFeatureQueries.cpp`; add `KisFeatureProtectionTest` | protection (6.5), queries (6.4) |
+| `libs/libkis/CMakeLists.txt`, `libs/libkis/tests/CMakeLists.txt` | Build `DocumentFeatureQueries.cpp`, `DocumentFeatureProtection.cpp`; add `TestDocumentFeatureQueries`, `TestFeatureProtection` | queries (6.4), protection (6.5) |
+| `libs/libkis/Document.h`, `plugins/extensions/pykrita/sip/krita/Document.sip` | Declare `featuresAt()`, `featuresOverlapping()` (rect, feature, selection), `featuresTouching()` (feature, name), `selection(expression)` (an overload of the active-selection getter), `lastKeptOut()`, `agentMoveKeptOut()`, `setProtectionSuspended()`, `protectionSuspended()` in a block of their own after `maskSegments()`; bodies in our `DocumentFeatureQueries.cpp`, `DocumentFeatureProtection.cpp` | queries (6.4), protection (6.5) |
+| `libs/libkis/Feature.h`, `Feature.cpp`, `plugins/extensions/pykrita/sip/krita/Feature.sip` | `setProtected()` (an undo step through the new `KisSetFeatureProtectedCommand`); our files | protection (6.5) |
+| `libs/libkis/StrokeJob.h`, `StrokeJob.cpp`, `StrokeJobShared.h`, `NodeStrokeJobs.cpp`, `plugins/extensions/pykrita/sip/krita/StrokeJob.sip` | `keptOut()` and `status()["keptOut"]`; each window of a job's strokes is clipped to its selection minus the protected features (our files) | protection (6.5) |
+| `libs/libkis/NodeAgentTools.cpp`, `libs/ui/processing/KisToolFunctions.{h,cpp}` | `allowProtected` option; `Target::enforceProtection`; the tool functions read the selection through the protected features when their stroke runs, and `Completion::keptOut()` (our files) | protection (6.5) |
+| `libs/libkis/Filter.cpp`, `Selection.cpp`, `DocumentHistory.{h,cpp}` | `Filter.apply()`, `startFilter()`, `Selection.cut()` and `paste()` and `Node.setPixelData()` keep out of protected features while the agent works (`DocumentHistory::protectionFor()`); an agent move's start and end reset what was kept out and any suspension of protection (upstream files, small branches each) | protection (6.5) |
+| `libs/image/KisFeature.h`, `KisFeature.cpp`, `KisFeatureList.h`, `KisFeatureList.cpp`, `KisFeatureCommands.{h,cpp}` | `hasPixelIn()`; the list's `revision()`, protection cache (`protectedMask()`), suspension and kept-out records; `KisSetFeatureProtectedCommand` (our files) | protection (6.5), queries (6.4) |
+| `libs/libkis/tests/CMakeLists.txt` | `kritatransformmaskstubs` added to the libkis tests' `LINK_LIBRARIES` (a transform mask asks the registry for its parameters' holder, which the stubs provide) | protection (6.5) |
+| `agent/run-tests.sh` | The failure summary also prints the `Loc:`, `Actual` and `Expected` lines and `QINFO` lines of the test log (a failing test said nothing about where) | build (6.5) |
+| `libs/libkis/Node.h`, `Node.cpp`, `plugins/extensions/pykrita/sip/krita/Node.sip` | `scaleNode`, `rotateNode`, `cropNode`, `shearNode` return `bool` (they were `void`); they, `setColorSpace`, `setColorProfile` and `mergeDown` refuse when the layer's pixels reach a protected feature | protection (6.5) |
+| `libs/libkis/Channel.cpp` | `Channel.setPixelData()` keeps protected pixels while the agent works | protection (6.5) |
+| `plugins/extensions/pykrita/tests/CMakeLists.txt`, `agent/ci-tests.txt` | Add `TestPythonProtection`; the new test programs | protection (6.5) |
 | `libs/ui/dialogs/kis_about_application.cpp` | Window title and the top of the "Your Rights" tab come from our `KisAboutAgent` (name, version and commit, GPL-3.0-or-later notice, source offer); both empty for stock Krita. **Needs a rebuild to show** | packaging (1.3) |
 | `libs/ui/CMakeLists.txt` | Builds `dialogs/KisAboutAgent.cpp` | packaging (1.3) |
 | `plugins/extensions/pykrita/plugin/utilities.cpp` | `Python::setPath`: `runningInBundle` is also true for an app bundle not called `krita.app` (`.app/contents` in the root). **Needs a rebuild to take effect** | packaging (1.3) |
@@ -195,6 +208,15 @@ tests `libs/image/tests/KisFeatureListTest`, `libs/image/tests/KisFeatureImageCo
 a configure option (an exception to rule 4): a document without features writes no element and no file, so its `.kra`
 is what stock Krita writes, an image operation on it runs as upstream, and an empty list costs one object per image.
 Stock Krita opens our `.kra` files but drops their features: saving the file again from stock Krita loses them.
+
+Our own files for the queries and protection (6.4, 6.5): `libs/image/KisFeatureQueries.{h,cpp}` (point, rectangle,
+feature and selection queries over the stored masks, touching with a gap of one pixel, and the expression grammar of
+`Document.selection()`), `libs/image/KisFeatureProtection.{h,cpp}` (the protected area as a selection, the write
+clips, `clipPixelWrite()` for raw pixel writes, the canvas-alignment check), `libs/libkis/DocumentFeatureQueries.cpp`,
+`libs/libkis/DocumentFeatureProtection.cpp`; tests `libs/image/tests/KisFeatureProtectionTest`,
+`libs/libkis/tests/TestDocumentFeatureQueries`, `libs/libkis/tests/TestFeatureProtection`. The `.kra` already carried
+`protected` on each `<feature>` (task 6.1, version 1), so no format version changes: a reader that does not know the
+attribute ignores it.
 
 Our own files for the feature builders (6.3): `libs/libkis/KisAgentReadLock.h`, `libs/image/KisFeatureBuilders.{h,cpp}` (the selection tools' logic as
 functions on a reference device: the contiguous and similar colour searches through `KisFillPainter`, grow, shrink,

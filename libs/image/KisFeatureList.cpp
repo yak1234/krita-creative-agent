@@ -21,7 +21,13 @@
 #include <boost/geometry/geometries/point.hpp>
 #include <boost/geometry/index/rtree.hpp>
 
+#include <KisRegion.h>
+#include <atomic>
+
+#include "kis_iterator_ng.h"
+#include "kis_paint_device.h"
 #include "kis_pixel_selection.h"
+#include "kis_sequential_iterator.h"
 
 namespace bg = boost::geometry;
 namespace bgi = boost::geometry::index;
@@ -53,6 +59,21 @@ struct KisFeatureList::Private {
     FeatureIndex index;
     /// The box each indexed feature has in the index, to remove it exactly.
     QHash<KisFeature *, IndexBox> indexed;
+
+    // ---- protection ----
+    std::atomic<int> revision {0};
+    std::atomic<int> protectionRevision {0};
+    std::atomic<bool> suspended {false};
+    /// The protection answers for the revision they were built at; built under \p cacheMutex (not \p mutex, so a
+    /// slow build never blocks reading the list).
+    mutable QMutex cacheMutex;
+    std::atomic<int> cachedRevision {-1};
+    std::atomic<bool> cachedHas {false};
+    KisPixelSelectionSP cachedProtected;
+    KisPixelSelectionSP cachedUnprotected;
+    mutable QMutex keptOutMutex;
+    QStringList lastKeptOut;
+    QStringList moveKeptOut;
 
     void unindex(KisFeature *feature)
     {
@@ -222,6 +243,8 @@ bool KisFeatureList::insertFeature(KisFeatureSP feature, int index)
         m_d->mayHaveFeatures = true;
         m_d->reindex(feature.data());
         feature->setOwner(m_d->guard);
+        m_d->revision++;
+        m_d->protectionRevision++;
     }
     Q_EMIT sigFeatureAdded(feature->id());
     return true;
@@ -241,6 +264,8 @@ KisFeatureSP KisFeatureList::removeFeature(const QUuid &id)
         if (!removed) return removed;
         m_d->unindex(removed.data());
         removed->setOwner(QSharedPointer<KisFeatureOwnerGuard>());
+        m_d->revision++;
+        m_d->protectionRevision++;
     }
     Q_EMIT sigFeatureRemoved(id);
     return removed;
@@ -258,6 +283,8 @@ void KisFeatureList::clear()
         Q_FOREACH (KisFeatureSP feature, removed) {
             feature->setOwner(QSharedPointer<KisFeatureOwnerGuard>());
         }
+        m_d->revision++;
+        m_d->protectionRevision++;
     }
     Q_FOREACH (KisFeatureSP feature, removed) {
         Q_EMIT sigFeatureRemoved(feature->id());
@@ -278,7 +305,7 @@ QList<KisFeatureSP> KisFeatureList::featuresWithBoundsContaining(const QPoint &p
     return featuresWithBoundsIntersecting(QRect(point, QSize(1, 1)));
 }
 
-void KisFeatureList::featureChanged(KisFeature *feature, bool boundsChanged)
+void KisFeatureList::featureChanged(KisFeature *feature, bool boundsChanged, bool protectionRelevant)
 {
     {
         QMutexLocker l(&m_d->mutex);
@@ -296,6 +323,154 @@ void KisFeatureList::featureChanged(KisFeature *feature, bool boundsChanged)
         if (boundsChanged) {
             m_d->reindex(feature);
         }
+        m_d->revision++;
+        m_d->protectionRevision += protectionRelevant ? 1 : 0;
     }
     Q_EMIT sigFeatureChanged(feature->id());
+}
+
+// ---- Protection (krita-fork task 6.5) ----------------------------------------------------------------------------
+
+namespace {
+
+/// Makes every non-zero pixel of \p mask 255. Reads and writes only the tiles that hold a value between 1 and 254.
+void binarize(KisPixelSelectionSP mask)
+{
+    const QVector<QRect> tiles = mask->region().rects();
+    for (const QRect &tile : tiles) {
+        QByteArray bytes(tile.width() * tile.height(), 0);
+        mask->readBytes(reinterpret_cast<quint8 *>(bytes.data()), tile);
+        bool changed = false;
+        for (char &value : bytes) {
+            const quint8 v = quint8(value);
+            if (v != 0 && v != 255) {
+                value = char(255);
+                changed = true;
+            }
+        }
+        if (changed) mask->writeBytes(reinterpret_cast<const quint8 *>(bytes.constData()), tile);
+    }
+}
+
+} // namespace
+
+int KisFeatureList::revision() const
+{
+    return m_d->revision.load();
+}
+
+int KisFeatureList::protectionRevision() const
+{
+    return m_d->protectionRevision.load();
+}
+
+bool KisFeatureList::protectionSuspended() const
+{
+    return m_d->suspended.load();
+}
+
+void KisFeatureList::setProtectionSuspended(bool suspended)
+{
+    if (m_d->suspended.exchange(suspended) != suspended) {
+        m_d->revision++;
+        m_d->protectionRevision++;
+    }
+}
+
+bool KisFeatureList::hasProtectedFeatures() const
+{
+    // The answer is cached for a revision; the revision is read first, so a change racing with this call is seen by
+    // the next one.
+    const int revision = m_d->protectionRevision.load();
+    if (m_d->cachedRevision.load() == revision) return m_d->cachedHas.load();
+    protectedMask();
+    return m_d->cachedHas.load();
+}
+
+KisPixelSelectionSP KisFeatureList::protectedMask() const
+{
+    const int revision = m_d->protectionRevision.load();
+    if (m_d->cachedRevision.load() == revision) {
+        QMutexLocker l(&m_d->cacheMutex);
+        return m_d->cachedProtected;
+    }
+    QMutexLocker cache(&m_d->cacheMutex);
+    if (m_d->cachedRevision.load() == revision) return m_d->cachedProtected;
+
+    QList<KisFeatureSP> protectedFeatures;
+    KisDefaultBoundsBaseSP bounds;
+    {
+        QMutexLocker l(&m_d->mutex);
+        bounds = m_d->defaultBounds;
+        if (!m_d->suspended.load()) {
+            Q_FOREACH (KisFeatureSP feature, m_d->features) {
+                if (feature->isProtected()) protectedFeatures << feature;
+            }
+        }
+    }
+    KisPixelSelectionSP protectedUnion;
+    KisPixelSelectionSP unprotected;
+    if (!protectedFeatures.isEmpty()) {
+        protectedUnion = new KisPixelSelection(bounds);
+        Q_FOREACH (KisFeatureSP feature, protectedFeatures) {
+            KisPixelSelectionSP mask = feature->mask();
+            if (mask) protectedUnion->applySelection(mask, SELECTION_ADD);
+        }
+        binarize(protectedUnion);
+        // A copy that shares the tiles until inverted: the inverse selects everything outside the holes.
+        unprotected = new KisPixelSelection(*protectedUnion);
+        unprotected->invert();
+    }
+    m_d->cachedProtected = protectedUnion;
+    m_d->cachedUnprotected = unprotected;
+    m_d->cachedHas.store(!protectedFeatures.isEmpty());
+    m_d->cachedRevision.store(revision);
+    return protectedUnion;
+}
+
+KisPixelSelectionSP KisFeatureList::unprotectedMask() const
+{
+    protectedMask();
+    QMutexLocker l(&m_d->cacheMutex);
+    return m_d->cachedUnprotected;
+}
+
+QStringList KisFeatureList::protectedFeaturesIn(const QRect &area, KisPixelSelectionSP within) const
+{
+    QStringList names;
+    if (area.isEmpty() || !hasProtectedFeatures()) return names;
+    Q_FOREACH (KisFeatureSP feature, featuresWithBoundsIntersecting(area)) {
+        if (!feature->isProtected()) continue;
+        const QRect r = area & feature->bounds();
+        if (r.isEmpty()) continue;
+        if (feature->hasPixelIn(r, within)) names << feature->name();
+    }
+    return names;
+}
+
+void KisFeatureList::recordKeptOut(const QStringList &names)
+{
+    QMutexLocker l(&m_d->keptOutMutex);
+    m_d->lastKeptOut = names;
+    Q_FOREACH (const QString &name, names) {
+        if (!m_d->moveKeptOut.contains(name)) m_d->moveKeptOut << name;
+    }
+}
+
+QStringList KisFeatureList::lastKeptOut() const
+{
+    QMutexLocker l(&m_d->keptOutMutex);
+    return m_d->lastKeptOut;
+}
+
+QStringList KisFeatureList::moveKeptOut() const
+{
+    QMutexLocker l(&m_d->keptOutMutex);
+    return m_d->moveKeptOut;
+}
+
+void KisFeatureList::resetMoveKeptOut()
+{
+    QMutexLocker l(&m_d->keptOutMutex);
+    m_d->moveKeptOut.clear();
 }

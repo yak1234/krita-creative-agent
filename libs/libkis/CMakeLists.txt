@@ -11,6 +11,8 @@ set(kritalibkis_LIB_SRCS
     FilterMaskBake.cpp
     DocumentFeatures.cpp
     DocumentFeatureBuilders.cpp
+    DocumentFeatureQueries.cpp
+    DocumentFeatureProtection.cpp
     Feature.cpp
     NodeAgentTools.cpp
     ScriptWaits.cpp

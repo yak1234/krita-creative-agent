@@ -155,7 +155,9 @@ public Q_SLOTS:
      * be registered with krita and be compatible with the current color model and depth; the image data
      * is <i>not</i> converted.
      * @param colorProfile
-     * @return if assigning the color profile worked
+     * @return if assigning the color profile worked. Refused (false, with a warning and the features named in
+     * Document.lastKeptOut()) when the layer's pixels reach a protected feature; Document.setProtectionSuspended()
+     * allows it.
      */
     bool setColorProfile(const QString &colorProfile);
 
@@ -179,6 +181,8 @@ public Q_SLOTS:
      * <li>F32: 32 bits floating point</li>
      * </ul>
      * @param colorProfile a valid color profile for this color model and color depth combination.
+     * @return true if converted. Refused (false, with a warning and the features named in Document.lastKeptOut())
+     * when the layer's pixels reach a protected feature, as setColorProfile().
      */
     bool setColorSpace(const QString &colorModel, const QString &colorDepth, const QString &colorProfile);
 
@@ -591,6 +595,11 @@ public Q_SLOTS:
     /**
      * @brief mergeDown merges the given node with the first visible node underneath this node in the layerstack.
      * This will drop all per-layer metadata.
+     *
+     * Protection (krita-fork 6.5): a merge leaves the composite as it is only when both layers use the Normal blending
+     * mode and this layer is fully opaque. Otherwise it changes the lower layer's pixels under this one, and it is
+     * refused (None, with a warning, the features named in Document.lastKeptOut()) when this layer's pixels reach a
+     * protected feature. Document.setProtectionSuspended() allows it.
      */
     Node *mergeDown();
 
@@ -600,6 +609,10 @@ public Q_SLOTS:
      * @param width the width
      * @param height the height
      * @param strategy the scaling strategy. There's several ones amongst these that aren't available in the regular UI.
+     *
+     * Protection (krita-fork 6.5): refused when the layer's pixels, now or after the change, reach a protected feature
+     * (the call cannot be clipped to it). It returns false, warns, and Document.lastKeptOut() names the features.
+     * Document.setProtectionSuspended() allows it. Returns false too for a node that is not a layer in a document.
      * <ul>
      * <li>Hermite</li>
      * <li>Bicubic - Adds pixels using the color of surrounding pixels. Produces smoother tonal gradations than Bilinear.</li>
@@ -611,13 +624,17 @@ public Q_SLOTS:
      * <li>Mitchell</li>
      * </ul>
      */
-    void scaleNode(QPointF origin, int width, int height, QString strategy);
+    bool scaleNode(QPointF origin, int width, int height, QString strategy);
 
     /**
      * @brief rotateNode rotate this layer by the given radians.
      * @param radians amount the layer should be rotated in, in radians.
+     *
+     * Protection (krita-fork 6.5): refused when the layer's pixels, now or after the change, reach a protected feature
+     * (the call cannot be clipped to it). It returns false, warns, and Document.lastKeptOut() names the features.
+     * Document.setProtectionSuspended() allows it. Returns false too for a node that is not a layer in a document.
      */
-    void rotateNode(double radians);
+    bool rotateNode(double radians);
 
     /**
      * @brief cropNode crop this layer.
@@ -625,15 +642,23 @@ public Q_SLOTS:
      * @param y the top edge of the cropping rectangle
      * @param w the right edge of the cropping rectangle
      * @param h the bottom edge of the cropping rectangle
+     *
+     * Protection (krita-fork 6.5): refused when the layer's pixels, now or after the change, reach a protected feature
+     * (the call cannot be clipped to it). It returns false, warns, and Document.lastKeptOut() names the features.
+     * Document.setProtectionSuspended() allows it. Returns false too for a node that is not a layer in a document.
      */
-    void cropNode(int x, int y, int w, int h);
+    bool cropNode(int x, int y, int w, int h);
 
     /**
      * @brief shearNode perform a shear operation on this node.
      * @param angleX the X-angle in degrees to shear by
      * @param angleY the Y-angle in degrees to shear by
+     *
+     * Protection (krita-fork 6.5): refused when the layer's pixels, now or after the change, reach a protected feature
+     * (the call cannot be clipped to it). It returns false, warns, and Document.lastKeptOut() names the features.
+     * Document.setProtectionSuspended() allows it. Returns false too for a node that is not a layer in a document.
      */
-    void shearNode(double angleX, double angleY);
+    bool shearNode(double angleX, double angleY);
 
     /**
      * @brief thumbnail create a thumbnail of the given dimensions. The thumbnail is sized according

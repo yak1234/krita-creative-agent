@@ -7,11 +7,13 @@
 
 #include <KoColor.h>
 
+#include <KisFeatureCommands.h>
 #include <KisFeatureList.h>
 #include <kis_image.h>
 #include <kis_pixel_selection.h>
 #include <kis_selection.h>
 
+#include "DocumentHistory.h"
 #include "Selection.h"
 
 struct Feature::Private {
@@ -70,6 +72,15 @@ QString Feature::state() const
 bool Feature::isProtected() const
 {
     return d->feature ? d->feature->isProtected() : false;
+}
+
+bool Feature::setProtected(bool value)
+{
+    KisImageSP image = d->image.toStrongRef();
+    if (!image || !d->feature || !isInDocument()) return false;
+    if (d->feature->isProtected() == value) return true;
+    return DocumentHistory::runCommandStrokeAndWait(image, new KisSetFeatureProtectedCommand(image, d->feature->id(), value),
+                                                    "Feature.setProtected()");
 }
 
 QRect Feature::bounds() const

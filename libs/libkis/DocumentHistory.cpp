@@ -17,6 +17,9 @@
 #include <typeinfo>
 
 #include <KisAgentHooks.h>
+#include <KisFeatureList.h>
+#include <KisFeatureProtection.h>
+#include <kis_debug.h>
 #include <KisTouchedDevices.h>
 #include <KisDocument.h>
 #include <commands_new/kis_saved_commands.h>
@@ -1004,6 +1007,13 @@ void DocumentHistory::agentMoveHook(bool open, const QString &name, KisImageWSP 
     // agent's (agent work nests with other agent work and with the Python switch).
     KisImageSP strongImage = image;
     if (strongImage) {
+        // Protection (krita-fork 6.5): a move starts a new list of what was kept out, and ends any suspension of
+        // protection a script left on, so a forgotten Document.setProtectionSuspended(true) never outlives the move.
+        if (open) {
+            strongImage->featureList()->resetMoveKeptOut();
+        } else {
+            strongImage->featureList()->setProtectionSuspended(false);
+        }
         if (DocumentChanges *changes = DocumentChanges::forImage(strongImage)) {
             if (open) {
                 changes->beginAgentWork();
@@ -1098,20 +1108,39 @@ namespace
 class PixelWriteCommand : public KUndo2Command
 {
 public:
-    PixelWriteCommand(KisNodeSP node, const QByteArray &data, const QRect &rect)
+    /// \p protectedBy: the image whose protected features the write keeps out of (krita-fork 6.5), or null for a
+    /// write that is not the agent's.
+    PixelWriteCommand(KisNodeSP node, const QByteArray &data, const QRect &rect, KisImageSP protectedBy = KisImageSP())
         : KUndo2Command(kundo2_i18n("Set Pixel Data"))
         , m_node(node)
         , m_data(data)
         , m_rect(rect)
+        , m_protectedBy(protectedBy)
     {
     }
 
     void redo() override
     {
+        if (m_refused) {
+            return;
+        }
         if (!m_transaction) {
             KisPaintDeviceSP device = m_node->paintDevice();
             if (!device) {
                 return;
+            }
+            if (m_protectedBy) {
+                // The protected features are read when the write runs, so one protected after the call was queued is
+                // honoured: its pixels keep what the device holds now.
+                bool refused = false;
+                m_protectedBy->featureList()->recordKeptOut(
+                    KisFeatureProtection::clipPixelWrite(m_protectedBy, device, m_data, m_rect, &refused));
+                m_protectedBy.clear();
+                if (refused) {
+                    warnScript << "Node.setPixelData() refused: the data is shorter than the rectangle, or larger than 1 GiB";
+                    m_refused = true;
+                    return; // nothing written, nothing to undo
+                }
             }
             KisTransaction transaction(device);
             device->writeBytes(reinterpret_cast<const quint8 *>(m_data.constData()),
@@ -1136,16 +1165,27 @@ private:
     KisNodeSP m_node;
     QByteArray m_data;
     QRect m_rect;
+    KisImageSP m_protectedBy;
+    bool m_refused = false;
     QScopedPointer<KUndo2Command> m_transaction;
 };
+
 } // namespace
+
+KisImageSP DocumentHistory::protectionFor(KisImageSP image)
+{
+    if (!KisFeatureProtection::isActive(image)) return KisImageSP();
+    DocumentChanges *changes = DocumentChanges::existingForImage(image.data());
+    return changes && changes->agentActive() ? image : KisImageSP();
+}
 
 bool DocumentHistory::queuePixelWrite(KisImageSP image, KisNodeSP node, const QByteArray &data, const QRect &rect)
 {
     if (!node || !node->paintDevice() || !scriptUndoAdapter(image, node->paintDevice())) {
         return false;
     }
-    runCommandStroke(image, new PixelWriteCommand(node, data, rect), KisStrokeJobData::SEQUENTIAL, KisStrokeJobData::NORMAL, true);
+    runCommandStroke(image, new PixelWriteCommand(node, data, rect, DocumentHistory::protectionFor(image)), KisStrokeJobData::SEQUENTIAL,
+                     KisStrokeJobData::NORMAL, true);
     return true;
 }
 
@@ -1154,12 +1194,19 @@ bool DocumentHistory::writePixelData(KisImageSP image, KisNodeSP node, const QBy
     if (!image || !node || !node->paintDevice()) {
         return false;
     }
+    if (DocumentHistory::protectionFor(image)) {
+        const QString why = KisFeatureProtection::whyNotCanvasAligned(image, node);
+        if (!why.isEmpty()) {
+            warnScript << "Node.setPixelData() refused," << why;
+            return false;
+        }
+    }
     if (queuePixelWrite(image, node, data, rect)) {
         return true;
     }
     // Outside a macro or move: a step of its own, waited for (its own stroke only), so the pixels are there when
     // the call returns.
-    return runPropertyCommand(image, new PixelWriteCommand(node, data, rect), "Node.setPixelData()", true);
+    return runPropertyCommand(image, new PixelWriteCommand(node, data, rect, DocumentHistory::protectionFor(image)), "Node.setPixelData()", true);
 }
 
 /*

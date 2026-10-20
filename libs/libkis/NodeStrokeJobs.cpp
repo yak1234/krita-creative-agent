@@ -28,6 +28,8 @@
 #include <KisAsynchronousStrokeUpdateHelper.h>
 #include <KisDocument.h>
 #include <KisGlobalResourcesInterface.h>
+#include <KisFeatureList.h>
+#include <KisFeatureProtection.h>
 #include <KisImageChangeReports.h>
 #include <KisMainWindow.h>
 #include <KisPart.h>
@@ -516,9 +518,106 @@ KisResourcesSnapshotSP StrokeJobFeeder::snapshotFor(const StrokeJobInput &input)
     KisResourcesSnapshotSP snapshot = new KisResourcesSnapshot(image, m_node, resources);
     snapshot->setStrokeStyle(KisPainter::StrokeStyleBrush);
     snapshot->setFillStyle(KisPainter::FillStyleNone);
-    snapshot->setSelectionOverride(clip);
+    snapshot->setSelectionOverride(enforceProtection ? m_effectiveClip : clip);
     snapshot->setPostExecutionUndoAdapterOverride(hold ? hold->adapter() : nullptr);
     return snapshot;
+}
+
+/// Brings the selection the next window paints through up to date with the protected features: \p clip minus the
+/// features protected now. Rebuilt only when the feature list has changed (an image without protected features
+/// reads one integer here, and the strokes use \p clip as they always did). A window already queued keeps the
+/// selection it was queued with: a feature protected meanwhile is honoured from the next window on.
+void StrokeJobFeeder::refreshProtection()
+{
+    KisImageSP image = m_image;
+    if (!image) return;
+    const int revision = image->featureList()->protectionRevision();
+    if (revision == m_protectionRevision) return;
+    m_protectionRevision = revision;
+    KisSelectionSP effective = KisFeatureProtection::guardSelection(image, clip);
+    if (effective.data() != m_effectiveClip.data()) {
+        m_effectiveClip = effective;
+    }
+}
+
+/// Names the protected features that strokes \p from to \p to - 1 reach: those with a pixel within half a brush size
+/// (and 2 px) of a segment of a stroke, inside \p clip. The brush size is the stroke's own, else the preset's: a brush
+/// whose size grows past it (pressure curves above 1) can reach a feature this misses, but is still kept out of it by
+/// the clip.
+///
+/// The cost is kept to the features not named yet and to the strokes' reach: a stroke's bounding box first picks the
+/// candidates (bounds only), a candidate's stored tiles are taken once for the window, and a segment is tested only
+/// against the tiles under it, until the feature is found. A window that names nothing new costs one pass over the
+/// strokes' boxes. This runs on the GUI thread, once per window of up to 32 strokes.
+void StrokeJobFeeder::nameKeptOut(int from, int to)
+{
+    KisImageSP image = m_image;
+    if (!image) return;
+    KisFeatureList *list = image->featureList();
+    if (!list->hasProtectedFeatures()) return;
+
+    const QStringList known = m_shared->keptOut();
+    struct Candidate {
+        KisFeatureSP feature;
+        QVector<QRect> tiles;
+        bool tilesTaken = false;
+        bool found = false;
+    };
+    QList<Candidate> candidates;
+    Q_FOREACH (KisFeatureSP feature, list->features()) {
+        if (feature->isProtected() && !feature->bounds().isEmpty() && !known.contains(feature->name())) {
+            candidates.append({feature, {}, false, false});
+        }
+    }
+    if (candidates.isEmpty()) return;
+
+    KisPixelSelectionSP within = clip ? clip->pixelSelection() : KisPixelSelectionSP();
+    const qreal presetSize = basePreset ? basePreset->settings()->paintOpSize() : 0;
+    QStringList found;
+    int remaining = candidates.size();
+    for (int i = from; i < to && remaining > 0; i++) {
+        const StrokeJobInput &input = inputs[i];
+        if (input.points.isEmpty()) continue;
+        const qreal half = (input.size > 0 ? input.size : presetSize) / 2 + 2;
+        // One box for the whole stroke picks the candidates; a diagonal across the canvas picks many, and the
+        // segments below sort them out.
+        qreal left = input.points[0].pos().x(), right = left, top = input.points[0].pos().y(), bottom = top;
+        for (const KisPaintInformation &point : input.points) {
+            left = qMin(left, point.pos().x());
+            right = qMax(right, point.pos().x());
+            top = qMin(top, point.pos().y());
+            bottom = qMax(bottom, point.pos().y());
+        }
+        const QRect strokeBox = QRectF(QPointF(left - half, top - half), QPointF(right + half, bottom + half)).toAlignedRect();
+        for (Candidate &c : candidates) {
+            if (c.found || !c.feature->bounds().intersects(strokeBox)) continue;
+            if (!c.tilesTaken) {
+                c.tiles = c.feature->storedTiles();
+                c.tilesTaken = true;
+            }
+            // Only the stored tiles under the stroke's box can matter to its segments.
+            QVector<QRect> local;
+            for (const QRect &tile : c.tiles) {
+                if (tile.intersects(strokeBox)) local.append(tile);
+            }
+            if (local.isEmpty()) continue;
+            for (int p = 0; p < input.points.size() && !c.found; p++) {
+                const QPointF a = input.points[p].pos();
+                const QPointF b = input.points[qMax(0, p - 1)].pos();
+                const QRect rect = QRectF(QPointF(qMin(a.x(), b.x()) - half, qMin(a.y(), b.y()) - half),
+                                          QPointF(qMax(a.x(), b.x()) + half, qMax(a.y(), b.y()) + half)).toAlignedRect();
+                if (!rect.intersects(c.feature->bounds())) continue;
+                if (c.feature->hasPixelInTiles(local, rect & c.feature->bounds(), within)) {
+                    c.found = true;
+                    found << c.feature->name();
+                    remaining--;
+                }
+            }
+        }
+    }
+    if (found.isEmpty()) return;
+    m_shared->addKeptOut(found);
+    list->recordKeptOut(m_shared->keptOut());
 }
 
 void StrokeJobFeeder::queueWindow(int count)
@@ -526,6 +625,10 @@ void StrokeJobFeeder::queueWindow(int count)
     KisImageSP image = m_image;
     if (!image) return;
     const int end = qMin(m_next + count, m_shared->total);
+    if (enforceProtection) {
+        refreshProtection();
+        nameKeptOut(m_next, end);
+    }
     for (int i = m_next; i < end; i++) {
         const StrokeJobInput &input = inputs[i];
         KisStrokeId id = image->startStroke(new StrokeJobStrokeStrategy(snapshotFor(input), strokeName, m_shared, i));
@@ -553,6 +656,7 @@ void StrokeJobFeeder::queueWindow(int count)
         inputs.squeeze();
         basePreset.clear();
         clip.clear();
+        m_effectiveClip.clear();
         if (KoCanvasResourceProvider *resources = m_shared->resources.data()) {
             resources->setResource(KoCanvasResource::CurrentKritaNode, QVariant::fromValue(KisNodeSP()));
             resources->setResource(KoCanvasResource::CurrentPaintOpPreset, QVariant::fromValue(KisPaintOpPresetSP()));
@@ -596,6 +700,17 @@ StrokeJob *Node::paintStrokes(const QVariantList &strokes, const QVariantMap &op
     if (!target->isEditable(false)) return refuse(QStringLiteral("the node is locked"));
     if (strokes.size() > kMaxStrokes) {
         return refuse(QStringLiteral("%1 strokes, more than the %2 a job takes").arg(strokes.size()).arg(kMaxStrokes));
+    }
+    // Krita keeps the strokes out of the protected features unless the job says it is a deliberate edit of them.
+    bool allowProtected = false;
+    if (options.contains(QStringLiteral("allowProtected"))) {
+        const QVariant given = options.value(QStringLiteral("allowProtected"));
+        if (given.typeId() != QMetaType::Bool) return refuse(QStringLiteral("\"allowProtected\" must be true or false"));
+        allowProtected = given.toBool();
+    }
+    if (!allowProtected && KisFeatureProtection::isActive(image)) {
+        const QString why = KisFeatureProtection::whyNotCanvasAligned(image, target);
+        if (!why.isEmpty()) return refuse(why);
     }
 
     // The brush: the preset named, else the active view's (its preset only: none of the view's other state).
@@ -675,6 +790,7 @@ StrokeJob *Node::paintStrokes(const QVariantList &strokes, const QVariantMap &op
     StrokeJob *job = new StrokeJob(shared);
     StrokeJobFeeder *feeder = new StrokeJobFeeder(shared, image, target, document);
     feeder->inputs = inputs;
+    feeder->enforceProtection = !allowProtected;
     feeder->basePreset = base->clone().dynamicCast<KisPaintOpPreset>(); // the view's own object may change later
     feeder->compositeOp = compositeOp;
     feeder->clip = selection && selection->selection() ? new KisSelection(*selection->selection()) : nullptr;

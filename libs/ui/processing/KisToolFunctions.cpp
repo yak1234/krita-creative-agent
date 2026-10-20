@@ -51,6 +51,9 @@
 #include <commands_new/kis_processing_command.h>
 #include <commands_new/kis_update_command.h>
 
+#include <KisFeatureList.h>
+#include <KisFeatureProtection.h>
+
 #include "kis_resources_snapshot.h"
 #include "processing/KisEncloseAndFillProcessingVisitor.h"
 #include "processing/fill_processing_visitor.h"
@@ -65,7 +68,20 @@ struct Completion::Private {
     bool finished = false;
     KisImageWSP image;
     KisStrokeId id;
+    QStringList keptOut;
 };
+
+QStringList Completion::keptOut() const
+{
+    QMutexLocker locker(&d->mutex);
+    return d->keptOut;
+}
+
+void Completion::setKeptOut(const QStringList &names)
+{
+    QMutexLocker locker(&d->mutex);
+    d->keptOut = names;
+}
 
 Completion::Completion()
     : d(new Private)
@@ -262,6 +278,69 @@ KisSelectionSP selectionOn(KisImageSP image, KisPixelSelectionSP mask)
     return selection;
 }
 
+/**
+ * What a call with Target::enforceProtection does when its stroke runs (krita-fork 6.5): reads the selection it paints
+ * through with the protected features taken out, as they are at that moment (so a feature protected after the call was
+ * queued is honoured), and records what it kept out. A copy of this is captured by the stroke's commands.
+ */
+struct ProtectionGuard {
+    KisImageSP image;
+    bool enforce = false;
+    CompletionSP completion;
+
+    explicit ProtectionGuard(const Target &target)
+        : image(target.image)
+        , enforce(target.enforceProtection)
+        , completion(target.completion)
+    {
+    }
+
+    /// \p resources' active selection minus the protected features.
+    KisSelectionSP selection(KisResourcesSnapshotSP resources) const
+    {
+        KisSelectionSP selection = resources->activeSelection();
+        return enforce ? KisFeatureProtection::guardSelection(image, selection) : selection;
+    }
+
+    /// Records the protected features with a pixel in \p area (and in \p within) as kept out.
+    void keptOut(const QRect &area, KisSelectionSP within = KisSelectionSP()) const
+    {
+        if (!enforce || !completion) return;
+        completion->setKeptOut(KisFeatureProtection::keptOutOf(image, area, within));
+    }
+};
+
+/// Records, when it runs, what a fill kept out of: the features reached by the region it filled (its bounding box,
+/// one pixel larger, since the region ends where a protected feature begins).
+class KeptOutOfFillCommand : public KUndo2Command
+{
+public:
+    KeptOutOfFillCommand(const ProtectionGuard &guard, QSharedPointer<QRect> dirtyRect, KisResourcesSnapshotSP resources)
+        : m_guard(guard)
+        , m_dirtyRect(dirtyRect)
+        , m_resources(resources)
+    {
+    }
+
+    void redo() override
+    {
+        if (m_done) return;
+        m_done = true;
+        // Only where the call was allowed to reach: its own limiting selection (or the document's).
+        m_guard.keptOut(m_dirtyRect->adjusted(-1, -1, 1, 1), m_resources->activeSelection());
+    }
+
+    void undo() override
+    {
+    }
+
+private:
+    ProtectionGuard m_guard;
+    QSharedPointer<QRect> m_dirtyRect;
+    KisResourcesSnapshotSP m_resources;
+    bool m_done = false;
+};
+
 KisResourcesSnapshotSP resourcesFor(const Target &target, const KoColor &color)
 {
     KisResourcesSnapshotSP resources = new KisResourcesSnapshot(target.image, target.node);
@@ -316,6 +395,10 @@ bool canPaint(const Target &target, QString *reason)
     if (!target.node->paintDevice()) {
         return refuse(reason, QString("%1 has no pixels of its own to paint").arg(target.node->name()));
     }
+    if (target.enforceProtection && KisFeatureProtection::isActive(target.image)) {
+        const QString why = KisFeatureProtection::whyNotCanvasAligned(target.image, target.node);
+        if (!why.isEmpty()) return refuse(reason, why);
+    }
     return true;
 }
 
@@ -331,11 +414,12 @@ bool fill(const Target &target, const QPoint &seed, const KoColor &color, const 
     KisNodeSP node = target.node;
     KisImageSP image = target.image;
     QSharedPointer<QRect> dirtyRect(new QRect);
+    const ProtectionGuard guard(target);
     Stroke stroke(target, kundo2_i18n("Flood Fill"), true);
 
     if (options.area == FillOptions::WholeSelection) {
         stroke.add(atRunTime([=]() -> KUndo2Command * {
-            FillProcessingVisitor *visitor = new FillProcessingVisitor(nullptr, resources->activeSelection(), resources);
+            FillProcessingVisitor *visitor = new FillProcessingVisitor(nullptr, guard.selection(resources), resources);
             visitor->setSeedPoint(seed);
             visitor->setSelectionOnly(true);
             visitor->setUseCustomBlendingOptions(true);
@@ -348,7 +432,7 @@ bool fill(const Target &target, const QPoint &seed, const KoColor &color, const 
         KisPaintDeviceSP reference = referenceDevice(target, options, stroke);
         stroke.add(atRunTime([=]() -> KUndo2Command * {
             // The selection as it is when the stroke runs, after the work queued before it.
-            KisSelectionSP selection = resources->activeSelection();
+            KisSelectionSP selection = guard.selection(resources);
             const bool blendingIsNoOp =
                 qFuzzyCompare(options.opacity, OPACITY_OPAQUE_F) && options.compositeOp == COMPOSITE_OVER;
             const bool useFastMode = !selection && blendingIsNoOp && options.opacitySpread == 100
@@ -382,7 +466,7 @@ bool fill(const Target &target, const QPoint &seed, const KoColor &color, const 
         // the stroke runs.
         KisPaintDeviceSP reference = referenceDevice(target, options, stroke);
         stroke.add(atRunTime([=]() -> KUndo2Command * {
-            KisSelectionSP selection = resources->activeSelection();
+            KisSelectionSP selection = guard.selection(resources);
             const KoColor referenceColor = reference->pixel(seed);
             QRect bounds = image->bounds();
             if (selection) {
@@ -410,6 +494,7 @@ bool fill(const Target &target, const QPoint &seed, const KoColor &color, const 
         }));
     }
 
+    if (guard.enforce) stroke.add(new KeptOutOfFillCommand(guard, dirtyRect, resources));
     stroke.add(new KisUpdateCommand(target.node, dirtyRect, KisImageSP(target.image).data()));
     stroke.end();
     return true;
@@ -426,6 +511,7 @@ bool encloseAndFill(const Target &target, KisPixelSelectionSP enclosingMask, con
     KisResourcesSnapshotSP resources = resourcesFor(target, color);
     KisNodeSP node = target.node;
     QSharedPointer<QRect> dirtyRect(new QRect);
+    const ProtectionGuard guard(target);
     Stroke stroke(target, kundo2_i18n("Enclose and Fill"), true);
     KisPaintDeviceSP reference = referenceDevice(target, options.fill, stroke);
     KisPixelSelectionSP mask = selectionOn(target.image, enclosingMask)->pixelSelection();
@@ -433,12 +519,13 @@ bool encloseAndFill(const Target &target, KisPixelSelectionSP enclosingMask, con
     stroke.add(atRunTime([=]() -> KUndo2Command * {
         const FillOptions &fill = options.fill;
         KisProcessingVisitorSP visitor = new KisEncloseAndFillProcessingVisitor(
-            reference, mask, resources->activeSelection(), resources, options.regions, options.regionColor,
+            reference, mask, guard.selection(resources), resources, options.regions, options.regionColor,
             options.invertRegions, options.includeContourRegions, options.includeSurroundingRegions, fill.threshold,
             fill.opacitySpread, fill.closeGap, fill.antiAlias, fill.grow, fill.stopGrowingAtDarkestPixel, fill.feather,
             fill.useSelectionAsBoundary, false, false, false, true, fill.opacity, fill.compositeOp, dirtyRect);
         return new KisProcessingCommand(visitor, node);
     }));
+    if (guard.enforce) stroke.add(new KeptOutOfFillCommand(guard, dirtyRect, resources));
     stroke.add(new KisUpdateCommand(target.node, dirtyRect, KisImageSP(target.image).data()));
     stroke.end();
     return true;
@@ -462,12 +549,18 @@ bool gradient(const Target &target, const QPointF &start, const QPointF &end, Ko
     KisNodeSP node = target.node;
     KisImageSP image = target.image;
     QSharedPointer<QRect> dirtyRect(new QRect);
+    const ProtectionGuard guard(target);
 
     Stroke stroke(target, kundo2_i18n("Gradient"), true);
     stroke.add(new KisCommandUtils::LambdaCommand(
-                   [node, image, resources, gradient, start, end, options, dirtyRect]() -> KUndo2Command * {
+                   [node, image, resources, gradient, start, end, options, dirtyRect, guard]() -> KUndo2Command * {
                        // The selection as it is when the stroke runs, after the work queued before it.
-                       KisSelectionSP selection = resources->activeSelection();
+                       KisSelectionSP limit = resources->activeSelection();
+                       if (guard.enforce) {
+                           // A gradient writes all of its area: it is kept out of every protected feature there.
+                           guard.keptOut(limit ? limit->selectedExactRect() & image->bounds() : image->bounds(), limit);
+                       }
+                       KisSelectionSP selection = guard.selection(resources);
                        *dirtyRect = image->bounds();
                        if (selection) *dirtyRect &= selection->selectedExactRect();
 
@@ -523,11 +616,19 @@ bool smartPatch(const Target &target, KisPixelSelectionSP area, int accuracy, in
     accuracy = qBound(0, accuracy, 99);
     patchRadius = qBound(2, patchRadius, 8);
 
+    const ProtectionGuard guard(target);
     Stroke stroke(target, kundo2_i18n("Smart Patch"), true);
-    stroke.add(new KisCommandUtils::LambdaCommand([node, mask, limit, accuracy, patchRadius]() -> KUndo2Command * {
+    stroke.add(new KisCommandUtils::LambdaCommand([node, mask, limit, accuracy, patchRadius, guard]() -> KUndo2Command * {
                    KisPaintDeviceSP device = node->paintDevice();
+                   // Only pixels inside the area change, and none of them inside a protected feature; the patch is
+                   // still found from the surroundings, protected ones included (reading is not writing).
+                   KisSelectionSP writable = limit;
+                   if (guard.enforce) {
+                       guard.keptOut(limit->selectedExactRect(), limit);
+                       writable = KisFeatureProtection::guardSelection(guard.image, limit);
+                   }
                    KisTransaction transaction(device);
-                   patchImage(device, mask, patchRadius, accuracy, limit);
+                   patchImage(device, mask, patchRadius, accuracy, writable);
                    return transaction.endAndTake();
                }),
                KisStrokeJobData::BARRIER);
@@ -549,6 +650,25 @@ bool moveNode(const Target &target, const QPoint &position, QString *reason)
     if (current == position) {
         if (target.completion) target.completion->end(true);
         return true;
+    }
+
+    if (target.enforceProtection && KisFeatureProtection::isActive(target.image)) {
+        // A move shifts every pixel of the layer: pixels now under a protected feature leave it, and pixels from
+        // elsewhere arrive in it. It cannot be clipped, so it is refused when the layer's pixels, where they are or
+        // where they would be, touch one.
+        const QString why = KisFeatureProtection::whyNotCanvasAligned(target.image, target.node);
+        if (!why.isEmpty()) return refuse(reason, why);
+        const QRect now = target.node->exactBounds();
+        const QRect then = now.translated(position - current);
+        QStringList kept = KisFeatureProtection::keptOutOf(target.image, now);
+        for (const QString &name : KisFeatureProtection::keptOutOf(target.image, then)) {
+            if (!kept.contains(name)) kept << name;
+        }
+        if (!kept.isEmpty()) {
+            if (target.completion) target.completion->setKeptOut(kept);
+            return refuse(reason, QString("moving %1 would move pixels in or out of the protected features %2")
+                                      .arg(target.node->name(), kept.join(", ")));
+        }
     }
 
     Stroke stroke(target, kundo2_i18n("Move"), false);

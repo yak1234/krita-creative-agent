@@ -20,9 +20,11 @@ kis_add_tests(
     TestNodeAgentTools.cpp
     TestStrokeJobs.cpp
     TestDocumentFeatureBuilders.cpp
+    TestDocumentFeatureQueries.cpp
+    TestFeatureProtection.cpp
     TestLibkisTraps.cpp
     TestLibkisNoView.cpp
-    LINK_LIBRARIES kritalibkis kritatestsdk
+    LINK_LIBRARIES kritalibkis kritatestsdk kritatransformmaskstubs
     )
 
 # Krita Agent: timings for region refresh and the scaled read on a 6000x4500 document (not run by ctest).

@@ -17,6 +17,7 @@
 #include <KoColorModelStandardIds.h>
 #include <KoMixColorsOp.h>
 
+#include <KisRegion.h>
 #include "KisFeatureList.h"
 #include "kis_paint_device.h"
 #include "kis_painter.h"
@@ -148,7 +149,7 @@ void KisFeature::setProtected(bool value)
         if (m_protected == value) return;
         m_protected = value;
     }
-    notifyOwner(false);
+    notifyOwner(false, true);
 }
 
 KisPixelSelectionSP KisFeature::mask() const
@@ -175,12 +176,18 @@ void KisFeature::setMask(KisPixelSelectionSP mask, KisPaintDeviceSP colorSource)
         m_mask = mask;
         m_properties = properties;
     }
-    notifyOwner(true);
+    notifyOwner(true, true);
 }
 
 void KisFeature::measure(KisPaintDeviceSP colorSource)
 {
-    setProperties(measureMask(mask(), colorSource));
+    // The mask may have been changed in place before this call: what is derived from it is rebuilt.
+    {
+        const Properties properties = measureMask(mask(), colorSource);
+        QMutexLocker l(&m_mutex);
+        m_properties = properties;
+    }
+    notifyOwner(true, true);
 }
 
 KisFeature::Properties KisFeature::properties() const
@@ -213,7 +220,7 @@ void KisFeature::setProperties(const Properties &properties)
         QMutexLocker l(&m_mutex);
         m_properties = properties;
     }
-    notifyOwner(true);
+    notifyOwner(true, false);
 }
 
 void KisFeature::setMaskAndProperties(KisPixelSelectionSP mask, const Properties &properties)
@@ -226,7 +233,7 @@ void KisFeature::setMaskAndProperties(KisPixelSelectionSP mask, const Properties
         m_mask = mask;
         m_properties = properties;
     }
-    notifyOwner(true);
+    notifyOwner(true, true);
 }
 
 namespace {
@@ -386,6 +393,43 @@ KisFeature::Properties KisFeature::measureMask(KisPixelSelectionSP mask, KisPain
     return result;
 }
 
+QVector<QRect> KisFeature::storedTiles() const
+{
+    KisPixelSelectionSP mask = this->mask();
+    return mask ? mask->region().rects() : QVector<QRect>();
+}
+
+bool KisFeature::hasPixelInTiles(const QVector<QRect> &tiles, const QRect &rect, KisPixelSelectionSP within) const
+{
+    KisPixelSelectionSP mask = this->mask();
+    if (!mask || rect.isEmpty()) return false;
+    for (const QRect &tile : tiles) {
+        const QRect candidate = tile & rect;
+        if (candidate.isEmpty()) continue;
+        KisSequentialConstIterator maskIt(mask, candidate);
+        if (within) {
+            KisSequentialConstIterator withinIt(within, candidate);
+            while (maskIt.nextPixel() && withinIt.nextPixel()) {
+                if (*maskIt.rawDataConst() != 0 && *withinIt.rawDataConst() != 0) return true;
+            }
+        } else {
+            while (maskIt.nextPixel()) {
+                if (*maskIt.rawDataConst() != 0) return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool KisFeature::hasPixelIn(const QRect &rect, KisPixelSelectionSP within) const
+{
+    KisPixelSelectionSP mask = this->mask();
+    if (!mask || rect.isEmpty()) return false;
+    KisRegion region = mask->region();
+    region &= rect;
+    return hasPixelInTiles(region.rects(), rect, within);
+}
+
 KisPixelSelectionSP KisFeature::boundedMask(KisPixelSelectionSP mask, const QRect &bounds)
 {
     if (!mask) return new KisPixelSelection();
@@ -436,13 +480,13 @@ QSharedPointer<KisFeatureOwnerGuard> KisFeature::owner() const
     return m_owner;
 }
 
-void KisFeature::notifyOwner(bool boundsChanged)
+void KisFeature::notifyOwner(bool boundsChanged, bool protectionRelevant)
 {
     QSharedPointer<KisFeatureOwnerGuard> guard = owner();
     if (!guard) return;
     // Held while the list is called: the list's destructor waits for it, and clears the link first.
     std::lock_guard<QRecursiveMutex> l(guard->mutex);
     if (guard->list) {
-        guard->list->featureChanged(this, boundsChanged);
+        guard->list->featureChanged(this, boundsChanged, protectionRelevant);
     }
 }

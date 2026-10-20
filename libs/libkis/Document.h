@@ -255,6 +255,142 @@ public Q_SLOTS:
      */
     QList<Selection *> maskSegments(const QList<Selection *> &hints, const QVariantMap &options = QVariantMap()) const;
 
+    // Krita Agent: spatial questions about the features (krita-fork 6.4; implemented in DocumentFeatureQueries.cpp).
+    // Every answer comes from the stored masks (their bounds first, then their own tiles), never from a new analysis
+    // of the painting, and every call is cheap: 30 features at 6000x4500 answer in milliseconds. The queries change
+    // nothing, never wait for the image and never end the artist's strokes. They count every feature, proposed or
+    // kept; the Feature objects tell which. Features come in the document's order. The caller owns the returned objects.
+    // A number that is not finite or lies beyond a billion pixels is refused with a warning (an empty list or None).
+
+    /**
+     * @brief featuresAt the features whose mask is not zero at the pixel containing (\p x, \p y)
+     * @return the features, or an empty list for a point outside the document or a number that is not usable
+     */
+    QList<Feature *> featuresAt(double x, double y) const;
+
+    /**
+     * @brief featuresOverlapping the features that share at least one pixel with \p rect (the part outside the
+     * document is ignored)
+     */
+    QList<Feature *> featuresOverlapping(const QRect &rect) const;
+
+    /**
+     * @brief featuresOverlapping the other features that share at least one pixel with \p feature's mask
+     * @return the features, without \p feature itself; empty for a feature that is not in this document
+     */
+    QList<Feature *> featuresOverlapping(Feature *feature) const;
+
+    /**
+     * @brief featuresOverlapping the features that share at least one pixel with the selected part of \p selection
+     */
+    QList<Feature *> featuresOverlapping(Selection *selection) const;
+
+    /**
+     * @brief featuresTouching the other features that touch \p feature. Two features touch when they share no pixel
+     * and some pixel of one is within 2 pixels of a pixel of the other (the larger of the horizontal and vertical
+     * distances): directly adjacent, diagonally too, or with a gap of one empty pixel, as an anti-aliased or hand
+     * drawn edge leaves. Features that overlap are not touching: ask featuresOverlapping().
+     * @return the features, or an empty list for a feature that is not in this document
+     */
+    QList<Feature *> featuresTouching(Feature *feature) const;
+
+    /// @brief featuresTouching the same, for the feature called \p name (outer spaces are dropped); empty if none is
+    QList<Feature *> featuresTouching(const QString &name) const;
+
+    /**
+     * @brief selection a Selection combined from features by name, in the document's bounds, without picking colours
+     *
+     * @code
+     * moonless = doc.selection("Sky - Moon")
+     * lit = doc.selection("(Sky + Clouds) & \"Tower (north)\"")
+     * @endcode
+     *
+     * The grammar: names joined by the operators "+" (union), "&" (intersection) and "-" (difference), each written
+     * with a space on each side, applied left to right with no precedence ("A + B - C" is "(A + B) - C"); parentheses
+     * group. A name is the text between operators, trimmed as feature names are, so it may contain spaces ("Tower 3")
+     * and a "-", "+" or "&" with no space on both sides ("Sky-2"). A name with a parenthesis or a double quote, or
+     * with " + ", " & " or " - " inside, is written in double quotes ("Tower (north)"; inside quotes \" is a quote and
+     * \\ a backslash). Values combine as Krita's selection tools do (union adds and clamps at 255, intersection takes
+     * the lower, difference subtracts and clamps at 0).
+     *
+     * Limits: an expression of at most 2000 characters, 64 names and 16 levels of parentheses, evaluated in at most
+     * 5 seconds.
+     *
+     * Document.selection() with no argument is the document's active selection.
+     *
+     * @return a new Selection, or None, with a warning saying why, for an unknown name, a syntax error or a limit
+     * passed. Never raises.
+     */
+    Selection *selection(const QString &expression) const;
+
+    // Krita Agent: protection (krita-fork 6.5; implemented in DocumentFeatureProtection.cpp). A feature is protected
+    // with Feature.setProtected() (or addFeature(..., isProtected=True)); Krita then keeps the agent's writes out of
+    // it. The full list of what is covered is in Feature.setProtected(); the points a script must know:
+    //
+    // Which calls enforce protection, and when. Enforced whenever a feature is protected, whoever calls: Node.paintStrokes(),
+    // fill(), encloseAndFill(), gradient(), smartPatch(), move(), rotateNode(), scaleNode(), shearNode(), cropNode(),
+    // setColorSpace(), setColorProfile() and mergeDown() (for a non-Normal or translucent merge). So an artist's own script
+    // that calls these is clipped (or refused) while a feature is protected too; lift it with the option "allowProtected"
+    // (where the call has options) or Document.setProtectionSuspended(). Enforced only while the agent works (agentActive()
+    // is true: an agent move or job is open, or setAgentActive(True) is on): the raw writes Node.setPixelData(),
+    // Channel.setPixelData(), Filter.apply(), Filter.startFilter(), Selection.cut() and Selection.paste(). Outside agent
+    // work they are the script's own, as the artist's tools are. An agent bridge therefore wraps each tool call in
+    // setAgentActive(True) ... setAgentActive(False) (try/finally) or in an agent move.
+    //
+    // Not covered, by design: Krita.action(...) and the tool actions run on the artist's selection and are not protected
+    // (an agent must not use them to write while a feature is protected); layer creation (paint, filter, fill, clone
+    // layers), opacity, visibility and blending-mode edits, layer styles, and spreading effects (blur or offset filter
+    // layers, filter masks, colorize mask key strokes) are not pixel writes of the agent into the feature, but they can
+    // change how a protected feature LOOKS. protectedSelection() gives a selection to limit such a layer or mask with.
+    // Document.agentMoveKeptOut() starts again when a move closed by a save, an undo or the idle timeout resumes as
+    // "(cont.)".
+
+    /**
+     * @brief protectionActive whether some feature is protected and protection is not suspended: whether the calls
+     * above are clipping or refusing now. Cheap.
+     */
+    bool protectionActive() const;
+
+    /**
+     * @brief protectedSelection a new Selection that is a copy of the union of the protected features (255 inside any
+     * of them, 0 elsewhere; a soft edge counts whole), or, with \p inverted, of everything else in the document. Empty
+     * (or the whole document, inverted) when nothing is protected or protection is suspended. Use it to limit a
+     * filter layer, fill layer or filter mask that must not reach the protected features.
+     */
+    Selection *protectedSelection(bool inverted = false) const;
+
+    /**
+     * @brief lastKeptOut the names of the protected features the most recent write call was kept out of: Node.fill(),
+     * encloseAndFill(), gradient(), smartPatch(), move(), the transforms, the last window of a Node.paintStrokes() job,
+     * a Node.setPixelData(), Filter.apply() or startFilter(), Selection.cut() or paste() made while the agent works
+     * (an agent move or job is open, or setAgentActive(true)). Empty when the last such call was kept out of nothing.
+     * A stroke job and a pixel write inside an open agent move land after the call returns; read this after
+     * waitForDone(), or use StrokeJob.keptOut() for a job. The tool calls return only true or false; this tells what
+     * they left alone.
+     * @return feature names, in the order the call named them
+     */
+    QStringList lastKeptOut() const;
+
+    /// @brief agentMoveKeptOut every protected feature that write calls were kept out of since the last agent move
+    /// began (kept after it ends, until the next one begins). It starts again when a move that Krita closed by itself
+    /// (a save, an undo, the idle timeout) resumes as "<name> (cont.)".
+    QStringList agentMoveKeptOut() const;
+
+    /**
+     * @brief setProtectionSuspended lifts protection for a deliberate edit of protected features: while true, no write
+     * is kept out of anything, by any call, including a job already running without "allowProtected": it paints into
+     * the protected features from its next window of strokes on. Only inside an open agent move: outside one it is
+     * refused (a warning, returns false), so a suspension can never linger; it is reset to false when the move closes.
+     * Use the option "allowProtected" of one call (paintStrokes, fill, encloseAndFill, gradient, smartPatch) when only
+     * that call should write into protected features. The artist's tools are never restricted by protection.
+     * Suspending is the way out for the calls that have no options (move, the transforms, setColorSpace, mergeDown).
+     * @return false when refused; true otherwise (also for \p suspended false)
+     */
+    bool setProtectionSuspended(bool suspended);
+
+    /// @brief protectionSuspended whether protection is lifted by setProtectionSuspended()
+    bool protectionSuspended() const;
+
 public Q_SLOTS:
     /**
      * @brief DEPRECATED - use guidesConfig() instead

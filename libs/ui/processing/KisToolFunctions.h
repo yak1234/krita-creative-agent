@@ -20,6 +20,7 @@
 #include <QScopedPointer>
 #include <QSharedPointer>
 #include <QString>
+#include <QStringList>
 
 #include <KoColor.h>
 #include <KoCompositeOpRegistry.h>
@@ -71,6 +72,12 @@ public:
     /// Cancels the stroke if it has not finished: its work so far is undone and nothing joins the history.
     void cancel();
 
+    /// The protected features the stroke kept its writes out of (Target::enforceProtection), set while it ran: valid
+    /// once the stroke has finished. Empty when nothing was kept out.
+    QStringList keptOut() const;
+    /// For the stroke.
+    void setKeptOut(const QStringList &names);
+
     bool finished() const;
 
     /// For the stroke: it ran (\p finished true) or was cancelled.
@@ -104,6 +111,13 @@ struct KRITAUI_EXPORT Target {
     KUndo2MagicString name;
     /// When set, told when the stroke ends.
     CompletionSP completion;
+    /**
+     * Keep the call's writes out of the image's protected features (krita-fork 6.5, KisFeatureProtection): the
+     * selection the stroke uses when it runs is the limiting one (or the whole layer) minus the protected features,
+     * and a move that would shift pixels under one is refused. The names of the features kept out are told to
+     * \p completion (Completion::keptOut()). A call that is a deliberate edit of a protected feature leaves it false.
+     */
+    bool enforceProtection = false;
 };
 
 /**

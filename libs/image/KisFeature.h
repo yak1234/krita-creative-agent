@@ -148,6 +148,20 @@ public:
     /// both (KisFeatureImageCommand) put back what was measured before.
     void setMaskAndProperties(KisPixelSelectionSP mask, const Properties &properties);
 
+    /**
+     * Whether the mask is non-zero at some pixel of \p rect and, when \p within is given, where \p within is non-zero
+     * too. Reads only the mask's stored tiles under \p rect, so it costs little for a rect the feature does not
+     * reach (task 6.4, 6.5). Any thread.
+     */
+    bool hasPixelIn(const QRect &rect, KisPixelSelectionSP within = KisPixelSelectionSP()) const;
+
+    /// The tiles the mask stores, as rectangles (one walk of the mask's tile table), for hasPixelInTiles(): a caller that
+    /// asks about many rectangles takes it once instead of once per question.
+    QVector<QRect> storedTiles() const;
+
+    /// As hasPixelIn(), over \p tiles taken earlier from storedTiles() (the mask must not have changed since).
+    bool hasPixelInTiles(const QVector<QRect> &tiles, const QRect &rect, KisPixelSelectionSP within = KisPixelSelectionSP()) const;
+
     /// Measures \p mask: its exact bounds, area and, with a colour source, mean colour. Reads only the mask's
     /// non-default tiles inside its exact bounds, row by row, never a dense copy.
     static Properties measureMask(KisPixelSelectionSP mask, KisPaintDeviceSP colorSource);
@@ -172,7 +186,8 @@ private:
     /// Set by the list that holds the feature, so a change of bounds updates its spatial index.
     void setOwner(QSharedPointer<KisFeatureOwnerGuard> guard);
     QSharedPointer<KisFeatureOwnerGuard> owner() const;
-    void notifyOwner(bool boundsChanged);
+    /// \p protectionRelevant: the change can alter the protected area (the protected flag, the mask).
+    void notifyOwner(bool boundsChanged, bool protectionRelevant = false);
 
     mutable QMutex m_mutex;
     const QUuid m_id;

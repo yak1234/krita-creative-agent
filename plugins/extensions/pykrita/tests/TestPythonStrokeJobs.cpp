@@ -208,7 +208,7 @@ void TestPythonStrokeJobs::testPollsStatusAndCancels()
                        "job.finished.connect(ended.append)\n"
                        "status = job.status()\n"
                        "result = (sorted(status.keys()), status['state'], status['done'], status['total'], job.cancel())"),
-             QString("(['cancelReason', 'done', 'error', 'ms', 'name', 'progress', 'rect', 'state', 'total'], 'queued', 0, 20, True)"));
+             QString("(['cancelReason', 'done', 'error', 'keptOut', 'ms', 'name', 'progress', 'rect', 'state', 'total'], 'queued', 0, 20, True)"));
     gate.release();
     QCOMPARE(runPython("final = settle(job)\n"
                        "result = (final, job.strokesDone(), ended, job.status()['done'], job.cancel(), column(layer, 10))"),

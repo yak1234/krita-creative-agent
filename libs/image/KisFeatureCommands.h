@@ -68,4 +68,20 @@ private:
     bool m_haveOldName {false};
 };
 
+/// Protects or unprotects a feature (krita-fork task 6.5). No pixel changes.
+class KRITAIMAGE_EXPORT KisSetFeatureProtectedCommand : public KUndo2Command
+{
+public:
+    KisSetFeatureProtectedCommand(KisImageWSP image, const QUuid &id, bool isProtected, KUndo2Command *parent = nullptr);
+    void redo() override;
+    void undo() override;
+
+private:
+    KisImageWSP m_image;
+    QUuid m_id;
+    bool m_new;
+    bool m_old {false};
+    bool m_haveOld {false};
+};
+
 #endif // KISFEATURECOMMANDS_H

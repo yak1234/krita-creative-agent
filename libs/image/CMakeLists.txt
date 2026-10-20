@@ -237,6 +237,8 @@ set(kritaimage_LIB_SRCS
    KisFeature.cpp
    KisFeatureList.cpp
    KisFeatureCommands.cpp
+   KisFeatureProtection.cpp
+   KisFeatureQueries.cpp
    KisFeatureImageCommand.cpp
    KisMagneticWorker.cc
    KisFeatureBuilders.cpp

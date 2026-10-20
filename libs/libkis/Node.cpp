@@ -81,6 +81,49 @@
 #include <brushengine/kis_paintop_preset.h>
 
 
+#include <cmath>
+
+#include <KoCompositeOpRegistry.h>
+#include <KisFeatureList.h>
+#include <KisFeatureProtection.h>
+#include <kis_debug.h>
+
+namespace {
+/**
+ * Krita Agent (krita-fork 6.5): whether a whole-layer rewrite (a transform, a crop, a colour conversion, a merge)
+ * must be refused because the pixels it rewrites, where they are now or where they would be, touch a protected
+ * feature. Such a call cannot be clipped to the feature, so as for Node.move() it is refused, with a warning, and the
+ * features are named in Document.lastKeptOut(). Document.setProtectionSuspended() is the way out. Nothing is refused
+ * when no feature is protected.
+ */
+bool refusedByProtection(KisImageSP image, const QList<QRect> &areas, const char *call)
+{
+    if (!KisFeatureProtection::isActive(image)) return false;
+    QStringList names;
+    for (const QRect &area : areas) {
+        for (const QString &name : KisFeatureProtection::keptOutOf(image, area)) {
+            if (!names.contains(name)) names << name;
+        }
+    }
+    if (names.isEmpty()) return false;
+    image->featureList()->recordKeptOut(names);
+    warnScript << call << "refused: it would rewrite pixels inside the protected features" << names.join(", ")
+               << "(Document.setProtectionSuspended(True) lifts protection for a deliberate edit)";
+    return true;
+}
+
+/// The bounds of \p rect after \p transform, with a margin, or an empty rect when the numbers are not usable.
+QRect transformedBounds(const QTransform &transform, const QRect &rect)
+{
+    const QRectF mapped = transform.mapRect(QRectF(rect));
+    if (!std::isfinite(mapped.x()) || !std::isfinite(mapped.y()) || !std::isfinite(mapped.width()) || !std::isfinite(mapped.height())
+        || std::abs(mapped.x()) > 1e9 || std::abs(mapped.y()) > 1e9 || mapped.width() > 1e9 || mapped.height() > 1e9) {
+        return QRect(INT_MIN / 2, INT_MIN / 2, INT_MAX, INT_MAX); // unusable numbers: as if it reached everywhere
+    }
+    return mapped.toAlignedRect().adjusted(-2, -2, 2, 2);
+}
+}
+
 namespace {
 /// Krita Agent: sets a node's visibility, undoably (KisImageChangeVisibilityCommand is not exported).
 class NodeVisibilityCommand : public KUndo2Command
@@ -363,6 +406,8 @@ bool Node::setColorProfile(const QString &colorProfile)
     if (!d->node) return false;
     if (!d->node->inherits("KisLayer")) return false;
     KisLayer *layer = qobject_cast<KisLayer*>(d->node.data());
+    // Assigning a profile changes how every pixel of the layer reads.
+    if (refusedByProtection(d->image, {QRect(d->node->exactBounds())}, "Node.setColorProfile()")) return false;
     const KoColorProfile *profile = KoColorSpaceRegistry::instance()->profileByName(colorProfile);
     bool result = false;
     const bool done = ScriptWaits::run(d->image, "Node.setColorProfile()", [&]() {
@@ -377,6 +422,8 @@ bool Node::setColorSpace(const QString &colorModel, const QString &colorDepth, c
     if (!d->node->inherits("KisLayer")) return false;
     const KoColorProfile *profile = KoColorSpaceRegistry::instance()->profileByName(colorProfile);
     if (!profile) return false;
+    // A conversion rewrites every pixel of the layer.
+    if (refusedByProtection(d->image, {QRect(d->node->exactBounds())}, "Node.setColorSpace()")) return false;
     const KoColorSpace *dstCs = KoColorSpaceRegistry::instance()->colorSpace(colorModel,
                                                                              colorDepth,
                                                                              profile);
@@ -731,6 +778,16 @@ Node* Node::mergeDown()
     if (!qobject_cast<KisLayer*>(d->node.data())) return 0;
     if (!d->node->prevSibling()) return 0;
 
+    // A merge is the composite unchanged only for a fully opaque upper layer with the Normal blending mode; any other
+    // merge changes the lower layer's pixels under the upper one, so it is refused where that reaches a protected feature.
+    if (KisFeatureProtection::isActive(d->image)) {
+        KisLayer *upper = qobject_cast<KisLayer*>(d->node.data());
+        KisLayer *lower = qobject_cast<KisLayer*>(d->node->prevSibling().data());
+        const bool plain = upper && lower && upper->compositeOpId() == COMPOSITE_OVER && lower->compositeOpId() == COMPOSITE_OVER
+            && upper->opacity() == OPACITY_OPAQUE_U8;
+        if (!plain && refusedByProtection(d->image, {QRect(d->node->exactBounds())}, "Node.mergeDown()")) return 0;
+    }
+
     // The layer below receives the merge. A merge that was held back past the wait limit is cancelled: null then,
     // never the layer below as if it were the result.
     KisNodeSP below = d->node->prevSibling();
@@ -741,18 +798,25 @@ Node* Node::mergeDown()
     return Node::createNode(d->image, d->node->prevSibling() ? d->node->prevSibling() : below);
 }
 
-void Node::scaleNode(QPointF origin, int width, int height, QString strategy)
+bool Node::scaleNode(QPointF origin, int width, int height, QString strategy)
 {
-    if (!d->node) return;
-    if (!qobject_cast<KisLayer*>(d->node.data())) return;
-    if (!d->node->parent()) return;
+    if (!d->node) return false;
+    if (!qobject_cast<KisLayer*>(d->node.data())) return false;
+    if (!d->node->parent()) return false;
 
     KisFilterStrategy *actualStrategy = KisFilterStrategyRegistry::instance()->get(strategy);
     if (!actualStrategy) actualStrategy = KisFilterStrategyRegistry::instance()->get("Bicubic");
 
     const QRect bounds(d->node->exactBounds());
+    if (KisFeatureProtection::isActive(d->image)) {
+        QTransform t;
+        t.translate(origin.x(), origin.y());
+        t.scale(qreal(width) / qMax(1, bounds.width()), qreal(height) / qMax(1, bounds.height()));
+        t.translate(-origin.x(), -origin.y());
+        if (refusedByProtection(d->image, {bounds, transformedBounds(t, bounds)}, "Node.scaleNode()")) return false;
+    }
 
-    ScriptWaits::run(d->image, "Node.scaleNode()", [&]() {
+    return ScriptWaits::run(d->image, "Node.scaleNode()", [&]() {
         d->image->scaleNode(d->node,
                             origin,
                             qreal(width) / bounds.width(),
@@ -761,36 +825,57 @@ void Node::scaleNode(QPointF origin, int width, int height, QString strategy)
     });
 }
 
-void Node::rotateNode(double radians)
+bool Node::rotateNode(double radians)
 {
-    if (!d->node) return;
-    if (!qobject_cast<KisLayer*>(d->node.data())) return;
-    if (!d->node->parent()) return;
+    if (!d->node) return false;
+    if (!qobject_cast<KisLayer*>(d->node.data())) return false;
+    if (!d->node->parent()) return false;
 
-    ScriptWaits::run(d->image, "Node.rotateNode()", [&]() {
+    if (KisFeatureProtection::isActive(d->image)) {
+        const QRect bounds(d->node->exactBounds());
+        QTransform t;
+        t.translate(bounds.center().x(), bounds.center().y());
+        t.rotateRadians(radians);
+        t.translate(-bounds.center().x(), -bounds.center().y());
+        if (refusedByProtection(d->image, {bounds, transformedBounds(t, bounds)}, "Node.rotateNode()")) return false;
+    }
+
+    return ScriptWaits::run(d->image, "Node.rotateNode()", [&]() {
         d->image->rotateNode(d->node, radians, 0);
     });
 }
 
-void Node::cropNode(int x, int y, int w, int h)
+bool Node::cropNode(int x, int y, int w, int h)
 {
-    if (!d->node) return;
-    if (!qobject_cast<KisLayer*>(d->node.data())) return;
-    if (!d->node->parent()) return;
+    if (!d->node) return false;
+    if (!qobject_cast<KisLayer*>(d->node.data())) return false;
+    if (!d->node->parent()) return false;
+
+    // A crop deletes what lies outside the rectangle: the layer's pixels are rewritten wherever it reaches.
+    if (refusedByProtection(d->image, {QRect(d->node->exactBounds())}, "Node.cropNode()")) return false;
 
     QRect rect = QRect(x, y, w, h);
-    ScriptWaits::run(d->image, "Node.cropNode()", [&]() {
+    return ScriptWaits::run(d->image, "Node.cropNode()", [&]() {
         d->image->cropNode(d->node, rect);
     });
 }
 
-void Node::shearNode(double angleX, double angleY)
+bool Node::shearNode(double angleX, double angleY)
 {
-    if (!d->node) return;
-    if (!qobject_cast<KisLayer*>(d->node.data())) return;
-    if (!d->node->parent()) return;
+    if (!d->node) return false;
+    if (!qobject_cast<KisLayer*>(d->node.data())) return false;
+    if (!d->node->parent()) return false;
 
-    ScriptWaits::run(d->image, "Node.shearNode()", [&]() {
+    if (KisFeatureProtection::isActive(d->image)) {
+        const QRect bounds(d->node->exactBounds());
+        QTransform t;
+        t.translate(bounds.center().x(), bounds.center().y());
+        t.shear(std::tan(qDegreesToRadians(angleX)), std::tan(qDegreesToRadians(angleY)));
+        t.translate(-bounds.center().x(), -bounds.center().y());
+        if (refusedByProtection(d->image, {bounds, transformedBounds(t, bounds)}, "Node.shearNode()")) return false;
+    }
+
+    return ScriptWaits::run(d->image, "Node.shearNode()", [&]() {
         d->image->shearNode(d->node, angleX, angleY, 0);
     });
 }

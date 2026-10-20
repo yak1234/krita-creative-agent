@@ -223,6 +223,73 @@ for the other.
 - **Protection:** a protected feature is enforced where pixels are written: agent jobs paint through a selection that
   excludes every protected feature, and direct pixel writes from scripts are clipped the same way while an agent move
   is open. The pass result names the features it was kept out of. The artist's own painting is never clipped.
+- **Queries as built (6.4):** `Document.featuresAt(x, y)`, `featuresOverlapping(rect | feature | selection)`,
+  `featuresTouching(feature | name)` and `selection(expression)`, in `libs/image/KisFeatureQueries`. The R-tree answers
+  at the level of bounds, then the masks' own stored tiles decide (`KisFeature::hasPixelIn`), so no pixel of the
+  painting is read. *Touching* means: no common pixel, and a pixel of one within 2 px (the larger of the horizontal and
+  vertical distances) of a pixel of the other: directly adjacent, diagonal, or with one empty pixel between, which is
+  what an anti-aliased or hand-drawn edge leaves; overlapping features are not touching. Every feature counts, proposed
+  or kept. *Grammar:* `expression := term { " " op " " term }`, `op := + | & | -` (union, intersection, difference),
+  always with a space on each side, left to right with no precedence, parentheses group; a name is the text between
+  operators, trimmed as feature names are, so `Tower 3` and `Sky-2` are names; a name with a parenthesis, a double
+  quote or ` + `, ` & `, ` - ` inside is written in double quotes (`\"` and `\\` inside). Limits: 2000 characters, 64
+  names, 16 levels, 5 s; unknown names, syntax errors and limits give `None` with a warning, never an exception.
+  Non-finite or huge numbers are refused; rectangles are cut to the document in 64-bit arithmetic.
+- **Protection as built (6.5).** One rule: *a pixel of any layer or mask that lies inside a protected feature's mask
+  (any non-zero value, so a soft edge is protected whole; state proposed or kept) is not written by the agent.* The mask
+  is in image coordinates and so is every paint device (a layer's offset is part of its device), so one selection
+  covers a write to any layer; the clip is the canvas region, not a layer. The union of the protected masks is built
+  once per `KisFeatureList::revision()` (any change to the list or a feature bumps it) and cached; with no protected
+  feature the answer is one atomic read, so an unprotected document does no extra work. Krita's painters already limit
+  a write to a selection, so enforcement is a selection, not an erase-after: `KisFeatureProtection::guardSelection()`.
+  The artist's own tools never call it. Which write paths are covered:
+  1. **Covered, selection clip.** `Node.paintStrokes` (the effective selection of every stroke is the job's selection,
+     or the whole canvas, minus the union; rebuilt per *window* of up to 32 strokes, so a feature protected mid-job is
+     honoured from the next window on and at most the window already queued paints inside it; the job's status says
+     `keptOut`), `Node.fill`, `encloseAndFill`, `gradient` and `smartPatch` (the selection is read when the stroke
+     *runs*, so a feature protected after the call was queued is honoured; `selection=None` cannot bypass it because
+     the clip is built from the union, not from the argument; for `smartPatch` the patch is still found from the
+     protected surroundings, only the write is clipped), `Filter.apply` (read when it runs), `Filter.startFilter`
+     (read when it starts), `Selection.cut` and `paste`.
+  2. **Covered, bytes.** `Node.setPixelData` while the agent works (an agent move or job is open, or
+     `setAgentActive(true)`): the pixels the device holds now replace the data inside protected features, when the write
+     runs (`clipPixelWrite`).
+  3. **Covered, refused whole.** `Node.move`, `rotateNode`, `scaleNode`, `shearNode`, `cropNode`, `setColorSpace` and
+     `setColorProfile` of a layer whose pixels, where they are or (for a transform) where they would be, touch a protected
+     feature (such a call cannot be clipped; it returns false, warns, and `lastKeptOut()` names the features);
+     `mergeDown` unless both layers are Normal-blend and the upper one fully opaque (otherwise it changes the lower
+     layer's pixels under the upper one). A write to a layer that has a transform mask, or sits under a group or layer with
+     one (looked up through every ancestor), or is (or is inside a group that is) the source of a clone layer, is refused
+     while any feature is protected: its pixels are shown somewhere else than where they are stored, so no clip can be exact.
+  4. **Exempt, and why.** Raw script writes (`setPixelData`, `Channel.setPixelData`, `Filter.apply`, `Selection.cut`/`paste`) outside agent work
+     are the script's own, as the artist's tools are; whoever wants protection brackets agent work with a move (the plugin
+     does). Layer and image operations that rearrange or recomposite without writing new content: `mergeGroups`, merge
+     down, flatten, `bake` (the composite is unchanged), crop, scale, rotate, mirror and colour conversion (the masks follow:
+     task 6.1b), layer add, remove, duplicate, visibility, opacity, blending mode, filter and transform masks. Effects of
+     filter layers or masks that spread a neighbour's influence into a protected feature (a blur, a layer style) are not
+     blocked: protection is about pixels written, and the effect is a layer the artist sees and can undo. Colorize mask key
+     strokes are input to such a mask, not layer pixels. `Document.protectedSelection()` is a copy of the union (or its
+     inverse) for limiting such layers. `Krita.action(...)` and the tool actions use the artist's selection and are not
+     protected: a bridge must not write through them while a feature is protected.
+  5. **Override.** The option `allowProtected: true` on one call (paintStrokes, fill, encloseAndFill, gradient, smartPatch),
+     `Document.setProtectionSuspended(true)` for everything else: refused outside an open agent move and reset when the
+     move closes (a job already running without `allowProtected` then paints into the features from its next window), or
+     unprotecting the feature with `Feature.setProtected(False)`. Unprotecting, removing a feature and undoing the protect
+     step are ordinary calls; a bridge that must not let a model do that does not forward them.
+  6. **Enforced for whom.** The tool calls, jobs, moves and transforms are enforced whoever calls them (an artist's own script
+     is clipped too while a feature is protected). The raw writes only while the agent works (`agentActive()`), so the
+     plugin brackets each agent tool call in `setAgentActive(True)` with try/finally.
+  7. **Cache.** The protected area is keyed on `KisFeatureList::protectionRevision()`, which only the protected flag, a mask,
+     an add, a remove and suspension change: a rename, kind, state, author or re-measure keeps it.
+  8. **Invisible byte noise.** Where a layer is transparent inside a protected feature, Krita's composite, which works on
+     several destination pixels at once through a selection, can give a pixel with selection 0 and alpha 0 the brush's colour at
+     alpha 0, within 3 px of the feature's left and right edge. Nothing shows and nothing with alpha changes; the clip cannot
+     prevent it (tested: `testEdgeNoiseIsInvisibleAndAtTheEdge`).
+  9. **What was kept out.** `StrokeJob.keptOut()` / `status()["keptOut"]` for a job; `Document.lastKeptOut()` for the most
+     recent write call and `Document.agentMoveKeptOut()` for the open (or last) move, because the tool functions return a
+     bool. A job names a feature when a stroke's brush box reaches a pixel of it; `setPixelData`, `Filter.apply` and
+     `Selection` writes when they would have changed a pixel inside it (exact for `setPixelData`); fills name the protected
+     features inside the filled region's bounding box grown by a pixel; a gradient the features inside its area.
 - **The plugin and companion:** the panel's protected-areas list becomes a features list (show, protect, rename,
   remove); the agent's `select`, `fill_region`, `stamp_material` and pass tools accept feature names. Fork-first: no
   selection-mask fallback is kept for stock Krita.

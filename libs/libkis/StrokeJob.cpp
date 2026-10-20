@@ -167,6 +167,20 @@ QRect StrokeJobShared::changedRect() const
     return m_rect;
 }
 
+void StrokeJobShared::addKeptOut(const QStringList &names)
+{
+    QMutexLocker locker(&m_mutex);
+    for (const QString &name : names) {
+        if (!m_keptOut.contains(name)) m_keptOut << name;
+    }
+}
+
+QStringList StrokeJobShared::keptOut() const
+{
+    QMutexLocker locker(&m_mutex);
+    return m_keptOut;
+}
+
 QString StrokeJobShared::error() const
 {
     QMutexLocker locker(&m_mutex);
@@ -412,7 +426,13 @@ QVariantMap StrokeJob::status() const
         {QStringLiteral("cancelReason"), cancelReason()},
         {QStringLiteral("name"), name()},
         {QStringLiteral("ms"), elapsedMs()},
+        {QStringLiteral("keptOut"), keptOut()},
     };
+}
+
+QStringList StrokeJob::keptOut() const
+{
+    return m_shared->keptOut();
 }
 
 bool StrokeJob::wait(int timeoutMs)

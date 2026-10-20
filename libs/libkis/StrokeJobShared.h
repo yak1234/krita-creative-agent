@@ -20,6 +20,7 @@
 #include <QRect>
 #include <QSharedPointer>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QWaitCondition>
 
@@ -72,6 +73,11 @@ public:
     void strokeEnded(int index, bool painted);
     void nodeDirty(KisImage *image, KisNode *node, const QVector<QRect> &rects);
 
+    /// The protected features the job's strokes were kept out of, in the order first named (the feeder adds them as it
+    /// queues each window). Any thread.
+    void addKeptOut(const QStringList &names);
+    QStringList keptOut() const;
+
     /// The feeder drops \p count strokes it will never queue (the job was cancelled first).
     void dropUnqueued(int count);
 
@@ -106,6 +112,7 @@ private:
     bool m_failed = false;
     QString m_error;
     QRect m_rect;
+    QStringList m_keptOut;
     QElapsedTimer m_clock;
     qint64 m_endMs = -1;
     StrokeJob *m_job = nullptr;
@@ -143,6 +150,9 @@ public:
 
     // Set by Node::paintStrokes() before start().
     QVector<StrokeJobInput> inputs;
+    /// Keep the strokes out of the image's protected features (krita-fork 6.5). Each window of strokes is limited by
+    /// \p clip minus the features protected when the window is queued.
+    bool enforceProtection = false;
     KisPaintOpPresetSP basePreset;
     QString compositeOp;
     KisSelectionSP clip;
@@ -159,6 +169,8 @@ public:
 
 private:
     void queueWindow(int count);
+    void refreshProtection();
+    void nameKeptOut(int from, int to);
     void finish();
     KisResourcesSnapshotSP snapshotFor(const StrokeJobInput &input);
 
@@ -169,6 +181,10 @@ private:
     int m_next = 0;
     bool m_finished = false;
     QHash<QString, KisPaintOpPresetSP> m_presets;
+    /// What the strokes of this window paint through: \p clip minus the protected features, as they were at revision
+    /// m_protectionRevision of the feature list (-1: not built yet).
+    KisSelectionSP m_effectiveClip;
+    int m_protectionRevision = -1;
 };
 
 /**

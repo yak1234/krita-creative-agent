@@ -27,6 +27,7 @@ public Q_SLOTS:
     QString author() const;
     QString state() const;
     bool isProtected() const;
+    bool setProtected(bool value);
     QRect bounds() const;
     qint64 area() const;
     QColor meanColor() const;

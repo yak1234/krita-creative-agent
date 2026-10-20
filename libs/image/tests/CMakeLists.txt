@@ -147,6 +147,13 @@ kis_add_test(
     LINK_LIBRARIES kritaimage kritatestsdk
     )
 
+# Krita Agent: protection (krita-fork 6.5) and spatial queries (6.4) on the feature list, run in a temporary home.
+kis_add_test(
+    KisFeatureProtectionTest.cpp
+    TEST_NAME KisFeatureProtectionTest
+    LINK_LIBRARIES kritaimage kritatestsdk kritaglobal kritatransformmaskstubs
+    )
+
 kis_add_test(
     kis_clone_layer_test.cpp
     LINK_LIBRARIES kritaimage kritatestsdk kritaglobal kritatransformmaskstubs

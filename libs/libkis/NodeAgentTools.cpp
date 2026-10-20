@@ -31,6 +31,8 @@
 #include <KisImageResolutionProxy.h>
 #include <processing/KisToolFunctions.h>
 
+#include <KisFeatureList.h>
+
 #include "DocumentHistory.h"
 #include "ScriptWaits.h"
 #include "Selection.h"
@@ -194,7 +196,7 @@ private:
 };
 
 const QStringList fillKeys = {"sample", "labels", "threshold", "spread", "closeGap", "grow", "feather", "antialias",
-                              "stopGrowingAtDarkestPixel", "useSelectionAsBoundary", "opacity", "compositeOp", "name"};
+                              "stopGrowingAtDarkestPixel", "useSelectionAsBoundary", "opacity", "compositeOp", "name", "allowProtected"};
 
 /// fill()'s options shared with encloseAndFill(); \p device checks the blending mode.
 void readFillOptions(Options &options, KisToolFunctions::FillOptions &fill, KisPaintDeviceSP device)
@@ -285,9 +287,12 @@ static bool waitForStroke(KisToolFunctions::CompletionSP completion, const char 
 /// A target for the tool functions: this node, \p selection, and the open macro's or move's undo, if any. Taken only
 /// once a call is going ahead, since it counts as script work in the open move.
 static KisToolFunctions::Target toolTarget(KisImageSP image, KisNodeSP node, KisSelectionSP selection,
-                                           bool overrideSelection, const QString &name)
+                                           bool overrideSelection, const QString &name, bool allowProtected = false)
 {
     KisToolFunctions::Target target;
+    // Krita keeps the call's writes out of the protected features (krita-fork 6.5) unless the script asked, by
+    // "allowProtected", to write into them on purpose.
+    target.enforceProtection = !allowProtected;
     target.image = image;
     target.node = node;
     target.selection = selection;
@@ -305,8 +310,14 @@ static bool runTool(KisToolFunctions::Target target, const char *call,
     if (target.image->locked()) return refused(call, "the document is locked (Document.lock()); unlock it first");
     target.undoFacade = DocumentHistory::scriptUndoFacade(target.image, target.node->paintDevice());
     target.completion.reset(new KisToolFunctions::Completion());
-    if (!run(target, &reason)) return refused(call, reason);
-    return waitForStroke(target.completion, call);
+    if (!run(target, &reason)) {
+        if (target.enforceProtection) target.image->featureList()->recordKeptOut(target.completion->keptOut());
+        return refused(call, reason);
+    }
+    const bool done = waitForStroke(target.completion, call);
+    // Document.lastKeptOut(): what protection kept this call out of.
+    if (done) target.image->featureList()->recordKeptOut(target.completion->keptOut());
+    return done;
 }
 
 bool Node::fill(int x, int y, const QColor &color, const QVariantMap &options, Selection *selection)
@@ -325,6 +336,8 @@ bool Node::fill(int x, int y, const QColor &color, const QVariantMap &options, S
     read.readColor("boundaryColor", boundary);
     QString name;
     read.readString("name", name);
+    bool allowProtected = false;
+    read.readBool("allowProtected", allowProtected);
     if (!read.ok()) return refused(call, read.error());
     KisImageSP image = this->image();
     if (boundary.isValid() && image) {
@@ -337,7 +350,7 @@ bool Node::fill(int x, int y, const QColor &color, const QVariantMap &options, S
     if (selection && (!limit || limit->selectedExactRect().isEmpty())) {
         return refused(call, "the limiting selection selects nothing");
     }
-    const KisToolFunctions::Target target = toolTarget(image, node, limit, selection != nullptr, name);
+    const KisToolFunctions::Target target = toolTarget(image, node, limit, selection != nullptr, name, allowProtected);
     const KoColor fillColor(color, image ? image->colorSpace() : nullptr);
     return runTool(target, call, [&](const KisToolFunctions::Target &t, QString *reason) {
         return KisToolFunctions::fill(t, QPoint(x, y), fillColor, fill, reason);
@@ -374,6 +387,8 @@ bool Node::encloseAndFill(Selection *enclosingArea, const QColor &color, const Q
     readFillOptions(read, enclose.fill, node ? node->paintDevice() : nullptr);
     QString name;
     read.readString("name", name);
+    bool allowProtected = false;
+    read.readBool("allowProtected", allowProtected);
     if (!read.ok()) return refused(call, read.error());
     if (image) enclose.regionColor = KoColor(regionColor.isValid() ? regionColor : QColor(Qt::black), image->colorSpace());
     if (selection && !selection->selection()) return refused(call, "the selection is not valid");
@@ -383,7 +398,7 @@ bool Node::encloseAndFill(Selection *enclosingArea, const QColor &color, const Q
     if (selection && (!limit || limit->selectedExactRect().isEmpty())) {
         return refused(call, "the limiting selection selects nothing");
     }
-    const KisToolFunctions::Target target = toolTarget(image, node, limit, selection != nullptr, name);
+    const KisToolFunctions::Target target = toolTarget(image, node, limit, selection != nullptr, name, allowProtected);
     const KoColor fillColor(color, image ? image->colorSpace() : nullptr);
     return runTool(target, call, [&](const KisToolFunctions::Target &t, QString *reason) {
         return KisToolFunctions::encloseAndFill(t, area ? area->pixelSelection() : nullptr, fillColor, enclose, reason);
@@ -397,7 +412,7 @@ bool Node::gradient(const QPointF &start, const QPointF &end, const QVariantMap 
     KisNodeSP node = this->node();
     KisImageSP image = this->image();
     Options read(options, {"colors", "gradient", "shape", "repeat", "reverse", "dither", "antiAliasThreshold",
-                           "opacity", "compositeOp", "name"});
+                           "opacity", "compositeOp", "name", "allowProtected"});
     KisToolFunctions::GradientOptions gradient;
     QList<QColor> colors;
     read.readColors("colors", colors);
@@ -429,6 +444,8 @@ bool Node::gradient(const QPointF &start, const QPointF &end, const QVariantMap 
     read.readString("compositeOp", gradient.compositeOp);
     QString name;
     read.readString("name", name);
+    bool allowProtected = false;
+    read.readBool("allowProtected", allowProtected);
     if (read.ok() && node && node->paintDevice() && !node->paintDevice()->colorSpace()->hasCompositeOp(gradient.compositeOp)) {
         read.fail(QString("unknown blending mode \"%1\"").arg(gradient.compositeOp));
     }
@@ -442,7 +459,7 @@ bool Node::gradient(const QPointF &start, const QPointF &end, const QVariantMap 
     if (selection && (!limit || limit->selectedExactRect().isEmpty())) {
         return refused(call, "the limiting selection selects nothing");
     }
-    const KisToolFunctions::Target target = toolTarget(image, node, limit, selection != nullptr, name);
+    const KisToolFunctions::Target target = toolTarget(image, node, limit, selection != nullptr, name, allowProtected);
     QString reason;
     if (!KisToolFunctions::canPaint(target, &reason)) return refused(call, reason);
     KoAbstractGradientSP resource;
@@ -463,18 +480,20 @@ bool Node::smartPatch(Selection *area, const QVariantMap &options)
 {
     const char *call = "Node.smartPatch():";
     if (!area || !area->selection()) return refused(call, "there is no area to patch");
-    Options read(options, {"accuracy", "patchRadius", "name"});
+    Options read(options, {"accuracy", "patchRadius", "name", "allowProtected"});
     int accuracy = 50;
     int patchRadius = 4;
     read.readInt("accuracy", accuracy, 0, 99);
     read.readInt("patchRadius", patchRadius, 2, 8);
     QString name;
     read.readString("name", name);
+    bool allowProtected = false;
+    read.readBool("allowProtected", allowProtected);
     if (!read.ok()) return refused(call, read.error());
 
     KisImageSP image = this->image();
     KisSelectionSP mask = selectionOn(area ? area->selection() : nullptr, image);
-    const KisToolFunctions::Target target = toolTarget(image, node(), nullptr, true, name);
+    const KisToolFunctions::Target target = toolTarget(image, node(), nullptr, true, name, allowProtected);
     return runTool(target, call, [&](const KisToolFunctions::Target &t, QString *reason) {
         return KisToolFunctions::smartPatch(t, mask ? mask->pixelSelection() : nullptr, accuracy, patchRadius, reason);
     });
@@ -488,6 +507,7 @@ bool Node::move(int x, int y)
     if (!node || !image) return refused(call, "the node is not in a document");
 
     KisToolFunctions::Target target = toolTarget(image, node, nullptr, false, QString());
+    target.completion.reset(new KisToolFunctions::Completion());
     QString reason;
     if (QPoint(node->x(), node->y()) == QPoint(x, y)) {
         // Nothing to move: no step, but the same refusals.
@@ -495,7 +515,11 @@ bool Node::move(int x, int y)
     }
     if (image->locked()) return refused(call, "the document is locked (Document.lock()); unlock it first");
     target.undoFacade = DocumentHistory::scriptUndoFacade(image, node->paintDevice());
-    target.completion.reset(new KisToolFunctions::Completion());
-    if (!KisToolFunctions::moveNode(target, QPoint(x, y), &reason)) return refused(call, reason);
-    return waitForStroke(target.completion, call);
+    if (!KisToolFunctions::moveNode(target, QPoint(x, y), &reason)) {
+        image->featureList()->recordKeptOut(target.completion->keptOut());
+        return refused(call, reason);
+    }
+    const bool done = waitForStroke(target.completion, call);
+    if (done) image->featureList()->recordKeptOut(QStringList());
+    return done;
 }

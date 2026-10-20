@@ -38,6 +38,19 @@ public Q_SLOTS:
     Selection *maskSimilarColor(const QList<QColor> &colors, const QMap<QString, QVariant> &options = QMap<QString, QVariant>()) const /Factory/;
     Selection *maskSnapOutline(const QList<QPointF> &points, const QMap<QString, QVariant> &options = QMap<QString, QVariant>()) const /Factory/;
     QList<Selection *> maskSegments(const QList<Selection *> &hints, const QMap<QString, QVariant> &options = QMap<QString, QVariant>()) const /Factory/;
+    QList<Feature *> featuresAt(double x, double y) const /Factory/;
+    QList<Feature *> featuresOverlapping(const QRect &rect) const /Factory/;
+    QList<Feature *> featuresOverlapping(Feature *feature) const /Factory/;
+    QList<Feature *> featuresOverlapping(Selection *selection) const /Factory/;
+    QList<Feature *> featuresTouching(Feature *feature) const /Factory/;
+    QList<Feature *> featuresTouching(const QString &name) const /Factory/;
+    Selection *selection(const QString &expression) const /Factory/;
+    QStringList lastKeptOut() const;
+    QStringList agentMoveKeptOut() const;
+    bool setProtectionSuspended(bool suspended);
+    bool protectionActive() const;
+    Selection *protectedSelection(bool inverted = false) const /Factory/;
+    bool protectionSuspended() const;
 
 public Q_SLOTS:
     QList<qreal> horizontalGuides() const;

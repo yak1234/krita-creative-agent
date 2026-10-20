@@ -163,6 +163,15 @@ public:
     /// Otherwise returns false and leaves \p command to the caller.
     static bool runCommandStrokeInStep(KisImageSP image, KUndo2Command *command);
 
+    /**
+     * Krita Agent, krita-fork 6.5: \p image if the script writes now are the agent's and some feature is protected
+     * (an agent move or job is open, or Document.setAgentActive(true) is on, and protection is not suspended), else
+     * null. The script pixel writes that are not tool functions or stroke jobs (Node.setPixelData(), Filter.apply(),
+     * Filter.startFilter(), Selection.cut() and paste()) keep out of the protected features exactly when this is not
+     * null. Any thread.
+     */
+    static KisImageSP protectionFor(KisImageSP image);
+
     /// How long an open macro or move may go without script work before it closes itself: 120 s unless set.
     static void setAgentMoveIdleTimeout(int milliseconds);
     static int agentMoveIdleTimeout();

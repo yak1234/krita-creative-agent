@@ -99,3 +99,36 @@ void KisRenameFeatureCommand::undo()
     if (!feature) return;
     feature->setName(m_oldName);
 }
+
+KisSetFeatureProtectedCommand::KisSetFeatureProtectedCommand(KisImageWSP image,
+                                                             const QUuid &id,
+                                                             bool isProtected,
+                                                             KUndo2Command *parent)
+    : KUndo2Command(isProtected ? kundo2_i18n("Protect Feature") : kundo2_i18n("Unprotect Feature"), parent)
+    , m_image(image)
+    , m_id(id)
+    , m_new(isProtected)
+{
+}
+
+void KisSetFeatureProtectedCommand::redo()
+{
+    KisFeatureList *list = listOf(m_image);
+    KisFeatureSP feature = list ? list->feature(m_id) : KisFeatureSP();
+    if (!feature) {
+        m_haveOld = false;
+        return;
+    }
+    m_old = feature->isProtected();
+    m_haveOld = true;
+    feature->setProtected(m_new);
+}
+
+void KisSetFeatureProtectedCommand::undo()
+{
+    if (!m_haveOld) return;
+    KisFeatureList *list = listOf(m_image);
+    KisFeatureSP feature = list ? list->feature(m_id) : KisFeatureSP();
+    if (!feature) return;
+    feature->setProtected(m_old);
+}

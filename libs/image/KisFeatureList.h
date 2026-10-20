@@ -11,9 +11,11 @@
 #include <QPoint>
 #include <QRect>
 #include <QScopedPointer>
+#include <QStringList>
 #include <QUuid>
 
 #include "KisFeature.h"
+#include "kis_types.h"
 #include "kis_default_bounds_base.h"
 #include "kritaimage_export.h"
 
@@ -99,6 +101,66 @@ public:
     /// The features whose bounds contain \p point, in list order (bounds level, as above).
     QList<KisFeatureSP> featuresWithBoundsContaining(const QPoint &point) const;
 
+    /**
+     * A number that changes whenever the list or a feature in it changes (an add, a remove, any setter, a new mask or
+     * measured properties). Anything derived from the features (the protected area below, a job's effective
+     * selection) is valid for as long as the number is the same. Any thread.
+     */
+    int revision() const;
+
+    /**
+     * The same, but changed only by what can alter the protected area: a feature added or removed, the protected flag,
+     * a new mask, suspension of protection. Renames, kind, state, author and the measured properties do not change it,
+     * so the cached protected area survives them (a rebuild at 30 features of 6000x4500 is about 65 ms to 280 ms).
+     */
+    int protectionRevision() const;
+
+    // ---- Protection (krita-fork task 6.5) ----
+
+    /**
+     * Whether some feature is protected and protection is not suspended. Cheap when the list has no feature (an
+     * atomic read of a cached answer), so an image without features pays nothing for protection. Any thread.
+     */
+    bool hasProtectedFeatures() const;
+
+    /**
+     * The union of the masks of the protected features, in image coordinates: a pixel is in it when it is in any
+     * protected feature's mask at all (non-zero; a soft edge is protected whole), 255 there and 0 elsewhere, with an
+     * unselected default pixel. Null when no feature is protected or protection is suspended. Cached until the list
+     * changes: the same object is returned to every caller, which must not change it. Any thread; the first call
+     * after a change builds it (a few ms for 30 features at 6000x4500).
+     */
+    KisPixelSelectionSP protectedMask() const;
+
+    /// The inverse of protectedMask(): selected (default pixel 255) everywhere except the protected features. Null
+    /// when protectedMask() is. The same caching and the same rule: do not change it.
+    KisPixelSelectionSP unprotectedMask() const;
+
+    /**
+     * The names of the protected features that have a pixel in \p area (a rectangle, and when \p within is not null,
+     * only where \p within selects), in list order. Reads only the masks' tiles under \p area; empty when protection
+     * is off. Any thread.
+     */
+    QStringList protectedFeaturesIn(const QRect &area, KisPixelSelectionSP within = KisPixelSelectionSP()) const;
+
+    /**
+     * Suspends protection for a deliberate edit (Document.setProtectionSuspended()): while true, nothing is
+     * protected. Not saved; ends when the image's agent move closes (the document's history calls
+     * setProtectionSuspended(false) then).
+     */
+    bool protectionSuspended() const;
+    void setProtectionSuspended(bool suspended);
+
+    /**
+     * What protection kept writes out of, for scripts: the names of the protected features of the most recent write
+     * call (recordKeptOut() replaces it), and of every write call since resetMoveKeptOut() (an agent move's start),
+     * in the order first named. Any thread.
+     */
+    void recordKeptOut(const QStringList &names);
+    QStringList lastKeptOut() const;
+    QStringList moveKeptOut() const;
+    void resetMoveKeptOut();
+
 Q_SIGNALS:
     void sigFeatureAdded(const QUuid &id);
     void sigFeatureRemoved(const QUuid &id);
@@ -108,7 +170,7 @@ Q_SIGNALS:
 private:
     friend class KisFeature;
     /// Called by a feature of this list after it changed (outside the feature's lock).
-    void featureChanged(KisFeature *feature, bool boundsChanged);
+    void featureChanged(KisFeature *feature, bool boundsChanged, bool protectionRelevant);
 
     struct Private;
     QScopedPointer<Private> m_d;

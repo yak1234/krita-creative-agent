@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include <QByteArray>
+#include <QDebug>
 #include <QDataStream>
 #include <QIODevice>
 
@@ -17,6 +18,11 @@
 #include <KoColorSpace.h>
 #include <kis_sequential_iterator.h>
 #include <kis_layer.h>
+#include <kis_image.h>
+#include <kis_pixel_selection.h>
+#include <KisFeatureList.h>
+#include <KisFeatureProtection.h>
+#include "DocumentHistory.h"
 
 #ifdef HAVE_OPENEXR
 #include <half.h>
@@ -197,6 +203,52 @@ QByteArray Channel::pixelData(const QRect &rect) const
 void Channel::setPixelData(QByteArray value, const QRect &rect)
 {
     if (!d->node || !d->channel || d->node->paintDevice() == 0) return;
+
+    // Krita Agent (krita-fork 6.5): while the agent works, pixels inside protected features keep their channel value.
+    // The device's bytes in the rectangle are saved first, and the protected pixels' channel bytes are put back when
+    // the write is over (row by row: the iterator below walks tile by tile).
+    struct Restore {
+        KisPaintDeviceSP device;
+        QRect rect;
+        QByteArray saved, mask;
+        int pos = 0, size = 0;
+        ~Restore()
+        {
+            if (mask.isEmpty()) return;
+            const int pixel = device->pixelSize();
+            QByteArray now(saved.size(), 0);
+            device->readBytes(reinterpret_cast<quint8 *>(now.data()), rect);
+            for (int i = 0; i < mask.size(); i++) {
+                if (mask.at(i) != 0) memcpy(now.data() + i * pixel + pos, saved.constData() + i * pixel + pos, size);
+            }
+            device->writeBytes(reinterpret_cast<const quint8 *>(now.constData()), rect.x(), rect.y(), rect.width(), rect.height());
+        }
+    } restore;
+    {
+        KisNodeSP layerNode = d->node;
+        while (layerNode && !qobject_cast<KisLayer *>(layerNode.data())) layerNode = layerNode->parent();
+        KisImageSP image;
+        if (layerNode) image = KisImageSP(qobject_cast<KisLayer *>(layerNode.data())->image());
+        if (DocumentHistory::protectionFor(image)) {
+            const QString why = KisFeatureProtection::whyNotCanvasAligned(image, d->node);
+            if (!why.isEmpty() || qint64(rect.width()) * rect.height() >= (qint64(1) << 24)) {
+                qWarning() << "Channel.setPixelData() refused:" << (why.isEmpty() ? QStringLiteral("the rectangle is too large") : why);
+                return;
+            }
+            if (KisPixelSelectionSP protectedArea = image->featureList()->protectedMask()) {
+                KisPaintDeviceSP device = d->node->paintDevice();
+                restore.device = device;
+                restore.rect = rect;
+                restore.pos = d->channel->pos();
+                restore.size = d->channel->size();
+                restore.saved.resize(int(qint64(rect.width()) * rect.height() * device->pixelSize()));
+                device->readBytes(reinterpret_cast<quint8 *>(restore.saved.data()), rect);
+                restore.mask.resize(int(qint64(rect.width()) * rect.height()));
+                protectedArea->readBytes(reinterpret_cast<quint8 *>(restore.mask.data()), rect);
+                image->featureList()->recordKeptOut(KisFeatureProtection::keptOutOf(image, rect));
+            }
+        }
+    }
 
     QDataStream stream(&value, QIODevice::ReadOnly);
     KisSequentialIterator dstIt(d->node->paintDevice(), rect);

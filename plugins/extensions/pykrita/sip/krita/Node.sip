@@ -76,10 +76,10 @@ public Q_SLOTS:
     Node *duplicate() /Factory/;
     void save(const QString &filename, double xRes, double yRes, const InfoObject & exportConfiguration, const QRect &exportRect = QRect());
     Node *mergeDown() /Factory/;
-    void scaleNode(QPointF origin, int width, int height, QString strategy);
-    void rotateNode(double radians);
-    void cropNode(int x, int y, int w, int h);
-    void shearNode(double angleX, double angleY);
+    bool scaleNode(QPointF origin, int width, int height, QString strategy);
+    bool rotateNode(double radians);
+    bool cropNode(int x, int y, int w, int h);
+    bool shearNode(double angleX, double angleY);
     QImage thumbnail(int w, int h);
     QString layerStyleToAsl();
     bool setLayerStyleFromAsl(const QString &asl);

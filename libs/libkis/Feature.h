@@ -74,8 +74,45 @@ public Q_SLOTS:
     /// @return "proposed" (an agent's proposal, which does not count until the artist keeps it) or "kept"
     QString state() const;
 
-    /// @return true if the feature is protected (enforcement comes with agent passes)
+    /**
+     * @return true if the feature is protected: Krita keeps the agent's writes out of it (see Feature.setProtected()).
+     */
     bool isProtected() const;
+
+    /**
+     * @brief setProtected protects the feature, or lifts its protection, as one undo step (inside an open agent move
+     * or macro, part of its step). No pixel changes, and the protection is saved in the .kra.
+     *
+     * While a feature is protected, Krita keeps the agent's writes out of it:
+     * <ul>
+     * <li>clipped: Node.paintStrokes() jobs, the tool functions Node.fill(), encloseAndFill(), gradient() and
+     * smartPatch(); and, while the agent works (an agent move or job is open, or Document.setAgentActive(True)), the raw
+     * writes Node.setPixelData(), Channel.setPixelData(), Filter.apply(), Filter.startFilter(), Selection.cut() and
+     * paste();</li>
+     * <li>refused whole (the call cannot be clipped; it returns false or None, warns, and Document.lastKeptOut() names
+     * the features): Node.move(), rotateNode(), scaleNode(), shearNode(), cropNode(), setColorSpace(), setColorProfile()
+     * of a layer whose pixels reach a protected feature, a mergeDown() that is not Normal-blend and fully opaque, and any
+     * write to a layer under a transform mask or shown by a clone layer;</li>
+     * <li>not covered: layer creation, opacity, visibility and blending-mode edits, layer styles, and spreading effects
+     * (blur or offset filter layers, filter masks, colorize mask key strokes). They are not pixel writes of the agent
+     * into the feature, but they can change how a protected feature looks; Document.protectedSelection() gives a
+     * selection to limit such a layer with. Krita.action(...) and the tool actions use the artist's selection and are
+     * not protected either.</li>
+     * </ul>
+     * The writes happen as asked everywhere else, and the call names what it was kept out of (see
+     * Document.lastKeptOut()). The artist's own tools are never restricted. Protection does not depend on the script
+     * that set it: it stays on until someone lifts it. A deliberate edit inside a protected feature passes the option
+     * "allowProtected" to the call, or lifts the protection with Document.setProtectionSuspended() inside an agent move.
+     * Unprotecting (setProtected(False)), removing the feature and undoing the step that protected it also lift it: they
+     * are ordinary calls, so a bridge that must not let a model do that does not forward them.
+     *
+     * A job already running honours a feature protected meanwhile from its next window of strokes on (at most 32
+     * strokes later); the tool functions read protection when their stroke runs.
+     *
+     * @return true if it was set (or already was); false if the feature is no longer in its document, or the call was
+     * held back past the wait limit
+     */
+    bool setProtected(bool value);
 
     /// @return the exact bounds of the mask's non-zero pixels; an empty rect for an empty mask
     QRect bounds() const;

@@ -78,6 +78,16 @@ public Q_SLOTS:
     QString errorString() const;
 
     /**
+     * The names of the protected features the job's strokes were kept out of so far: the features of the document
+     * that are protected (Feature.setProtected()) and that a stroke of the job reached with its brush. Krita clips each
+     * stroke to the job's selection minus the protected features, so nothing of the job lands inside them. Empty when
+     * nothing was kept out, when the job was given "allowProtected", or when no feature is protected. Grows while the
+     * job runs; final when it has ended. A feature protected while the job runs is honoured from the next window of
+     * 32 strokes on, and named once a stroke reaches it.
+     */
+    QStringList keptOut() const;
+
+    /**
      * Why the job was cancelled, once it has been: "script" (cancel() was called, by a script or the plugin's Stop),
      * "undo" (the artist pressed Undo during the job), "document_closed" (the document was closing), or an empty
      * string while the job is not cancelled. The first reason stays. A cancel that came too late to stop anything
@@ -93,7 +103,7 @@ public Q_SLOTS:
 
     /**
      * Everything above in one map, for a bridge to send on: state, done, total, progress, rect ([x, y, w, h]), error,
-     * cancelReason, name and ms.
+     * cancelReason, name, ms and keptOut (see keptOut()).
      */
     QVariantMap status() const;
 

@@ -19,11 +19,14 @@
 #include <QSvgWidget>
 #include <QVBoxLayout>
 #include <QLabel>
+#include <QSvgRenderer>
 
 #include <KisPart.h>
 #include <KisApplication.h>
 
 #include <kis_icon.h>
+#include <KisAppIdentity.h> // Krita Agent
+#include "KisSplashBannerLayout.h" // Krita Agent
 
 #include <klocalizedstring.h>
 #include <kconfig.h>
@@ -43,7 +46,11 @@ KisSplashScreen::KisSplashScreen(int height, QWidget *parent, Qt::WindowFlags f)
     : QWidget(parent, f)
       , m_versionHtml(qApp->applicationVersion().toHtmlEscaped())
 {
-    setWindowTitle(i18n("Krita"));
+    // Krita Agent: the build named Toska has its own banner, with the halo in the image, no Krita logo beside it and
+    // no art credit line (krita/data/splash/splash-toska.qrc, KisSplashBannerLayout.h). KisAppIdentity::hasOwnSplash()
+    // is the configure-time value that also picked that qrc; every other build runs upstream's lines
+    const bool ownSplash = KisAppIdentity::hasOwnSplash();
+    setWindowTitle(ownSplash ? KisAppIdentity::displayName() : i18n("Krita"));
 #ifndef Q_OS_MACOS
     setWindowIcon(KisIconUtils::loadIcon("krita-branding"));
 #endif
@@ -60,9 +67,15 @@ KisSplashScreen::KisSplashScreen(int height, QWidget *parent, Qt::WindowFlags f)
     m_loadingTextLabel->setAlignment(Qt::AlignRight | Qt::AlignTop);
     addDropShadow(m_loadingTextLabel);
 
-    m_brandingSvg = new QSvgWidget(QStringLiteral(":/krita-branding.svgz"), m_lblSplash);
+    // Krita Agent: Toska's splash does not load Krita's logo (an empty widget keeps the pointer valid)
+    m_brandingSvg = ownSplash ? new QSvgWidget(m_lblSplash)
+                              : new QSvgWidget(QStringLiteral(":/krita-branding.svgz"), m_lblSplash);
     m_bannerSvg = new QSvgWidget(QStringLiteral(":/splash/banner.svg"), m_lblSplash);
-    addDropShadow(m_bannerSvg);
+    if (ownSplash) {
+        m_brandingSvg->hide();
+    } else {
+        addDropShadow(m_bannerSvg);
+    }
 
     m_artCreditsLabel = new QLabel(m_lblSplash);
     m_artCreditsLabel->setTextFormat(Qt::PlainText);
@@ -99,6 +112,25 @@ void KisSplashScreen::updateSplashImage(const int height)
     // Let scaledContents downscale to the fixedSize
     m_lblSplash->setScaledContents(true);
     m_lblSplash->setPixmap(img);
+
+    // Krita Agent: Toska's logo in the calm left third, the loading text at the top right, no credit line
+    if (KisAppIdentity::hasOwnSplash()) {
+        QSvgRenderer *renderer = m_bannerSvg->renderer();
+        const QRectF viewBox = renderer ? renderer->viewBoxF() : QRectF();
+        const QRectF logo = renderer && renderer->elementExists(QStringLiteral("toska-logo"))
+            ? renderer->boundsOnElement(QStringLiteral("toska-logo")) : QRectF();
+        const QRect banner = KisSplashBannerLayout::identityBannerGeometry(QSize(width, height), viewBox, logo);
+        m_bannerSvg->setVisible(!banner.isEmpty());
+        if (!banner.isEmpty()) {
+            m_bannerSvg->setFixedSize(banner.size());
+            m_bannerSvg->move(banner.topLeft());
+        }
+        m_loadingTextLabel->move(marginRight, marginTop);
+        m_loadingTextLabel->setFixedWidth(qMax(0, width - 2 * marginRight));
+        m_artCreditsLabel->setText(source.artistCredit);
+        m_artCreditsLabel->setVisible(!source.artistCredit.isEmpty());
+        return;
+    }
 
     // Align banner to top-left with margin.
     m_bannerSvg->setFixedHeight(bannerHeight);
@@ -151,6 +183,9 @@ KisSplashScreen::Source KisSplashScreen::getImageSource()
     }
 #endif
 #endif
+    if (KisAppIdentity::hasOwnSplash()) {
+        artistCredit.clear(); // Krita Agent: Toska's painting carries no credit line
+    }
     if (!artistCredit.isEmpty()) {
         artistCredit = i18nc("splash image credit", "Artwork by: %1", artistCredit);
     }

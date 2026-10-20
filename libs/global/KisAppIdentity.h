@@ -30,6 +30,11 @@ KRITAGLOBAL_EXPORT QString settingsFolder();
 /// The application name shown to the user ("Krita" for stock Krita).
 KRITAGLOBAL_EXPORT QString displayName();
 
+/// True only in the build named Toska, and never on Android: the splash screen shows Toska's painting and logo
+/// (krita/data/splash/splash-toska.qrc) laid out by KisSplashBannerLayout. The same configure-time value
+/// (KRITA_APP_OWN_SPLASH, cmake/modules/KritaAppIdentity.cmake) picks that qrc, so the two never disagree.
+KRITAGLOBAL_EXPORT bool hasOwnSplash();
+
 /// The organization domain ("krita.org" for stock Krita).
 KRITAGLOBAL_EXPORT QString organizationDomain();
 

@@ -105,6 +105,11 @@ ecm_install_icons(ICONS
 # Android has a different splash screen.
 if(ANDROID)
     set(krita_splash_qrc splash-android.qrc)
+elseif(KRITA_APP_OWN_SPLASH)
+    # Krita Agent: the build named Toska shows Toska's painting and logo under the same aliases
+    # (krita/data/splash/splash-toska.qrc); KRITA_APP_OWN_SPLASH (0 or 1, cmake/modules/KritaAppIdentity.cmake) also
+    # decides the C++ side (KisAppIdentity::hasOwnSplash()). Every other build keeps upstream's splash
+    set(krita_splash_qrc splash-toska.qrc)
 else()
     set(krita_splash_qrc splash.qrc)
 endif()

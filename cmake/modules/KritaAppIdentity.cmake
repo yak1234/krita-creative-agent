@@ -82,13 +82,29 @@ set(KRITA_MACOS_BUNDLE_NAME "" CACHE STRING "macOS bundle name shown in the menu
 set(KRITA_BUILD_MACOS_INTEGRATION "AUTO" CACHE STRING
     "macOS Quick Look, thumbnail and Spotlight extensions (need Xcode, claim Krita's types): ON, OFF or AUTO (ON for stock Krita, OFF with a settings folder)")
 
+# The build named Toska: the settings folder "KritaAgent" (see the display name below). Compared as a string, never by
+# the truthiness of a folder name (CMake reads "Off", "No", "False", ... as false).
+set(_identity_is_toska FALSE)
+if (DEFINED KRITA_APP_SETTINGS_FOLDER AND "${KRITA_APP_SETTINGS_FOLDER}" STREQUAL "KritaAgent")
+    set(_identity_is_toska TRUE)
+endif()
+
+# KRITA_APP_OWN_SPLASH (0 or 1) is the one value that decides Toska's splash screen: krita/CMakeLists.txt picks
+# krita/data/splash/splash-toska.qrc by it, and config-app-identity.h hands it to KisAppIdentity::hasOwnSplash(), which
+# every splash branch in libs/ui/kis_splash_screen.cpp reads. Only the build named Toska, and never Android (whose
+# splash-android.qrc has no Toska art): any other build keeps upstream's splash.
+set(KRITA_APP_OWN_SPLASH 0)
+if (_identity_is_toska AND NOT ANDROID)
+    set(KRITA_APP_OWN_SPLASH 1)
+endif()
+
 if (KRITA_APP_SETTINGS_FOLDER)
     string(REGEX REPLACE "([a-z0-9])([A-Z])" "\\1 \\2" _identity_display_name "${KRITA_APP_SETTINGS_FOLDER}")
     # The product the artist sees is Toska (named 2026-10-20). Its settings folder and bundle id are still the ones it
     # started with, "KritaAgent" and local.kritaagent: renaming them moves the artist's profile, a later migration
     # (AGENT-FORK.md, "Product name: Toska"). So this folder, and only this one, shows as Toska. Any other folder keeps
     # the name derived from it, which is what a differently named build or a test identity wants.
-    if (KRITA_APP_SETTINGS_FOLDER STREQUAL "KritaAgent")
+    if (_identity_is_toska)
         set(_identity_display_name "Toska")
     endif()
     string(TOLOWER "${KRITA_APP_SETTINGS_FOLDER}" _identity_id)

@@ -227,6 +227,15 @@ kis_add_test(KisAboutAgentTest.cpp
     LINK_LIBRARIES kritaui kritatestsdk
     )
 
+# Krita Agent: where Toska's splash banner goes in the build named Toska (KisSplashBannerLayout.h), and the
+# shipped banner (krita/data/splash/toska/banner.svg) has its logo frame and a picture QtSvg decodes
+kis_add_test(KisSplashBannerLayoutTest.cpp
+    TEST_NAME KisSplashBannerLayoutTest
+    LINK_LIBRARIES kritaui kritaglobal kritatestsdk Qt${QT_MAJOR_VERSION}::Svg
+    )
+target_compile_definitions(KisSplashBannerLayoutTest PRIVATE
+    TOSKA_SPLASH_DIR="${CMAKE_SOURCE_DIR}/krita/data/splash/toska")
+
 # Krita Agent: the brush preset session storage ported from Krita-Revamp (krita-fork 3.1): tweaks persist, keyed by
 # resource id and MD5, in the build's own settings folder; refused while the agent works; run in a temporary home.
 kis_add_test(TestPresetSessionStorage.cpp

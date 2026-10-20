@@ -168,6 +168,9 @@ Keep this table current: every upstream file the `krita-agent` branch changes, a
 | `libs/ui/CMakeLists.txt` | Builds `dialogs/KisAboutAgent.cpp` | packaging (1.3) |
 | `plugins/extensions/pykrita/plugin/utilities.cpp` | `Python::setPath`: `runningInBundle` is also true for an app bundle not called `krita.app` (`.app/contents` in the root). **Needs a rebuild to take effect** | packaging (1.3) |
 | `libs/ui/tests/CMakeLists.txt` | Adds `KisAboutAgentTest` | packaging (1.3) |
+| `krita/CMakeLists.txt` | `krita_splash_qrc` is `splash-toska.qrc` when `KRITA_APP_OWN_SPLASH` is 1 (the build named Toska, not Android) | Toska splash |
+| `libs/ui/kis_splash_screen.cpp` | When `KisAppIdentity::hasOwnSplash()`: window title from the identity, Krita's logo (`:/krita-branding.svgz`) not loaded, no dark drop shadow on the banner, banner placed by `KisSplashBannerLayout.h`, loading text at the top right, no art credit; every other build runs upstream's lines unchanged | Toska splash |
+| `libs/ui/tests/CMakeLists.txt` | Adds `KisSplashBannerLayoutTest` | Toska splash |
 
 Our own files for the identity: `cmake/modules/KritaAppIdentity.cmake`, `libs/global/KisAppIdentity.{h,cpp}`,
 `libs/global/config-app-identity.h.cmake`; tests `libs/global/tests/KisAppIdentityTest.{h,cpp}`,
@@ -726,9 +729,53 @@ T emblem alone, a 1024 x 1024 square with margin, the lettering cleared) and `To
 `sips`/`iconutil` sizes 16 to 512 @2x; transparent background, check it in the Dock and Finder). **Wired in the packaged app (20 Oct):**
 `Packager.brand_icon` copies `Toska.icns` over `Contents/Resources/krita.icns` (the bundle's `CFBundleIconFile` is `krita`;
 there is no `Assets.car`), and the `.kra`/`.krz` document icons stay Krita's. **Still TODO:** `krita/CMakeLists.txt` for the
-install-tree app, plus the in-app splash and
-About-box pictures (`krita/pics`, `libs/ui` resources), which still show Krita's artwork. The artist decides whether the icon
+install-tree app icon, plus the About-box pictures (`krita/pics`, `libs/ui` resources), which still show Krita's artwork
+(the splash is done: "Splash screen" below). The artist decides whether the icon
 wants an opaque rounded background.
+
+**Splash screen (20 Oct).** The build named Toska shows the artist's Toska painting with the Toska logo. Every other
+build (stock Krita, another identity, any Android build) compiles in upstream's qrc and runs upstream's layout lines, so
+it is unchanged.
+
+- *One switch.* `KRITA_APP_OWN_SPLASH` (0 or 1), computed in `cmake/modules/KritaAppIdentity.cmake`: 1 only when the
+  settings folder is the string `KritaAgent` (the same test that names the app Toska, compared with `STREQUAL`, never
+  by the truthiness of a folder name) and `NOT ANDROID`. `krita/CMakeLists.txt` picks the qrc by it, and
+  `libs/global/config-app-identity.h` passes it to `KisAppIdentity::hasOwnSplash()`, which all three splash branches
+  (title and logo, layout, credit in `getImageSource()`) read. So the qrc and the C++ never disagree.
+- *Artwork.* The painting and the logo are artwork owned by the artist, licence to be decided: no SPDX licence line
+  claims them (`banner.svg` has none; `make_banner.py`, which is code, is GPL-3.0-or-later), and
+  `krita/data/splash/toska/README.md` says so beside them. Both PNGs keep the sRGB chunk the artist's sources carry.
+
+- *Resources.* `krita/CMakeLists.txt` picks `krita/data/splash/splash-toska.qrc` instead of `splash.qrc`. It gives the two
+  aliases `KisSplashScreen` loads: `:/splash/0.png` = `toska/toska-splash.png` (the painting, 1774 x 887, 2:1, PNG
+  recompressed losslessly, metadata other than the sRGB chunk dropped, 2.5 MB) and `:/splash/banner.svg` = `toska/banner.svg` (590 KB: the logo at
+  1086 x 362, half the artist's size, with a light halo baked into one embedded PNG, plus an invisible rectangle
+  `toska-logo` that marks the logo's own frame). The halo is in the picture, not an SVG filter, so it does not depend on
+  QtSvg's filter support (new in Qt 6.7) or its options. `toska/make_banner.py` remakes the banner from
+  `creative-agent/docs/branding/toska-logo.png` (`uv run --with pillow --with numpy python make_banner.py <logo> banner.svg`;
+  the output is byte-identical here, but another Pillow or zlib may write other bytes).
+- *Layout* (`libs/ui/kis_splash_screen.cpp`, identity branch only; numbers in `libs/ui/KisSplashBannerLayout.h`). The
+  logo frame (not the halo) sits with its left edge at 3.5 % of the splash width, its top at 30 % of the height and is
+  36 % of the width wide, in the painting's calm left third (the preview the lead approved); the halo padding falls
+  outside. Upstream sizes the KRITA lettering from the SVG's view box at 16.875 % of the height, right-aligned at the top;
+  a 3:1 logo at 36 % of the width does not fit that, so the identity branch places it with
+  `QSvgRenderer::boundsOnElement("toska-logo")` instead. Krita's logo next to the banner (`:/krita-branding.svgz`,
+  Krita's app icon) is hidden; the banner's dark drop shadow is not applied; the loading text (version and the current
+  step, white with upstream's drop shadow) moves to the top right at upstream's margins; the art credit is empty and
+  hidden (no credit line); the window title is the display name. `:/krita-branding.svgz` is not loaded at all (an
+  empty `QSvgWidget` keeps the member valid).
+- *Sizes.* Only one Toska painting exists (1774 x 887; upstream ships a 4K PNG and an HD JPEG for Android). The splash
+  is 480 points high (`krita/main.cc`), so it shows at 960 x 480 points: sharp on a normal screen and slightly soft on a
+  Retina one (1920 x 960 pixels). A larger version replaces `toska/toska-splash.png` later under the same alias, nothing
+  else changes (keep it a PNG under about 3 MB; the test checks it is 2:1). Android keeps upstream's splash.
+- *Tests.* `creative-agent/krita-creative-agent/tests/test_toska_splash.py` (the qrc's aliases and files, the banner
+  parses and embeds a PNG, the halo is light, faint and not clipped, QtSvg finds the logo frame, CMake picks the Toska qrc
+  only with a settings folder, the stock lines are still there). C++: `KisSplashBannerLayoutTest` (the layout numbers,
+  the fallbacks, the shipped banner through `QSvgRenderer`; listed in `agent/ci-tests.txt`). A mock of the composite was made outside the tree (not
+  in the repository).
+- *Needs a rebuild to show.* A CMake re-configure (the define and the qrc), then `kritaglobal` (`KisAppIdentity`),
+  `kritaui` (`kis_splash_screen.cpp`) and `krita` (the qrc is compiled into it), then
+  `agent/run-tests.sh KisSplashBannerLayoutTest KisAppIdentityTest`. Not seen in the running app yet.
 
 **Later migration (a separate task, with a profile move).** Rename the internal identifiers together, once, so nothing is
 half-moved: (1) settings folder `KritaAgent` -> `Toska` (`KRITA_APP_SETTINGS_FOLDER`; config, resources, caches, logs, autosaves,
@@ -738,7 +785,9 @@ again; (3) the port, `KRITA_AGENT_*` variables and `kritamcp` stay unless there 
 finds `~/Library/{Application Support,Preferences,Caches}/KritaAgent`, asks, and moves (or copies, then renames the old folder
 `KritaAgent.migrated`) never overwriting anything in `Toska`; the `KritaAgent` branch of `KisAppIdentity`'s display-name special
 case is deleted and the display name derives from the folder; the check `agent/check-identity.sh`, the tests that name
-`KritaAgent` (`test_package_app.py`, `test_bridge_config.py`, `test_native_craft.py`, `test_packaging.py`) and `krita_actions.json`'s
+`KritaAgent` (`test_package_app.py`, `test_bridge_config.py`, `test_native_craft.py`, `test_packaging.py`, and
+`test_toska_splash.py`'s `test_the_fork_configures_with_a_settings_folder`, which pins the folder `KritaAgent`; the
+`STREQUAL "KritaAgent"` test behind `KRITA_APP_OWN_SPLASH` moves with it) and `krita_actions.json`'s
 key move at the same commit; the artist's profile is backed up first, and Krita must be closed (never while painting).
 
 **Needs a rebuild to show (C++).** `libs/ui/dialogs/KisAboutAgent.{h,cpp}` (+ `KisAboutAgentTest`), `libs/ui/KisMainWindow.cpp`

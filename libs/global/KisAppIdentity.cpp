@@ -88,6 +88,11 @@ QString KisAppIdentity::displayName()
     return name.isEmpty() ? QStringLiteral("Krita") : name;
 }
 
+bool KisAppIdentity::hasOwnSplash()
+{
+    return KRITA_APP_OWN_SPLASH != 0;
+}
+
 QString KisAppIdentity::organizationDomain()
 {
     const QString domain = QStringLiteral(KRITA_APP_ORGANIZATION_DOMAIN);

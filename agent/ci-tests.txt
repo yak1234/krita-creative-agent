@@ -55,6 +55,7 @@ kis_transaction_test
 kis_selection_test
 kis_paint_device_test
 KisAboutAgentTest
+KisSplashBannerLayoutTest
 KisFeatureProtectionTest
 TestDocumentFeatureQueries
 TestFeatureProtection

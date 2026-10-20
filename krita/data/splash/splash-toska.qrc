@@ -1,0 +1,16 @@
+<!DOCTYPE RCC>
+<!--
+  SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
+  SPDX-License-Identifier: CC0-1.0
+
+  Toska's splash (krita/CMakeLists.txt picks this file instead of splash.qrc in a build with its own identity,
+  KRITA_APP_SETTINGS_FOLDER set). The aliases are the ones KisSplashScreen loads, so no path changes in the code.
+  The painting and the logo are the artist's artwork. Only one size exists (1774 x 887); a larger version replaces
+  toska/toska-splash.png later under the same alias.
+-->
+<RCC version="1.0">
+    <qresource prefix="/splash">
+        <file alias="banner.svg">toska/banner.svg</file>
+        <file alias="0.png">toska/toska-splash.png</file>
+    </qresource>
+</RCC>

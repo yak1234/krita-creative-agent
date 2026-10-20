@@ -865,6 +865,37 @@ class SigningOrderTests(unittest.TestCase):
         self.assertEqual(sorted(order), sorted(['QtCore.framework', 'Python.framework', 'Inner.framework', 'Helper.app', 'Share.xpc', 'Thumb.plugin']))
 
 
+class HeadlessHelperTests(unittest.TestCase):
+    """The bundled Python ignores the caller's PYTHONPATH (hermetic), so kritarunner finds the helper scripts in the user's
+    pykrita folder, which is inside the TEMPORARY home."""
+
+    def test_the_script_is_staged_in_the_user_pykrita_folder_of_the_temporary_home(self):
+        with tempfile.TemporaryDirectory(prefix='krita-agent-test-') as root:
+            home = pathlib.Path(root) / 'home'
+            path = package_app.stage_helper_script(home, 'smoke_bundle', 'def __main__(a): pass\n', 'KritaAgent')
+            self.assertEqual(path, home / 'Library/Application Support/KritaAgent/kritarunner/krita/pykrita/smoke_bundle.py')
+            self.assertEqual(path.read_text(), 'def __main__(a): pass\n')
+            self.assertTrue(package_app.inside(path, home))
+            other = package_app.stage_helper_script(home, 'other', 'x', 'Other Folder')
+            self.assertIn('Other Folder', str(other))                                  # the build's settings folder names it
+
+    def test_the_staged_folder_is_what_the_launchers_python_would_list_first_for_this_app(self):
+        # KisApplication names the kritarunner process "kritarunner" under the settings folder (see the real sys.path of a smoke run)
+        folder = package_app.helper_folder('/h', 'KritaAgent')
+        self.assertEqual(str(folder), '/h/Library/Application Support/KritaAgent/kritarunner/krita/pykrita')
+
+    def test_sys_path_entries_outside_the_bundle_and_home_and_a_leaked_pythonpath_are_problems(self):
+        copy, home, poison = '/t/Krita Agent.app', '/t/home', '/t/poison'
+        good = [copy + '/Contents/Resources/krita-python-libs', copy + '/Contents/Frameworks/Python.framework/Versions/3.13/lib/python3.13',
+                home + '/Library/Application Support/KritaAgent/kritarunner/krita/pykrita', '']
+        self.assertEqual(package_app.sys_path_problems(good, copy, home, poison), [])
+        bad = package_app.sys_path_problems(good + ['/opt/homebrew/lib/python3.13', poison], copy, home, poison)
+        self.assertEqual(len(bad), 3, bad)                                              # two outside entries, and the leak is named
+        self.assertTrue(any('PYTHONPATH' in p and 'ignore' in p for p in bad))
+        # a poisoned entry that happens to sit inside the temporary home is still a leak
+        self.assertTrue(any('PYTHONPATH' in p for p in package_app.sys_path_problems(good + [home + '/poison'], copy, home, home + '/poison')))
+
+
 @unittest.skipUnless(HAVE_CC, 'needs macOS and a C compiler')
 class SigningReportTests(unittest.TestCase):
     def test_a_missing_identity_prints_one_line_and_leaves_the_bundle_as_it_was(self):

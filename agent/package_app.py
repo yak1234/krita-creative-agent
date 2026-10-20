@@ -337,6 +337,34 @@ def merge_first_run_defaults(text):
     return bom + out + '[python]' + eol + key + eol
 
 
+def helper_folder(home, settings=SETTINGS_FOLDER):
+    """The user pykrita folder of the bundle's kritarunner process (a name of its own under the app's settings folder): one of
+    the first entries of the bundled Python's sys.path. The packaged Python takes only its own paths, never the caller's
+    PYTHONPATH, so helper scripts are staged here, in the TEMPORARY home, and run with `kritarunner -s <module>`."""
+    return Path(home) / 'Library' / 'Application Support' / settings / 'kritarunner' / 'krita' / 'pykrita'
+
+
+def stage_helper_script(home, name, text, settings=SETTINGS_FOLDER):
+    folder = helper_folder(home, settings)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / (name + '.py')
+    path.write_text(text)
+    return path
+
+
+def sys_path_problems(entries, copy, home, poison=None):
+    """Entries of the bundled Python's sys.path that are outside the bundle and the temporary home, and a leak of the caller's
+    PYTHONPATH (`poison`, a folder the test run put there to be ignored)."""
+    problems = []
+    real_copy, real_home = os.path.realpath(str(copy)), os.path.realpath(str(home))
+    for entry in entries:
+        if entry and not (inside(os.path.realpath(entry), real_copy) or inside(os.path.realpath(entry), real_home)):
+            problems.append('sys.path has an entry outside the bundle and the temporary home: %s' % entry)
+    if poison and any(entry and os.path.realpath(entry) == os.path.realpath(str(poison)) for entry in entries):
+        problems.append('the caller\'s PYTHONPATH reached the bundled Python: it must ignore it (hermetic)')
+    return problems
+
+
 def settings_folder(source):
     """The build's KRITA_APP_SETTINGS_FOLDER (from its CMake cache), else the fork's default."""
     try:
@@ -773,11 +801,9 @@ class Packager:
         if not ok:
             raise RuntimeError('refusing to run kritarunner: the bundle does not verify (%s)' % message[-300:])
         home = tempfile.mkdtemp(prefix='krita-agent-compile-')
-        scripts = tempfile.mkdtemp(prefix='krita-agent-compile-script-')
         try:
-            Path(scripts, 'compile_bundle.py').write_text(self.COMPILE_SCRIPT)
-            env = {'PATH': '/usr/bin:/bin', 'HOME': home, 'CFFIXED_USER_HOME': home, 'QT_QPA_PLATFORM': 'offscreen',
-                   'PYTHONPATH': scripts, 'PYTHONNOUSERSITE': '1'}
+            stage_helper_script(home, 'compile_bundle', self.COMPILE_SCRIPT, settings_folder(self.source))
+            env = {'PATH': '/usr/bin:/bin', 'HOME': home, 'CFFIXED_USER_HOME': home, 'QT_QPA_PLATFORM': 'offscreen', 'PYTHONNOUSERSITE': '1'}
             folders = [self.frameworks / 'Python.framework', self.resources / 'krita-python-libs', self.resources / 'krita' / 'pykrita']
             result = subprocess.run([str(self.macos / 'kritarunner'), '-s', 'compile_bundle', str(self.bundle)] + [str(f) for f in folders],
                                     env=env, capture_output=True, text=True, timeout=900)
@@ -785,7 +811,6 @@ class Packager:
                 self.problems.append('compiling the Python files failed: ' + (result.stderr or result.stdout)[-400:])
         finally:
             shutil.rmtree(home, ignore_errors=True)
-            shutil.rmtree(scripts, ignore_errors=True)
 
     def finish_permissions(self):
         for path in self.contents.rglob('*'):
@@ -1325,7 +1350,7 @@ def sandbox_profile(deny):
     return '\n'.join(lines) + '\n'
 
 
-def smoke_test(bundle, log=print, deny=()):
+def smoke_test(bundle, log=print, deny=(), settings=None):
     """Run the bundle's own Python headless (kritarunner) from a TEMPORARY COPY, in a clean environment (env -i), with the
     launcher's environment variables, a temporary home (Qt takes CFFIXED_USER_HOME, never $HOME) and, with `deny`, the build,
     install and source trees made unreadable (sandbox-exec). It imports krita, PyQt6, kritamcp, numpy, cv2, psutil and xxhash,
@@ -1343,13 +1368,14 @@ def smoke_test(bundle, log=print, deny=()):
         run(['/usr/bin/ditto', bundle, copy])
         require_runnable(copy)
         home = work / 'home'
-        scripts = home / 'smoke-scripts'
-        scripts.mkdir(parents=True)
-        (scripts / 'smoke_bundle.py').write_text(SMOKE_SCRIPT)
+        home.mkdir(parents=True)
+        stage_helper_script(home, 'smoke_bundle', SMOKE_SCRIPT, settings or SETTINGS_FOLDER)
+        poison = work / 'poisoned-pythonpath'                   # a PYTHONPATH the bundled Python must ignore
+        poison.mkdir()
         result_file = home / 'result.json'
         contents = copy / 'Contents'
         env = {'PATH': '/usr/bin:/bin', 'HOME': str(home), 'CFFIXED_USER_HOME': str(home), 'QT_QPA_PLATFORM': 'offscreen',
-               'PYTHONPATH': str(scripts), 'SMOKE_OUT': str(result_file), 'SMOKE_CONTENTS': str(contents), 'SMOKE_HOME': str(home)}
+               'PYTHONPATH': str(poison), 'SMOKE_OUT': str(result_file), 'SMOKE_CONTENTS': str(contents), 'SMOKE_HOME': str(home)}
         env.update(launcher_environment(contents.resolve()))
         command = [str(contents / 'MacOS/kritarunner'), '-s', 'smoke_bundle']
         denied = [d for d in deny if d and os.path.exists(d)]
@@ -1365,21 +1391,21 @@ def smoke_test(bundle, log=print, deny=()):
         except (OSError, ValueError):
             return ['kritarunner produced no result (exit %d): %s' % (run_result.returncode, run_result.stderr[-300:])]
         problems = []
-        real_copy, real_home = os.path.realpath(copy), os.path.realpath(home)
         for name, value in found['imports'].items():
             if str(value).startswith('ERROR'):
                 problems.append('%s: %s' % (name, value))
-            elif str(value).startswith('/') and not inside(os.path.realpath(str(value)), real_copy):
+            elif str(value).startswith('/') and not inside(os.path.realpath(str(value)), os.path.realpath(copy)):
                 problems.append('%s was imported from outside the bundle: %s' % (name, value))
-        for entry in found['sys_path']:
-            if entry and not (inside(os.path.realpath(entry), real_copy) or inside(os.path.realpath(entry), real_home)):
-                problems.append('sys.path has an entry outside the bundle and the temporary home: %s' % entry)
+        problems += sys_path_problems(found['sys_path'], copy, home, poison)
         if found.get('compute') != [45, 3.0]:
             problems.append('numpy/OpenCV computed %r' % (found.get('compute'),))
         if found.get('companion') is not True:
             problems.append('the bundled companion could not be verified and copied out on first use: %r' % (found.get('companion'),))
         if found.get('mlt') is not True:
             problems.append('MLT factory init / producer failed: %r' % (found.get('mlt'),))
+        shown = [e.replace(str(copy.resolve()), '<app>').replace(str(copy), '<app>').replace(str(home.resolve()), '<temp home>').replace(str(home), '<temp home>')
+                 for e in found['sys_path']]
+        log('  sys.path of the bundled Python:\n    ' + '\n    '.join(shown))
         log('  smoke: %s; MLT %s; companion first-use copy %s; sys.path has %d entries%s' % (', '.join(sorted(found['imports'])), 'ok' if found.get('mlt') is True else 'FAILED',
                                                                'ok' if found.get('companion') is True else 'FAILED', len(found['sys_path']), ' (build trees unreadable)' if denied else ''))
         return problems
@@ -1471,7 +1497,7 @@ def main(argv=None):
         found = [] if ok else ['signature does not verify']
         found += check_everything(packager.bundle, [install, source])
         if ok:
-            found += smoke_test(packager.bundle, deny=[install, source, ROOT.parent])
+            found += smoke_test(packager.bundle, deny=[install, source, ROOT.parent], settings=settings_folder(source))
         for problem in found:
             print('PROBLEM', problem)
         problems = problems + found

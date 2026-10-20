@@ -46,6 +46,7 @@ Keep this table current: every upstream file the `krita-agent` branch changes, a
 | `CMakeLists.txt` | `include(KritaAppIdentity)`: the build's identity options | identity (1.1) |
 | `krita/CMakeLists.txt` | Bundle id and name from the identity; macOS Quick Look/Spotlight extensions optional (they need Xcode and claim Krita's file types; `ff7ec1b` bundled this option with the identity); the Info.plist through `krita_app_identity_info_plist()` (never claims Krita's types) and its check as a test; the identity's qrc (shipped `kritarc` defaults under the identity's config name) | identity (1.1) |
 | `krita/main.cc` | `KisAppIdentity::initialize()` first; single-instance key, display name, organization domain, config and crash-log paths from the identity | identity (1.1) |
+| `krita/data/themes/CMakeLists.txt` | Installs `ToskaNight.colors` and `ToskaDay.colors` with the other themes | Toska colour theme |
 | `libs/global/CMakeLists.txt` | Builds `KisAppIdentity.cpp` and its generated `config-app-identity.h` | identity (1.1) |
 | `libs/global/KisUsageLogger.cpp` | `krita.log`, `krita-sysinfo.log` in the identity's log folder, `kritacrash.log` in its crash-log folder (upstream's config folder when stock) | identity (1.1) |
 | `libs/image/CMakeLists.txt` | Builds `KisImageChangeReports.cpp` | change reports (2.2, 2.8) |
@@ -62,6 +63,7 @@ Keep this table current: every upstream file the `krita-agent` branch changes, a
 | `libs/macosutils/KisMacosSecurityBookmarkManager.mm` | `securitybookmarkrc` in the identity's config folder (through the organization name: this library sits below `kritaglobal`) | identity (1.1) |
 | `libs/ui/KisApplication.cpp` | `kritarc` reset/backup in the identity's config folder | identity (1.1) |
 | `libs/ui/KisAutoSaveRecoveryDialog.cpp`, `.h` | Autosaves of never-saved documents, and the start-up recovery that deletes those not recovered, in the identity's own folder, never stock Krita's home or temp folder; the class exported so `KisAutoSaveLocationTest` can call it | identity (1.1) |
+| `libs/ui/thememanager.cpp` | A theme name with no installed scheme (a removed `.colors` file, a typo in kritarc) gets Krita dark instead of an empty `KSharedConfig`, whose defaults are light (one line in `slotChangePalette`; not built yet) | Toska colour theme |
 | `libs/ui/KoDocumentInfo.cpp` | Author info read from the identity's `kritarc` | identity (1.1) |
 | `libs/ui/kis_config.cc` | `kritadisplayrc` and other config files in the identity's config folder | identity (1.1) |
 | `libs/ui/dialogs/kis_dlg_preferences.cc` | Same, for the preferences dialog | identity (1.1) |
@@ -916,11 +918,85 @@ defaults as well.
   `QT_QPA_PLATFORM=offscreen uv run --with pyqt6 python agent/make_agent_workspace.py` (the stub window uses the real docker ids;
   hidden placeholders include every id registered under `plugins/python`). The workspace has no `<image>` thumbnail.
   Hand-written bytes were rejected: the state format is Qt's. A returning artist keeps the layout Krita saved for them.
-- **Theme.** `[theme] Theme=Krita dark` was already in the shipped kritarc (and is the code's default); kept, and tested.
+- **Theme.** `[theme] Theme=Krita dark` was already in the shipped kritarc (and is the code's default); kept, and tested. The
+  build named Toska now opens with Toska Night instead, through the identity's own copy of kritarc ("Colour theme: Toska" below);
+  the shipped file still says Krita dark.
 - **Tests.** `creative-agent/krita-creative-agent/tests/test_new_install_defaults.py` (part of `agent/ci.sh`'s Python suite, run
   under PyQt5, plus a second `agent/ci.sh` group under PyQt6, which also checks that the generator reproduces the committed blob): the photoshop habit keys, the scheme name, the dark theme, the workspace file and that kritarc's layout
   equals it, the agent docker id equals the one the plugin registers, and a restore of the state into a stub window shows exactly
   the intended dockers. Not tested: the layout in a running Krita (no run was made in this task).
+
+## Colour theme: Toska (20 Oct)
+
+Two colour themes from the artist's logo and splash palette: night navy `#09131e`..`#1f2c3c` (backgrounds), ember `#e44a2f`
+(accent), cream `#f5dbae` (highlight), steel blue `#475d74` (borders, secondary text).
+`krita/data/themes/ToskaNight.colors` ("Toska Night", dark) and `ToskaDay.colors` ("Toska Day", light) are KDE colour schemes
+with every section and key `KritaDarkOrange.colors` has; `[General] Name` is the Settings > Theme menu entry and the value
+kritarc saves. Installed in every build of the fork (they are only listed; nothing selects them in stock).
+
+| Role (`.colors` key) | Toska Night | Toska Day |
+|---|---|---|
+| Window background (`Window` `BackgroundNormal`) / alternate | `#141b25` / `#1a2330` | `#efe8dc` / `#e7dfd0` |
+| View, base (`View` `BackgroundNormal`) / alternate | `#0e141c` / `#1a2330` | `#f8f4ec` / `#e7dfd0` |
+| Button / alternate | `#1f2a38` / `#2a3748` | `#e2d8c6` / `#d8ccb6` |
+| Normal text | `#e9e3d8` | `#1b2430` |
+| Inactive text (Window, View / Button) | `#8e9bab` / `#93a0af` | `#576474` / `#4d5967` |
+| Focus and hover decoration | `#e4502f` | `#c4432a` |
+| Active text (Window, View) | `#e65d3f` | `#b03c26` |
+| Selection background / text / alternate | `#b8432a` / `#fff4e6` / `#8f3420` | `#c4432a` / `#fff8ee` / `#a2381f` |
+| Link / visited | `#f0b27a` / `#b98a6a` | `#a2481f` / `#7d5a45` |
+| Negative / neutral / positive (Window, View) | `#e16056` / `#e8a24a` / `#7fb38a` | `#b3322b` / `#915500` / `#396e45` |
+| Tooltip background / text (both themes) | `#1f2a38` / `#f5e6cc` | `#1f2a38` / `#f5e6cc` |
+| Complementary (title-bar style areas) | `#09131e` / `#e9e3d8` | the same |
+
+*Contrast* (WCAG ratio, tested for every foreground key of every section on both its backgrounds): normal text at least 7:1
+(Night 11.4 to 14.5, Day 11.1 to 14.3), inactive and other text at least 4.5:1, selection text at least 4.5:1 (Night 4.99, Day
+4.76), focus decorations at least 3:1. A value that failed changed in lightness only, keeping its hue: Day's proposed inactive
+text `#5d6b7c` was 4.47:1 on the window and is `#576474` (Button `#4d5967`); the negative, active and a few Button and Selection
+secondary colours were lightened (Night) or darkened (Day) the same way. Values are the files'; the test pins the proposed
+roles that were kept.
+
+*New-install default: the single-switch rule.* `KRITA_APP_DEFAULT_THEME`, computed in `cmake/modules/KritaAppIdentity.cmake`:
+"Toska Night" only when `_identity_is_toska` (the settings folder is the string `KritaAgent`), empty otherwise. Stock Krita and
+the identity build share `krita/data/kritarc` (stock as `:/kconfig/kritarc` through `krita/krita.qrc`, the identity as
+`:/kconfig/KritaAgent/kritarc` through the generated `krita-app-identity.qrc`), so the shipped file is not edited: with a default
+theme, the identity's alias points at `<build>/krita-app-identity-kritarc`, a copy of `krita/data/kritarc` that differs in the
+`[theme]` group's `Theme=` line only and keeps the source's line endings, LF or CRLF (configuring fails if kritarc does not have exactly one such line; `configure_file` makes
+a change to kritarc re-run CMake). KConfig reads that copy under the artist's own kritarc, so a theme the artist chose (Krita
+saves it on every change, `KisMainWindow::slotThemeChanged`) always wins. A returning artist who never changed the theme has no
+saved `Theme` key and also gets Toska Night. A returning artist who never chose a theme gets Toska Night on the first launch of
+the new build, and can switch back in Settings > Theme. No C++ reads the value: `config-app-identity.h` carries `KRITA_APP_DEFAULT_THEME`
+for `KisAppIdentityTest` only, which checks that stock's `:/kconfig/kritarc` says Krita dark and the identity's says the
+configured theme. Every other identity and an empty folder keep Krita dark; an Android build named Toska gets Toska Night too
+(unlike the splash, a theme needs no Android-specific art).
+
+*The panel.* The Creative Agent panel's colours live in `kritamcp/panel_theme.py` (no Qt): its own Dark and Light, unchanged, and
+Toska Night and Toska Day dictionaries taken from the files (bg = Window background, surface = View, raised = Button, hover = Button
+alternate, text = Window text, muted = Button inactive, accent = Window active, button and buttonText = the selection pair; border
+is steel blue, `#475d74` at night and `#a0b2c5` by day). "Match Toska" uses them when the app shows a Toska theme: the app
+palette's exact window colour alone decides (`#141b25` Toska Night, `#efe8dc` Toska Day, anything else Dark or Light by
+`QColor.lightness()` as before). The saved theme name (`Krita.readSetting('theme', 'Theme')`) decides only when there is no
+palette: Krita applies the palette before it saves the name (`KisMainWindow::slotThemeChanged`, through a queued connection,
+after even a zero-time timer), so during a theme change the saved name is the old one (Toska Night -> Krita dark would have
+kept Toska's colours). The panel applies its theme once per palette change. Match now follows
+a theme change in the running app: Qt delivers `ApplicationPaletteChange` to `event()`, never to `changeEvent()` (where the panel
+listened), and the panel sets its own palette, so it got no `PaletteChange` either; it overrides `event()` now.
+
+*Tests.* `creative-agent/krita-creative-agent/tests/test_toska_theme.py`: both files have DarkOrange's sections and keys, names,
+install list, licence header, every contrast ratio, the kept roles, the Day inactive text darkened at the same hue; the default
+for every identity through `cmake -P` (`KritaAgent` gets a copy saying Toska Night that differs from kritarc in that line only;
+`Other` keeps the source kritarc; an empty folder, `Off` and `No` have no identity qrc; the header's define agrees), and a CRLF
+kritarc whose copy keeps CRLF; the `ThemeManager` fallback line; the panel's dictionaries against the files, their contrast, the
+Match choice by palette, name and lightness, and the switches away from Toska while the old name is saved (Toska Night to
+`#474747`, Toska Day to a light grey). `tests/ui_smoke.py` sets the app palette to each Toska window colour and to a plain dark
+and light one and checks the panel's colours in Match mode and that it applied its theme once per change.
+C++: `KisAppIdentityTest::testShippedConfigDefaultsAreRead` (the two kritarc themes). A mock of both themes (menu bar, toolbox,
+docker with a selected row, tooltip, buttons, text roles) was made outside the tree for review.
+
+*Needs a rebuild to show.* A CMake re-configure (the identity kritarc copy, the qrc alias and the header), then `krita` (the qrc is
+compiled into it), the install step (the `.colors` files go to `share/color-schemes`), and `KisAppIdentityTest`:
+`agent/run-tests.sh KisAppIdentityTest`. `kritaui` for the `ThemeManager` fallback (`libs/ui/thememanager.cpp`). `kritaglobal` recompiles `KisAppIdentity.cpp` because the header changed (no code
+change there). Not seen in the running app yet. The panel needs no build (Python).
 
 ## Licence
 

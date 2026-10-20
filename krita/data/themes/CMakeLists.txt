@@ -16,6 +16,8 @@ KritaBright.colors
 KritaDark.colors
 KritaDarkOrange.colors
 KritaDarker.colors
+ToskaNight.colors
+ToskaDay.colors
  ${schemefiles} DESTINATION ${KDE_INSTALL_DATADIR}/color-schemes
 )
 

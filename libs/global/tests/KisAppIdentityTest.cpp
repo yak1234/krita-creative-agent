@@ -149,6 +149,8 @@ void KisAppIdentityTest::testShippedConfigDefaultsAreRead()
     {
         KConfig stock(QStringLiteral("kritarc"));
         QCOMPARE(stock.group("advancedColorSelector").readEntry("commonColorsCount", -1), 12);
+        // Stock Krita's shipped theme is upstream's, whatever this build's identity is
+        QCOMPARE(stock.group("theme").readEntry("Theme", QString()), QStringLiteral("Krita dark"));
     }
 
     const QString configuredFolder = QStringLiteral(KRITA_APP_SETTINGS_FOLDER);
@@ -162,6 +164,10 @@ void KisAppIdentityTest::testShippedConfigDefaultsAreRead()
     KSharedConfigPtr main = KSharedConfig::openConfig();
     QCOMPARE(main->name(), configuredFolder + QStringLiteral("/kritarc"));
     QCOMPARE(main->group("advancedColorSelector").readEntry("commonColorsCount", -1), 12);
+    // The identity's own copy of kritarc carries its default theme (Toska Night for the build named Toska)
+    const QString defaultTheme = QStringLiteral(KRITA_APP_DEFAULT_THEME);
+    QCOMPARE(main->group("theme").readEntry("Theme", QString()),
+             defaultTheme.isEmpty() ? QStringLiteral("Krita dark") : defaultTheme);
     QDir(KisAppIdentity::configLocation()).removeRecursively();
     QDir(KisAppIdentity::logLocation()).removeRecursively();
 }

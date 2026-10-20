@@ -8,6 +8,7 @@ import threading
 import uuid
 from .qt_compat import sip, enum_value
 from .product_name import product_name
+from .panel_theme import panel_colors
 from krita import DockWidget, DockWidgetFactory, DockWidgetFactoryBase, Krita, Selection
 from .creative_document_identity import document_id, open_documents
 from . import node_runtime
@@ -1535,11 +1536,23 @@ class CreativeAgentDocker(DockWidget):
         self.theme_mode = ['system', 'dark', 'light'][index]
         self.apply_theme()
 
+    def app_theme_name(self):
+        """The app's saved colour theme ([theme] Theme), or '' when it cannot be read."""
+        try:
+            name = Krita.instance().readSetting('theme', 'Theme', '')
+        except Exception:
+            return ''
+        return name if isinstance(name, str) else ''
+
     def apply_theme(self, dark=None):
         if dark is None:
-            dark = self.theme_mode == 'dark' or (self.theme_mode == 'system' and QApplication.palette().color(QPalette.ColorRole.Window).lightness() < 128)
-        c = ({'bg':'#1e1f22','surface':'#28292d','raised':'#313338','border':'#42444b','text':'#e7e8eb','muted':'#a7aab3','hover':'#3b3e45','accent':'#b9c7e8','button':'#e1e5ee','buttonText':'#24272d'} if dark else
-             {'bg':'#f7f7f8','surface':'#ffffff','raised':'#e9ebee','border':'#d3d6dc','text':'#24272e','muted':'#646a76','hover':'#dee2e9','accent':'#3c5c91','button':'#313946','buttonText':'#ffffff'})
+            # Match: Toska's colours under a Toska theme, otherwise Dark or Light by the app's lightness (panel_theme.py)
+            window = QApplication.palette().color(QPalette.ColorRole.Window) if self.theme_mode == 'system' else None
+            c, dark = panel_colors(self.theme_mode, window.name() if window is not None else None,
+                                   self.app_theme_name() if self.theme_mode == 'system' else None,
+                                   window.lightness() if window is not None else None)
+        else:
+            c, dark = panel_colors('dark' if dark else 'light')
         self.theme_colors = c
         c['chevron'] = os.path.join(os.path.dirname(__file__), 'icons', 'chevron-dark.svg' if dark else 'chevron-light.svg').replace('\\', '\\\\').replace('"', '\\"')
         palette = QPalette(self.palette())
@@ -1623,10 +1636,13 @@ class CreativeAgentDocker(DockWidget):
         for item in self.transcript.messages:
             item['label'].set_rendered(self.transcript.render(item['text']))
 
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.ApplicationPaletteChange and hasattr(self, 'theme_mode') and self.theme_mode == 'system':
+    def event(self, event):
+        # Qt hands ApplicationPaletteChange to event(), never to changeEvent(); the panel sets its own palette, so it gets
+        # no PaletteChange either. A theme change in the app reaches 'Match' here.
+        handled = super().event(event)
+        if event.type() == QEvent.Type.ApplicationPaletteChange and getattr(self, 'theme_mode', None) == 'system':
             self.apply_theme()
+        return handled
 
     def toggle_diagnostics(self, expanded):
         self.diagnostics_text.setVisible(expanded)

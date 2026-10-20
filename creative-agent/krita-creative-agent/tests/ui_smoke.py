@@ -785,6 +785,20 @@ for previous_source in ('new', 'copy'):
     assert panel.source.currentData() == previous_source
     panel.new_chat()
     assert panel.source.currentData() == 'current', 'new chat must not inherit the previous painting creation choice'
+# 'Match <app>' follows the application's palette: Toska's colours under a Toska theme, Dark or Light otherwise
+from creative_ui_test.qt_compat import QPalette
+from creative_ui_test.panel_theme import TOSKA_NIGHT, TOSKA_DAY, DARK, LIGHT
+saved_palette = QPalette(QApplication.palette()); panel.theme_selector.setCurrentIndex(0); settle()
+assert panel.theme_mode == 'system'
+theme_applies = []; _apply_theme = panel.apply_theme
+panel.apply_theme = lambda *args, **kwargs: (theme_applies.append(args), _apply_theme(*args, **kwargs))[1]
+for window, expected in (('#141b25', TOSKA_NIGHT), ('#efe8dc', TOSKA_DAY), ('#2a2a2a', DARK), ('#e6e6e6', LIGHT)):
+    palette = QPalette(saved_palette); palette.setColor(QPalette.ColorRole.Window, QColor(window)); theme_applies.clear()
+    QApplication.setPalette(palette); settle()
+    assert len(theme_applies) == 1, ('one apply per palette change', window, len(theme_applies))
+    assert {key: panel.theme_colors[key] for key in expected} == expected, (window, panel.theme_colors)
+    panel.grab().save(str(output/('match-theme-%s.png' % window.lstrip('#'))))
+QApplication.setPalette(saved_palette); settle(); del panel.apply_theme
 panel.close()
 print('Qt interaction, context receipts, streaming selection/scroll, structured plans, paste and six themed layout checks passed: '+str(output))
 

@@ -147,7 +147,7 @@ void ThemeManager::slotChangePalette()
     KisIconUtils::clearIconCache();
 
     QString theme(currentThemeName());
-    QString filename        = d->themeMap.value(theme);
+    QString filename        = d->themeMap.value(theme, d->themeMap.value(QStringLiteral("Krita dark"))); // Krita Agent: an unknown name gets Krita dark
     KSharedConfigPtr config = KSharedConfig::openConfig(filename);
 
     QPalette palette               = qApp->palette();

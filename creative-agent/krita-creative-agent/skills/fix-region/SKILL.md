@@ -22,6 +22,11 @@ Tool details for the AI image route are in the `image-asset` skill.
 2. **Match:** `sample_canvas_colors` just outside the damage, on every side that meets good paint.
 3. **Repaint:** First propose_protection for any focal feature inside the area (the moon, a figure), named; Luna checks it after the batch. Then, inside the selection, `fill_region` a gradient between those samples for a smooth area (sky,
    wall), or `paint_recipe` with their palette for a textured one (clouds, foliage), on a new layer.
+   **A seam or small damage** (a thin strip or blotch, a bounding box of at most 512 x 512 px): when offered,
+   `smart_patch` the selection instead of repainting it (accuracy 50-80); Krita re-makes it from the paint
+   around it on a new layer, in one call; a larger area is patched in pieces. When offered too, `bucket_fill` floods
+   one region from a point, `enclose_and_fill` the regions inside an outline, and `krita_gradient` makes the conical,
+   spiral and repeating gradients `fill_region` cannot.
 4. **Blend and redraw:** a blur mask (`apply_filter`, limited to the selection) where the area should be soft,
    then `paint_batch` strokes to redraw any contour the damage crossed. Then `observe_canvas` and compare.
 

@@ -82,6 +82,7 @@ export class PaintingRuntime {
   acceptBridgeHealth(bridgeStatus) {
     this.routingCapabilities=bridgeStatus.capabilities ?? {};
     this.kritaActions=bridgeStatus.krita_actions ?? 0;          // vetted Krita actions; none: krita_action is not offered
+    this.forkTools=bridgeStatus.fork_tools;                    // false: stock Krita has no Node.fill and the rest, so those tools are not offered
     this.bridgeCompatible = bridgeStatus.protocol_version === PROTOCOL_VERSION &&
       (BUILD_INFO.build_id === 'development-unverified' || bridgeStatus.build?.build_id === BUILD_INFO.build_id);
     this.emit({ type: 'ready', models: this.listModels(),providers:this.listProviders(), bridge: bridgeStatus, build:BUILD_INFO, compatible:this.bridgeCompatible });
@@ -405,13 +406,13 @@ export class PaintingRuntime {
     }
     if (event.type === 'tool_execution_start') {
       this.pendingTools.set(event.toolCallId, { name: event.toolName, args: event.args, at: Date.now() });
-      this.setActivity('tool', ({observe_canvas:'Looking at the canvas…',list_brushes:'Choosing a brush…',paint_pass:'Painting: ' + (event.args?.name ?? 'next pass'),adjust_layer:'Adjusting a layer…',create_layer:'Creating a layer: ' + (event.args?.name ?? 'new layer'),set_layer:'Setting a layer…',select:'Selecting: ' + (event.args?.name ?? 'a region'),fill_region:'Filling a region: ' + (event.args?.name ?? 'a layer'),apply_filter:'Applying a filter: ' + (event.args?.filter ?? 'filter'),colorize_flats:'Colorizing flats: ' + (event.args?.name ?? 'Flats'),transform_layer:'Transforming a layer…',letter:'Lettering: ' + (event.args?.kind ?? 'text') + ' in ' + (event.args?.panel ?? 'a panel'),view_reference:'Studying the reference…',make_material:'Making a material: ' + (event.args?.name ?? 'tips'),stamp_material:'Stamping: ' + (event.args?.name ?? 'a material')})[event.toolName] ?? 'Working…');
+      this.setActivity('tool', ({observe_canvas:'Looking at the canvas…',list_brushes:'Choosing a brush…',paint_pass:'Painting: ' + (event.args?.name ?? 'next pass'),adjust_layer:'Adjusting a layer…',create_layer:'Creating a layer: ' + (event.args?.name ?? 'new layer'),set_layer:'Setting a layer…',select:'Selecting: ' + (event.args?.name ?? 'a region'),fill_region:'Filling a region: ' + (event.args?.name ?? 'a layer'),apply_filter:'Applying a filter: ' + (event.args?.filter ?? 'filter'),colorize_flats:'Colorizing flats: ' + (event.args?.name ?? 'Flats'),transform_layer:'Transforming a layer…',letter:'Lettering: ' + (event.args?.kind ?? 'text') + ' in ' + (event.args?.panel ?? 'a panel'),view_reference:'Studying the reference…',bucket_fill:'Filling: ' + (event.args?.name ?? 'a region'),enclose_and_fill:'Filling inside an outline: ' + (event.args?.name ?? 'regions'),krita_gradient:'Painting a gradient: ' + (event.args?.name ?? 'gradient'),smart_patch:'Smart patch: ' + (event.args?.name ?? 'repair'),make_material:'Making a material: ' + (event.args?.name ?? 'tips'),stamp_material:'Stamping: ' + (event.args?.name ?? 'a material')})[event.toolName] ?? 'Working…');
     }
     if (event.type === 'tool_execution_end') {
       const tool = this.pendingTools.get(event.toolCallId);
       this.pendingTools.delete(event.toolCallId);
       if (tool && ['paint_pass','adjust_layer',...CRAFT_OPERATIONS,...COMIC_OPERATIONS,'painting_toolbox','paint_recipe','paint_contours','stamp_material','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface'].includes(tool.name)) this.emit({ type: 'action', error: !!event.isError,
-        message: event.isError ? 'Painting action needs attention' : ['paint_pass','painting_toolbox','create_layer','fill_region','paint_recipe','paint_contours','stamp_material','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface'].includes(tool.name) ? 'Painted: ' + (tool.args?.name ?? 'new layer') : 'Adjusted a layer',
+        message: event.isError ? 'Painting action needs attention' : ['paint_pass','painting_toolbox','create_layer','fill_region','bucket_fill','enclose_and_fill','krita_gradient','smart_patch','paint_recipe','paint_contours','stamp_material','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface'].includes(tool.name) ? 'Painted: ' + (tool.args?.name ?? 'new layer') : 'Adjusted a layer',
         seconds: (Date.now() - tool.at) / 1000 });
       this.lastModelActivityAt = Date.now();
       if (!this.cancelRequested) this.setActivity('waiting', 'Waiting for the model…');

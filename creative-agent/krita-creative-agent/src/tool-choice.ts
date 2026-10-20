@@ -20,7 +20,8 @@ function methodOf({ tool, args }: Action, canvas: Canvas): string[] {
   switch (tool) {
     case 'select': return [(args.steps ?? []).some((s: any) => Array.isArray(s?.seed)) ? 'seed' : 'select'];
     case 'split_by_color': return ['split'];
-    case 'fill_region': return ['fill'];
+    case 'fill_region': case 'bucket_fill': case 'enclose_and_fill': case 'krita_gradient': return ['fill'];
+    case 'smart_patch': return ['patch'];
     case 'create_layer': return [args.type === 'fill' ? 'fill_layer' : 'layer'];
     case 'apply_filter': return [args.mode === 'copy' ? 'filter' : 'filter_mask'];
     case 'clone_layer': return ['clone'];

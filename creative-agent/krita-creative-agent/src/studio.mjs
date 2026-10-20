@@ -4,7 +4,7 @@ import { DecisionService } from './decisions/service.ts';
 import {passCheck, progressCheck, moveCheck, seamCheck} from './visual-checks.ts';
 import { executionSettings, thinkingLevel, AUTO_REASONING_NOTE } from './execution-settings.mjs';
 import { panelSchema } from './settings-schema.mjs';
-import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS } from './craft.mjs';
+import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS } from './craft.mjs';
 import { GUARDS_CHANNEL, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension } from './extensions.mjs';
 import { layerNeedCheck, paintedRole } from './layer-need.mjs';
 import { COMIC_GUIDANCE, COMIC_REVIEW, comicContext, comicPlanProblems, panelId, storySchema } from './comic.mjs';
@@ -885,6 +885,7 @@ export class StudioRuntime extends PaintingRuntime {
   toolOffered(name) {
     if (name === 'letter') return !!this.goal?.comic;
     if (name === 'krita_action' && !(this.kritaActions > 0)) return false;     // an unaudited Krita: it would always refuse
+    if (FORK_TOOLS.includes(name) && this.forkTools !== true) return false;     // stock Krita, or a plugin too old to say: it would always refuse
     return this.executionSettings?.native_craft !== false || !CRAFT_TOOLS.includes(name);
   }
   buildTools() {

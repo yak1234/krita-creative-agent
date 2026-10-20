@@ -178,5 +178,76 @@ class StampTests(unittest.TestCase):
         self.assertEqual((sheet.width(), sheet.height()), (2 * 20 + 3 * 4, 20 + 2 * 4))
 
 
+class KritaBrushStampTests(unittest.TestCase):
+    """What the Krita-brush stamp (krita-fork 5.1) needs of the raster: tips as variants for a dab's rotation and
+    stretch, the brush tip image, the area's faded clip and each dab's colour."""
+    W = H = 100
+    BASE = bytes([120, 60, 40, 255]) * (100 * 100)
+    FULL = bytes([255]) * (100 * 100)
+    SQUARE = bytes([255]) * (20 * 20)
+
+    def dab(self, **kw):
+        return dict(dict(x=50, y=50, scale=1, stretch=1, rotation=0, opacity=0.2, tip=0), **kw)
+
+    def test_a_plain_dab_uses_the_tip_itself(self):
+        side, alpha = raster.tip_variant(self.SQUARE, 20, 0, 1)
+        self.assertEqual((side, alpha), (20, self.SQUARE))
+
+    def test_a_stretched_tip_is_wide_and_a_rotated_one_turns(self):
+        disc = bytes(255 if math.hypot(x - 10, y - 10) < 9 else 0 for y in range(20) for x in range(20))
+        side, wide = raster.tip_variant(disc, 20, 0, 2)
+        self.assertGreaterEqual(side, 20 * 1.41)
+        self.assertEqual(len(wide), side * side)
+        rows = lambda a: [y for y in range(side) if any(a[y * side + x] > 128 for x in range(side))]
+        cols = lambda a: [x for x in range(side) if any(a[y * side + x] > 128 for y in range(side))]
+        self.assertGreater(len(cols(wide)), 1.7 * len(rows(wide)), 'twice as wide as tall')
+        self.assertGreaterEqual(len(cols(wide)), 15, 'the long axis keeps the tip size')
+        _side, turned = raster.tip_variant(disc, 20, 90, 2)
+        self.assertGreater(len(rows(turned)), 1.7 * len(cols(turned)), 'rotated a quarter turn: taller than wide')
+        side2, narrow = raster.tip_variant(disc, 20, 0, 0.5)
+        self.assertGreater(len(rows(narrow)), 1.7 * len(cols(narrow)), 'stretch under 1 is narrower than tall')
+
+    def test_the_brush_tip_image_carries_the_tip_as_its_alpha(self):
+        image = raster.tip_image(bytes(range(16)), 4)
+        self.assertEqual((image.width(), image.height()), (4, 4))
+        self.assertEqual([image.pixelColor(x, 0).alpha() for x in range(4)], [0, 1, 2, 3])
+        self.assertEqual(image.pixelColor(3, 3).alpha(), 15)
+
+    def test_rotation_and_stretch_fall_in_buckets_and_few_variants_are_made(self):
+        dabs = [self.dab(rotation=r, stretch=s) for r in (-25, -5, 0, 14, 31, 200) for s in (1.0, 1.3, 1.6, 0.4)]
+        keys, level = raster.bucket_variants(dabs, max_variants=96)
+        self.assertEqual(level, 'fine')
+        self.assertEqual(keys[4], keys[8], 'a dab 5 degrees from 0 shares the bucket of 0')
+        self.assertEqual(len({(d['tip'],) + k for d, k in zip(dabs, keys)}), len(set(keys)))
+        self.assertEqual(keys[dabs.index(self.dab(rotation=0, stretch=1.0))], (0, 1.0))
+        self.assertTrue(all(rotation % 30 == 0 and rotation < 360 for rotation, _s in keys))
+        self.assertEqual({k[1] for k in keys}, {0.4444, 1.0, 1.5}, 'stretch in steps of 1.5')
+        many = [self.dab(rotation=r, stretch=s, tip=t) for r in range(0, 360, 10) for s in (0.3, 0.5, 1, 1.4, 2, 3, 4) for t in range(2)]
+        keys, level = raster.bucket_variants(many, max_variants=40)
+        self.assertEqual(level, 'coarse')
+        self.assertLessEqual(len({(d['tip'],) + k for d, k in zip(many, keys)}), 40)
+        keys, level = raster.bucket_variants(many, max_variants=6)
+        self.assertEqual((level, set(keys)), ('plain', {(0, 1.0)}), 'one variant per tip: rotation and stretch are dropped')
+
+    def test_the_clip_is_the_area_faded_at_its_edge_and_nothing_past_it(self):
+        left = bytes([255 if x < 50 else 0 for _y in range(self.H) for x in range(self.W)])
+        clip = raster.clip_mask(left, self.W, self.H, [self.dab(scale=3)], 20)
+        at = lambda x: clip[50 * self.W + x]
+        self.assertEqual(at(55), 0)
+        self.assertLess(at(49), at(30) * 0.6)
+        self.assertGreater(at(15), 240)
+        self.assertEqual(len(clip), self.W * self.H)
+        self.assertEqual(raster.clip_mask(left, self.W, self.H, [], 20), left, 'no dabs: the mask itself')
+
+    def test_a_dab_takes_the_colour_the_qpainter_stamp_took(self):
+        tint = {'color': '#ffffff', 'amount': 0.6, 'toward': 'top'}
+        colours = raster.dab_colours(self.BASE, self.W, self.H, [self.dab(y=12), self.dab(y=88)], tint)
+        self.assertEqual(len(colours), 2)
+        self.assertTrue(all(len(c) == 7 and c[0] == '#' for c in colours))
+        top, bottom = (int(c[1:3], 16) + int(c[3:5], 16) + int(c[5:7], 16) for c in colours)
+        self.assertGreater(top, bottom + 30)
+        self.assertEqual(raster.dab_colours(self.BASE, self.W, self.H, [self.dab()], None), ['#%02x%02x%02x' % (40, 60, 120)])
+
+
 if __name__ == '__main__':
     unittest.main()

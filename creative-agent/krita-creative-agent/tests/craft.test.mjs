@@ -107,7 +107,7 @@ test('colorize_flats reaches the plugin, can colour line art made earlier in a b
 test('native_craft off hides the craft tools from the painter and from paint_batch', async () => {
   const offered = [];
   const studio = { mode: 'autopilot', study: {}, models: { getModel: () => ({ input: ['text', 'image'] }) }, lunaMode: () => 'off',
-    session: { setActiveToolsByName: names => offered.push(names), agent: {} }, executionSettings: { native_craft: false }, kritaActions: 13,
+    session: { setActiveToolsByName: names => offered.push(names), agent: {} }, executionSettings: { native_craft: false }, kritaActions: 13, forkTools: true,
     toolOffered: StudioRuntime.prototype.toolOffered, applyPhaseReasoning: () => {} };
   StudioRuntime.prototype.selectTools.call(studio, 'agent');
   studio.executionSettings = { native_craft: true };

@@ -203,12 +203,83 @@ def stamp(colour_bgra, w, h, mask, tips, size, dabs, tint=None):
     painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
     painter.drawImage(0, 0, _image(mask, w, h, ALPHA, 1))
     # Then the edge, faded inward: a selection bounded by a rectangle otherwise cuts the stamp off in a straight line.
-    sizes = sorted(size * d['scale'] for d in dabs)
-    fade = EDGE_FADE * sizes[len(sizes) // 2] if sizes else 0
+    fade = _edge_fade(dabs, size)
     if fade >= 1:
         painter.drawImage(0, 0, _image(image_bytes(_blur(_image(mask, w, h, GREY, 1), fade)), w, h, ALPHA, 1))
     painter.end()
     return image_bytes(canvas.convertToFormat(ARGB)), placed
+
+
+def _edge_fade(dabs, size):
+    """The width the area's edge fades over: a share of the median dab size."""
+    sizes = sorted(size * d['scale'] for d in dabs)
+    return EDGE_FADE * sizes[len(sizes) // 2] if sizes else 0
+
+
+# ----- the Krita-brush stamp (krita-fork 5.1): the same dabs, painted by Krita's brush engine ------------------------------
+# A Krita brush tip is one image and a preset has one tip at a fixed ratio and angle, so a dab's own rotation and stretch
+# cannot be set per stroke. They are folded into the tip instead: a variant of the tip, rotated and stretched, made once
+# for each bucket of (rotation, stretch) the dabs fall in. Fine buckets (30 degrees, steps of 1.5 in stretch) keep the look;
+# when the stamp would need more variants than the limit, coarse ones (90 degrees, steps of 2.25), then none ("plain": every
+# dab is its tip, upright and unstretched, and the result says so).
+BUCKETS = (('fine', 30, 1.5), ('coarse', 90, 2.25))
+VARIANT_PAD = math.sqrt(2)  # a stretched tip turned by any angle stays inside a square this many times the tip's side
+
+
+def bucket_variants(dabs, max_variants):
+    """(keys, level): for each dab its variant key (rotation degrees in [0, 360), stretch), at the finest level whose
+    distinct (tip, key) pairs number at most `max_variants`; level 'plain' (every key (0, 1.0)) when even coarse is too many."""
+    keys = []
+    for level, step, ratio in BUCKETS:
+        keys = [(int(round(d['rotation'] / step)) * step % 360, round(ratio ** round(math.log(d['stretch']) / math.log(ratio)), 4))
+                for d in dabs]
+        if len({(d['tip'], key) for d, key in zip(dabs, keys)}) <= max_variants:
+            return keys, level
+    return [(0, 1.0)] * len(dabs), 'plain'
+
+
+def tip_variant(alpha, size, rotation, stretch):
+    """A tip (alpha bytes size*size) as a dab of `rotation` degrees and `stretch` (width over height) draws it: (side,
+    alpha bytes side*side). The long axis keeps the tip's size; the square is VARIANT_PAD times larger so nothing turned is
+    cut off. A plain dab (no rotation, no stretch) is the tip itself."""
+    if rotation % 360 == 0 and stretch == 1:
+        return size, alpha
+    side = math.ceil(size * VARIANT_PAD)
+    source = _image(alpha, size, size, ALPHA, 1).convertToFormat(PREMULTIPLIED)
+    canvas = QImage(side, side, PREMULTIPLIED)
+    canvas.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(canvas)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    wide = stretch >= 1
+    painter.setTransform(QTransform().translate(side / 2, side / 2).rotate(rotation)
+                         .scale(1 if wide else stretch, 1 / stretch if wide else 1).translate(-size / 2, -size / 2))
+    painter.drawImage(0, 0, source)
+    painter.end()
+    return side, bytes(image_bytes(canvas)[3::4])
+
+
+def tip_image(alpha, side):
+    """The tip as the image Krita makes a brush tip from: black, its coverage in the alpha channel ('alpha' application)."""
+    pixels = bytearray(side * side * 4)
+    pixels[3::4] = alpha
+    return _image(bytes(pixels), side, side, ARGB, 4)
+
+
+def clip_mask(mask, w, h, dabs, size):
+    """The area's mask as the job's selection: the area, its edge faded inward as stamp() does (never printing a straight
+    cut), nothing past it. Bytes, one per pixel."""
+    fade = _edge_fade(dabs, size)
+    if fade < 1:
+        return bytes(mask)
+    faded = image_bytes(_blur(_image(mask, w, h, GREY, 1), fade))
+    return bytes(m * f // 255 for m, f in zip(mask, faded))
+
+
+def dab_colours(colour_bgra, w, h, dabs, tint=None):
+    """Each dab's colour as '#rrggbb': the painting under it, blurred, plus 60% of its light, moved toward the tint."""
+    source = _image(colour_bgra, w, h, ARGB, 4)
+    local = source.scaled(max(1, w // LOCAL_COLOUR), max(1, h // LOCAL_COLOUR), STRETCH, SMOOTH)
+    return [_colour(source, local, w, h, d['x'], d['y'], tint).name() for d in dabs]
 
 
 def contact_sheet(tips, size, gap=4):

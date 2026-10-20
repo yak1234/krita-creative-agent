@@ -31,6 +31,7 @@ from .brush_controls import control_changes
 from .precision_tools import PrecisionTools
 from .creative_tools import CreativeTools
 from .script_steps import one_step
+from .stamp_names import list_presets
 from .command_queue import CommandQueue
 from .bridge_config import bridge_port, output_dir
 
@@ -1058,15 +1059,8 @@ class KritaMCPExtension(CreativeTools, PrecisionTools, Extension):
         filter_str = params.get("filter", "")
         limit = int(params.get("limit", 50))
 
-        presets = Krita.instance().resources("preset")
-        brush_list = []
-        for name in sorted(presets.keys()):
-            if filter_str.lower() in name.lower():
-                brush_list.append(name)
-                if len(brush_list) >= limit:
-                    break
-        return {"status": "ok", "brushes": brush_list, "count": len(brush_list),
-                "total": len(presets)}
+        brush_list, total = list_presets(Krita.instance().resources("preset").keys(), filter_str, limit, params.get("exclude_prefix", ""))
+        return {"status": "ok", "brushes": brush_list, "count": len(brush_list), "total": total}
 
     def cmd_list_layers(self, params):
         """List every layer with visibility/opacity/blending mode."""

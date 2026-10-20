@@ -45,7 +45,7 @@ async function harness(respond, bridgeHook) {
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
   const models=await ModelRuntime.create({authPath:join(output,'auth.json'),modelsPath:null,refreshOnCreate:false});
   models.registerProvider('local-test',{api:'openai-completions',baseUrl:`http://127.0.0.1:${server.address().port}/v1`,models:[{id:'vision-test',name:'Test',reasoning:false,input:['text','image'],
-    cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:64000,maxTokens:4096}]});
+    cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:128000,maxTokens:4096}]});     // the painter's tool schemas (60k characters) leave little of 64k before compaction (at 47k) starts mid-test
   await models.setRuntimeApiKey('local-test','test-only');
   let observation;
   const bridge={async call(operation,params,id,operationId){

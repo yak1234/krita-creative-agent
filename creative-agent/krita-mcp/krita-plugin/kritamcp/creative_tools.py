@@ -26,7 +26,8 @@ from .comic import ComicCraft
 from .merge_craft import MergeCraft
 from .native_craft import NativeCraft, compact_actions
 from .protection import ProtectionCraft, PANEL_ONLY as PROTECTION_PANEL_ONLY
-from .material_stamp import MaterialCraft
+from .material_stamp import MaterialCraft, RESOURCE_PREFIX as STAMP_RESOURCE_PREFIX
+from .tool_craft import ToolCraft, OPERATIONS as TOOL_OPERATIONS, PASS_TITLES as TOOL_TITLES, tool_functions_available
 from .journal_store import Journal
 from . import painting_weight
 from . import canvas_projection
@@ -81,7 +82,7 @@ def wait_for_krita(seconds):
 # later results and `save_status`. Actions after the copy stay unsaved. Without the helper, before the painting is its
 # own file, and at the end of a chat, the save is synchronous as before.
 # Pass kinds that add a new agent layer or mask.
-NEW_CONTRIBUTIONS = ('paint_pass', 'create_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp')
+NEW_CONTRIBUTIONS = ('paint_pass', 'create_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp') + TOOL_OPERATIONS
 CHECKPOINT_SECONDS = 180
 # A painting copy a test or tool-choice run made: benchmark-runs/<stamp>-tool-choice[-no-guards]/<scenario>-<run>/…/<painting>.kra
 # (or an image copy: .png, .jpg),
@@ -107,7 +108,7 @@ def merge_pass_record_error(result, error):
             'error': result['error'] + ' (' + note + ')' if result.get('error') else note}
 
 
-class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, ProtectionCraft, NativeCraft, MaterialCraft):
+class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, ProtectionCraft, NativeCraft, MaterialCraft, ToolCraft):
     def cmd_creative(self, request):
         fields(request, ('operation', 'session_id', 'operation_id', 'params'), ('operation', 'params'))
         operation = request['operation']
@@ -117,7 +118,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         if operation == 'health':
             return {'status': 'ok', 'creative_version': '1.0.0', 'protocol_version': 2, 'build': CREATIVE_BUILD, 'krita_version': Krita.instance().version(),
                     'capabilities': self._creative_adapter_capabilities(), 'native_paths': True, 'session_active': bool(getattr(self, '_creative_session', None)),
-                    'krita_actions': len(self._native_actions(Krita.instance().version())), 'python_packages': vendor.versions()}
+                    'krita_actions': len(self._native_actions(Krita.instance().version())), 'python_packages': vendor.versions(),
+                    'fork_tools': tool_functions_available()}
         if operation == 'context':
             fields(params, ('document_id',))
             doc = self._creative_document(params.get('document_id'))
@@ -489,7 +491,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         if operation == 'list_brushes':
             fields(params, ('filter',))
             # The whole library: the companion adds a measured card to every preset (brush-catalog.json).
-            result = self.cmd_list_brushes({'filter': params.get('filter', ''), 'limit': 500})
+            # The stamp's own tips and presets (stamp_names.py, one per variant) are hidden before the limit applies.
+            result = self.cmd_list_brushes({'filter': params.get('filter', ''), 'limit': 500, 'exclude_prefix': STAMP_RESOURCE_PREFIX + ' '})
             return result
         if operation == 'capabilities':
             result = self._craft_capabilities(doc, params)
@@ -507,7 +510,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             self._creative_store_operations(session)
             return dict(self._creative_observe(doc, session), unresolved_operations=[],
                         committed_operation_count=self._creative_committed_count(session))
-        if operation not in ('paint_pass', 'adjust_layer', 'painting_toolbox', 'review_pass', 'create_layer', 'set_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp'):
+        if operation not in ('paint_pass', 'adjust_layer', 'painting_toolbox', 'review_pass', 'create_layer', 'set_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp') + TOOL_OPERATIONS:
             raise ValueError('Unsupported creative operation')
         operation_id = text(request.get('operation_id'), 'operation_id', 100)
         fingerprint = hashlib.sha256(json.dumps([operation, {k: v for k, v in params.items() if k != 'expected_revision'}], sort_keys=True).encode()).hexdigest()
@@ -585,9 +588,11 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             self._native_validate_split(doc, session, params)
         elif operation == 'stamp':
             self._stamp_validate(doc, session, params)
+        elif operation in TOOL_OPERATIONS:
+            self._tool_validate(doc, session, operation, params)
         else:
             return self._protect_review(doc, session, params, lambda: self._creative_review(doc, session, params, operation_id, fingerprint))
-        if operation in ('paint_pass', 'create_layer', 'fill_region', 'apply_filter'):
+        if operation in ('paint_pass', 'create_layer', 'fill_region', 'apply_filter') + TOOL_OPERATIONS:
             self._comic_validate_scope(doc, session, operation, params)
         self._protect_refuse(doc, session, operation, params)
         lap('validate')
@@ -643,7 +648,9 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             elif operation == 'split_by_color':
                 result.update(self._native_split(doc, session, params))
             elif operation == 'stamp':
-                result.update(self._stamp_apply(doc, session, params))
+                result.update(self._stamp_apply(doc, session, params, result))
+            elif operation in TOOL_OPERATIONS:
+                result.update(self._tool_apply(doc, session, operation, params, result))
             elif operation == 'paint_pass':
                 # The fork paints a pass as one stroke job (Node.paintStrokes) that takes its preset by name and needs no
                 # view, so the artist's brush is left alone; smudge overlay mode is set on the view's preset, which the
@@ -711,7 +718,10 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 if restored.get('error'):
                     result['brush_restore'] = 'failed: ' + str(restored['error'])
             if prior_node is not None:
-                doc.setActiveNode(prior_node)
+                try:
+                    doc.setActiveNode(prior_node)
+                except RuntimeError:
+                    pass                                   # the document was closed during the operation
         lap('apply')
         if operation == 'merge_passes' and result.get('status') == 'ok' and not result.get('merged_layers'):
             session['operations'][operation_id] = (fingerprint, result)     # nothing merged: no canvas change, no checkpoint
@@ -738,7 +748,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 self._creative_settle_containers(doc, session, self._creative_node(doc, layer_id))
             if layer_id:
                 state = self._creative_layer_state(self._creative_node(doc, layer_id), doc)
-                entry = dict(id=operation_id, title=params.get('name') or {'fill_region': 'Region fill', 'apply_filter': params.get('filter'), 'colorize_flats': 'Colorized flats', 'transform_layer': 'Transform', 'comic_page': 'Comic page', 'letter': 'Lettering', 'merge_passes': 'Merged passes', 'krita_action': result.get('action_label'), 'clone_layer': 'Clone', 'split_by_color': 'Split by colour', 'stamp': 'Stamp'}.get(operation) or 'Layer adjustment', kind=operation,
+                entry = dict(id=operation_id, title=params.get('name') or {'fill_region': 'Region fill', 'apply_filter': params.get('filter'), 'colorize_flats': 'Colorized flats', 'transform_layer': 'Transform', 'comic_page': 'Comic page', 'letter': 'Lettering', 'merge_passes': 'Merged passes', 'krita_action': result.get('action_label'), 'clone_layer': 'Clone', 'split_by_color': 'Split by colour', 'stamp': 'Stamp', **TOOL_TITLES}.get(operation) or 'Layer adjustment', kind=operation,
                              stage_id=params.get('stage_id'), region=params.get('region'), layer_id=layer_id,
                              continuation_of=params.get('continue_layer_id'),
                              group_id=result.get('group_id'),
@@ -1798,13 +1808,14 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         except Exception:
             return None                                  # a measure must never stop an observation
 
-    def _creative_stroke_job(self, doc, session, params, node, result, new_layer=True, started=None):
+    def _creative_stroke_job(self, doc, session, params, node, result, new_layer=True, started=None, selection=None):
         """The fork: the whole pass as one Node.paintStrokes job (libkis StrokeJob, krita-fork task 2.4). The job paints in
         Krita's worker threads; this call stays synchronous to the bridge by polling it on the GUI thread with short
         bounded waits, running Qt's events between them: the job's feeder tops up its strokes from the event loop, which
         a GUI-thread wait never runs. So the window, the panel's Stop and the artist's own strokes respond while the pass
         paints, and the companion follows it through the progress file. `started` runs as soon as the job exists (the
-        artist's layer becomes active again). Returns the result's fields: pen notes, `stroke_job`, and on a stop
+        artist's layer becomes active again). `selection` is the job's own clip (the stamp's faded area), else the
+        stage mask of params['region'], else none. Returns the result's fields: pen notes, `stroke_job`, and on a stop
         `stopped_after_strokes`. A job Krita ended on the artist's Undo is waited out until the undo has landed and then
         raised, so nothing is observed, saved or recorded as painted; a refused job painted nothing and is a rejected pass.
         The job's undo step is its own, named after the pass, or joins an open agent move by itself."""
@@ -1812,8 +1823,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         options = {'name': params['name']}
         if not params.get('smudge_overlay'):
             options['preset'] = params['preset']     # else a copy of the view's preset, set to overlay mode above
-        selection = None
-        if params.get('region'):
+        if selection is None and params.get('region'):
             # The stage mask clips the whole brush footprint and fades in at inner edges (stage_mask.py); the job clips
             # to it alone, whatever the document selects, so the artist's selection is never swapped.
             from .stage_mask import mask as stage_mask
@@ -1913,6 +1923,14 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         if present and not node.remove():
             raise RuntimeError('Could not remove the unsuccessful pass layer')
         session['layers'].discard(identifier)
+        group_id = result.get('clip_group_id')            # a clip_base layer sits alone in a group made for it: the group goes too
+        if group_id:
+            try:
+                self._creative_node(doc, group_id).remove()
+            except ValueError:
+                pass                                       # an undo may have taken it already
+            session.get('clip_groups', set()).discard(group_id)
+            session['layers'].discard(group_id)
 
     def _creative_stock_strokes(self, doc, session, params, result):
         """Stock Krita (frozen): the pass through the native helper when Krita loaded it, else stroke by stroke through

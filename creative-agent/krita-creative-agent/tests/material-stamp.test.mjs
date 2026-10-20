@@ -77,3 +77,13 @@ test('stamp_material tells the painter that heavy stamps are thinned, so it buil
   const { tools } = setup();
   assert.match(tools.stamp_material.description, /at most 0\.6 ink per selected pixel \(coverage in the result\); a heavier stamp is thinned evenly \(opacity_scaled\)/);
 });
+
+test('stamp_material passes the chosen base brush through and tells the painter how a stamp is painted', async () => {
+  const { tools, calls } = setup();
+  await tools.make_material.execute('m1', { name: 'Clouds', source: { selection: 'Sky' } });
+  await tools.stamp_material.execute('s1', { name: 'Cloud volume', material: 'Clouds', selection: 'Sky', brush: 'b) Basic-3 Flow', count: 10 });
+  assert.equal(calls.at(-1).params.brush, 'b) Basic-3 Flow');
+  assert.equal(tools.stamp_material.parameters.properties.brush.type, 'string');
+  assert.match(tools.stamp_material.description, /painted by Krita’s brush engine/);
+  assert.match(tools.stamp_material.description, /brush: a base preset from list_brushes/);
+});

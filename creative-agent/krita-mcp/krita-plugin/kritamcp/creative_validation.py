@@ -21,8 +21,18 @@ def fields(value, allowed, required=()):
         raise ValueError('Missing parameters: ' + ', '.join(sorted(missing)))
 
 
+def _finite_number(value):
+    """True for a real, finite int or float; a bool, NaN, infinity or an int too big for a float (10**400) is not."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except (OverflowError, TypeError):
+        return False
+
+
 def numeric(value, label, low, high):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if not _finite_number(value):
         raise ValueError(label + ' must be a finite number')
     if not low <= value <= high:
         raise ValueError('%s must be between %s and %s' % (label, low, high))
@@ -131,3 +141,129 @@ def painted_share(pixels, tolerance=12):
     differing = sum(1 for quad in quads if max(abs(a - b) for a, b in zip(quad, dominant)) > tolerance)
     return round(differing / count, 4)
 
+
+
+# ----- Krita's tools as operations (krita-fork 5.3): bucket_fill, enclose_and_fill, krita_gradient, smart_patch ------------
+# Each tool's `options` is a dict the fork checks key by key (unknown keys, wrong kinds and out-of-range values are refused
+# with only a warning and a false return). Checked here first, from the documented keys and ranges, so a bad option is a
+# plain error before anything is queued; and NaN, infinity, bools-as-numbers and huge numbers never reach Krita.
+FILL_SAMPLES = ('layer', 'all', 'labels')
+FILL_MODES = ('contiguous', 'similar', 'selection')
+ENCLOSE_REGIONS = ('all', 'color', 'transparent', 'colorOrTransparent', 'allExceptColor', 'allExceptTransparent',
+                   'allExceptColorOrTransparent', 'surroundedByColor', 'surroundedByTransparent', 'surroundedByColorOrTransparent')
+COLOUR_REGIONS = ('color', 'colorOrTransparent', 'allExceptColor', 'allExceptColorOrTransparent', 'surroundedByColor',
+                  'surroundedByColorOrTransparent')
+GRADIENT_SHAPES = ('linear', 'bilinear', 'radial', 'square', 'conical', 'conicalSymmetric', 'spiral', 'reverseSpiral', 'polygonal')
+GRADIENT_REPEATS = ('none', 'forwards', 'alternate')
+GRADIENT_DITHERS = ('blueNoise', 'bayer2', 'bayer4', 'bayer8')
+MAX_GRADIENT_COLORS = 16
+PATCH_AREA_LIMIT = 512 * 512            # the fork refuses a larger bounding rectangle (about 5 s at the limit)
+# (kind, low, high) per key; 'choice' keys carry their words, 'bool' and 'color' and 'blend' need nothing.
+_SHARED_FILL = {
+    'sample': ('choice', FILL_SAMPLES), 'labels': ('ints', 0, 8), 'threshold': ('int', 1, 100), 'spread': ('int', 0, 100),
+    'closeGap': ('int', 0, 32), 'grow': ('int', -400, 400), 'feather': ('int', 0, 400), 'antialias': ('bool',),
+    'stopGrowingAtDarkestPixel': ('bool',), 'useSelectionAsBoundary': ('bool',), 'opacity': ('float', 0, 1), 'compositeOp': ('blend',)}
+TOOL_OPTIONS = {
+    'fill': dict(_SHARED_FILL, mode=('choice', FILL_MODES), boundaryColor=('color',)),
+    'enclose': dict(_SHARED_FILL, regions=('choice', ENCLOSE_REGIONS), regionColor=('color',), invert=('bool',),
+                    includeContourRegions=('bool',), includeSurroundingRegions=('bool',)),
+    'gradient': {'colors': ('colors',), 'gradient': ('text', 200), 'shape': ('choice', GRADIENT_SHAPES), 'repeat': ('choice', GRADIENT_REPEATS),
+                 'reverse': ('bool',), 'dither': ('dither',), 'antiAliasThreshold': ('float', 0, 1), 'opacity': ('float', 0, 1),
+                 'compositeOp': ('blend',)},
+    'patch': {'accuracy': ('int', 0, 99), 'patchRadius': ('int', 2, 8)},
+}
+
+
+def _colour(value, label):
+    try:
+        return color(value)
+    except ValueError:
+        raise ValueError(label + ' must be a colour as #RRGGBB')
+
+
+def whole_number(value, label, low, high):
+    """An integer from a whole number (12 or 12.0), never a bool, NaN, infinity or a fraction."""
+    if not _finite_number(value) or value != int(value):
+        raise ValueError('%s must be a whole number from %s to %s' % (label, low, high))
+    if not low <= value <= high:
+        raise ValueError('%s must be a whole number from %s to %s' % (label, low, high))
+    return int(value)
+
+
+def tool_options(kind, options):
+    """The checked options dict of one of Krita's tools ('fill', 'enclose', 'gradient', 'patch'), in the fork's own keys."""
+    if options is None:
+        options = {}
+    if not isinstance(options, dict):
+        raise ValueError('options must be an object')
+    known = TOOL_OPTIONS[kind]
+    unknown = sorted(set(options) - set(known))
+    if unknown:
+        raise ValueError('Unknown options: %s. This tool takes: %s' % (', '.join(unknown), ', '.join(sorted(known))))
+    out = {}
+    for key, value in options.items():
+        spec = known[key]
+        label = 'options.' + key
+        if spec[0] == 'int':
+            out[key] = whole_number(value, label, spec[1], spec[2])
+        elif spec[0] == 'float':
+            out[key] = numeric(value, label, spec[1], spec[2])
+        elif spec[0] == 'bool':
+            if not isinstance(value, bool):
+                raise ValueError(label + ' must be true or false')
+            out[key] = value
+        elif spec[0] == 'choice':
+            if value not in spec[1] or not isinstance(value, str):
+                raise ValueError('%s must be one of: %s' % (label, ', '.join(spec[1])))
+            out[key] = value
+        elif spec[0] == 'color':
+            out[key] = _colour(value, label)
+        elif spec[0] == 'text':
+            out[key] = text(value, label, spec[1])
+        elif spec[0] == 'ints':
+            if not isinstance(value, list) or not 1 <= len(value) <= spec[2] + 1:
+                raise ValueError('%s must be a list of 1-%d colour labels (%d to %d)' % (label, spec[2] + 1, spec[1], spec[2]))
+            out[key] = [whole_number(item, label, spec[1], spec[2]) for item in value]
+        elif spec[0] == 'colors':
+            if not isinstance(value, list) or not 2 <= len(value) <= MAX_GRADIENT_COLORS:
+                raise ValueError('%s must be a list of 2-%d colours (#RRGGBB)' % (label, MAX_GRADIENT_COLORS))
+            out[key] = [_colour(item, label) for item in value]
+        elif spec[0] == 'dither':
+            if not isinstance(value, bool) and value not in GRADIENT_DITHERS:
+                raise ValueError('%s must be true, false or one of: %s' % (label, ', '.join(GRADIENT_DITHERS)))
+            out[key] = value
+        elif spec[0] == 'blend':
+            from .capabilities import validate_blend_mode
+            out[key] = validate_blend_mode(value)
+    if 'labels' in out and out.get('sample') != 'labels':
+        raise ValueError('options.labels go with options.sample "labels"')
+    if out.get('sample') == 'labels' and 'labels' not in out:
+        raise ValueError('options.sample "labels" needs options.labels (colour label numbers 0 to 8)')
+    if kind == 'enclose':
+        if out.get('regions') in COLOUR_REGIONS and 'regionColor' not in out:
+            raise ValueError('options.regionColor (#RRGGBB) is required for regions "%s"' % out['regions'])
+    if kind == 'gradient' and 'colors' not in out and 'gradient' not in out:
+        raise ValueError('A gradient needs options.colors or options.gradient (the name of a gradient)')
+    return out
+
+
+def canvas_point(value, label, width, height, margin):
+    """[x, y] as two finite numbers within `margin` pixels of the canvas (0 for a point that must lie on it)."""
+    if not isinstance(value, list) or len(value) != 2:
+        raise ValueError(label + ' must be [x, y]')
+    x = numeric(value[0], label + ' x', -margin, width + margin - (1 if margin == 0 else 0))
+    y = numeric(value[1], label + ' y', -margin, height + margin - (1 if margin == 0 else 0))
+    return [x, y]
+
+
+def canvas_pixel(x, y, x_label, y_label, width, height):
+    """(x, y) as whole pixels inside the canvas: where a bucket fill starts."""
+    return whole_number(x, x_label, 0, width - 1), whole_number(y, y_label, 0, height - 1)
+
+
+def check_patch_area(width, height):
+    """Smart patch takes an area whose bounding rectangle is at most 512 x 512 pixels (262144): refuse a larger one with
+    its numbers, as the fork would only warn."""
+    if width * height > PATCH_AREA_LIMIT:
+        raise ValueError('The area to patch is %d x %d pixels (%d), larger than the %d-pixel limit (512 x 512). Patch it in '
+                         'pieces: select a smaller area around the seam or damage.' % (width, height, width * height, PATCH_AREA_LIMIT))

@@ -1,7 +1,8 @@
 // Material stamp: the painter cuts a material (soft greyscale tips) from any source, the painting, a layer, a
-// reference or an asset, and stamps it into an area as one reversible pass. Krita turns an area into a brush tip only
-// in its brush editor; its scripting API cannot, so the plugin keeps its own tips (material_stamp.py) and paints the
-// dabs with one QPainter. This extension decides what is stamped where: it registers the two tools and plans the dabs.
+// reference or an asset, and stamps it into an area as one reversible pass. In the fork (our Krita) the plugin turns the
+// tips into real Krita brush tips and presets and paints the dabs with Krita's brush engine (material_stamp.py, krita-fork
+// 5.1); stock Krita 5.3.3 (frozen) paints them with one QPainter. This extension decides what is stamped where: it
+// registers the two tools and plans the dabs.
 // A New Moscow spike stamped 523 cloud dabs in 0.6 s where a reference transfer planned 156,304 strokes.
 // A shipped Pi extension registered inline (src/extensions.mjs). It knows the studio only through MaterialHost.
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
@@ -85,7 +86,9 @@ export default function materialStamp(host: MaterialHost): (pi: ExtensionAPI) =>
         'count dabs (1-2000, default 400) scattered over within [x,y,w,h] (default the canvas), size [min,max] px across, opacity [min,max] (default [0.25,0.5]), ' +
         'rotate (degrees of jitter, default 25), stretch (width over height, default 1.3), seed. tint {color, amount 0-1, toward top|all} moves the colour toward a light, ' +
         'e.g. moonlight on cloud tops. A stamp lays at most 0.6 ink per selected pixel (coverage in the result); a heavier stamp is thinned evenly (opacity_scaled): ' +
-        'many large, opaque dabs merge into a pale veil that flattens the forms, so build volume in two or three light stamps and judge each. One new layer, one reversible pass; protected areas are kept out. Then strokes for crisp edges. Call it on its own, not inside paint_batch.',
+        'many large, opaque dabs merge into a pale veil that flattens the forms, so build volume in two or three light stamps and judge each. ' +
+        'The dabs are painted by Krita’s brush engine with a brush made from the material’s tips; brush: a base preset from list_brushes (default b) Basic-1) gives size, opacity and blending behaviour. ' +
+        'Rotation and stretch are applied by turned and stretched copies of the tip (the result’s brush.variants says if they had to be dropped). One new layer, one reversible pass; protected areas are kept out. Then strokes for crisp edges. Call it on its own, not inside paint_batch.',
       parameters: Type.Object({
         name: Type.String({ minLength: 1, maxLength: 120 }), material: Type.String({ minLength: 1, maxLength: 40 }),
         area: Type.Optional(selectionSteps), selection: Type.Optional(Type.String({ maxLength: 40 })),
@@ -93,6 +96,7 @@ export default function materialStamp(host: MaterialHost): (pi: ExtensionAPI) =>
         within: Type.Optional(Type.Array(Type.Integer({ minimum: 0, maximum: 100000 }), { minItems: 4, maxItems: 4 })),
         size: Type.Optional(range(4, 4000, 'Dab size range in canvas pixels.')), opacity: Type.Optional(range(0, 1, 'Dab opacity range.')),
         rotate: Type.Optional(Type.Number({ minimum: 0, maximum: 180 })), stretch: Type.Optional(Type.Number({ minimum: 0.2, maximum: 5 })),
+        brush: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: 'Base brush preset (an exact name from list_brushes) the stamp’s brush is made from.' })),
         tint: Type.Optional(Type.Object({ color: Type.String({ pattern: '^#[0-9a-fA-F]{6}$' }), amount: Type.Number({ minimum: 0, maximum: 1 }),
           toward: Type.Optional(Type.Union([Type.Literal('top'), Type.Literal('all')])) }, { additionalProperties: false })),
         seed: Type.Optional(Type.Integer({ minimum: 0, maximum: 2 ** 31 })),

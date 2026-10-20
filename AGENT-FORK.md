@@ -633,3 +633,47 @@ release task (1.3).
   published to `main` with `agent/publish.sh --push`. The very first push (`--first`, which replaces the old `main`) waits for
   the artist's go. Never push anything else, never to KDE's `origin`.
 - Upstream edits: `README.md` is now ours (Krita's is `README.krita.md`, renamed). `.github/workflows/ci.yml` is ours.
+
+## Plugin craft: live checks (krita-fork 5.1 stamps, 5.3 tools)
+
+Written for the plugin side on `agent/plugin-craft`. Everything below was tested only against fakes; run these in the fork.
+
+1. **Brush size.** The stamp assumes a brush tip's `size` equals the tip image's side in pixels at 100%. Stamp a cloud with a known
+   `size` and measure it, also for a rotated or stretched variant (its square is about 1.41 x the tip).
+2. **Base preset.** `b) Basic-1` should paint the tip with no pressure or speed shaping; check `createPreset` keeps spacing and
+   the blending mode, and that an eraser or multiply preset is refused as `brush`.
+3. **Resources.** A second stamp of the same material (same chat, new chat, after a Krita restart) must reuse the presets and make
+   no new resource version. Remaking the material replaces the agent's own tip and preset under the same name; an artist's
+   same-name resource is left alone and the agent paints with the "name (2)" preset.
+4. **Brush list.** The Agent-tagged presets show in Krita's own brush list but not in the painter's `list_brushes` or
+   `krita_capabilities`.
+5. **Undo during a stamp.** Ctrl+Z during a multi-variant stamp (several jobs inside one agent move): the pass must end as
+   `partial_change`, the layer removed, nothing recorded.
+6. **Undo during the tools.** Ctrl+Z during `bucket_fill`, `enclose_and_fill`, `krita_gradient` and a long `smart_patch`: the
+   plugin reads the history after the call (plus one event-loop turn), so an Undo that only lands later cannot be seen.
+7. **Closing the document** during a call: the result should say the document was closed, not a pass-record error.
+8. **Refusals.** The fork only warns and returns false; the plugin's error says "see Krita's log". Check the log names the
+   reason for a locked layer, an empty selection and a bad seed.
+9. **A call that changes nothing** (a fill clipped away by the stage region or by protection): rejected, layer removed; with
+   protection 6.5 `Document.lastKeptOut()` names the features and the result carries `kept_out`.
+10. **Smart patch.** Time at the 512 x 512 limit (about 5 s); the repair layer must hold only the patched pixels; protected
+    features inside the copied context are holes the patch searches around (`kept_out_note`), so a repair next to one may look
+    thin. A patch layer sits in its stage group, which may lie below artist layers that cover the seam.
+11. **Redo stack.** A refused or failed tool call leaves a net-zero "Agent: ..." move (the layer was made, then removed) that
+    purges the artist's redo stack. Not avoided: the layer must exist before the call.
+12. **Stage groups.** A rejected FIRST call of a stage leaves its empty stage group (as `paint_pass` does); a failed
+    `clip_base` call now removes its own clip group.
+
+### Cost of a stamp
+Each dab is a one-point stroke, so a 2000-dab stamp is 2000 strokes in jobs of windows of 32 (one job per tip variant). A snapshot
+per stroke copies the preset and tip. A multi-point stroke cannot stand in for them: it draws a continuous line between its
+points, not separate dabs. Measure a 2000-dab stamp on New Moscow; if it is slow, lower `MAX_DABS` or ask the fork for a
+"dab list" stroke kind.
+
+### Growth of the agent's resources and a cleanup recipe
+A stamp makes one tip and one preset per (material, tip, rotation bucket, stretch bucket), up to 48 variants per stamp
+(`MAX_VARIANTS`), named `Agent stamp <material> <hash> t<i> r<rot> s<stretch>` and tagged "Agent". They are reused while Krita's
+settings (`creative-agent/stamp-resources`) record them; a remade material replaces its own. Nothing is deleted automatically.
+To clean up: quit the fork, delete `Agent stamp *` from the `brushes/` and `paintoppresets/` folders of the fork's resource folder
+(Settings > Manage Resources > Open Resources Folder), and remove the `[creative-agent]` `stamp-resources` key from the fork's
+`kritarc`. The tag and the database entries are rebuilt on the next start.

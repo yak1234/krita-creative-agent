@@ -10,16 +10,22 @@ imported where it is used so this module loads without Qt in the companion's tes
 """
 import base64
 import binascii
+import contextlib
 import hashlib
 import json
 import os
+import re
 
+import krita as krita_module
+from krita import Krita, Selection
 from .creative_validation import color as hex_colour, fields, numeric, text
+from .script_steps import one_step
+from .stamp_names import PREFIX
 from . import canvas_projection
 
 MATERIAL_FIELDS = ('name', 'source', 'kind', 'count', 'size')
 SOURCE_FIELDS = ('area', 'selection', 'layer_id', 'image_base64')
-STAMP_FIELDS = ('name', 'material', 'selection', 'area', 'dabs', 'tint', 'stage_id', 'region', 'expected_revision', 'panel')
+STAMP_FIELDS = ('name', 'material', 'selection', 'area', 'dabs', 'tint', 'brush', 'stage_id', 'region', 'expected_revision', 'panel')
 DAB_FIELDS = ('x', 'y', 'scale', 'stretch', 'rotation', 'opacity', 'tip')
 KINDS = ('light', 'shape')
 MAX_DABS = 2000
@@ -27,6 +33,21 @@ MAX_DABS = 2000
 # offline on rebuilt batches): 0.44 kept, 2.3 a pale veil Luna undid; 0.6 with the area's edge faded passed.
 MAX_COVERAGE = 0.6
 MAX_IMAGE = 12 * 1024 * 1024
+# The Krita-brush stamp: the base presets tried in order when the painter names none, and the most tip variants (a tip and a
+# preset each, one job each) one stamp makes before its variants get coarser.
+BASE_PRESETS = ('b) Basic-1', 'b) Basic-3 Flow', 'b) Basic-5 Size')
+MAX_VARIANTS = 48
+RESOURCE_PREFIX = PREFIX
+
+
+REGISTRY = ('creative-agent', 'stamp-resources')      # Krita's settings: {resource name: {digest, preset}} for what the agent made
+DESTRUCTIVE = ('erase', 'clear', 'copy', 'multiply', 'destination_in', 'destination_atop', 'alphadarken')
+
+
+def krita_brush_stamps():
+    """True in our Krita: the application can make brush tips and presets (Krita.createBrushTip, createPreset)."""
+    app = Krita.instance()
+    return hasattr(app, 'createBrushTip') and hasattr(app, 'createPreset')
 
 
 class MaterialCraft:
@@ -159,6 +180,8 @@ class MaterialCraft:
             numeric(dab['rotation'], 'dab rotation', -360, 360); numeric(dab['opacity'], 'dab opacity', 0, 1)
             if not isinstance(dab['tip'], int) or not 0 <= dab['tip'] < record['tips']:
                 raise ValueError('dab tip is 0-%d: the material has %d tips.' % (record['tips'] - 1, record['tips']))
+        if krita_brush_stamps():
+            self._stamp_base_name(params)
         if 'tint' in params:
             tint = params['tint']
             fields(tint, ('color', 'amount', 'toward'), ('color', 'amount'))
@@ -172,15 +195,47 @@ class MaterialCraft:
         layer['type'] = 'paint'
         return layer
 
-    def _stamp_apply(self, doc, session, params):
+    def _stamp_base_name(self, params):
+        """The base preset a Krita-brush stamp makes its presets from: `brush`, else the first installed of BASE_PRESETS."""
+        installed = Krita.instance().resources('preset')
+        if 'brush' in params:
+            name = text(params['brush'], 'brush', 200)
+            if name not in installed:
+                raise ValueError('Use an exact installed preset name from list_brushes as the brush.')
+            self._stamp_check_base(name, installed[name])
+            return name
+        for name in BASE_PRESETS:
+            if name in installed:
+                return name
+        raise ValueError('None of the usual base brushes (%s) is installed: name one with brush (see list_brushes).' % ', '.join(BASE_PRESETS))
+
+    @staticmethod
+    def _stamp_check_base(name, resource):
+        """A stamp paints soft dabs of light: an eraser, or a brush whose blending mode destroys or darkens, would not. Known
+        from the name, and from the preset's CompositeOp when this Krita can give the preset's XML."""
+        mode = ''
+        preset = getattr(krita_module, 'Preset', None)
+        if preset is not None:
+            try:
+                found = re.search(r'name="CompositeOp"[^>]*>\s*([A-Za-z_]+)\s*<', preset(resource).toXML())
+                mode = found.group(1).lower() if found else ''
+            except Exception:
+                mode = ''
+        if re.search(r'eras', name, re.IGNORECASE) or mode in DESTRUCTIVE:
+            raise ValueError('The brush "%s" %s: a stamp needs a base brush that paints normally. Choose another with brush.' % (
+                name, 'erases' if 'eras' in name.lower() or mode == 'erase' else 'blends in "%s" mode' % mode))
+
+    def _stamp_plan(self, doc, session, params):
+        """What both stamps share: the area, the dabs in its coordinates, thinned to the coverage cap. (plan, None), or
+        (None, a rejected result) when the area is empty inside the canvas."""
         from . import material_raster
         record, tips = self._material_load(session, params['material'])
         selection = (self._region_load(session, params['selection']) if 'selection' in params
                      else self._region_build(doc, session, params['area']))
         extent = self._region_bounds(doc, selection)
         if extent is None:
-            return {'status': 'rejected', 'error': 'The area is empty inside the canvas. Nothing was stamped.',
-                    'error_code': 'validation_rejected'}
+            return None, {'status': 'rejected', 'error': 'The area is empty inside the canvas. Nothing was stamped.',
+                          'error_code': 'validation_rejected'}
         (x, y, w, h), _pixels = extent
         dabs = [dict(dab, x=dab['x'] - x, y=dab['y'] - y) for dab in params['dabs']]
         tint = dict(params['tint'], color=hex_colour(params['tint']['color'])) if 'tint' in params else None
@@ -189,6 +244,144 @@ class MaterialCraft:
         thinned = MAX_COVERAGE / ink if ink > MAX_COVERAGE else None
         if thinned:                                       # too much ink veils the area: every dab lighter, same layout
             dabs = [dict(dab, opacity=dab['opacity'] * thinned) for dab in dabs]
+        return dict(record=record, tips=tips, selection=selection, rect=(x, y, w, h), dabs=dabs, tint=tint, mask=mask,
+                    ink=ink, thinned=thinned), None
+
+    def _stamp_apply(self, doc, session, params, result=None):
+        plan, rejected = self._stamp_plan(doc, session, params)
+        if rejected:
+            return rejected                               # nothing changed yet: the journal records a refused call
+        if krita_brush_stamps():
+            return self._stamp_brush(doc, session, params, plan, {} if result is None else result)
+        painted = self._stamp_painter(doc, session, params, plan)
+        if 'brush' in params and painted.get('status', 'ok') == 'ok':
+            painted['brush_note'] = 'brush applies only in our Krita (the fork); this stamp was painted without it.'
+        return painted
+
+    # ----- the Krita-brush stamp (the fork) ------------------------------------------------------------------------------
+    @staticmethod
+    def _stamp_slug(name):
+        return re.sub(r'[^A-Za-z0-9]+', ' ', name).strip()[:24] or 'material'
+
+    def _stamp_resources(self, session, record, tips, variants, base_name):
+        """The preset for each variant (tip index, key), made once and reused: {variant: (preset name, side)}, with the
+        counts and any names Krita changed because they belong to another resource."""
+        from . import material_raster
+        app = Krita.instance()
+        installed = app.resources('preset')
+        base = installed[base_name]
+        try:
+            registry = json.loads(app.readSetting(REGISTRY[0], REGISTRY[1], '') or '{}')
+        except (ValueError, AttributeError):
+            registry = {}
+        if not isinstance(registry, dict):
+            registry = {}
+        label = '%s %s' % (self._stamp_slug(record['name']), hashlib.sha256(record['name'].strip().lower().encode()).hexdigest()[:6])
+        made, reused, renamed, got = 0, 0, [], {}
+        for tip, key in variants:
+            rotation, stretch = key
+            side, alpha = material_raster.tip_variant(tips[tip], record['size'], rotation, stretch)
+            name = '%s %s t%d r%d s%g' % (RESOURCE_PREFIX, label, tip, rotation, stretch)
+            digest = hashlib.sha256(alpha + base_name.encode() + bytes([side % 256, side // 256])).hexdigest()
+            entry = registry.get(name)
+            if isinstance(entry, dict) and entry.get('digest') == digest and entry.get('preset') in installed:
+                reused += 1                                  # the same tip on the same base, made by this agent earlier (any chat)
+                got[(tip, key)] = (entry['preset'], side)
+                continue
+            resource = app.createBrushTip(material_raster.tip_image(alpha, side), name, 'alpha')
+            preset = app.createPreset(base, resource, name) if resource else None
+            if not preset:
+                raise ValueError('Krita could not make a brush from the material "%s" with the base brush "%s": %s.' % (
+                    record['name'], base_name, 'it refused the tip' if not resource else 'the base brush has no brush tip engine; choose another with brush'))
+            if preset.name() != name:
+                renamed.append(preset.name())
+            registry[name] = {'digest': digest, 'preset': preset.name()}
+            made += 1
+            got[(tip, key)] = (preset.name(), side)
+        if made:
+            try:
+                app.writeSetting(REGISTRY[0], REGISTRY[1], json.dumps(registry))
+            except AttributeError:
+                pass
+        return got, made, reused, renamed
+
+    def _stamp_clip(self, doc, params, plan):
+        """The job's selection: the area's mask faded at its edge, times the stage region's mask, in the area's rectangle."""
+        from . import material_raster
+        x, y, w, h = plan['rect']
+        clip = material_raster.clip_mask(plan['mask'], w, h, plan['dabs'], plan['record']['size'])
+        if params.get('region'):
+            import numpy
+            from .stage_mask import mask as stage_mask
+            rx, ry, rw, rh = params['region']
+            stage = stage_mask(params['region'], doc.width(), doc.height())
+            left, top, right, bottom = max(x, rx), max(y, ry), min(x + w, rx + rw), min(y + h, ry + rh)
+            out = numpy.zeros((h, w), numpy.uint8)
+            if right > left and bottom > top:
+                area = numpy.frombuffer(clip, numpy.uint8).reshape(h, w)[top - y:bottom - y, left - x:right - x].astype(numpy.uint16)
+                out[top - y:bottom - y, left - x:right - x] = (area * stage[top - ry:bottom - ry, left - rx:right - rx] // 255).astype(numpy.uint8)
+            clip = out.tobytes()
+        selection = Selection()
+        selection.setPixelData(clip, x, y, w, h)
+        return selection
+
+    def _stamp_brush(self, doc, session, params, plan, result):
+        from . import material_raster
+        record, tips, dabs = plan['record'], plan['tips'], plan['dabs']
+        x, y, w, h = plan['rect']
+        mask = plan['mask']
+        placed = [dab for dab in dabs if 0 <= dab['x'] < w and 0 <= dab['y'] < h and mask[int(dab['y']) * w + int(dab['x'])] >= 128]
+        if not placed:
+            return {'status': 'rejected', 'error': 'No dab is centred inside the area. Nothing was stamped.',
+                    'error_code': 'validation_rejected'}
+        keys, level = material_raster.bucket_variants(placed, MAX_VARIANTS)
+        variants = list(dict.fromkeys((dab['tip'], key) for dab, key in zip(placed, keys)))
+        colours = material_raster.dab_colours(bytes(doc.pixelData(x, y, w, h)), w, h, placed, plan['tint'])
+        base_name = self._stamp_base_name(params)
+        try:
+            presets, made, reused, renamed = self._stamp_resources(session, record, tips, variants, base_name)
+        except ValueError as refused:
+            return {'status': 'rejected', 'error': str(refused), 'error_code': 'validation_rejected'}
+        batches = {}
+        for dab, key, colour in zip(placed, keys, colours):
+            preset, side = presets[(dab['tip'], key)]
+            batches.setdefault(preset, []).append({
+                'points': [[dab['x'] + x, dab['y'] + y]], 'color': colour, 'flow': 1.0,
+                'size': min(10000.0, max(1.0, side * dab['scale'] * max(1.0, key[1]))),
+                'opacity': min(1.0, max(0.01, dab['opacity']))})
+        selection = self._stamp_clip(doc, params, plan)
+        with (one_step(doc, 'Stamp: ' + params['name']) if len(batches) > 1 else contextlib.nullcontext()):
+            result.update(self._craft_create(doc, session, self._stamp_layer_params(params)))
+            node = self._creative_node(doc, result['layer_id'])
+            result['stroke_job'] = job = {'state': 'done', 'strokes': 0, 'total': len(placed), 'ms': 0, 'jobs': len(batches)}
+            for preset, strokes in batches.items():
+                out = self._creative_stroke_job(doc, session, {'name': params['name'], 'preset': preset, 'strokes': strokes}, node,
+                                                result, True, None, selection)
+                if result.get('status') == 'rejected':
+                    return {}                              # Krita refused: the layer is gone, nothing was painted
+                done = out.get('stroke_job', {})
+                job.update(strokes=job['strokes'] + done.get('strokes', 0), ms=job['ms'] + done.get('ms', 0), state=done.get('state', job['state']))
+                if out.get('stopped'):
+                    result.update(stopped=out['stopped'], stopped_after_strokes=job['strokes'], strokes_total=len(placed))
+                    break
+        result.update(stamped_bounds=[x, y, w, h], dabs_placed=len(placed), material=record['name'], engine='krita_brush',
+                      coverage=round(min(plan['ink'], MAX_COVERAGE), 3),
+                      brush={'base': base_name, 'application': 'alpha', 'presets': len(variants), 'created': made, 'reused': reused,
+                             'variants': level})
+        if level == 'plain' and any(d['rotation'] or d['stretch'] != 1 for d in placed):
+            result['brush']['dropped'] = 'rotation and stretch: more than %d tip variants were needed' % MAX_VARIANTS
+        if renamed:
+            result['brush']['renamed'] = renamed
+        if plan['thinned']:
+            result['opacity_scaled'] = round(plan['thinned'], 3)
+        return self._region_warn_edges(doc, plan['selection'], plan['rect'], result)
+
+    # ----- the QPainter stamp (stock Krita, frozen) ---------------------------------------------------------------------
+    def _stamp_painter(self, doc, session, params, plan):
+        from . import material_raster
+        record, tips, dabs, tint, mask = plan['record'], plan['tips'], plan['dabs'], plan['tint'], plan['mask']
+        x, y, w, h = plan['rect']
+        ink, thinned, selection = plan['ink'], plan['thinned'], plan['selection']
         out, placed = material_raster.stamp(bytes(doc.pixelData(x, y, w, h)), w, h, mask, tips, record['size'], dabs, tint)
         if not placed:
             # Nothing changed yet: the journal records this as a refused call.

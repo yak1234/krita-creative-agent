@@ -1,4 +1,5 @@
 """Following the artist, composition guides and canvas messages, with a fake Krita window. Files go to a temporary folder that is removed."""
+import json
 import sys
 import types
 import unittest
@@ -70,9 +71,36 @@ class CanvasViewTests(region_tests.RegionSetup, unittest.TestCase):
         asked = []
         self.h.cmd_list_brushes = lambda params: asked.append(params) or {'status': 'ok', 'brushes': [], 'count': 0, 'total': 154}
         region_tests.run(self.h, 'list_brushes', {})
-        self.assertEqual(asked, [{'filter': '', 'limit': 500}], 'all 154 presets, not the first 80')
+        self.assertEqual(asked, [{'filter': '', 'limit': 500, 'exclude_prefix': 'Agent stamp '}], 'all 154 presets, not the first 80')
         with self.assertRaisesRegex(Exception, 'Unknown parameters'):
             region_tests.run(self.h, 'list_brushes', {'limit': 10})
+
+    def test_the_agents_own_stamp_brushes_are_not_listed_to_the_painter(self):
+        # Material stamps make a tip and a preset per variant (krita-fork 5.1): they are the stamp's, not brushes to choose from.
+        asked = []
+        self.h.cmd_list_brushes = lambda params: asked.append(params) or {'status': 'ok', 'brushes': ['b) Basic-1'], 'count': 1, 'total': 1}
+        region_tests.run(self.h, 'list_brushes', {'filter': 'basic'})
+        self.assertEqual(asked, [{'filter': 'basic', 'limit': 500, 'exclude_prefix': 'Agent stamp '}], 'hidden before the limit applies')
+
+    def test_hiding_stamp_presets_happens_before_the_limit_and_the_total_counts_visible_ones(self):
+        names = ['Agent stamp Clouds %03d t0 r0 s1' % i for i in range(700)] + ['a) Real', 'b) Basic-1', 'c) Pencil', 'Agent stampede']
+        stamp_names = sys.modules['creative_test_package.stamp_names']
+        brushes, total = stamp_names.list_presets(names, '', 500, 'Agent stamp ')
+        self.assertEqual((brushes, total), (['Agent stampede', 'a) Real', 'b) Basic-1', 'c) Pencil'], 4), 'sorted, the 700 hidden')
+        self.assertEqual(stamp_names.list_presets(names, 'basic', 5, 'Agent stamp ')[0], ['b) Basic-1'])
+        self.assertEqual(stamp_names.list_presets(names, '', 2, 'Agent stamp '), (['Agent stampede', 'a) Real'], 4), 'the limit counts visible ones')
+        self.assertEqual(len(stamp_names.list_presets(names, '', 500, '')[0]), 500, 'no prefix: nothing hidden')
+
+    def test_the_manifest_does_not_list_them_either_fresh_or_cached(self):
+        capabilities = sys.modules['creative_test_package.capabilities']
+        app = types.SimpleNamespace(resources=lambda kind: {'preset': {'Agent stamp X t0 r0 s1': 1, 'b) Basic-1': 1}}.get(kind, {}))
+        self.assertEqual(capabilities._resources(app, 'preset'), ['b) Basic-1'])
+        self.assertEqual(capabilities._resources(app, 'pattern'), [])
+        settings = {}
+        full = {'manifest_version': capabilities.MANIFEST_VERSION, 'krita_version': '5.3.3', 'generators': {'color': {}},
+                'presets': ['Agent stamp X t0 r0 s1', 'b) Basic-1']}
+        app.version, app.readSetting = (lambda: '5.3.3'), (lambda group, key, default='': json.dumps(full))
+        self.assertEqual(capabilities.manifest(app, None)['presets'], ['b) Basic-1'], 'a manifest cached before the fix is cleaned on read')
 
     def test_guides_are_a_view_aid_restored_when_the_chat_ends(self):
         result = region_tests.run(self.h, 'guides', {'preset': 'thirds', 'horizon': 90})

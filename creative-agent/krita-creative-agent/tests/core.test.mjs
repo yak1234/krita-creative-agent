@@ -195,3 +195,31 @@ test('select tells the painter it reports straight edges through open paint', ()
   const select = paintingTools({}).find(t => t.name === 'select');
   assert.match(select.description, /open_edges: straight lines where it cuts through open paint; extend or feather it before painting through it/);
 });
+
+test('the Krita tool functions are offered unless the bridge says this Krita lacks them', async () => {
+  const { StudioRuntime } = await import('../src/studio.mjs');
+  const offered = (forkTools, name, settings = {}) => StudioRuntime.prototype.toolOffered.call({ executionSettings: settings, kritaActions: 13, forkTools, goal: null }, name);
+  for (const name of ['bucket_fill', 'enclose_and_fill', 'krita_gradient', 'smart_patch']) {
+    assert.equal(offered(undefined, name), false, name + ': a plugin that does not report fork_tools (an old one) is not the fork');
+    assert.equal(offered(true, name), true, name + ': the fork says so');
+    assert.equal(offered(false, name), false, name + ': stock Krita has no Node.fill and the rest');
+    assert.equal(offered(null, name), false);
+    assert.equal(offered(true, name, { native_craft: false }), false, 'native_craft off hides them like the other craft tools');
+  }
+  assert.equal(offered(false, 'fill_region'), true, 'the others are not affected');
+  const runtime = { emit() {}, listModels: () => [], listProviders: () => [] };
+  PaintingRuntime.prototype.acceptBridgeHealth.call(runtime, { protocol_version: 2, fork_tools: false, capabilities: {} });
+  assert.equal(runtime.forkTools, false);
+  PaintingRuntime.prototype.acceptBridgeHealth.call(runtime, { protocol_version: 2, capabilities: {} });
+  assert.equal(runtime.forkTools, undefined);
+});
+
+test('the prompt and the fix-region skill name the four Krita tools only as "when offered"', async () => {
+  const { PAINTING_INSTRUCTIONS } = await import('../src/prompt.mjs');
+  const { readFile } = await import('node:fs/promises');
+  const { SKILLS_DIR } = await import('../src/skills.mjs');
+  const bullet = PAINTING_INSTRUCTIONS.split('\n').find(line => line.includes('smart_patch'));
+  assert.match(bullet, /when offered/i);
+  const skill = await readFile(join(SKILLS_DIR, 'fix-region', 'SKILL.md'), 'utf8');
+  assert.match(skill.slice(skill.indexOf('smart_patch') - 400, skill.indexOf('smart_patch') + 600), /when offered/);
+});

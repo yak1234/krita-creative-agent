@@ -9,6 +9,7 @@ mistyped value is refused instead of guessed.
 import json
 import re
 from krita import Krita, InfoObject, Selection
+from .stamp_names import is_stamp_resource
 
 MANIFEST_VERSION = 3   # 2: generator settings, colour settings, unsupported settings recorded; 3: gradient generator settings
 SETTINGS_GROUP = 'creative_agent_capabilities'
@@ -139,9 +140,10 @@ def _generators(app, doc, unsupported):
 
 def _resources(app, kind):
     try:
-        return sorted(app.resources(kind).keys())
+        names = sorted(app.resources(kind).keys())
     except Exception:
         return []
+    return [name for name in names if not (kind == 'preset' and is_stamp_resource(name))]      # the stamp's own presets are not brushes to choose
 
 
 def collect(app=None, doc=None):
@@ -170,6 +172,7 @@ def manifest(app=None, doc=None, refresh=False):
             cached = {}
         if (cached.get('manifest_version') == MANIFEST_VERSION and cached.get('krita_version') == app.version()
                 and cached.get('generators')):
+            cached['presets'] = [name for name in cached.get('presets', []) if not is_stamp_resource(name)]      # cached before they were hidden
             return cached
     result = collect(app, doc)
     if result['generators']:

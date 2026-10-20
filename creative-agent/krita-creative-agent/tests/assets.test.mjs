@@ -261,7 +261,7 @@ test('workflow skills are reusable slash commands: /name and /skill:name both ex
   const tools = new Set(paintingTools({ study: { directory: tmpdir(), references: [] } }).map(t => t.name));
   for (const name of ['paint-sky', 'place-subject', 'fix-region', 'paint-scene']) {
     const text = await readFile(join(SKILLS_DIR, name, 'SKILL.md'), 'utf8');
-    for (const tool of text.match(/\b(make_asset|run_skill_script|paint_from_reference|paint_reference_surface|paint_reference_edges|observe_canvas|create_layer|paint_pass|paint_recipe|set_layer)\b/g) ?? [])
+    for (const tool of text.match(/\b(make_asset|run_skill_script|paint_from_reference|paint_reference_surface|paint_reference_edges|observe_canvas|create_layer|paint_pass|paint_recipe|set_layer|smart_patch|bucket_fill|enclose_and_fill|krita_gradient)\b/g) ?? [])
       assert.ok(tools.has(tool), name + ' names ' + tool);
   }
   for (const name of ['repaint-area', 'repeat-motif', 'reference-transfer']) {

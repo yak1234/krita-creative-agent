@@ -97,6 +97,22 @@ export async function resultContent(runtime, result, {compactLayers=false,focusL
   return { content, details: result };
 }
 
+// Krita's own tools as functions (krita-fork 5.3, our Krita only): the option dicts the fork checks key by key, with its ranges.
+// Each paints a NEW layer; selection / area limit the call (neither: the whole canvas), region is the stage's clip. Selection steps
+// are as in select, checked by the plugin, so the schema stays short (the tool list is sent every turn).
+const looseSteps = Type.Array(Type.Record(Type.String(), Type.Unknown()), { minItems: 1, maxItems: 16, description: 'Selection steps, as in select.' });
+const toolLimit = { selection: Type.Optional(Type.String({ maxLength: 40, description: 'A saved selection that limits the call.' })), area: Type.Optional(looseSteps),
+  region: Type.Optional(Type.Array(Type.Integer({ minimum: 0, maximum: 8192 }), { minItems: 4, maxItems: 4, description: 'Stage region [x,y,w,h] to stay inside.' })) };
+const toolLayer = { blend_mode: Type.Optional(Type.String({ maxLength: 40 })), opacity: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
+  clip_to: Type.Optional(Type.String()), clip_base: Type.Optional(Type.Boolean()) };
+const whole = (low, high) => Type.Optional(Type.Integer({ minimum: low, maximum: high }));
+const flag = () => Type.Optional(Type.Boolean());
+const word = list => Type.Optional(Type.Union(list.map(w => Type.Literal(w))));
+const fillShared = { sample: word(['layer', 'all', 'labels']), labels: Type.Optional(Type.Array(Type.Integer({ minimum: 0, maximum: 8 }), { minItems: 1, maxItems: 9 })),
+  threshold: whole(1, 100), spread: whole(0, 100), closeGap: whole(0, 32), grow: whole(-400, 400), feather: whole(0, 400),
+  antialias: flag(), stopGrowingAtDarkestPixel: flag(), useSelectionAsBoundary: flag(),
+  opacity: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })), compositeOp: Type.Optional(Type.String({ maxLength: 40 })) };
+
 /** How a painting tool runs one native operation: revision and recovery handling, the canvas image in the result.
  * Shared with the shipped extensions' tools (studio.mjs materialHost). */
 export function nativeExecute(runtime, operation) {
@@ -192,6 +208,31 @@ export function paintingTools(runtime) {
           stops: Type.Array(object({ offset: Type.Number({ minimum: 0, maximum: 1 }), color: hex }), { minItems: 2, maxItems: 16 }) })),
         blend_mode: Type.Optional(Type.String({ maxLength: 40 })), opacity: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
         clip_base: Type.Optional(Type.Boolean()), clip_to: Type.Optional(Type.String()), panel }), 'fill_region'),
+    tool('bucket_fill', 'Bucket fill',
+      'Krita\u2019s fill tool: flood one region from the point x, y with a colour, onto a NEW layer. options.mode contiguous (default), similar (every pixel of a similar colour) or selection; sample all (default: regions found on the painting as shown), layer or labels; threshold 1-100 (default 8), closeGap 0-32 (bridges gaps in line art), grow, feather. selection or area limits it. For one region from a point; fill_region fills a whole named selection. One reversible pass; returns the canvas image and tool_call (what Krita did).',
+      object({ name: Type.String({ minLength: 1, maxLength: 120 }), x: Type.Integer({ minimum: 0, maximum: 100000 }), y: Type.Integer({ minimum: 0, maximum: 100000 }), color: hex,
+        options: Type.Optional(object({ ...fillShared, mode: word(['contiguous', 'similar', 'selection']), boundaryColor: Type.Optional(hex) })),
+        ...toolLimit, ...toolLayer }), 'bucket_fill'),
+    tool('enclose_and_fill', 'Enclose and fill',
+      'Krita\u2019s enclose-and-fill tool: flood the regions inside a drawn area onto a NEW layer, where bucket_fill does one. enclose_area (selection steps, e.g. a polygon round a facade) or enclose_selection (a saved name); color. options.regions: all (default), transparent, color (with regionColor), allExcept\u2026 or surroundedBy\u2026 forms; includeContourRegions (regions touching the area\u2019s edge, default off); invert; and the fill options (sample all by default). selection or area limits it. One reversible pass; returns the canvas image and tool_call.',
+      object({ name: Type.String({ minLength: 1, maxLength: 120 }), enclose_area: Type.Optional(looseSteps), enclose_selection: Type.Optional(Type.String({ maxLength: 40 })), color: hex,
+        options: Type.Optional(object({ ...fillShared, regionColor: Type.Optional(hex), invert: flag(), includeContourRegions: flag(), includeSurroundingRegions: flag(),
+          regions: word(['all', 'color', 'transparent', 'colorOrTransparent', 'allExceptColor', 'allExceptTransparent', 'allExceptColorOrTransparent',
+            'surroundedByColor', 'surroundedByTransparent', 'surroundedByColorOrTransparent']) })),
+        ...toolLimit, ...toolLayer }), 'enclose_and_fill'),
+    tool('krita_gradient', 'Painting a gradient',
+      'Krita\u2019s gradient tool: a gradient from start to end (canvas pixels, may lie off the canvas) onto a NEW layer. options.colors (2-16 hex, evenly spaced) or options.gradient (an installed name); shape linear (default), bilinear, radial, square, conical, conicalSymmetric, spiral, reverseSpiral, polygonal; repeat none|forwards|alternate; reverse; dither. selection or area limits it, else the whole layer. For what fill_region\u2019s linear/radial gradient cannot do (conical, spiral, repeating, dithered). One reversible pass; returns the canvas image and tool_call.',
+      object({ name: Type.String({ minLength: 1, maxLength: 120 }), start: point, end: point,
+        options: object({ colors: Type.Optional(Type.Array(hex, { minItems: 2, maxItems: 16 })), gradient: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+          shape: word(['linear', 'bilinear', 'radial', 'square', 'conical', 'conicalSymmetric', 'spiral', 'reverseSpiral', 'polygonal']), repeat: word(['none', 'forwards', 'alternate']),
+          reverse: flag(), dither: Type.Optional(Type.Union([Type.Boolean(), ...['blueNoise', 'bayer2', 'bayer4', 'bayer8'].map(w => Type.Literal(w))])),
+          antiAliasThreshold: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })), opacity: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })), compositeOp: Type.Optional(Type.String({ maxLength: 40 })) }),
+        ...toolLimit, ...toolLayer }), 'krita_gradient'),
+    tool('smart_patch', 'Smart patch',
+      'Smart patch repairs a seam inside a small area: Krita\u2019s PatchMatch inpainting re-makes the area (selection or area; bounding rectangle at most 512 x 512 px, larger damage in pieces) from the paint around it. The repair is a NEW layer holding only the patched pixels (the painting is read, never changed); layer_id patches an edited copy of one of your layers instead. options.accuracy 0-99 (default 50), patchRadius 2-8 (default 4); context 8-512 px of painting around the area to copy from (default 96). One reversible pass; returns the canvas image and tool_call.',
+      object({ name: Type.String({ minLength: 1, maxLength: 120 }), layer_id: Type.Optional(Type.String()),
+        options: Type.Optional(object({ accuracy: whole(0, 99), patchRadius: whole(2, 8) })), context: whole(8, 512),
+        selection: toolLimit.selection, area: toolLimit.area, region: toolLimit.region }), 'smart_patch'),
     tool('apply_filter', 'Applying a filter',
       'Apply a Krita filter (krita_capabilities lists them with their settings) to one of your layers or groups; config holds only the settings to change. mode mask (default): a non-destructive filter mask on the target, for colour balance, curves, HSV or blur without repainting. layer: a filter layer inside your group, grading everything below it there (target the group to grade all of it). copy: filters the pixels of a copy, original hidden, when later strokes need the result; in an Agent move only copy is allowed (masks and filter layers recompute on every refresh). selection (a saved name) or area (selection steps) limits it. Colour to alpha is the colortoalpha filter, config {targetcolor: \u0027#RRGGBB\u0027, threshold: 0-255}: it makes that colour transparent, to lift line art off white paper or a glow off black (a mask, or copy on your layer). The artist\u2019s layers are never filtered: to lift the artist\u2019s sketch, clone_layer it and put the filter on the clone as a mask. One reversible pass: reject removes the effect, fade changes its strength. Returns the canvas image.',
       object({ target: Type.String(), filter: Type.String({ minLength: 1, maxLength: 80 }),

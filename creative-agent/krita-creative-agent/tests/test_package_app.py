@@ -823,7 +823,8 @@ class ReferenceScanTests(unittest.TestCase):
         self.assertFalse(harmless('OPENSSLDIR: "%s" copied from %s/x' % (gitlab, self.HOME), concrete))
 
     def test_other_peoples_build_paths_are_not_ours(self):
-        compile_c(self.fake.build, 'theirs', 'const char *a = "/Users/runner/work/numpy/.openblas"; int main(void) { return a == 0; }\n')
+        # A name that is nobody's home folder: GitHub's macOS runner is the account "runner", so /Users/runner would be OURS there.
+        compile_c(self.fake.build, 'theirs', 'const char *a = "/Users/some-other-builder/work/numpy/.openblas"; int main(void) { return a == 0; }\n')
         shutil.copy2(self.fake.build / 'theirs', self.fake.macos / 'theirs')
         self.assertEqual(package_app.reference_problems(self.fake.app, self.marks), [])
 

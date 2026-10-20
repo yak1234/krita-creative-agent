@@ -38,4 +38,6 @@ jobs:
         working-directory: creative-agent/krita-creative-agent
         run: npm ci --ignore-scripts
       - name: Plugin Python suite, companion JS suite and typecheck
+        env:
+          QT_QPA_PLATFORM: offscreen      # the Qt tests that make a QApplication need a platform plugin that needs no display
         run: agent/ci.sh --no-cpp

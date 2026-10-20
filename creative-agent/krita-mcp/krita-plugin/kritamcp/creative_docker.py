@@ -59,6 +59,13 @@ def provider_name(identifier):
             'meta': 'Meta'}.get(identifier, identifier.replace('-', ' ').title())
 
 
+def painting_name_from(prompt, default='Creative painting'):
+    """A file-friendly painting name from the artist's first words ("a winter street in Moscow" -> "A winter street in Moscow")."""
+    words = re.sub(r'[^\w\s-]', ' ', prompt or '').split()
+    name = ' '.join(words[:8])[:60].strip()
+    return (name[0].upper() + name[1:]) if name else default
+
+
 class ProviderDialog(QDialog):
     def __init__(self, parent):
         super().__init__(parent)
@@ -1083,6 +1090,7 @@ class CreativeAgentDocker(DockWidget):
         self.theme_mode = 'system'
         self.text_scale = 1.0
         self.document_signature = None
+        self.had_document = False; self.mode_user_chosen = False; self.mode_auto = False
         self.uncertain_operations = []
         self.inspected_uncertain = False
         self.preview_after_refresh = False
@@ -1249,10 +1257,14 @@ class CreativeAgentDocker(DockWidget):
         self.empty_state = QWidget(); empty = QVBoxLayout(self.empty_state); empty.setContentsMargins(8, 24, 8, 16); empty.setSpacing(12)
         welcome = QLabel('A little direction.\nRoom to create.'); welcome.setObjectName('emptyTitle'); welcome.setWordWrap(True); empty.addWidget(welcome)
         hint = QLabel('Explore your canvas, shape an idea, or paint together.'); hint.setWordWrap(True); hint.setObjectName('muted'); empty.addWidget(hint)
+        self.no_document_label = QLabel('Start a painting: describe it, or open one.'); self.no_document_label.setWordWrap(True)
+        self.no_document_label.setObjectName('muted'); self.no_document_label.hide(); empty.addWidget(self.no_document_label)
+        self.starter_buttons = {}
         for label, mode, prompt in [('Discuss this painting', 'ask', 'What do you notice about this painting?'),
                                      ('Plan from a reference', 'plan', ''), ('Start a painting', 'autopilot', '')]:
             button = QPushButton(label + '  ↗'); button.setObjectName('emptyAction')
             button.clicked.connect(lambda _checked=False, m=mode, p=prompt: self.choose_starter(m, p)); empty.addWidget(button)
+            self.starter_buttons[mode] = button
         self.transcript.rows.insertWidget(0, self.empty_state)
         jump_row = QHBoxLayout(); jump_row.addStretch()
         self.jump_button = QPushButton('↓  Latest'); self.jump_button.setObjectName('jumpLatest')
@@ -1987,6 +1999,7 @@ class CreativeAgentDocker(DockWidget):
 
     def change_mode(self, *_args):
         self.chat_mode = self.mode_selector.currentData()
+        if not getattr(self, 'setting_default_mode', False): self.mode_user_chosen = True; self.mode_auto = False
         placeholders = {'ask': 'Ask about your painting…', 'plan': 'Describe the result and what to preserve…', 'agent': 'Describe a move, e.g. paint the swirling night sky…', 'autopilot': 'Give a direction, or send to start the plan…'}
         self.prompt.setPlaceholderText(placeholders[self.chat_mode])
         if self.process and self.process.state() == QProcess.ProcessState.Running:
@@ -2064,6 +2077,7 @@ class CreativeAgentDocker(DockWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self.refresh_document_state()
         if not self.process and not os.environ.get('KRITA_CREATIVE_NO_AUTOSTART'):
             QTimer.singleShot(100, self.start_companion)
 
@@ -2077,8 +2091,44 @@ class CreativeAgentDocker(DockWidget):
         if self.phase in ('waiting', 'thinking', 'planning') and seconds >= 30:
             self.status.setText('Waiting for the model… You can pause at any time.')
 
+    def has_open_document(self):
+        """True when Krita has an active document. A closed or deleted one (None, or a dead wrapper) counts as none."""
+        try: return Krita.instance().activeDocument() is not None
+        except (RuntimeError, ReferenceError): return False
+        except AttributeError: pass
+        # Only when Krita cannot be asked: the companion's last look at the canvas.
+        canvas = self.canvas_context.get('canvas') or {}
+        return bool(canvas.get('document_id') and self.canvas_context.get('selected') and self.canvas_context.get('state') != 'none')
+
+    def invites_painting(self):
+        return not self.has_open_document() and not (self.study_active or self.goal)
+
+    def set_default_mode(self, mode):
+        self.setting_default_mode = True
+        try: self.mode_selector.setCurrentIndex(self.mode_selector.findData(mode))
+        finally: self.setting_default_mode = False
+
+    def refresh_document_state(self):
+        """Follow documents opening and closing: the empty-state invitation, the automatic Agent mode, the size fields."""
+        try:
+            has = self.has_open_document()
+            invite = self.invites_painting()
+            self.no_document_label.setVisible(invite)
+            if 'ask' in self.starter_buttons: self.starter_buttons['ask'].setVisible(not invite)
+            if invite and not self.mode_user_chosen and self.chat_mode == 'ask':
+                self.set_default_mode('agent'); self.mode_auto = True
+            elif has and self.mode_auto and not (self.study_active or self.goal) and self.chat_mode == 'agent':
+                self.set_default_mode('ask'); self.mode_auto = False
+            if self.had_document and not has and (self.study_active or self.goal) and not self.busy:
+                self.status.setText('The painting was closed in Krita. Use Return to painting to open it again, or start a new chat.')
+            if has != self.had_document: self.had_document = has; self.update_controls()
+        except (AttributeError, RuntimeError, ReferenceError):
+            pass
+
     def poll_canvas_metadata(self):
-        if not self.isVisible() or not self.process: return
+        if not self.isVisible(): return
+        self.refresh_document_state()
+        if not self.process: return
         try:
             doc = Krita.instance().activeDocument()
             signature = (document_id(doc), doc.fileName(), doc.modified()) if doc else None
@@ -2105,6 +2155,7 @@ class CreativeAgentDocker(DockWidget):
         self.empty_state.show()
         self.last_user_item = None
         self.chat_mode = 'ask'; self.mode_selector.blockSignals(True); self.mode_selector.setCurrentIndex(0); self.mode_selector.blockSignals(False)
+        self.mode_user_chosen = False; self.mode_auto = False; self.refresh_document_state()
         self.saved_path = None; self.saved_at = None; self.painting_target = {}; self.save_status.setText('Ask · no canvas changes')
         self.trace_link.hide(); self.trace_link.setText('')
         self.study_id = None
@@ -2123,7 +2174,9 @@ class CreativeAgentDocker(DockWidget):
         # Krita may emit this while constructing the dock. Observe only after
         # initialization; the host owns attachment state and target pinning.
         if hasattr(self, 'context_timer'):
-            if self.canvas_context.get('selected'):
+            if not self.has_open_document() and self.canvas_context.get('canvas'):
+                self.canvas_context.update(state='none', canvas=None); self.render_context()
+            elif self.canvas_context.get('selected'):
                 self.canvas_context['state'] = 'stale'
                 self.render_context()
             self.context_timer.start(120)
@@ -2261,7 +2314,7 @@ class CreativeAgentDocker(DockWidget):
                 self.trace_link.setText('<a href="%s">Trace</a>' % html.escape(url, quote=True)); self.trace_link.show()
         elif kind == 'context':
             self.canvas_context = {key: value for key, value in event.items() if key != 'type'}
-            self.render_context(); self.update_controls()
+            self.render_context(); self.update_controls(); self.refresh_document_state()
             if self.status.text().startswith('Attaching a rectangular crop') and (self.canvas_context.get('region') or {}).get('state') == 'fresh':
                 self.status.setText('Rectangular crop attached')
             if self.preview_after_refresh and self.canvas_context.get('state') == 'fresh' and (self.canvas_context.get('canvas') or {}).get('path'):
@@ -2595,6 +2648,11 @@ class CreativeAgentDocker(DockWidget):
             self.status.setText('Choose or connect a model first.'); return
         self.empty_state.hide()
         self.transcript.jump_to_latest(); self.flush_stream()
+        start_mode, start_name = self.source.currentData(), self.name.text()
+        if not self.study_active and start_mode == 'current' and self.chat_mode == 'agent' and not self.has_open_document():
+            # Nothing is open: the first message creates the painting, sized by the Size fields and named from the request.
+            start_mode = 'new'
+            if start_name.strip() in ('', 'Creative painting'): start_name = painting_name_from(prompt)
         message_id = uuid.uuid4().hex
         self.last_user_item = self.transcript.add_message('You', prompt, message_id=message_id)
         self.reply_open = False
@@ -2604,7 +2662,7 @@ class CreativeAgentDocker(DockWidget):
             self.send(dict(shared, type='prompt', text=prompt))
         else:
             self.send(dict(shared, type='start', prompt=prompt, provider=selected['provider'], model=selected['id'],
-                           mode=self.source.currentData(), name=self.name.text(), width=self.canvas_width.value(),
+                           mode=start_mode, name=start_name, width=self.canvas_width.value(),
                            height=self.canvas_height.value(), experiment=self.experiment.currentData()))
         self.prompt.clear(); self.status.setText('Preparing your message…')
 
@@ -2842,8 +2900,9 @@ class CreativeAgentDocker(DockWidget):
         for widget in self.setting_widgets.values(): widget.setEnabled(running and not self.busy)
         self.filter.setEnabled(not self.busy)
         self.connect_button.setEnabled(running and not self.busy)
-        self.canvas_width.setEnabled(not self.study_active and self.source.currentData() == 'new')
-        self.canvas_height.setEnabled(not self.study_active and self.source.currentData() == 'new')
+        sizing = self.source.currentData() == 'new' or (self.source.currentData() == 'current' and self.chat_mode == 'agent' and not self.has_open_document())
+        self.canvas_width.setEnabled(not self.study_active and sizing)
+        self.canvas_height.setEnabled(not self.study_active and sizing)
         self.map_button.setVisible(self.experiment.currentData() == 'guided')
         self.send_button.setToolTip('Send direction · current brush action settles first' if self.busy else 'Send message · Enter')
         self.send_button.setEnabled(running and bool((self.accepted_model if self.study_active else None) or self.model.currentData()) and not self.pending_model_change and (not self.busy or self.study_active))
@@ -2868,7 +2927,8 @@ class CreativeAgentDocker(DockWidget):
         self.execute_button.setText('Resume' if self.goal and self.goal.get('status') == 'paused' else 'Start painting')
         self.compare_button.setVisible(bool(self.goal and self.goal.get('passes', 0)))
         placeholders = {'ask': 'Ask about your painting…', 'plan': 'Describe the result and what to preserve…', 'agent': 'Describe the next move, or type a correction to refine the last one…', 'autopilot': 'Give a direction for the next painting step…'}
-        self.prompt.setPlaceholderText('Answer here, or choose an option above…' if self.goal and self.goal.get('question') else placeholders[self.chat_mode])
+        self.prompt.setPlaceholderText('Answer here, or choose an option above…' if self.goal and self.goal.get('question') else
+                                       'Describe the painting you want, e.g. a winter street in Moscow at night…' if self.invites_painting() and self.chat_mode == 'agent' else placeholders[self.chat_mode])
         if self.chat_mode in ('ask', 'plan'): self.save_status.setText(self.chat_mode.capitalize() + ' · read only')
         elif self.saved_at and self.saved_path: self.save_status.setText('Saved ' + self.saved_at + ' · ' + os.path.basename(self.saved_path))
         elif self.saved_path: self.save_status.setText('Painting · ' + os.path.basename(self.saved_path))

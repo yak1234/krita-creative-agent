@@ -779,3 +779,22 @@ settings (`creative-agent/stamp-resources`) record them; a remade material repla
 To clean up: quit the fork, delete `Agent stamp *` from the `brushes/` and `paintoppresets/` folders of the fork's resource folder
 (Settings > Manage Resources > Open Resources Folder), and remove the `[creative-agent]` `stamp-resources` key from the fork's
 `kritarc`. The tag and the database entries are rebuilt on the next start.
+
+## The Creative Agent panel with no painting open (task 4.1)
+Plugin only (`creative-agent/krita-mcp/krita-plugin/kritamcp/creative_docker.py`); no upstream file and no companion change.
+- **Loads with the window.** The docker factory `krita_creative_agent` is registered at plugin load with `DockPosition.DockRight`;
+  `KisMainWindow::createDockWidget` creates every registered docker for each new window, visible in the right area unless a saved
+  window layout says otherwise, whether or not a document is open. The docker never needed a document, so registration is unchanged.
+  The default workspace that shows it docked is task 3.3.
+- **Empty state.** With no active document and no chat, the panel shows "Start a painting: describe it, or open one.", hides
+  "Discuss this painting", opens in Agent mode (only while the artist has not picked a mode; it returns to Ask when a painting opens),
+  and the composer says "Describe the painting you want, e.g. a winter street in Moscow at night...".
+- **First prompt.** `submit` sends `start` with `mode: 'new'` instead of `'current'` when Krita has no document, so the companion
+  takes its existing new-painting path (`bindCanvas` creates the canvas on the first move, `explicit_new_canvas`). The size is the
+  Size fields (768 x 1024 by default; enabled while nothing is open); the name is the first eight words of the request unless the
+  artist typed a name. `Work on: Current canvas` stays the stored default, so opening a painting later still works on it.
+- **Open and close.** `refresh_document_state` (every canvas poll, showEvent, context events, new chat) treats `activeDocument()`
+  returning None or raising RuntimeError (dead wrapper) as "no document". Closing the document of a running chat keeps the
+  transcript and says the painting was closed and how to return to it; the companion's own checks still guard painting.
+- Test: `uv run -q --with pyqt5 python tests/ui_panel_no_document.py` in `creative-agent/krita-creative-agent` (a standalone UI
+  script like `ui_smoke.py`; it stubs `krita` for the whole process, so it is not in `unittest discover`).

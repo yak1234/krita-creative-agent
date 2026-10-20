@@ -20,7 +20,8 @@ from creative_ui_test.qt_compat import (QT6, QApplication, QDockWidget, QTabWidg
 QTest = importlib.import_module(('PyQt6' if QT6 else 'PyQt5') + '.QtTest').QTest
 stub = types.ModuleType('krita'); stub.DockWidget = QDockWidget
 stub.DockWidgetFactory = object; stub.DockWidgetFactoryBase = types.SimpleNamespace(DockRight=0)
-stub.Krita = types.SimpleNamespace(instance=lambda: types.SimpleNamespace(activeDocument=lambda: None))
+active_document = [None]                            # the document Krita reports as active; set before a canvas is attached
+stub.Krita = types.SimpleNamespace(instance=lambda: types.SimpleNamespace(activeDocument=lambda: active_document[0]))
 stub.Selection = object                             # protection.py imports it; the panel checks use a fake
 sys.modules['krita'] = stub
 spec = importlib.util.spec_from_file_location('creative_ui_test.creative_docker', module_path)
@@ -44,6 +45,7 @@ for y in range(160, 352):
 assert fixture.save(image_path), 'fixture canvas could not be written'
 canvas = {'document_id':'open-painting','name':'DeepSeek — first color-field study','filename':str(root.parent / 'painting.kra'), 'modified':True,
           'width':768,'height':1024,'revision':'r1','content_id':'sha256-one','captured_at':'2026-09-11T10:00:00Z','path':image_path}
+active_document[0] = types.SimpleNamespace(fileName=lambda: canvas['filename'], modified=lambda: True)
 panel.handle_event({'type':'context','selected':True,'follow_active':True,'state':'fresh','canvas':canvas})
 assert 'painting.kra' in panel.canvas_button.text()
 assert canvas['name'] not in panel.canvas_button.text() and canvas['name'] in panel.canvas_button.toolTip()

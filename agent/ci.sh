@@ -26,6 +26,8 @@ if [ "$plain" = 1 ]; then
     # Python: pass on "OK" in the last lines (unittest exits non-zero on failure, so the exit code is enough).
     group "plugin Python suite" uv run -q --with pyqt5 --with pillow --with numpy --with httpx --with opencv-python-headless \
         python -m unittest discover -s tests -p 'test_*.py'
+    # UI scripts: each stubs krita for its whole process, so they run apart from discover (offscreen Qt).
+    group "panel UI scripts" sh -c 'uv run -q --with pyqt5 python tests/ui_panel_no_document.py && uv run -q --with pyqt5 python tests/ui_smoke.py'
     group "companion JS suite" npm run -s test:unit
     group "companion typecheck" npm run -s typecheck
 fi

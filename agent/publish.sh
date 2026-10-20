@@ -84,6 +84,10 @@ if [ "$push" = 0 ]; then
 fi
 git remote get-url "$remote" > /dev/null 2>&1 || { echo "no remote '$remote' (git remote add $remote https://github.com/yak1234/krita-creative-agent.git)" >&2; exit 1; }
 export GIT_TERMINAL_PROMPT=0
+# Use the GitHub CLI's login for this push only (no change to the repository's or the artist's git configuration).
+if command -v gh > /dev/null 2>&1; then
+    export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0='!gh auth git-credential'
+fi
 if [ "$first" = 1 ]; then
     old="$(git ls-remote "$remote" "refs/heads/$branch" | cut -f1)"
     if [ -n "$old" ]; then

@@ -34,7 +34,9 @@ if [ "$cpp" = 1 ]; then
     # The C++ programs are the binaries last built: refuse to call them current when the sources have moved on. The build's
     # own ninja only (another version deletes the build log and forces a full rebuild).
     ninja="$root/_krita-tools/ninja/ninja"
-    if [ -x "$ninja" ] && ! "$ninja" -C "$root/_build" -n 2>&1 | grep -q "no work to do"; then
+    # Krita's build always lists a dozen icon and translation steps as pending (they have no stamp); anything else is real work.
+    pending=$("$ninja" -C "$root/_build" -n 2>&1 | grep -E '^\[[0-9]+/[0-9]+\]' | grep -vE 'Generating (krita\.iconset|krita\.icns|mo|ts)|Copying OS X Content' | wc -l | tr -d ' ')
+    if [ -x "$ninja" ] && [ "$pending" != 0 ]; then
         echo "FAIL   C++ programs: the build is not current (sources changed since it was built): agent/build-macos.sh --tests"
         exit 1
     fi

@@ -1425,7 +1425,7 @@ class CreativeAgentDocker(DockWidget):
         self.layout().setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self.apply_theme()
         self.shortcuts = []
-        for key, callback in [('Ctrl+L', lambda: self.prompt.setFocus()), ('Ctrl+Shift+N', self.end_button.click), ('Escape', self.pause_if_busy)]:
+        for key, callback in [('Ctrl+Alt+Shift+L', lambda: self.prompt.setFocus()), ('Ctrl+Alt+Shift+N', self.end_button.click), ('Escape', self.pause_if_busy)]:
             shortcut = QShortcut(QKeySequence(key), self); shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut); shortcut.activated.connect(callback); self.shortcuts.append(shortcut)
         self.update_controls()
         self.render_context()

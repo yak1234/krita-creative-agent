@@ -708,6 +708,46 @@ Upstream files edited: `libs/resources/KisResourceLocator.h/.cpp` (public `loadS
 Live look: tweak a brush size/spacing, quit, reopen: the tweak and the dirty mark are back; Reload clears it; Save clears it. Run an
 Agent-mode chat after tweaking: strokes use the saved brush and `presetTweaksrc` is unchanged.
 
+## New-install defaults (krita-fork 3.3)
+
+A new KritaAgent install opens with the Photoshop shortcut scheme, a layout with the Creative Agent panel docked, and the dark
+theme. All three are entries in `krita/data/kritarc`, the shipped defaults that are compiled in as `:/kconfig/KritaAgent/kritarc`
+and read **under** the artist's own `~/Library/Preferences/KritaAgent/kritarc`. A key the artist has set always wins. No
+launcher change and no new marker was needed; the launcher's `.agent-first-run-1` marker still only enables the plugin. Nothing
+reads or writes stock Krita's settings. A build and a package are needed for it to take effect (the file is compiled in).
+Who sees what: the **layout** (`State`) is safe for returning artists, because Krita saves its own `State` on quit and that
+wins. The **scheme** default applies to any KritaAgent settings folder that never chose a scheme (no `Current Scheme` key), new
+or returning; this is accepted, the artist wants Photoshop habits as the default. Custom bindings in `kritashortcutsrc` still
+win over the scheme. A fork build configured with an empty `KRITA_APP_SETTINGS_FOLDER` is stock-identity and does not get the
+`:/kconfig/KritaAgent/` alias, but it compiles the same `krita/data/kritarc` as `:/kconfig/kritarc`, so it would get these
+defaults as well.
+
+- **Shortcuts.** `[Shortcut Schemes] Current Scheme=photoshop_compatible` (the scheme name is the file's base name, see
+  `KisKShortcutSchemesHelper::schemeFileLocations`). The scheme file already existed upstream; we filled its gaps:
+  W contiguous selection, L lasso (freehand selection; the brush colour "lighter" key L and "darker" key K are unbound in this
+  scheme; `tablet_pro` keeps K for darker and binds L to the lasso too), Alt+Backspace fills with the foreground colour and
+  Ctrl+Backspace (Cmd on macOS) with the background colour. The `_opacity` fills are Alt+Shift+Backspace and Ctrl+Shift+Backspace.
+  Plain Backspace no longer fills in this scheme. Already right upstream: B brush, E eraser (a mode of the brush, not a
+  separate tool), V move, M marquee, G gradient and Shift+G fill, I picker, C crop, T text, Ctrl+Z / Ctrl+Shift+Z, Ctrl+J, Ctrl+T,
+  `[` and `]`, X swap, D defaults. The Creative Agent panel registers three widget-scoped keys; they were Ctrl+L (Levels), Ctrl+Shift+N (new paint layer) and
+  Escape, and are now Ctrl+Alt+Shift+L (focus the prompt), Ctrl+Alt+Shift+N (new chat) and Escape (pause), checked by a test
+  against every binding in the scheme. The remaining duplicates in
+  the file are text-editing and filter commands in other contexts and were left as upstream has them.
+- **Layout.** `[MainWindow] State` in `krita/data/kritarc` (what Krita restores at start) is a Qt 6 `saveState` of: toolbox left;
+  right of the canvas a panels column (colour selector with tool options and palette as tabs, brush presets with overview and
+  history as tabs, layers) and, outermost, the Creative Agent panel (docker id `krita_creative_agent`, full height, 440 px).
+  Every other docker id Krita ships is in the state as a hidden placeholder, because Qt leaves a docker that is not in the state
+  visible where it was created. The same blob is the workspace `krita/data/workspaces/Photoshop_Agent.kws` ("Photoshop Agent"
+  in the Workspaces menu, also installed), so an artist can return to it. Both are generated, not hand-edited:
+  `QT_QPA_PLATFORM=offscreen uv run --with pyqt6 python agent/make_agent_workspace.py` (the stub window uses the real docker ids;
+  hidden placeholders include every id registered under `plugins/python`). The workspace has no `<image>` thumbnail.
+  Hand-written bytes were rejected: the state format is Qt's. A returning artist keeps the layout Krita saved for them.
+- **Theme.** `[theme] Theme=Krita dark` was already in the shipped kritarc (and is the code's default); kept, and tested.
+- **Tests.** `creative-agent/krita-creative-agent/tests/test_new_install_defaults.py` (part of `agent/ci.sh`'s Python suite, run
+  under PyQt5, plus a second `agent/ci.sh` group under PyQt6, which also checks that the generator reproduces the committed blob): the photoshop habit keys, the scheme name, the dark theme, the workspace file and that kritarc's layout
+  equals it, the agent docker id equals the one the plugin registers, and a restore of the state into a stub window shows exactly
+  the intended dockers. Not tested: the layout in a running Krita (no run was made in this task).
+
 ## Licence
 
 Every binary release publishes the exact source it was built from (this branch at the release tag) under

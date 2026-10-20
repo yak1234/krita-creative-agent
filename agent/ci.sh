@@ -28,6 +28,8 @@ if [ "$plain" = 1 ]; then
         python -m unittest discover -s tests -p 'test_*.py'
     # UI scripts: each stubs krita for its whole process, so they run apart from discover (offscreen Qt).
     group "panel UI scripts" sh -c 'uv run -q --with pyqt5 python tests/ui_panel_no_document.py && uv run -q --with pyqt5 python tests/ui_smoke.py'
+    # The layout blob is a Qt 6 saveState: test it under PyQt6 too (the suite above runs on PyQt5).
+    group "new-install defaults (Qt 6)" uv run -q --with pyqt6 python -m unittest tests.test_new_install_defaults
     group "companion JS suite" npm run -s test:unit
     group "companion typecheck" npm run -s typecheck
 fi

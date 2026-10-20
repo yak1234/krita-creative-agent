@@ -180,6 +180,12 @@ function moveReviewLine({verdict,findings,undone_batches,batches}) {
   return verdict==='undone' ? `Luna undid ${undone_batches} of ${plural(batches)} (${what})` : verdict==='warned' ? `Luna warned: ${what}` : `Luna: no regressions in ${plural(batches)}`;
 }
 const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer','painting_toolbox','stamp_material',...CRAFT_OPERATIONS,'letter','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface'];
+/** Agent mode's request for "Paint this plan": the plan's current step, one move at a time. */
+function planStepRequest(goal) {
+  const steps = goal.brief.steps, index = Math.min(goal.current_step ?? 0, steps.length - 1);
+  return 'Paint step ' + (index + 1) + ' of the plan: ' + String(steps[index].title).trim().replace(/[.\s]+$/, '') + '.';
+}
+
 export class StudioRuntime extends PaintingRuntime {
   constructor(options) {
     super(options);
@@ -1271,7 +1277,9 @@ export class StudioRuntime extends PaintingRuntime {
     // A chat on a signed-out OAuth model (e.g. Codex) says how to sign in again; it keeps its model.
     await this.recheckSignIn(this.study.provider); this.assertConnected(this.study.provider);
     if (command.chat_mode && command.chat_mode !== this.mode) await this.setMode(command.chat_mode);
-    if (!text?.trim()) text = this.mode === 'autopilot' ? 'Start painting from the current plan.' : 'Generate a painting plan from our discussion and references.';
+    if (!text?.trim()) text = this.mode === 'autopilot' ? 'Start painting from the current plan.'
+      : this.mode === 'agent' && command.start_plan && this.goal.brief?.steps?.length ? planStepRequest(this.goal)
+      : 'Generate a painting plan from our discussion and references.';
     // "/skill:name ..." becomes the skill's instructions for the model; the transcript keeps what the artist typed.
     const modelText = expandSkillCommand(text);
     if (this.busy) {

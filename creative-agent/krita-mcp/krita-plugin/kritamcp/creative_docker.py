@@ -2031,7 +2031,8 @@ class CreativeAgentDocker(DockWidget):
 
     def start_plan(self):
         if not self.goal or not self.goal.get('brief'): return
-        self.mode_selector.setCurrentIndex(self.mode_selector.findData('autopilot'))
+        # The plan is painted in Agent mode, one move per step for the artist to keep, undo or refine.
+        self.mode_selector.setCurrentIndex(self.mode_selector.findData('agent'))
         self.submit(force_start=True)
 
     def show_history(self):

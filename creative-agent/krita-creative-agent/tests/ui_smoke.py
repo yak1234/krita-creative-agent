@@ -211,6 +211,7 @@ assert not panel.execute_button.isVisible(), 'answer required before starting a 
 goal['question'] = None
 panel.handle_event({'type':'goal','goal':goal,'mode':'plan','references':[]})
 panel.execute_button.click(); assert commands[-1]['start_plan'] is True
+assert panel.mode_selector.currentData() == 'agent', 'Paint this plan paints in Agent mode, one move per step'
 panel.mode_selector.setCurrentIndex(1)
 panel.transcript.clear(); panel.empty_state.hide()
 panel.last_user_item = panel.transcript.add_message('You','Give the upper field a little more dry texture. Keep its color and shape.')

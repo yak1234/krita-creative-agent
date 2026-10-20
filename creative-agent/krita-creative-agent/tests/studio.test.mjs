@@ -2518,3 +2518,28 @@ test('an older plugin without views without guides: the review still runs, and s
   assert.equal(h.runtime.guidesView,false,'not asked again');
  } finally {await h.close();}
 });
+
+test('Paint this plan in Agent mode starts one move on the plan\'s current step, not a new plan',{timeout:30000},async()=>{
+ const asked=[];
+ let h;
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(names.includes('propose_plan')) return call('propose_plan',brief);
+  if(!names.includes('paint_batch')) return {content:'Hello.'};
+  asked.push(JSON.stringify(req.messages.at(-1)));
+  return call('paint_batch',{summary:'Figures blocked in',actions:[{tool:'paint_pass',arguments:pass}]});
+ },async(operation,params,_study,id)=>{
+  if(!['paint_pass','review_pass'].includes(operation))return undefined;
+  const dir=h.runtime.study.directory; await writeFile(join(dir,'view.png'),png);
+  return {status:'ok',document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,image_path:join(dir,'view.png'),layers:[],revision:'r-'+id,content_id:'c-'+id,passes:[]};
+ });
+ try {
+  await h.start('plan'); await h.runtime.setExecutionSettings({move_size:'quick'}); await h.runtime.setMode('agent');
+  await h.runtime.prompt('',{start_plan:true});
+  const [move]=h.runtime.goal.moves;
+  assert.equal(move.request,'Paint step 1 of the plan: Establish figures.');
+  assert.ok(asked.some(text=>text.includes('Paint step 1 of the plan: Establish figures.')),'the painter is told which step');
+  assert.equal(h.runtime.mode,'agent','the plan is painted in Agent mode, one move at a time');
+  assert.equal(h.runtime.goal.reviews.length,0);
+ } finally {await h.close();}
+});

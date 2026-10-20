@@ -181,7 +181,8 @@ class NativeCraft:
         """Remove the agent's hidden leftovers from the open painting: hidden layers inside its own groups (copy-edit
         originals, rejected passes), then its groups left empty. Nothing outside those groups is touched (the
         artist's hidden layers, the protected areas). A dry run (the default) only lists them. The saved file is
-        backed up first; the painting is not saved, so the artist looks and saves."""
+        backed up first; the painting is not saved, so the artist looks and saves. It removes hidden layers only and writes
+        no pixels, so feature protection (which keeps pixel writes out of protected features) has nothing to guard here."""
         fields(params, ('dry_run',))
         dry = params.get('dry_run', True) is not False
         found, groups = [], []
@@ -274,7 +275,8 @@ class NativeCraft:
                 doc.waitForDone()
             merged = layers[0]
             for upper in layers[1:]:
-                merged = upper.mergeDown() or merged
+                # An active protection is the fork's: Krita refuses a merge reaching a protected feature, and says which.
+                merged = (self._feature_merge_down(doc, upper) if self._feature_active(doc) else upper.mergeDown()) or merged
                 doc.waitForDone()
             merged.setName('%s merged %d' % (AGENT_GROUP, number))
         doc.waitForDone()
@@ -311,7 +313,8 @@ class NativeCraft:
     def _native_tidy_kept(self, doc, session, params):
         """After the artist keeps a stage, remove its hidden leftovers: rejected passes and the originals its copy edits
         replaced. Keep means there is no way back to them. Only the agent's own hidden layers; their history entries
-        are marked tidied. Not a canvas change (they are hidden), so no pass; the next checkpoint saves it."""
+        are marked tidied. Not a canvas change (they are hidden), so no pass; the next checkpoint saves it. Like _native_tidy it
+        removes hidden layers and writes no pixels, so protection does not apply."""
         fields(params, ('stage_id',), ('stage_id',))
         stage = text(params['stage_id'], 'stage_id', 100)
         passes = [e for e in session.get('passes', []) if e.get('stage_id') == stage]
@@ -362,6 +365,7 @@ class NativeCraft:
     def _native_validate_action(self, doc, session, params):
         fields(params, ACTION_FIELDS, ('action', 'target'))
         entry = self._native_action_entry(params)
+        self._feature_refuse_action(doc, entry)
         node = self._creative_node(doc, text(params['target'], 'target', 200))
         if entry.get('kind') == 'selection':
             self._region_saved_path(session, text(params.get('save_as'), 'save_as', 40))
@@ -376,7 +380,7 @@ class NativeCraft:
         if 'selection' in entry.get('needs', ()) and not params.get('selection'):
             raise ValueError('%s needs a saved selection: give selection.' % entry['id'])
         if params.get('selection'):
-            self._region_saved_path(session, params['selection'], must_exist=True)
+            self._region_check_named(doc, session, params['selection'])
         if 'name' in params:
             text(params['name'], 'name', 120)
         return entry, node
@@ -405,7 +409,7 @@ class NativeCraft:
         self._native_check_view(doc, node)
         artist, active = doc.selection(), doc.activeNode()
         doc.setActiveNode(node)
-        doc.setSelection(self._region_load(session, params['selection']) if params.get('selection') else None)
+        doc.setSelection(self._region_load(session, params['selection'], doc) if params.get('selection') else None)
         try:
             action.trigger()
             doc.waitForDone()

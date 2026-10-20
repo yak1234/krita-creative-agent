@@ -117,6 +117,7 @@ class LayerCraft:
             area = Selection()
             x, y, w, h = params.get('region') or [0, 0, doc.width(), doc.height()]
             area.select(x, y, w, h, 255)
+            area = self._feature_limit_area(doc, area)      # a fill layer changes how a protected feature looks
             node = doc.createFillLayer(name, generator, config, area)
         elif kind == 'clone':
             # Internal kind (clone_layer, native_craft.py): a live copy that follows its source, read only.

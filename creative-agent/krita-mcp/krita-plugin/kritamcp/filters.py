@@ -73,7 +73,7 @@ class FilterCraft:
         if len(areas) > 1:
             raise ValueError('Limit the filter with selection or area, not both.')
         if 'selection' in params:
-            self._region_saved_path(session, params['selection'], must_exist=True)
+            self._region_check_named(doc, session, params['selection'])
         elif 'area' in params:
             self._region_validate_steps(doc, session, params['area'])
         if areas and mode == 'copy':
@@ -98,7 +98,7 @@ class FilterCraft:
         target = self._creative_node(doc, params['target'])
         area = None
         if 'selection' in params:
-            area = self._region_load(session, params['selection'])
+            area = self._region_load(session, params['selection'], doc)
         elif 'area' in params:
             area = self._region_build(doc, session, params['area'])
         extent = self._region_bounds(doc, area) if area is not None else None
@@ -126,6 +126,7 @@ class FilterCraft:
         return result
 
     def _filter_node(self, doc, session, target, krita_filter, name, mode, area, rect):
+        area = self._feature_limit_area(doc, area)         # a filter mask or layer never reaches a protected feature
         if area is None:
             area = Selection()
             area.select(0, 0, doc.width(), doc.height(), 255)

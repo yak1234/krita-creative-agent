@@ -14,6 +14,7 @@ from . import bundled_release
 from .bridge_config import bridge_port
 from .command_queue import stop_requested
 from .protection import ProtectionCraft
+from .feature_guard import FeatureCraft
 from .reference_parts import part_image, crop_image, opaque_bounds
 from .qt_compat import Qt, QProcess, QProcessEnvironment, QUrl, QTimer, pyqtSignal, QEvent, QSize, QRectF, scoped, QCoreApplication, QStandardPaths
 from .qt_compat import QDesktopServices, QPixmap, QTextCursor, QTextDocument, QTextBlockFormat, QTextCharFormat, QFont, QIcon, QKeySequence, QPalette, QColor, QPainter, QPen
@@ -1381,7 +1382,7 @@ class CreativeAgentDocker(DockWidget):
         self.ai_images_selector.currentIndexChanged.connect(self.change_ai_images); buttons.addWidget(self.ai_images_selector)
         self.ai_images_used = QLabel(''); self.ai_images_used.setAccessibleName('AI images used'); buttons.addWidget(self.ai_images_used)
         # Protected areas: what the agent must never change. The panel changes them here, in Krita's own process.
-        self.protection = ProtectionCraft(); self.protection_controls = []; self.protection_editing = None; self.protection_shown = None
+        self.protection = ProtectionCraft(); self.features = FeatureCraft(); self.protection_controls = []; self.protection_editing = None; self.protection_shown = None
         self.protect_button = QPushButton('🛡'); self.protect_button.setObjectName('contextAction')
         self.protect_button.setAccessibleName('Protected areas'); self.protect_button.setToolTip('Protected areas: what the agent must never change')
         self.protect_button.clicked.connect(lambda: self.open_protection()); buttons.addWidget(self.protect_button)
@@ -2722,6 +2723,27 @@ class CreativeAgentDocker(DockWidget):
         else:
             self.paint_protection(area)
 
+    def feature_rows(self):
+        """The painting's features for the panel's list (name, kind, protected, author, state); empty without our Krita.
+        The list itself is task 4.x's UI: this is its data."""
+        doc = self.protection_document()
+        return self.features._feature_list(doc) if doc is not None else []
+
+    def set_feature_protected(self, name, value):
+        """The artist protects or unprotects a feature from the panel. Only the panel calls this: the companion has no
+        operation for it (feature_guard.PANEL_ONLY), so a model cannot lift a protection."""
+        doc = self.protection_document()
+        if doc is None:
+            self.status.setText('Open your painting to protect parts of it.'); return False
+        try:
+            done = self.features._feature_set_protected(doc, name, value)
+        except ValueError as error:
+            self.status.setText(str(error)); return False
+        if not done:
+            self.status.setText("Krita did not change the protection of '%s'." % name); return False
+        self.status.setText("'%s' is %s." % (name, 'protected' if value else 'no longer protected'))
+        return True
+
     def remove_protection(self, area):
         self.protection._protect_remove(self.protection_document(), area['id'])
         self.status.setText("'%s' is no longer protected." % area['name'])
@@ -2757,6 +2779,13 @@ class CreativeAgentDocker(DockWidget):
         count = len([a for a in self.protection._protect_list(doc) if a.get('by') != 'automatic']) + 1
         name, ok = QInputDialog.getText(self, 'Protect this area', 'Name', QLineEdit.EchoMode.Normal, 'Protected %d' % count)
         if not ok or not name.strip(): return
+        if self.features._feature_ready(doc):
+            # Our Krita: the selection becomes a protected feature ("Buildings"), which Krita itself keeps the agent out of.
+            try:
+                self.features._feature_add_protected(doc, name, selection)
+            except ValueError as error:
+                self.status.setText(str(error)); return
+            self.status.setText("'%s' is protected." % name.strip()[:60]); return
         self.protection._protect_add(doc, selection.duplicate(), name.strip()[:60], 'artist', 'active', bounds)
         self.status.setText("'%s' is protected." % name.strip()[:60])
 

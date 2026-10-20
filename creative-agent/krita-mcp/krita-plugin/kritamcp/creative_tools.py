@@ -5,6 +5,7 @@ A paint pass paints, on the fork (our Krita), as one libkis stroke job: Node.pai
 responding, Stop as job.cancel() (_creative_stroke_job). On stock Krita 5.3.3 (frozen) it paints through the native
 helper's paint_strokes when Krita loaded it, else stroke by stroke through the Python API (_creative_stock_strokes).
 """
+import contextlib
 import hashlib
 import json
 import os
@@ -26,6 +27,8 @@ from .comic import ComicCraft
 from .merge_craft import MergeCraft
 from .native_craft import NativeCraft, compact_actions
 from .protection import ProtectionCraft, PANEL_ONLY as PROTECTION_PANEL_ONLY
+from .script_steps import one_step
+from .feature_guard import EXPRESSION_LIMIT, FeatureCraft, PANEL_ONLY as FEATURE_PANEL_ONLY, agent_writing, reject_privileged
 from .material_stamp import MaterialCraft, RESOURCE_PREFIX as STAMP_RESOURCE_PREFIX
 from .tool_craft import ToolCraft, OPERATIONS as TOOL_OPERATIONS, PASS_TITLES as TOOL_TITLES, tool_functions_available
 from .journal_store import Journal
@@ -108,13 +111,17 @@ def merge_pass_record_error(result, error):
             'error': result['error'] + ' (' + note + ')' if result.get('error') else note}
 
 
-class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, ProtectionCraft, NativeCraft, MaterialCraft, ToolCraft):
+class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, ProtectionCraft, FeatureCraft, NativeCraft, MaterialCraft, ToolCraft):
     def cmd_creative(self, request):
         fields(request, ('operation', 'session_id', 'operation_id', 'params'), ('operation', 'params'))
         operation = request['operation']
         params = request['params']
         if not isinstance(params, dict):
             raise ValueError('params must be an object')
+        # Protection is the artist's: no model-supplied option lifts it, and the panel's feature calls are not operations.
+        reject_privileged(params)
+        if operation in FEATURE_PANEL_ONLY:
+            raise ValueError('Only the artist can change a feature or its protection in the panel.')
         if operation == 'health':
             return {'status': 'ok', 'creative_version': '1.0.0', 'protocol_version': 2, 'build': CREATIVE_BUILD, 'krita_version': Krita.instance().version(),
                     'capabilities': self._creative_adapter_capabilities(), 'native_paths': True, 'session_active': bool(getattr(self, '_creative_session', None)),
@@ -458,7 +465,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                     'committed_stage_counts': counts}
         if operation == 'observe':
             fields(params, ('region',))
-            observation = self._creative_observe(doc, session, params.get('region'))
+            observation = self._feature_observation(doc, self._creative_observe(doc, session, params.get('region')))
             # Looks also list seams baked into the painting, found once a chat (on the whole canvas), as candidates for
             # the companion's Luna check (seams.py). Every look carries them: the studio looks before the painter does,
             # and a painter may only ever look at regions (run 15). The agent's own seams are select's open_edges.
@@ -467,6 +474,10 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             if session['seam_candidates']:
                 observation['seam_candidates'] = session['seam_candidates']
             return observation
+        if operation == 'features_list':
+            # What the painting's features are called, and which the artist protected (read only).
+            fields(params, ())
+            return {'status': 'ok', 'features': self._feature_list(doc)}
         if operation == 'select':
             # Saved to the study folder; not a canvas change, so no pass or checkpoint.
             return self._region_select(doc, session, params)
@@ -543,6 +554,12 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         # Validate the whole pass before any layer or brush changes.
         if operation == 'paint_pass':
             validate_pass(params, doc.width(), doc.height(), Krita.instance().resources('preset'))
+            if 'selection' in params:
+                if not on_fork():
+                    raise ValueError('A pass limited to a selection or feature needs our Krita (the fork).')
+                if params.get('region'):
+                    raise ValueError('Give a pass a region or a selection (a saved name or feature), not both.')
+                self._region_check_named(doc, session, text(params['selection'], 'selection', EXPRESSION_LIMIT))
             if params.get('smudge_overlay'):
                 self._creative_validate_smudge_overlay(params['preset'], 'smudge_rate' in params)
             if params.get('continue_layer_id'):
@@ -620,6 +637,13 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         smudge_restore, smudge_preset = False, None
         session['operation_id'] = operation_id
         self._view_message(doc, params.get('name') or params.get('filter') or operation.replace('_', ' '))
+        # The call's writes are the agent's: Krita keeps the raw ones (pixel data, filters, paste) out of protected features.
+        # Each writing call is one agent move too, so Krita's record of what it kept out starts fresh with the call.
+        writing = contextlib.ExitStack()
+        writing.enter_context(agent_writing(doc))
+        self._feature_clipped, kept_names = [], []
+        if self._feature_ready(doc):
+            writing.enter_context(one_step(doc, params.get('name') or operation.replace('_', ' ')))
         try:
             if operation == 'painting_toolbox':
                 result.update(self._creative_toolbox(doc, session, params))
@@ -656,6 +680,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 # needs no view, so the artist's brush is left alone; smudge overlay mode goes to the job as
                 # presetProperties (set on the job's own copy). Stock Krita paints with the view's brush, as before.
                 stroke_job = on_fork()
+                limit = self._region_load(session, params['selection'], doc) if params.get('selection') else None   # before any layer exists
                 if not stroke_job:
                     brush = self.cmd_set_brush({'preset': params['preset']})
                     if brush.get('error'):
@@ -696,7 +721,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                     if not hasattr(node, 'paintStrokes'):
                         raise RuntimeError('This Krita has Node.paintStrokes but this layer does not: nothing was painted.')
                     result.update(self._creative_stroke_job(doc, session, params, node, result, not params.get('continue_layer_id'),
-                                                            lambda: prior_node is not None and doc.setActiveNode(prior_node)))
+                                                            lambda: prior_node is not None and doc.setActiveNode(prior_node), selection=limit))
                 else:
                     self._creative_stock_strokes(doc, session, params, result)
                 if result.get('error_code') != 'validation_rejected':
@@ -711,6 +736,13 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         except Exception as error:
             result = dict(result, status='partial', error=str(error), error_code='partial_change')
         finally:
+            try:
+                if operation != 'paint_pass' or not on_fork():
+                    doc.waitForDone()                      # a write inside the move lands after the call returns (a job has been waited on: never end the artist's strokes)
+                kept_names = self._feature_kept_out(doc)   # read before the move ends (it starts the record again)
+            except RuntimeError:
+                pass                                       # the document was closed during the call
+            writing.close()
             if smudge_restore:
                 # The artist's preset never keeps overlay mode: the preset the overlay was set on, by name (on the fork only
                 # now that the job has ended, since it reads the view's live preset while it paints).
@@ -734,6 +766,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             return result
         # Nothing the agent does may change a visible pixel inside a protected area.
         result.update(self._protect_enforce(doc, session, operation, params, result, protected, prior))
+        if operation not in ('set_layer', 'adjust_layer'):
+            self._feature_report(doc, result, kept_names)   # which protected features Krita kept the call's writes out of
         lap('protect_enforce')
         try:
             checkpoint = self._creative_commit_view(doc, session)
@@ -1225,6 +1259,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         commands = params['commands']
         if not isinstance(commands, list) or not 1 <= len(commands) <= 256:
             raise ValueError('Use 1–256 commands per contribution; observe before the next contribution.')
+        self._feature_refuse_toolbox(doc, commands)
         allowed = {'set_brush','stroke','curve_stroke','draw_shape','selection','modify_selection',
                    'eraser','move_layer','transform_layer','blend_mode','layer_settings',
                    'brush_controls','configure_brush','restore_brush','set_color','fill','flood_fill','clear','set_brush_texture','gradient','smart_patch'}
@@ -1382,7 +1417,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 elif name == 'blend_mode': node.setBlendingMode(text(value.get('mode'), 'mode'))
                 elif name == 'transform_layer':
                     op = value.get('operation')
-                    if op == 'rotate': node.rotateNode(numeric(value.get('radians'), 'radians', -1000, 1000))
+                    if op == 'rotate': self._feature_transform(doc, node, 'rotate', lambda: node.rotateNode(numeric(value.get('radians'), 'radians', -1000, 1000)))
                     elif op == 'scale':
                         width = numeric(value.get('width'), 'width', 1, 100000)
                         height = numeric(value.get('height'), 'height', 1, 100000)
@@ -1391,8 +1426,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                         x,y = [numeric(v,'origin',-100000,100000) for v in origin]
                         strategy = value.get('strategy','Bicubic')
                         if strategy not in ('Bicubic','Bilinear','NearestNeighbor'): raise ValueError('Unknown scale strategy')
-                        node.scaleNode(QPointF(x,y), int(width), int(height), strategy)
-                    elif op == 'shear': node.shearNode(numeric(value.get('x',0),'x',-89,89), numeric(value.get('y',0),'y',-89,89))
+                        self._feature_transform(doc, node, 'scale', lambda: node.scaleNode(QPointF(x,y), int(width), int(height), strategy))
+                    elif op == 'shear': self._feature_transform(doc, node, 'shear', lambda: node.shearNode(numeric(value.get('x',0),'x',-89,89), numeric(value.get('y',0),'y',-89,89)))
                     else: raise ValueError('Use rotate, scale, or shear')
                 else:
                     if (name == 'clear' or name == 'draw_shape' and value.get('fill', True)) and doc.selection():
@@ -1875,6 +1910,9 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                           error='Krita refused the strokes and painted nothing: ' + (job.errorString() or 'no reason given'))
             return out
         out['stroke_job'] = {'state': state, 'strokes': done, 'total': job.strokesTotal(), 'ms': job.elapsedMs()}
+        kept = job.keptOut() if hasattr(job, 'keptOut') else []
+        if kept:
+            out['kept_out'] = list(kept)               # protected features the job's strokes were clipped out of
         if state == 'cancelled' and not cancelled:
             reason = job.cancelReason() if hasattr(job, 'cancelReason') else None
             if reason != 'script':

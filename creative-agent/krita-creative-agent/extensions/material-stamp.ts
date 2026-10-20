@@ -64,7 +64,7 @@ export default function materialStamp(host: MaterialHost): (pi: ExtensionAPI) =>
         'kind shape: the source’s alpha as one tip, for a cut-out asset (a leaf, a snowflake). Never cut from a protected area. Not a canvas change; returns the tips as one image. Call it on its own, not inside paint_batch.',
       parameters: Type.Object({
         name: Type.String({ minLength: 1, maxLength: 40 }),
-        source: Type.Object({ area: Type.Optional(selectionSteps), selection: Type.Optional(Type.String({ maxLength: 40 })),
+        source: Type.Object({ area: Type.Optional(selectionSteps), selection: Type.Optional(Type.String({ maxLength: 2000 })),
           layer_id: Type.Optional(Type.String()), reference_id: Type.Optional(Type.String()) }, { additionalProperties: false }),
         kind: Type.Optional(Type.Union([Type.Literal('light'), Type.Literal('shape')])),
         count: Type.Optional(Type.Integer({ minimum: 1, maximum: 8 })), size: Type.Optional(Type.Integer({ minimum: 32, maximum: 512 })),
@@ -82,7 +82,7 @@ export default function materialStamp(host: MaterialHost): (pi: ExtensionAPI) =>
     pi.registerTool({
       name: 'stamp_material', label: 'Stamping a material', executionMode: 'sequential',
       description: 'Stamp a material from make_material into an area: soft volume and texture in one call, in the painting’s own colours ' +
-        '(each dab takes the colour under it). area (selection steps) or selection (a saved name) limits it: select the sky, the water, the foliage, never the whole canvas. ' +
+        '(each dab takes the colour under it). area (selection steps) or selection (a saved name, or on our Krita feature names and expressions such as "Sky - Moon") limits it: select the sky, the water, the foliage, never the whole canvas. ' +
         'count dabs (1-2000, default 400) scattered over within [x,y,w,h] (default the canvas), size [min,max] px across, opacity [min,max] (default [0.25,0.5]), ' +
         'rotate (degrees of jitter, default 25), stretch (width over height, default 1.3), seed. tint {color, amount 0-1, toward top|all} moves the colour toward a light, ' +
         'e.g. moonlight on cloud tops. A stamp lays at most 0.6 ink per selected pixel (coverage in the result); a heavier stamp is thinned evenly (opacity_scaled): ' +
@@ -91,7 +91,7 @@ export default function materialStamp(host: MaterialHost): (pi: ExtensionAPI) =>
         'Rotation and stretch are applied by turned and stretched copies of the tip (the result’s brush.variants says if they had to be dropped). One new layer, one reversible pass; protected areas are kept out. Then strokes for crisp edges. Call it on its own, not inside paint_batch.',
       parameters: Type.Object({
         name: Type.String({ minLength: 1, maxLength: 120 }), material: Type.String({ minLength: 1, maxLength: 40 }),
-        area: Type.Optional(selectionSteps), selection: Type.Optional(Type.String({ maxLength: 40 })),
+        area: Type.Optional(selectionSteps), selection: Type.Optional(Type.String({ maxLength: 2000 })),
         count: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_DABS })),
         within: Type.Optional(Type.Array(Type.Integer({ minimum: 0, maximum: 100000 }), { minItems: 4, maxItems: 4 })),
         size: Type.Optional(range(4, 4000, 'Dab size range in canvas pixels.')), opacity: Type.Optional(range(0, 1, 'Dab opacity range.')),

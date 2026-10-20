@@ -27,7 +27,7 @@ Never measure an outline from close-ups, and never cover an area with a stroke p
 
 ## 2. Change it
 
-First propose_protection for any focal feature inside the area (the moon, a figure), named; Luna checks it after the batch.
+First propose_protection for any focal feature inside the area (the moon, a figure), named, unless the observation's features already lists it; Luna checks it after the batch.
 
 - **Repaint a sky:** `sample_canvas_colors` at the top and at the horizon first, then `fill_region` with
   `selection` = the saved sky and a linear `gradient` from the top colour to the horizon colour, on a new layer

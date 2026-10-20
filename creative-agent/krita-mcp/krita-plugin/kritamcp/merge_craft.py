@@ -77,7 +77,7 @@ class MergeCraft:
             ids = lambda: [child.uniqueId().toString() for child in parent.childNodes()]
             position = ids().index(current.uniqueId().toString())
             doc.waitForDone()
-            node.mergeDown()
+            self._feature_merge_down(doc, node)
             doc.waitForDone()
             # Krita replaces both layers with a new one in the lower one's place; find it there.
             if node.uniqueId().toString() in ids():

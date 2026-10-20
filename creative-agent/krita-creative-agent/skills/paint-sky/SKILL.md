@@ -17,7 +17,7 @@ Tool details for the AI image route (prompts, checking assets, scripts) are in t
    horizon colour. Where subjects already overlap the band, select the sky itself instead, with a seed step
    in it or the matching `split_by_color` region (the `repaint-area` skill), and `fill_region` the gradient in
    that selection, so the subjects stay untouched.
-3. **Cloud masses:** First propose_protection for any focal feature inside the area (the moon, a figure), named,
+3. **Cloud masses:** First propose_protection for any focal feature inside the area (the moon, a figure), named, unless the observation's features already lists it,
    and for everything the artist said to leave alone (the buildings, the skyline); Luna checks it after the batch.
    Protect a skyline as everything but the sky: `select` the sky with a seed step, then `propose_protection`
    with `[{"saved": "<that selection>"}, {"invert": true}]`. It follows every roof and spire; a hand-drawn polygon

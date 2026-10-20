@@ -96,7 +96,7 @@ class MaterialCraft:
         if key in ('area', 'selection'):
             if key == 'area':
                 self._region_validate_steps(doc, session, source['area'])
-            selection = (self._region_load(session, source['selection']) if key == 'selection'
+            selection = (self._region_load(session, source['selection'], doc) if key == 'selection'
                          else self._region_build(doc, session, source['area']))
             extent = self._region_bounds(doc, selection)
             if extent is None:
@@ -165,7 +165,7 @@ class MaterialCraft:
         if len(areas) != 1:
             raise ValueError('Give the area to stamp into: selection (a saved name) or area (selection steps).')
         if 'selection' in params:
-            self._region_saved_path(session, params['selection'], must_exist=True)
+            self._region_check_named(doc, session, params['selection'])
         else:
             self._region_validate_steps(doc, session, params['area'])
         dabs = params['dabs']
@@ -230,7 +230,7 @@ class MaterialCraft:
         (None, a rejected result) when the area is empty inside the canvas."""
         from . import material_raster
         record, tips = self._material_load(session, params['material'])
-        selection = (self._region_load(session, params['selection']) if 'selection' in params
+        selection = (self._region_load(session, params['selection'], doc) if 'selection' in params
                      else self._region_build(doc, session, params['area']))
         extent = self._region_bounds(doc, selection)
         if extent is None:

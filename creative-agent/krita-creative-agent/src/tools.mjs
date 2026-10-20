@@ -31,10 +31,11 @@ const selectionStep = object({
   layer_id: Type.Optional(Type.String()), color: Type.Optional(hex),
   seed: Type.Optional(Type.Array(Type.Integer({ minimum: 0, maximum: 100000 }), { minItems: 2, maxItems: 2 })), tolerance: Type.Optional(Type.Integer({ minimum: 0, maximum: 255 })),
   saved: Type.Optional(Type.String({ maxLength: 40 })),
+  feature: Type.Optional(Type.String({ maxLength: 2000, description: 'Named features of the painting (observations list them), combined with " + ", " & " and " - ", e.g. "Sky - Moon"; needs our Krita.' })),
   mode: Type.Optional(Type.Union([Type.Literal('replace'), Type.Literal('add'), Type.Literal('subtract'), Type.Literal('intersect')])),
   grow: amount, shrink: amount, border: amount, feather: amount, smooth: Type.Optional(Type.Boolean()), invert: Type.Optional(Type.Boolean()),
 });
-const selectionSteps = Type.Array(selectionStep, { minItems: 1, maxItems: 16, description: 'Steps in order. Each has at most one source: shape (rectangle/ellipse with bounds [x,y,w,h], polygon with points), layer_id (that layer\u2019s alpha, read only), color (+tolerance 0-255, optional bounds) on the visible image, seed [x,y] (a magic wand: the area joined to that pixel whose colour is within tolerance of it, default 24, optional bounds; e.g. the whole sky from one point in it, stopping at every roof and spire, without measuring the outline), or saved (a selection name). Later sources combine by mode (default add). Then grow, shrink, border, feather (pixels), smooth, invert.' });
+const selectionSteps = Type.Array(selectionStep, { minItems: 1, maxItems: 16, description: 'Steps in order. Each has at most one source: shape (rectangle/ellipse with bounds [x,y,w,h], polygon with points), layer_id (that layer\u2019s alpha, read only), color (+tolerance 0-255, optional bounds) on the visible image, seed [x,y] (a magic wand: the area joined to that pixel whose colour is within tolerance of it, default 24, optional bounds; e.g. the whole sky from one point in it, stopping at every roof and spire, without measuring the outline), saved (a selection name) or feature (feature names and expressions such as \"Sky - Moon\", from the observation\u2019s features; our Krita only). Later sources combine by mode (default add). Then grow, shrink, border, feather (pixels), smooth, invert.' });
 const styleBlend = Type.Optional(Type.Union(['normal','multiply','screen','overlay','color_dodge','linear_dodge'].map(m => Type.Literal(m))));
 const effect = extra => Type.Union([Type.Null(), object({ color: Type.Optional(hex), opacity: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
   size: Type.Optional(Type.Number({ minimum: 0, maximum: 250 })), blend_mode: styleBlend, ...extra })]);
@@ -65,6 +66,7 @@ const stroke = object({
 // Host bookkeeping the model never needs: files, ids, the whole pass history (the
 // panel gets it from `details`). One painting result used to carry ~59k characters.
 const LAYER_INDEX_LIMIT = 8000;
+const FEATURES_LIMIT = 3000;
 const HOST_ONLY = ['passes','image_path','path','checkpoint','painting_path','before_path','after_path','document_id',
   'captured_at','content_id','save_number','checkpoint_deferred','unsaved_operations','source_prior','source_after','prior','after','timings_ms','weight','seam_candidates','save_job','previous_save','background_refused'];
 export function modelResultText(result, {compactLayers=false,focusLayerIds=[],limit=compactLayers?2000:6000}=/** @type {{compactLayers?: boolean, focusLayerIds?: any[], limit?: number}} */ ({})) {
@@ -78,12 +80,16 @@ export function modelResultText(result, {compactLayers=false,focusLayerIds=[],li
   // past that, the newest layers are kept. Everything else shares `limit`.
   let index=model.layer_index;
   while (index && JSON.stringify(index).length>LAYER_INDEX_LIMIT) { index=index.slice(-Math.floor(index.length*0.75)); model.layer_index_truncated=true; }
-  const size=value=>JSON.stringify({...value,layer_index:undefined}).length;
+  // The artist's features likewise (an observation's name and protected flag per feature): a budget of their own,
+  // protected ones first, so many features never crowd out the rest of the result.
+  let features=model.features;
+  while (Array.isArray(features) && JSON.stringify(features).length>FEATURES_LIMIT) { features=features.slice(0,Math.floor(features.length*0.75)); model.features_truncated=true; }
+  const size=value=>JSON.stringify({...value,layer_index:undefined,features:undefined}).length;
   // Over budget: shorten the longest string fields, never emitting invalid JSON.
   for (let cap=1200; size(model)>limit && cap>=60; cap=Math.floor(cap/2))
     model=Object.fromEntries(Object.entries(model).map(([key,value])=>[key,typeof value==='string' && value.length>cap ? value.slice(0,cap)+'…' : value]));
   if (size(model)>limit) model={status:model.status,error:model.error,error_code:model.error_code,layer_id:model.layer_id,layer_count:model.layer_count,result_truncated:'Observe the canvas for details.'};
-  return JSON.stringify({...model,...(index?{layer_index:index}:{})});
+  return JSON.stringify({...model,...(index?{layer_index:index}:{}),...(features?{features}:{})});
 }
 export async function resultContent(runtime, result, {compactLayers=false,focusLayerIds=[],limit=undefined}={}) {
   /** @type {any[]} */
@@ -101,7 +107,7 @@ export async function resultContent(runtime, result, {compactLayers=false,focusL
 // Each paints a NEW layer; selection / area limit the call (neither: the whole canvas), region is the stage's clip. Selection steps
 // are as in select, checked by the plugin, so the schema stays short (the tool list is sent every turn).
 const looseSteps = Type.Array(Type.Record(Type.String(), Type.Unknown()), { minItems: 1, maxItems: 16, description: 'Selection steps, as in select.' });
-const toolLimit = { selection: Type.Optional(Type.String({ maxLength: 40, description: 'A saved selection that limits the call.' })), area: Type.Optional(looseSteps),
+const toolLimit = { selection: Type.Optional(Type.String({ maxLength: 2000, description: 'A saved selection, or (our Krita) feature names and expressions such as "Sky - Moon", that limit the call.' })), area: Type.Optional(looseSteps),
   region: Type.Optional(Type.Array(Type.Integer({ minimum: 0, maximum: 8192 }), { minItems: 4, maxItems: 4, description: 'Stage region [x,y,w,h] to stay inside.' })) };
 const toolLayer = { blend_mode: Type.Optional(Type.String({ maxLength: 40 })), opacity: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })),
   clip_to: Type.Optional(Type.String()), clip_base: Type.Optional(Type.Boolean()) };
@@ -167,6 +173,7 @@ export function paintingTools(runtime) {
       object({ name: Type.String({ minLength: 1, maxLength: 120 }), preset: Type.String({ minLength: 1 }),
         strokes: Type.Array(stroke, { minItems: 1, maxItems: 256 }),
         region:Type.Optional(Type.Array(Type.Integer({minimum:0,maximum:8192}),{minItems:4,maxItems:4})),
+        selection: Type.Optional(Type.String({ maxLength: 2000, description: 'Limit the pass to a saved selection or (our Krita) feature names and expressions such as "Sky - Moon" instead of a region; protected features are kept out either way.' })),
         layer_opacity: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })), panel,
         blend_mode: Type.Optional(Type.String({ maxLength: 40, description: 'Paint on a new layer in this blend mode: overlay or soft_light for texture, multiply for shadow, add or screen for light.' })),
         clip_to: Type.Optional(Type.String({ description: 'Clip the new stroke layer to this layer (usually the area\u2019s flat), so no mark leaves its shape.' })) }), 'paint_pass'),
@@ -202,7 +209,7 @@ export function paintingTools(runtime) {
     tool('fill_region', 'Filling a region',
       'Fill an area in one call, without strokes: flats, sky, a shadow shape, a gradient. Area: selection (a saved name) or area (selection steps). Paint: color, gradient {type linear|radial, start, end, stops [{offset 0-1, color}]} or pattern (a krita_capabilities name). Fills a NEW layer named name (with blend_mode, opacity, clip_base, clip_to as in create_layer), or layer_id: an agent paint layer, honouring its alpha lock (fill_region onto a clip_base layer extends the flats and keeps its clipped layers). One reversible pass; returns the canvas image.',
       object({ name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })), layer_id: Type.Optional(Type.String()),
-        selection: Type.Optional(Type.String({ maxLength: 40 })), area: Type.Optional(selectionSteps),
+        selection: Type.Optional(Type.String({ maxLength: 2000, description: 'A saved selection name, or (our Krita) feature names and expressions such as "Sky - Moon".' })), area: Type.Optional(selectionSteps),
         color: Type.Optional(hex), pattern: Type.Optional(Type.String({ maxLength: 200 })),
         gradient: Type.Optional(object({ type: Type.Optional(Type.Union([Type.Literal('linear'), Type.Literal('radial')])), start: point, end: point,
           stops: Type.Array(object({ offset: Type.Number({ minimum: 0, maximum: 1 }), color: hex }), { minItems: 2, maxItems: 16 }) })),
@@ -215,7 +222,7 @@ export function paintingTools(runtime) {
         ...toolLimit, ...toolLayer }), 'bucket_fill'),
     tool('enclose_and_fill', 'Enclose and fill',
       'Krita\u2019s enclose-and-fill tool: flood the regions inside a drawn area onto a NEW layer, where bucket_fill does one. enclose_area (selection steps, e.g. a polygon round a facade) or enclose_selection (a saved name); color. options.regions: all (default), transparent, color (with regionColor), allExcept\u2026 or surroundedBy\u2026 forms; includeContourRegions (regions touching the area\u2019s edge, default off); invert; and the fill options (sample all by default). selection or area limits it. One reversible pass; returns the canvas image and tool_call.',
-      object({ name: Type.String({ minLength: 1, maxLength: 120 }), enclose_area: Type.Optional(looseSteps), enclose_selection: Type.Optional(Type.String({ maxLength: 40 })), color: hex,
+      object({ name: Type.String({ minLength: 1, maxLength: 120 }), enclose_area: Type.Optional(looseSteps), enclose_selection: Type.Optional(Type.String({ maxLength: 2000 })), color: hex,
         options: Type.Optional(object({ ...fillShared, regionColor: Type.Optional(hex), invert: flag(), includeContourRegions: flag(), includeSurroundingRegions: flag(),
           regions: word(['all', 'color', 'transparent', 'colorOrTransparent', 'allExceptColor', 'allExceptTransparent', 'allExceptColorOrTransparent',
             'surroundedByColor', 'surroundedByTransparent', 'surroundedByColorOrTransparent']) })),
@@ -239,7 +246,7 @@ export function paintingTools(runtime) {
         config: Type.Optional(Type.Record(Type.String(), Type.Union([Type.String(), Type.Number(), Type.Boolean()]))),
         mode: Type.Optional(Type.Union([Type.Literal('mask'), Type.Literal('layer'), Type.Literal('copy')])),
         name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
-        selection: Type.Optional(Type.String({ maxLength: 40 })), area: Type.Optional(selectionSteps), panel }), 'apply_filter'),
+        selection: Type.Optional(Type.String({ maxLength: 2000, description: 'A saved selection name, or (our Krita) feature names and expressions such as "Sky - Moon".' })), area: Type.Optional(selectionSteps), panel }), 'apply_filter'),
     tool('colorize_flats', 'Colorizing flats',
       'Flat colours from closed line art in one call, with Krita\u2019s colorize mask: put one seed (x, y, color) inside each region; colour grows up to the lines and under them. color "transparent" keeps a region (such as the background) empty. line_layer is any layer with the lines (read only; the artist\u2019s layers are never changed). The flats go on a NEW layer directly below the line art, a clip_base by default so shadow and light layers can clip_to it; a hidden helper keeps the mask so the artist can refine it in Krita. edge_detection helps with thick or sketchy lines. One reversible pass; returns the canvas image.',
       object({ line_layer: Type.String(), name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),

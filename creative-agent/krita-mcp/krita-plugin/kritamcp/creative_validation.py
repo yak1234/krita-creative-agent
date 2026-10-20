@@ -52,7 +52,7 @@ def color(value):
 
 
 def validate_pass(params, width, height, presets):
-    fields(params, ('name', 'preset', 'strokes', 'layer_opacity', 'region', 'stage_id', 'expected_revision', 'continue_layer_id', 'panel', 'blend_mode', 'clip_to', 'smudge_overlay', 'smudge_rate'), ('name', 'preset', 'strokes'))
+    fields(params, ('name', 'preset', 'strokes', 'layer_opacity', 'region', 'stage_id', 'expected_revision', 'continue_layer_id', 'panel', 'blend_mode', 'clip_to', 'smudge_overlay', 'smudge_rate', 'selection'), ('name', 'preset', 'strokes'))
     if 'smudge_overlay' in params and not isinstance(params['smudge_overlay'], bool):
         raise ValueError('smudge_overlay must be boolean')
     if 'smudge_rate' in params:

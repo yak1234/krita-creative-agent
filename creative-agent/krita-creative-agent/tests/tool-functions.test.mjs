@@ -53,7 +53,7 @@ test('bad input is refused by the schema before anything runs', async () => {
     ['bucket_fill', { options: { threshold: 0 } }], ['bucket_fill', { options: { threshold: 101 } }], ['bucket_fill', { options: { grow: 401 } }],
     ['bucket_fill', { options: { opacity: 2 } }], ['bucket_fill', { options: { mode: 'flood' } }], ['bucket_fill', { options: { name: 'x' } }],
     ['bucket_fill', { options: { regions: 'all' } }], ['bucket_fill', { options: { labels: [9] } }], ['bucket_fill', { extra: 1 }],
-    ['bucket_fill', { x: 1e12 }], ['bucket_fill', { name: '' }], ['bucket_fill', { selection: 'x'.repeat(41) }],
+    ['bucket_fill', { x: 1e12 }], ['bucket_fill', { name: '' }], ['bucket_fill', { selection: 'x'.repeat(2001) }],
     ['enclose_and_fill', { options: { regions: 'some' } }], ['enclose_and_fill', { color: 5 }], ['enclose_and_fill', { enclose_area: [] }],
     ['krita_gradient', { start: [0] }], ['krita_gradient', { end: [0, 0, 0] }], ['krita_gradient', { options: { shape: 'zigzag' } }],
     ['krita_gradient', { options: { colors: ['#000000'] } }], ['krita_gradient', { options: { colors: ['black', 'white'] } }],
@@ -67,6 +67,12 @@ test('bad input is refused by the schema before anything runs', async () => {
     await assert.rejects(byName(tools, 'paint_batch').execute('bad', { actions: [{ tool, arguments: args }] }), /does not match its schema/, tool + ' ' + JSON.stringify(change));
   }
   assert.equal(calls.length, 0);
+});
+
+test('a feature expression limits a call like a saved selection name', async () => {
+  const { tools, calls } = fakeRuntime();
+  await byName(tools, 'paint_batch').execute('feature', { actions: [{ tool: 'bucket_fill', arguments: { ...valid.bucket_fill, selection: 'Sky - Moon' } }] });
+  assert.equal(calls[0].params.selection, 'Sky - Moon');
 });
 
 test('NaN, infinity and huge numbers cannot be sent (JSON has no NaN; the schema bounds the rest)', async () => {
@@ -107,4 +113,31 @@ test('a fill, enclose-and-fill or gradient counts as a fill for tool choice, a s
   assert.deepEqual(methodsOf({ tool: 'enclose_and_fill', args: {} }, canvas), ['fill']);
   assert.deepEqual(methodsOf({ tool: 'krita_gradient', args: {} }, canvas), ['fill']);
   assert.deepEqual(methodsOf({ tool: 'smart_patch', args: {} }, canvas), ['patch']);
+});
+
+test('the prompt teaches features, kept_out and the expression form, and keeps propose_protection for non-features', async () => {
+  const { PAINTING_INSTRUCTIONS } = await import('../src/prompt.mjs');
+  const section = PAINTING_INSTRUCTIONS.slice(PAINTING_INSTRUCTIONS.indexOf('<protection>'), PAINTING_INSTRUCTIONS.indexOf('</protection>'));
+  assert.match(section, /features \(name, protected/);
+  assert.match(section, /kept_out/);
+  assert.match(section, /"Sky - Moon"/);
+  assert.match(section, /quote a name that has a parenthesis/);
+  assert.match(section, /never ask the artist to lift the protection/);
+  assert.match(section, /propose_protection is only for areas that are not features/);
+  assert.match(section, /unless features already lists them as protected/);
+});
+
+test('thirty features in a look are capped and do not push the rest of the result out', async () => {
+  const { modelResultText } = await import('../src/tools.mjs');
+  const features = Array.from({ length: 24 }, (_, n) => ({ name: 'Feature number ' + n + ' of the painting', protected: n < 3 }));
+  const result = { status: 'ok', features, features_more: 6, canvas: { width: 100, height: 80 }, note: 'x'.repeat(5000) };
+  const text = JSON.parse(modelResultText(result));
+  assert.equal(text.features.length, 24, 'the features have a budget of their own and are kept');
+  assert.equal(text.features_more, 6);
+  assert.equal(text.result_truncated, undefined);
+  const long = { ...result, features: Array.from({ length: 200 }, (_, n) => ({ name: 'Feature ' + n, protected: n < 3 })) };
+  const cut = JSON.parse(modelResultText(long));
+  assert.ok(JSON.stringify(cut.features).length <= 3000, 'a runaway list is cut');
+  assert.deepEqual(cut.features.slice(0, 3).map(f => f.protected), [true, true, true], 'protected first survive');
+  assert.equal(cut.features_truncated, true);
 });

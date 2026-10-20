@@ -21,9 +21,9 @@ from .creative_validation import color as hex_colour, fields, numeric, text
 from .geometry_data import bounds as checked_bounds, polygon
 from . import canvas_projection
 
-STEP_FIELDS = ('shape', 'bounds', 'points', 'layer_id', 'color', 'seed', 'tolerance', 'saved', 'mode',
+STEP_FIELDS = ('feature', 'shape', 'bounds', 'points', 'layer_id', 'color', 'seed', 'tolerance', 'saved', 'mode',
                'grow', 'shrink', 'border', 'feather', 'smooth', 'invert')
-SOURCES = ('shape', 'layer_id', 'color', 'seed', 'saved')
+SOURCES = ('shape', 'layer_id', 'color', 'seed', 'saved', 'feature')
 RUN = re.compile(rb'[^\x00]+')
 MODES = ('replace', 'add', 'subtract', 'intersect')
 REFINEMENTS = ('grow', 'shrink', 'border', 'feather')     # applied in this order, then smooth, then invert
@@ -85,9 +85,9 @@ class RegionCraft:
                 fields(step, STEP_FIELDS)
                 sources = [key for key in SOURCES if key in step]
                 if len(sources) > 1:
-                    raise ValueError('choose one source: shape, layer_id, color, seed or saved')
+                    raise ValueError('choose one source: shape, layer_id, color, seed, saved or feature')
                 if index == 0 and not sources:
-                    raise ValueError('the first step needs a source: shape, layer_id, color, seed or saved')
+                    raise ValueError('the first step needs a source: shape, layer_id, color, seed, saved or feature')
                 if 'mode' in step:
                     if step['mode'] not in MODES:
                         raise ValueError('mode must be one of ' + ', '.join(MODES))
@@ -138,6 +138,8 @@ class RegionCraft:
                 checked_bounds(step['bounds'], doc.width(), doc.height())
         elif source == 'saved':
             self._region_saved_path(session, step['saved'], must_exist=True)
+        elif source == 'feature':
+            self._feature_selection(doc, step['feature'])          # resolved and discarded: a typo is refused now
 
     def _region_polygon(self, doc, points):
         return polygon(points, doc.width(), doc.height())
@@ -221,6 +223,8 @@ class RegionCraft:
             return self._craft_alpha_selection(doc, self._creative_node(doc, step['layer_id']))[0]
         if source == 'saved':
             return self._region_load(session, step['saved'])
+        if source == 'feature':
+            return self._feature_selection(doc, step['feature'])
         return self._region_colour(doc, step, source)
 
     def _region_colour(self, doc, step, source, native=True):
@@ -354,7 +358,29 @@ class RegionCraft:
                            {'name': name.strip(), 'rect': list(rect), 'canvas': [doc.width(), doc.height()]},
                            selection.pixelData(*rect))
 
-    def _region_load(self, session, name):
+    def _region_has_saved(self, session, name):
+        return (isinstance(name, str) and bool(NAME.match(name)) and bool(session.get('output'))
+                and os.path.exists(self._region_saved_path(session, name)))
+
+    def _region_check_named(self, doc, session, name):
+        """Validation of a selection given by name: a saved selection, or (our Krita) a feature name or expression such as
+        "Sky - Moon". A saved selection wins when both exist."""
+        if self._region_has_saved(session, name):
+            return
+        if self._feature_ready(doc):
+            try:
+                self._feature_selection(doc, name)       # resolved and discarded: a typo is refused now, before any layer exists
+            except ValueError:
+                known = sorted(self._region_saved_names(session))
+                raise ValueError('No saved selection or feature "%s". Saved: %s. Features: %s.' % (
+                    name, ', '.join(known) or 'none', ', '.join(self._feature_names(doc)) or 'none')) from None
+            return
+        self._region_saved_path(session, name, must_exist=True)
+
+    def _region_load(self, session, name, doc=None):
+        """A saved selection, else (given the document, in our Krita) the features `name` is or combines."""
+        if doc is not None and self._feature_ready(doc) and not self._region_has_saved(session, name):
+            return self._feature_selection(doc, name)
         header, data = self._region_read(self._region_saved_path(session, name, must_exist=True))
         selection = Selection()
         selection.setPixelData(data, *header['rect'])
@@ -392,7 +418,7 @@ class RegionCraft:
         if len(areas) != 1:
             raise ValueError('Give the area to fill: selection (a saved name) or area (selection steps).')
         if 'selection' in params:
-            self._region_saved_path(session, params['selection'], must_exist=True)
+            self._region_check_named(doc, session, params['selection'])
         else:
             self._region_validate_steps(doc, session, params['area'])
         if params.get('layer_id'):
@@ -459,7 +485,7 @@ class RegionCraft:
 
     def _region_fill(self, doc, session, params):
         from . import region_raster
-        selection = (self._region_load(session, params['selection']) if 'selection' in params
+        selection = (self._region_load(session, params['selection'], doc) if 'selection' in params
                      else self._region_build(doc, session, params['area']))
         extent = self._region_bounds(doc, selection)
         if extent is None:

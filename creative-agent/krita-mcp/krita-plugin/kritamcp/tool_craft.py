@@ -75,7 +75,7 @@ class ToolCraft:
         elif len(areas) > 1:
             raise ValueError('Give at most one of selection (a saved name) or area (selection steps) to limit the call.')
         if 'selection' in params:
-            self._region_saved_path(session, params['selection'], must_exist=True)
+            self._region_check_named(doc, session, params['selection'])
         elif 'area' in params:
             self._region_validate_steps(doc, session, params['area'])
 
@@ -99,7 +99,7 @@ class ToolCraft:
             if len(enclosing) != 1:
                 raise ValueError('Give the enclosing area: enclose_selection (a saved name) or enclose_area (selection steps).')
             if 'enclose_selection' in params:
-                self._region_saved_path(session, params['enclose_selection'], must_exist=True)
+                self._region_check_named(doc, session, params['enclose_selection'])
             else:
                 self._region_validate_steps(doc, session, params['enclose_area'])
             hex_colour(params['color'])
@@ -133,7 +133,7 @@ class ToolCraft:
         width, height = doc.width(), doc.height()
         base = None
         if 'selection' in params:
-            base = self._region_load(session, params['selection'])
+            base = self._region_load(session, params['selection'], doc)
         elif 'area' in params:
             base = self._region_build(doc, session, params['area'])
         stage = None
@@ -195,8 +195,8 @@ class ToolCraft:
         if hasattr(doc, 'lastKeptOut'):
             try:
                 names = [str(name) for name in doc.lastKeptOut()]
-            except Exception:
-                names = []
+            except RuntimeError:
+                names = []                                   # the document was closed
         if names:
             result['kept_out'] = names
         return names
@@ -262,7 +262,7 @@ class ToolCraft:
             return self._tool_patch(doc, session, params, result, limit, rect, options, step)
         enclosing = None
         if operation == 'enclose_and_fill':
-            enclosing = (self._region_load(session, params['enclose_selection']) if 'enclose_selection' in params
+            enclosing = (self._region_load(session, params['enclose_selection'], doc) if 'enclose_selection' in params
                          else self._region_build(doc, session, params['enclose_area']))
             enclosed = self._region_bounds(doc, enclosing)
             if enclosed is None:

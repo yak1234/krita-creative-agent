@@ -216,7 +216,7 @@
 - [x] 6.4 Queries: `featuresAt`, `featuresOverlapping`, `featuresTouching`, and `selection("Sky - Moon")`. (merged 20 Oct)
 - [x] 6.5 Protection as a feature property, enforced on agent jobs and script pixel writes during an agent move; the (merged 20 Oct; reviewed, mutation-tested)
   pass result names the features it was kept out of. Test: "leave the buildings alone" over a whole-canvas pass.
-- [ ] 6.6 Plugin and companion: the panel's features list replaces protected areas; `select`, `fill_region`, [partly done 20 Oct: the plugin and companion use features and protection; the panel features list UI is open]
+- [x] 6.6 Plugin and companion: the panel's features list replaces protected areas; `select`, `fill_region`, (done 20 Oct: the plugin and companion use features and protection; the panel Protected section lists features with artist-only toggles)
   `stamp_material` and passes accept feature names (fork-first: no stock fallback).
 - [ ] 6.7 Proposed features drawn by the canvas overlay (task 4.3) until kept, adjusted or discarded.
 - [ ] 6.8 Measure feature memory with 30 features on New Moscow.

@@ -173,3 +173,13 @@ test('a batch result without a canvas image is reviewed against the latest canva
   await result('paint_batch', { details: {} });
   assert.equal(calls.review[0].after, 'latest.png');
 });
+
+test('the batch is judged without guide lines, or the verdict says the image had them', async () => {
+  const { calls, result } = setup();
+  await result('paint_batch', { details: { image_path: 'after.png', unguided_path: 'after-clean.png' } });
+  assert.equal(calls.review[0].after, 'after-clean.png', 'the painting without the agent’s guide lines');
+  assert.equal(calls.record[0].guides_note, undefined);
+  await result('paint_batch', { details: { image_path: 'after.png', guides_note: 'The guide lines are still in this view.' } });
+  assert.equal(calls.review[1].after, 'after.png');
+  assert.equal(calls.record[1].guides_note, 'The guide lines are still in this view.', 'Luna’s verdict knows the image had guides');
+});

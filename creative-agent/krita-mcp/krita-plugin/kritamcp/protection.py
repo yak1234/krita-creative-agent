@@ -202,11 +202,11 @@ class ProtectionCraft:
     def _protect_reach(params, operation):
         """[left, top, right, bottom] a paint pass can touch: its strokes' points widened well past the brush (a
         scattering preset throws dabs several diameters out), cut to its region. None when it can reach anywhere."""
-        if operation != 'paint_pass' or not params.get('strokes'):
+        if operation not in ('paint_pass', 'draw_guide') or not params.get('strokes'):
             return None
         xs, ys = [], []
         for stroke in params['strokes']:
-            pad = 6 * float(stroke.get('size', 0)) + 16
+            pad = 6 * float(stroke.get('size', 0) if operation == 'paint_pass' else 4) + 16    # a guide line is at most 4 px
             for x, y in [stroke['start']] + [(seg[i], seg[i + 1]) for seg in stroke.get('segments', []) for i in (0, 2, 4)]:
                 xs += [x - pad, x + pad]; ys += [y - pad, y + pad]
         reach = [int(min(xs)), int(min(ys)), int(max(xs)) + 1, int(max(ys)) + 1]

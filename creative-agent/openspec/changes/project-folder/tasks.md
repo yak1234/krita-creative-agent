@@ -75,22 +75,22 @@ Markdown (`PLAN.md`, `NOTES.md`, backups) back into the folder.
 - Merge: `merge_passes` and `_native_merge_agent` never take a layer inside the guides group; `_native_tidy` never
   removes it.
 
-- [ ] **Step 1: Write the failing tests** in `test_guide_craft.py` with the `test_native` stub tree pattern
+- [x] **Step 1: Write the failing tests** in `test_guide_craft.py` with the `test_native` stub tree pattern
   (`tests/test_layer_craft.py:1-30`): `test_draw_guide_creates_its_layer_in_the_guides_group` (group name, layer name
   "Guide · Towers", outside every 'Creative Agent · <stage>' group, opacity 0.7),
   `test_a_second_guide_for_the_same_element_extends_its_layer`, `test_reject_of_the_move_hides_the_guide`,
   `test_finish_guide_hides_and_is_idempotent`, `test_merge_passes_and_merge_agent_ignore_guides`,
   `test_tidy_keeps_hidden_guides`, `test_observe_without_guides_hides_and_restores_the_group` (also on an exception),
   `test_guide_rejects_bad_input` (empty element, >256 strokes, unknown fields).
-- [ ] **Step 2: Run them to see them fail**
+- [x] **Step 2: Run them to see them fail**
   Run (from creative-agent/krita-creative-agent): `uv run -q --with pyqt5 --with pillow --with numpy --with httpx
   --with opencv-python-headless python -m unittest tests.test_guide_craft -v` — Expected: errors (no module).
-- [ ] **Step 3: Implement** `GuideCraft` (mixin like the other *Craft classes) in `guide_craft.py` with
+- [x] **Step 3: Implement** `GuideCraft` (mixin like the other *Craft classes) in `guide_craft.py` with
   `_guide_draw(doc, session, params) -> dict` and `_guide_finish(doc, session, params) -> dict`; reuse the
   `paint_pass` stroke path (`_creative_stroke_job` on the fork) with the forced brush; wire validation, dispatch and
   journal; exclude the group in merge/tidy; add the `observe` flag.
-- [ ] **Step 4: Run** the new tests and the whole Python discover suite — Expected: all pass.
-- [ ] **Step 5: Commit** "Guide layers: draw_guide and finish_guide in their own group, never merged, hidden on undo".
+- [x] **Step 4: Run** the new tests and the whole Python discover suite — Expected: all pass.
+- [x] **Step 5: Commit** "Guide layers: draw_guide and finish_guide in their own group, never merged, hidden on undo".
 
 ### Task A2: Guide tools, setting and skill in the companion
 
@@ -117,18 +117,18 @@ Markdown (`PLAN.md`, `NOTES.md`, backups) back into the folder.
     never outlines of every detail), that the goal image decides placement and an element reference decides shape,
     then paint over the guide in its own strokes (the reference tools may give colour), then `finish_guide`.
 
-- [ ] **Step 1: Write the failing tests** in `tests/guide-tool.test.mjs` with `fakeRuntime()` from
+- [x] **Step 1: Write the failing tests** in `tests/guide-tool.test.mjs` with `fakeRuntime()` from
   `tests/tool-functions.test.mjs:13-18`: `draw_guide in canvas pixels reaches the plugin as strokes`,
   `draw_guide maps reference points through source and target` (a point at the source centre lands at the target
   centre; a mismatched aspect is refused with the reference tools' message),
   `finish_guide reaches its operation`, `the guides setting off removes both tools from the offered list`; and in
   `tests/brush-catalog.test.mjs`: `the prompt names the guided-trace skill and stays under 13330 characters`.
-- [ ] **Step 2: Run** `npm run test:unit` — Expected: the new tests fail.
-- [ ] **Step 3: Implement** `guideTools(runtime): Tool[]` in `src/guide-tool.ts`; export `mapReferencePoint` from
+- [x] **Step 2: Run** `npm run test:unit` — Expected: the new tests fail.
+- [x] **Step 3: Implement** `guideTools(runtime): Tool[]` in `src/guide-tool.ts`; export `mapReferencePoint` from
   `reference-generator.mjs` without changing the reference tools' behaviour (their tests stay green); add the setting,
   the prompt line and the skill.
-- [ ] **Step 4: Run** `npm run test:unit` and `npm run typecheck` — Expected: all pass, reference tests unchanged.
-- [ ] **Step 5: Commit** "Guided trace: draw_guide and finish_guide tools, the setting, the guided-trace skill".
+- [x] **Step 4: Run** `npm run test:unit` and `npm run typecheck` — Expected: all pass, reference tests unchanged.
+- [x] **Step 5: Commit** "Guided trace: draw_guide and finish_guide tools, the setting, the guided-trace skill".
 
 ### Task A3: Guides never judge the painting
 
@@ -137,15 +137,15 @@ Markdown (`PLAN.md`, `NOTES.md`, backups) back into the folder.
   Luna) to pass `guides:false`; `extensions/luna-review.ts` only if it observes itself
 - Test: `tests/studio.test.mjs`
 
-- [ ] **Step 1: Write the failing tests** with `harness(respond, bridgeHook)` (`tests/studio.test.mjs:40`):
+- [x] **Step 1: Write the failing tests** with `harness(respond, bridgeHook)` (`tests/studio.test.mjs:40`):
   `review and pass checks observe without guides` (every observe sent for Luna, pass checks and the final review has
   `guides:false`), `the painter's own observe still shows guides` (no `guides` key or true), and
   `a move with a guide: Keep merges the paint and leaves the guide` (bridge hook records `merge_passes` params; the
   guide's layer id is absent).
-- [ ] **Step 2: Run** `npm run test:unit` — Expected: fail.
-- [ ] **Step 3: Implement** the flag on those call sites.
-- [ ] **Step 4: Run** `npm run test:unit` — Expected: pass.
-- [ ] **Step 5: Commit** "Guides: Luna's review and pass checks look at the painting without guides".
+- [x] **Step 2: Run** `npm run test:unit` — Expected: fail.
+- [x] **Step 3: Implement** the flag on those call sites.
+- [x] **Step 4: Run** `npm run test:unit` — Expected: pass.
+- [x] **Step 5: Commit** "Guides: Luna's review and pass checks look at the painting without guides".
 
 **Group A done when:** the lead rebuilds and packages, and a live Agent move on a copy painting draws a guide, paints
 over it, keeps the guide layer separate, and hides it on `finish_guide`.

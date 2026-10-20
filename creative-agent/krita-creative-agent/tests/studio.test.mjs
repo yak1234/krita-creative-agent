@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, rm, writeFile, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { crc32, deflateSync } from 'node:zlib';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Value } from 'typebox/value';
 import { StudioRuntime, freshGoal, validateReview, normalizeBrief, repeatedReviewFailures, progressStalled, approvedReviewScope, restoredReviewStart } from '../src/studio.mjs';
@@ -975,7 +976,7 @@ test('parallel preparation runs two isolated model requests beside one painter t
     assert.equal(peak,2);assert.equal(proposals,2);assert.equal(h.runtime.goal.status,'complete');
     assert.equal(h.calls.filter(c=>c.operation==='paint_pass').length,1);
     const id=h.runtime.study.id;await h.runtime.end();await h.runtime.resume(id);
-    assert.deepEqual(h.runtime.executionSettings,{concurrency:2,reasoning:'high',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,assets:'codex',ai_images:0,keep_screen_awake:false,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
+    assert.deepEqual(h.runtime.executionSettings,{concurrency:2,reasoning:'high',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,guides:true,assets:'codex',ai_images:0,keep_screen_awake:false,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
     assert.equal(h.runtime.session.thinkingLevel,'off');
     assert.equal(h.runtime.goal.status,'paused');
   } finally {await h.close();}
@@ -2099,14 +2100,16 @@ test('pacing close-up: an actual-pixel crop of where the call painted, only of t
   try {
     await writeFile(join(directory,'crop.png'),png);
     const calls=[]; let revision='r1';
-    const host={study:{directory,id:'study'},callPasses:()=>[],bridge:{call:async(op,params)=>{calls.push({op,params});return {revision,image_path:join(directory,'crop.png')};}}};
+    const host={guidesView:true,study:{directory,id:'study'},callPasses:()=>[],bridge:{call:async(op,params)=>{calls.push({op,params});return {revision,image_path:join(directory,'crop.png')};}}};
     const closeUp=(call,details)=>StudioRuntime.prototype.paceCloseUp.call(host,call,{details});
     const details={width:6000,height:4500,revision:'r1',document_id:'doc'};
     const surface={tool:'paint_reference_surface',args:{target:[600,60,5000,1740]}};
     const found=await closeUp(surface,details);
     assert.deepEqual(found.region,[2316,146,1568,1568]);
     assert.equal(found.content.type,'image');
-    assert.deepEqual(calls[0],{op:'peek',params:{output_dir:directory,region:[2316,146,1568,1568],refresh:false,document_id:'doc'}});
+    assert.deepEqual(calls[0],{op:'peek',params:{output_dir:directory,region:[2316,146,1568,1568],refresh:false,guides:false,document_id:'doc'}},'Luna\u2019s close-up leaves the guide lines out');
+    host.guidesView=false; await closeUp(surface,details);
+    assert.ok(!('guides' in calls.at(-1).params),'an older plugin is never sent the flag');
     revision='r2';
     assert.equal(await closeUp(surface,details),null,'a crop of another revision is dropped');
     assert.equal(await closeUp(surface,{...details,width:768,height:1024}),null,'a small canvas is already seen at actual pixels');
@@ -2370,5 +2373,148 @@ test('the painting is saved during the model’s turn, after Luna review has set
   await h.runtime.saveHost().checkpoint();
   assert.equal(flushed,1,'the studio’s own checkpoint, as at review and run end');
   assert.equal(h.runtime.saveHost().painting('paint_batch'),true);
+ } finally {await h.close();}
+});
+
+// Guided trace (project-folder A3): Luna and the reviewer judge the painting without the agent's guide lines; the painter
+// sees them. The plugin's looks carry unguided_path (the view without guides) while guides show, and observe
+// {guides:false} is the painting without them (test_guide_craft.py). Three distinct images tell them apart here.
+// A valid 1x1 grey PNG of the given value (Pi decodes the images of a prompt, so they must be real images).
+function greyPng(value) {
+ const chunk=(type,data)=>{const length=Buffer.alloc(4);length.writeUInt32BE(data.length);const body=Buffer.concat([Buffer.from(type),data]);
+  const crc=Buffer.alloc(4);crc.writeUInt32BE(crc32(body));return Buffer.concat([length,body,crc]);};
+ return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',Buffer.from([0,0,0,1,0,0,0,1,8,0,0,0,0])),
+  chunk('IDAT',deflateSync(Buffer.from([0,value]))),chunk('IEND',Buffer.alloc(0))]);
+}
+const guidesPng=greyPng(80);      // the painting with its guide lines showing
+const cleanPng=greyPng(160);      // the same painting without them
+const lunaImages=luna=>luna.requests.flatMap(r=>(r.parts ?? []).filter(p=>typeof p==='object')).map(p=>p.data);
+async function guideViews(h,operation,params,id,extra={}) {
+ const dir=h.runtime.study.directory;
+ await writeFile(join(dir,'guides.png'),guidesPng); await writeFile(join(dir,'clean.png'),cleanPng);
+ const hidden=operation==='observe' && params.guides===false;
+ return {status:'ok',document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,layers:[],revision:'r-1',content_id:'c-'+id,
+  image_path:join(dir,hidden ? 'clean.png' : 'guides.png'),...(hidden ? {guides_hidden:true} : {unguided_path:join(dir,'clean.png')}),...extra};
+}
+
+test('review and pass checks observe without guides',{timeout:30000},async()=>{
+ let painted=false; let h;
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(names.includes('propose_plan')) return call('propose_plan',brief);
+  if(names.includes('submit_review')) return call('submit_review',{verdict:'complete',summary:'Done.',issues:[],checks:[0,1,2,3].map(i=>({id:'check-'+i,met:true,evidence:'Visible.'}))});
+  if(!painted){painted=true;return call('paint_pass',pass);}
+  return call('request_review',{reason:'Finished.'});
+ },async(operation,params,_study,id)=>{
+  if(!['observe','paint_pass'].includes(operation)) return undefined;
+  const dir=h.runtime.study.directory;
+  return guideViews(h,operation,params,id,operation==='paint_pass' ? {passes:[{id,kind:'paint_pass',title:'Figure silhouettes',layer_id:'L1',before_path:join(dir,'clean.png'),after_path:join(dir,'clean.png')}]} : {});
+ });
+ try {
+  await h.start('plan'); h.runtime.guidesView=true;
+  const luna=fakeLuna(); h.runtime.lunaClient=luna;
+  await h.runtime.setExecutionSettings({routing:'guide'});
+  await h.runtime.setMode('autopilot'); await h.runtime.prompt('',{start_plan:true});
+  assert.equal(h.runtime.goal.status,'complete');
+  assert.ok(h.calls.some(c=>c.operation==='observe' && c.params.guides===false),'the final review looks without guides');
+  const views=h.calls.filter(c=>c.operation==='view_options');
+  assert.ok(views.length && views.at(-1).params.unguided_views===true,'with Luna on, every look also saves the view without guides');
+  const hide=h.calls.findIndex(c=>c.operation==='hide_guides'), review=h.calls.findLastIndex(c=>c.operation==='observe' && c.params.guides===false);
+  assert.ok(hide>review,'a completed run hides every guide: none reaches the finished painting');
+  assert.ok(h.calls.findIndex(c=>c.operation==='merge_passes')<0 || hide<h.calls.findIndex(c=>c.operation==='merge_passes'),'before the kept work is merged');
+  assert.ok(h.calls.filter(c=>c.operation==='observe').every(c=>c.params.guides===false || !('guides' in c.params)));
+  const reviewer=JSON.stringify(h.requests.find(req=>req.tools.some(t=>t.function.name==='submit_review')));
+  assert.ok(reviewer.includes(cleanPng.toString('base64')) && !reviewer.includes(guidesPng.toString('base64')),'the reviewer sees the painting without guides');
+  assert.ok(lunaImages(luna).includes(cleanPng.toString('base64')),'Luna paced the run on the painting');
+  assert.ok(!lunaImages(luna).includes(guidesPng.toString('base64')),'Luna never sees a guide');
+ } finally {await h.close();}
+});
+
+test('the painter’s own observe still shows guides; a move with a guide: Keep merges the paint and leaves the guide',{timeout:30000},async()=>{
+ let turn=0; let h;
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(!names.includes('paint_batch')) return {content:'Hello.'};
+  assert.ok(names.includes('draw_guide') && names.includes('finish_guide'),'offered in an Agent move');
+  turn++;
+  if(turn===1) return call('observe_canvas',{});
+  if(turn===2) return call('draw_guide',{element:'Towers',lines:[{points:[[100,500],[100,200],[160,200],[160,500]]}]});
+  if(turn===3) return call('paint_batch',{summary:'Towers',actions:[{tool:'paint_pass',arguments:{...pass,name:'Towers'}}]});
+  if(turn===4) return call('finish_guide',{element:'Towers'});
+  return call('finish_move',{summary:'Towers'});
+ },async(operation,params,_study,id)=>{
+  if(operation==='protection_list') return {status:'ok',areas:[]};
+  if(operation==='merge_passes') return {status:'ok',merged_layers:0,remaining_runs:0,passes:[]};
+  if(!['observe','paint_pass','draw_guide','finish_guide'].includes(operation)) return undefined;
+  const dir=h.runtime.study.directory, entry=kind=>({id,kind,title:'Towers',layer_id:kind==='guide' ? 'guide-layer' : 'L-'+id,before_path:join(dir,'clean.png'),after_path:join(dir,'clean.png')});
+  return guideViews(h,operation,params,id,{revision:'r-'+id,...(operation==='draw_guide' ? {layer_id:'guide-layer',passes:[entry('guide')]} : operation==='paint_pass' ? {passes:[entry('paint_pass')]} : {})});
+ });
+ try {
+  await h.start('ask','Hello'); h.runtime.guidesView=true; h.runtime.forkTools=true;
+  const luna=fakeLuna(); h.runtime.lunaClient=luna;
+  await h.runtime.setExecutionSettings({routing:'guide'}); await h.runtime.setMode('agent');
+  await h.runtime.prompt('Paint the Kremlin towers.');
+  const observes=h.calls.filter(c=>c.operation==='observe');
+  assert.ok(observes.length>=2 && observes.every(c=>!('guides' in c.params)),'the painter (and the move start) look with the guides showing');
+  const guide=h.calls.find(c=>c.operation==='draw_guide');
+  assert.equal(guide.params.stage_id,'move-1','the guide belongs to the move: Undo of the move rejects it');
+  assert.ok(guide.params.expected_revision);
+  assert.deepEqual(guide.params.strokes[0].start,[100,500]);
+  assert.ok(h.calls.some(c=>c.operation==='finish_guide' && c.params.element==='Towers'));
+  assert.equal(luna.requests.filter(r=>r.purpose==='detect-move-failures').length,1,'the guide is not reviewed as a painted batch');
+  assert.ok(lunaImages(luna).length && !lunaImages(luna).includes(guidesPng.toString('base64')),'Luna judges the move without its guide');
+  const painter=JSON.stringify(h.requests.at(-1));
+  assert.ok(painter.includes(guidesPng.toString('base64')),'the painter sees its guide');
+  assert.ok(!painter.includes('unguided_path'),'host bookkeeping stays out of the painter’s results');
+  await h.runtime.moveAction({action:'keep',move:1});
+  const merges=h.calls.filter(c=>c.operation==='merge_passes');
+  assert.ok(merges.length && merges.every(c=>Object.keys(c.params).sort().join()==='name,stage_id' && !JSON.stringify(c.params).includes('guide-layer')),
+   'Keep merges the move’s stroke passes by stage; the plugin never takes the guide (test_guide_craft.py)');
+  assert.ok(!h.calls.some(c=>c.operation==='review_pass'),'Keep hides nothing');
+ } finally {await h.close();}
+});
+
+test('ending a chat hides its guides first; finish_guide waits like any painting call',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}));
+ try {
+  await h.start('ask','Hello'); h.runtime.guidesView=true;
+  await assert.rejects(h.runtime.callNative('finish_guide',{element:'Towers'}),/Painting is disabled/,'not in Ask, Plan or a paused run');
+  assert.ok(!h.calls.some(c=>c.operation==='finish_guide'));
+  await h.runtime.setMode('agent'); h.runtime.executionPhase='agent'; h.runtime.goal.status='active';
+  await h.runtime.bindCanvas();
+  h.runtime.goal.question={question:'Which?'};
+  await assert.rejects(h.runtime.callNative('finish_guide',{element:'Towers'}),/Painting is disabled/,'not while a question waits');
+  await h.runtime.end();
+  const hide=h.calls.findIndex(c=>c.operation==='hide_guides'), end=h.calls.findIndex(c=>c.operation==='end');
+  assert.ok(hide>=0 && hide<end,'no guide is left showing when the chat ends');
+ } finally {await h.close();}
+});
+
+test('an older plugin without views without guides: the review still runs, and says guides may show',{timeout:30000},async()=>{
+ let painted=false; let h; let refuse=false;
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(names.includes('propose_plan')) return call('propose_plan',brief);
+  if(names.includes('submit_review')) return call('submit_review',{verdict:'complete',summary:'Done.',issues:[],checks:[0,1,2,3].map(i=>({id:'check-'+i,met:true,evidence:'Visible.'}))});
+  if(!painted){painted=true;return call('paint_pass',pass);}
+  return call('request_review',{reason:'Finished.'});
+ },async(operation,params)=>{
+  if(['observe','peek'].includes(operation) && 'guides' in params && refuse) { const error=new Error('ValueError: Unknown parameters: guides'); error.code='validation_rejected'; throw error; }
+  if(['hide_guides','view_options'].includes(operation) && !h.runtime.guidesView) throw new Error('Unsupported creative operation');
+  return undefined;
+ });
+ try {
+  const diagnostics=[];
+  await h.start('plan'); h.runtime.diagnostics={record:event=>diagnostics.push(event)};
+  await h.runtime.setMode('autopilot'); await h.runtime.prompt('',{start_plan:true});
+  assert.equal(h.runtime.goal.status,'complete','an older plugin is never asked for guides: false');
+  assert.ok(!h.calls.some(c=>'guides' in (c.params ?? {})));
+  assert.ok(!h.calls.some(c=>['hide_guides','view_options'].includes(c.operation)));
+  // A plugin that said it could, then refused: the review looks again without the flag and says so.
+  h.runtime.guidesView=true; refuse=true;
+  const review=await h.runtime.reviewCanvas();
+  assert.equal(review.verdict,'complete');
+  assert.ok(diagnostics.some(e=>e.type==='guides_view_refused'),'logged: the reviewed image may show guides');
+  assert.equal(h.runtime.guidesView,false,'not asked again');
  } finally {await h.close();}
 });

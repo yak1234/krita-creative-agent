@@ -109,6 +109,63 @@ def validate_pass(params, width, height, presets):
     return params
 
 
+GUIDE_FIELDS = ('element', 'strokes', 'stage_id', 'expected_revision')
+GUIDE_STROKE_FIELDS = ('start', 'segments', 'size', 'opacity', 'flow', 'color')
+MAX_GUIDE_STROKES = 256
+GUIDE_ELEMENT_LIMIT = 60
+GUIDE_MARGIN = 4                       # the widest guide line, past the canvas edge, as a pass allows one brush size
+
+
+# Characters an element's name never holds: controls and DEL, line and paragraph separators, and the bidirectional
+# overrides and isolates that would make a layer name read differently from what it is.
+GUIDE_NAME_FORBIDDEN = frozenset([0x7f, 0x2028, 0x2029] + list(range(0x202a, 0x202f)) + list(range(0x2066, 0x206a)))
+
+
+def guide_element(value):
+    """An element's name as guides use it: plain text on one line, spacing normalised. Guides compare names ignoring
+    case and spacing ("Towers" and " towers " are one element), so one element shares its guide however it is written."""
+    element = ' '.join(text(value, 'element', GUIDE_ELEMENT_LIMIT).split())
+    if any(ord(character) < 32 or ord(character) in GUIDE_NAME_FORBIDDEN for character in value):
+        raise ValueError('element must be plain text on one line')
+    return element
+
+
+def validate_guide(params, width, height):
+    """draw_guide: the element it is for and its lines, in the paint_pass stroke shape. The plugin forces the guide brush
+    (colour, opacity, flow, a thin size), so those keys are optional and only checked; pen input is not taken. Returns
+    the element's name with its spacing normalised."""
+    fields(params, GUIDE_FIELDS, ('element', 'strokes'))
+    element = guide_element(params['element'])
+    for key in ('stage_id', 'expected_revision'):
+        if key in params:
+            text(params[key], key, 100)
+    strokes = params['strokes']
+    if not isinstance(strokes, list) or not 1 <= len(strokes) <= MAX_GUIDE_STROKES:
+        raise ValueError('A guide needs 1–%d lines' % MAX_GUIDE_STROKES)
+    for stroke in strokes:
+        fields(stroke, GUIDE_STROKE_FIELDS, ('start', 'segments'))
+        if 'size' in stroke:
+            numeric(stroke['size'], 'size', 1, 10000)
+        for key in ('opacity', 'flow'):
+            if key in stroke:
+                numeric(stroke[key], key, 0.01, 1)
+        if 'color' in stroke:
+            color(stroke['color'])
+        start, segments = stroke['start'], stroke['segments']
+        if not isinstance(start, list) or len(start) != 2:
+            raise ValueError('start needs two coordinates')
+        if not isinstance(segments, list) or not 1 <= len(segments) <= 1000:
+            raise ValueError('Use 1–1000 cubic segments per line')
+        coordinates = list(start)
+        for segment in segments:
+            if not isinstance(segment, list) or len(segment) != 6:
+                raise ValueError('Each segment needs c1x,c1y,c2x,c2y,endx,endy')
+            coordinates.extend(segment)
+        for index, value in enumerate(coordinates):
+            numeric(value, 'coordinate', -GUIDE_MARGIN, (width if index % 2 == 0 else height) + GUIDE_MARGIN)
+    return element
+
+
 def pen_input(values, name, count):
     """One pen input's list: `count` entries, each in Krita's range for it (tilt an [x, y] pair of degrees)."""
     if not isinstance(values, list) or len(values) != count:

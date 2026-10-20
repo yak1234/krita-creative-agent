@@ -29,7 +29,7 @@ class MergeCraft:
             except ValueError:
                 continue
             if (node.type() != 'paintlayer' or node.blendingMode() != 'normal' or node.inheritAlpha() or node.childNodes()
-                    or node.locked() or not node.visible()):
+                    or node.locked() or not node.visible() or self._guide_in_group(node)):    # guides are never merged
                 continue
             state = self._creative_layer_state(node, doc)
             if any(state[key] != entry['after'][key] for key in ('pixels', 'opacity', 'visible')):

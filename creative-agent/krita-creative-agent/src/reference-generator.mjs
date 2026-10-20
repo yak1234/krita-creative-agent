@@ -20,6 +20,16 @@ export const DEFAULT_STEPS=[6,2.5,1.2];
 // Integer rectangles rarely share an exact ratio: the whole of a 1920x1291 reference over a 1520x1022 canvas
 // is off by a fraction of a pixel. Within one target pixel the stretch cannot be seen.
 const sameAspect=(sw,sh,tw,th)=>Math.abs(sh*tw/sw-th)<=1;
+/** The source→target mapping of the reference tools, for other tools that place things from reference pixels (guides):
+ * (x, y) in source pixels to canvas pixels, under the same aspect rule. Points outside the source map on, unclamped.
+ * @param {number[]} source [x,y,w,h] in reference pixels @param {number[]} target [x,y,w,h] in canvas pixels
+ * @returns {(x:number,y:number)=>[number,number]} */
+export function mapReferencePoint(source,target){
+ const [sx,sy,sw,sh]=source,[tx,ty,tw,th]=target;
+ if(!(sw>0&&sh>0&&tw>0&&th>0)||!sameAspect(sw,sh,tw,th))throw new Error('Source and target must have matching aspect ratios; crop instead of stretching.');
+ const scale=tw/sw;
+ return (x,y)=>[tx+(x-sx)*scale,ty+(y-sy)*scale];
+}
 /** Strokes a dab transfer plans (an upper bound: transparent samples are skipped), from the recipe alone. */
 export function estimateReferenceStrokes(recipe){
  const steps=recipe.steps??DEFAULT_STEPS,[,,sw,sh]=recipe.source;

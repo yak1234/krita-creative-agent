@@ -9,7 +9,8 @@ import type { MoveCheckResult, MoveFinding } from '../src/visual-checks.ts';
 export type LunaMode = 'off' | 'evaluate' | 'guide';
 export type BatchPass = { id: string; before_path: string; title?: string; layer_id?: string; area?: number[] | null };
 export type Verdict = { move: number; call_id: string; status: 'kept' | 'undone' | 'warned' | 'fallback';
-  findings: MoveFinding[]; undone_pass_ids?: string[]; partial?: boolean; reason?: string; scope?: unknown };
+  findings: MoveFinding[]; undone_pass_ids?: string[]; partial?: boolean; reason?: string; scope?: unknown;
+  guides_note?: string };       // the judged image still had the agent's guide lines (the plugin could not leave them out)
 type Image = { type: 'image'; data: string; mimeType: string };
 export type Undone = { pass_ids: string[]; image?: Image; image_path?: string; revision?: string };
 /** What the studio provides (studio.mjs reviewHost). */
@@ -35,8 +36,8 @@ const line = (review: Record<string, unknown>) => ({ type: 'text' as const, text
 export default function lunaReview(host: ReviewHost): (pi: ExtensionAPI) => void {
   const undos = new Map<number, number>();
 
-  const check = async (move: number, callId: string, passes: BatchPass[], after: string, scope: unknown): Promise<Verdict> => {
-    const base = { move, call_id: callId, ...(scope === undefined ? {} : { scope }) };
+  const check = async (move: number, callId: string, passes: BatchPass[], after: string, scope: unknown, guidesNote?: string): Promise<Verdict> => {
+    const base = { move, call_id: callId, ...(scope === undefined ? {} : { scope }), ...(guidesNote ? { guides_note: guidesNote } : {}) };
     try {
       const result = await host.review({ before: passes[0].before_path, after, features: await host.features(), ...(scope === undefined ? {} : { scope }) });
       if (!('findings' in result)) return { ...base, status: 'fallback', findings: [], reason: result.fallback };
@@ -51,16 +52,18 @@ export default function lunaReview(host: ReviewHost): (pi: ExtensionAPI) => void
       const toolName = (event as { toolName: string }).toolName;
       const mode = host.mode(), move = host.move();
       if (event.isError || mode === 'off' || move === null || !host.painting(toolName)) return undefined;
-      const details = ((event as { details?: unknown }).details ?? {}) as { image_path?: string };
+      const details = ((event as { details?: unknown }).details ?? {}) as { image_path?: string; unguided_path?: string; guides_note?: string };
       const passes = host.batch(event.toolCallId, toolName, event.input, details);
-      const after = details.image_path ?? host.canvas?.();
+      // The painting without the agent's guide lines, when guides show (the painter's own image keeps them).
+      const after = details.unguided_path ?? details.image_path ?? host.canvas?.();
+      const guidesNote = details.unguided_path ? undefined : details.guides_note;
       if (!passes.length || !after) return undefined;
       const scope = host.scope?.();
       if (mode === 'evaluate') {                       // record only, never delay the painter
-        void check(move, event.toolCallId, passes, after, scope).then(verdict => host.record(verdict)).catch(() => {});
+        void check(move, event.toolCallId, passes, after, scope, guidesNote).then(verdict => host.record(verdict)).catch(() => {});
         return undefined;
       }
-      const verdict = await check(move, event.toolCallId, passes, after, scope);
+      const verdict = await check(move, event.toolCallId, passes, after, scope, guidesNote);
       if (verdict.status !== 'warned') { host.record(verdict); return undefined; }
       const what = lost(verdict.findings);
       if ((undos.get(move) ?? 0) >= UNDO_CAP) {

@@ -1117,3 +1117,32 @@ Plugin only (`creative_docker.py`: `FeaturesSection`, `refresh_features`, `toggl
   second; the boxes are disabled during a pass and enabled after; switching between two open paintings swaps the list; "Use my
   selection" adds a ticked row at once; a painting with 30 features scrolls and the poll stays smooth.
 - Test: `uv run -q --with pyqt5 python tests/ui_panel_features.py` and the same with `--with pyqt6` (both in ci.sh's panel UI group).
+
+## Guide layers (project-folder, group A: guided trace)
+Plugin and companion only (`kritamcp/guide_craft.py`, `src/guide-tool.ts`, `skills/guided-trace`); no upstream file.
+- **What it is.** `draw_guide` paints thin construction lines (b) Basic-1, 2-4 px, `#4fb3ff`, layer opacity 70 %) as one
+  `Node.paintStrokes` job on "Guide · <element>" inside "Guides · Creative Agent" at the top of the painting, outside every
+  stage group; each move draws on a layer of its own. Its pass (kind `guide`) belongs to the move, so Undo of the move
+  hides only that move's lines. The group is known by its id (document annotation `creative-agent-guides`, and the guide
+  passes), its name only as a fallback. Merge (Keep, `merge_agent_work`) and tidy never take a guide; guides are never
+  locked (a locked layer refuses the agent's own strokes), and the agent may not target one (adjust, transform, filter,
+  clip_to). `finish_guide` hides an element's guides; `hide_guides` hides every guide in one undo step, and the companion
+  runs it when a run finishes and before a chat ends. A guide layer the artist painted on is never hidden. The setting
+  "Guides" (on by default, our Krita only) offers the two tools.
+- **Never judged.** Luna, the review, colour samples and seams see the painting without guides. On the fork
+  `Node.setVisible` is an undo step, so the plugin never hides the group to read: it rebuilds the 8-bit sRGB view under
+  the lines, only inside the 64 px tiles each guide stroke touched (recorded on its pass; the layer's bounds when the
+  layer moved since), only on covered pixels: the normal blend with the guide colour undone (in linear light for a
+  linear profile), lines past 90 % coverage filled from around them. Another colour model than RGBA, other layers over
+  the guides group, or the artist's paint on a guide layer keep the guides in the view with a `guides_note`. `observe
+  {guides: false}` is that view; while Luna is on (`view_options`) every look also saves it as `unguided_path`, which
+  the pass history and Luna's pass, move and pacing checks use. The revision stays the painting's own. The companion
+  asks for it only when `health` reports `guides_view`.
+- **Live checks** (only fakes so far): a guide on a copy painting lands as one "Agent: draw guide" step in its own group at
+  the top, light blue and thin; the next pass's stage group goes under it; Keep leaves it a separate visible layer;
+  Undo of the move hides it; `finish_guide` and `hide_guides` hide guides as one step each; a finished Autopilot run
+  and an ended chat leave none showing; `tidy_painting` keeps hidden guides. Compare `observe {guides: false}` with the
+  canvas with the group hidden by hand, on an 8-bit, a 16-bit and a linear float painting: they should match to a level
+  or two (the rebuild assumes the group's projection carries its layers' 70 % opacity and that the guide colour shows as
+  `#4fb3ff`). Time a look with a horizon and a vertical guide on New Moscow. Paint on a guide layer by hand: the next
+  Luna look should carry `guides_note` and `finish_guide` should leave it showing.

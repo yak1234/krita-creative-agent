@@ -30,6 +30,7 @@ from .protection import ProtectionCraft, PANEL_ONLY as PROTECTION_PANEL_ONLY
 from .script_steps import one_step
 from .feature_guard import EXPRESSION_LIMIT, FeatureCraft, PANEL_ONLY as FEATURE_PANEL_ONLY, agent_writing, reject_privileged
 from .material_stamp import MaterialCraft, RESOURCE_PREFIX as STAMP_RESOURCE_PREFIX
+from .guide_craft import GuideCraft
 from .tool_craft import ToolCraft, OPERATIONS as TOOL_OPERATIONS, PASS_TITLES as TOOL_TITLES, tool_functions_available
 from .journal_store import Journal
 from . import painting_weight
@@ -85,8 +86,10 @@ def wait_for_krita(seconds):
 # later results and `save_status`. Actions after the copy stay unsaved. Without the helper, before the painting is its
 # own file, and at the end of a chat, the save is synchronous as before.
 # Pass kinds that add a new agent layer or mask.
-NEW_CONTRIBUTIONS = ('paint_pass', 'create_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp') + TOOL_OPERATIONS
+NEW_CONTRIBUTIONS = ('paint_pass', 'guide', 'create_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp') + TOOL_OPERATIONS
 CHECKPOINT_SECONDS = 180
+# Operations that paint as one fork stroke job: waited on by the job itself, never by Document.waitForDone.
+STROKE_JOBS = ('paint_pass', 'draw_guide')
 # A painting copy a test or tool-choice run made: benchmark-runs/<stamp>-tool-choice[-no-guards]/<scenario>-<run>/…/<painting>.kra
 # (or an image copy: .png, .jpg),
 # the copy itself or a file a session saved deeper in that run folder (close_benchmark_copy, test_keep_protection).
@@ -111,7 +114,7 @@ def merge_pass_record_error(result, error):
             'error': result['error'] + ' (' + note + ')' if result.get('error') else note}
 
 
-class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, ProtectionCraft, FeatureCraft, NativeCraft, MaterialCraft, ToolCraft):
+class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, ProtectionCraft, FeatureCraft, NativeCraft, MaterialCraft, ToolCraft, GuideCraft):
     def cmd_creative(self, request):
         fields(request, ('operation', 'session_id', 'operation_id', 'params'), ('operation', 'params'))
         operation = request['operation']
@@ -126,7 +129,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             return {'status': 'ok', 'creative_version': '1.0.0', 'protocol_version': 2, 'build': CREATIVE_BUILD, 'krita_version': Krita.instance().version(),
                     'capabilities': self._creative_adapter_capabilities(), 'native_paths': True, 'session_active': bool(getattr(self, '_creative_session', None)),
                     'krita_actions': len(self._native_actions(Krita.instance().version())), 'python_packages': vendor.versions(),
-                    'fork_tools': tool_functions_available()}
+                    'fork_tools': tool_functions_available(), 'guides_view': True}
         if operation == 'context':
             fields(params, ('document_id',))
             doc = self._creative_document(params.get('document_id'))
@@ -364,15 +367,16 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             # selecting, or taking ownership of a painting document.
             # refresh=False skips the full recomposite: for a close-up of a canvas just observed,
             # whose revision the caller compares, so a stale projection cannot pass unnoticed.
-            fields(params, ('output_dir', 'document_id', 'region', 'refresh'), ('output_dir',))
+            fields(params, ('output_dir', 'document_id', 'region', 'refresh', 'guides'), ('output_dir',))
             if not isinstance(params.get('refresh', True), bool):
                 raise ValueError('refresh must be boolean')
+            guides = self._creative_guides_flag(params)
             destination = self._creative_output(request)
             doc = self._creative_document(params.get('document_id'))
             if doc is None:
                 return {'status': 'ok', 'state': 'none', 'message': 'No canvas is open.'}
             return self._creative_observe(doc, {'output': destination, 'layers': set(),
-                'document_id': document_id(doc), 'projection_fresh': not params.get('refresh', True)}, params.get('region'))
+                'document_id': document_id(doc), 'projection_fresh': not params.get('refresh', True)}, params.get('region'), **guides)
         if operation == 'sample_colors':
             fields(params, ('document_id', 'points'), ('points',))
             points = params['points']
@@ -390,14 +394,26 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             projection = doc.projection(0, 0, doc.width(), doc.height())
             if projection.isNull():
                 raise RuntimeError('Could not read canvas colours.')
+            # The paint, never a guide line over it (guide_craft.py): rebuilt around the sampled points only.
+            sampled, guides_note = projection, None
+            xs, ys = [p[0] for p in points], [p[1] for p in points]
+            near = [max(0, min(xs) - 8), max(0, min(ys) - 8)]
+            near += [min(doc.width(), max(xs) + 9) - near[0], min(doc.height(), max(ys) + 9) - near[1]]
+            owner = getattr(self, '_creative_session', None)
+            try:
+                clean, guides_note = self._guide_unguided(doc, projection, near, owner if owner and owner.get('document_id') == document_id(doc) else None)
+                sampled = clean if clean is not None else projection
+            except Exception as error:
+                guides_note = 'The guide lines could not be left out of these samples: ' + str(error)
             samples = []
             for x, y in points:
-                pixel = projection.pixelColor(x, y)
+                pixel = sampled.pixelColor(x, y)
                 samples.append({'position': [x, y], 'hex': '#%02x%02x%02x' % (pixel.red(), pixel.green(), pixel.blue()),
                                 'rgba': [pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()]})
             return {'status': 'ok', 'document_id': document_id(doc),
                     'revision': self._creative_revision(doc, projection), 'samples': samples,
-                    'source': 'Rendered canvas projection, 8-bit RGBA. These are observed colours, not an invented palette.'}
+                    'source': 'Rendered canvas projection, 8-bit RGBA. These are observed colours, not an invented palette.',
+                    **({'guides_note': guides_note} if guides_note else {})}
         if operation == 'list_passes':
             fields(params, ('output_dir',))
             session = getattr(self, '_creative_session', None)
@@ -464,8 +480,9 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                     'committed_operation_count': self._creative_committed_count(session),
                     'committed_stage_counts': counts}
         if operation == 'observe':
-            fields(params, ('region',))
-            observation = self._feature_observation(doc, self._creative_observe(doc, session, params.get('region')))
+            fields(params, ('region', 'guides'))
+            # guides: false is the painting as Luna and the review judge it, without the agent's guide lines.
+            observation = self._feature_observation(doc, self._creative_observe(doc, session, params.get('region'), **self._creative_guides_flag(params)))
             # Looks also list seams baked into the painting, found once a chat (on the whole canvas), as candidates for
             # the companion's Luna check (seams.py). Every look carries them: the studio looks before the painter does,
             # and a painter may only ever look at regions (run 15). The agent's own seams are select's open_edges.
@@ -499,6 +516,15 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         if operation == 'guides':
             # A view aid, not paint: no pass or checkpoint; restored when the chat ends.
             return self._guides_set(doc, session, params)
+        if operation == 'finish_guide':
+            # Hides an element's guide layers (guide_craft.py): not a pass; the guide passes follow their state.
+            return self._guide_finish(doc, session, params)
+        if operation == 'hide_guides':
+            # Every guide hidden in one step: a finished run or the end of a chat leaves no guide in the painting.
+            return self._guide_hide_all(doc, session, params)
+        if operation == 'view_options':
+            # While Luna checks the painting, every look also saves the view without guide lines (unguided_path).
+            return self._guide_view_options(session, params)
         if operation == 'list_brushes':
             fields(params, ('filter',))
             # The whole library: the companion adds a measured card to every preset (brush-catalog.json).
@@ -521,8 +547,9 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             self._creative_store_operations(session)
             return dict(self._creative_observe(doc, session), unresolved_operations=[],
                         committed_operation_count=self._creative_committed_count(session))
-        if operation not in ('paint_pass', 'adjust_layer', 'painting_toolbox', 'review_pass', 'create_layer', 'set_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp') + TOOL_OPERATIONS:
+        if operation not in ('paint_pass', 'adjust_layer', 'painting_toolbox', 'review_pass', 'create_layer', 'set_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp', 'draw_guide') + TOOL_OPERATIONS:
             raise ValueError('Unsupported creative operation')
+        self._guide_refuse_target(doc, session, operation, params)
         operation_id = text(request.get('operation_id'), 'operation_id', 100)
         fingerprint = hashlib.sha256(json.dumps([operation, {k: v for k, v in params.items() if k != 'expected_revision'}], sort_keys=True).encode()).hexdigest()
         previous = session['operations'].get(operation_id)
@@ -605,6 +632,10 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             self._native_validate_split(doc, session, params)
         elif operation == 'stamp':
             self._stamp_validate(doc, session, params)
+        elif operation == 'draw_guide':
+            if not on_fork():
+                raise ValueError('Guides need our Krita (the fork), which paints them on a layer of their own.')
+            self._guide_validate(doc, session, params)
         elif operation in TOOL_OPERATIONS:
             self._tool_validate(doc, session, operation, params)
         else:
@@ -676,6 +707,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 result.update(self._native_split(doc, session, params))
             elif operation == 'stamp':
                 result.update(self._stamp_apply(doc, session, params, result))
+            elif operation == 'draw_guide':
+                result.update(self._guide_draw(doc, session, params, result))
             elif operation in TOOL_OPERATIONS:
                 result.update(self._tool_apply(doc, session, operation, params, result))
             elif operation == 'paint_pass':
@@ -740,9 +773,9 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             result = dict(result, status='partial', error=str(error), error_code='partial_change')
         finally:
             try:
-                if operation != 'paint_pass' or not on_fork():
+                if operation not in STROKE_JOBS or not on_fork():
                     doc.waitForDone()                      # a write inside the move lands after the call returns (a job has been waited on: never end the artist's strokes)
-                if self._feature_call_writes(operation, params) and not (operation == 'paint_pass' and on_fork()):
+                if self._feature_call_writes(operation, params) and not (operation in STROKE_JOBS and on_fork()):
                     kept_names = self._feature_kept_out(doc)   # read before the move ends; a fork pass has its job's own names
             except RuntimeError:
                 pass                                       # the document was closed during the call
@@ -779,6 +812,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         except Exception as error:
             result.update(status='partial', error='Checkpoint failed: ' + str(error), error_code='checkpoint_failed')
         lap('checkpoint')
+        guide_record = result.pop('_guide', None)            # what a guide pass records (guide_craft.py), not for the painter
         layer_id = result.get('layer_id', params.get('layer_id'))
         if result.get('contribution_removed'): layer_id = None
         try:
@@ -792,7 +826,9 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                              group_id=result.get('group_id'),
                              projection_region=result.get('projection_region'),
                              projection_feather=result.get('projection_feather'),
-                             before_path=before.get('image_path'), after_path=result.get('image_path'),
+                             # The painting's own images, without guide lines: what the pass history and Luna compare.
+                             before_path=before.get('unguided_path') or before.get('image_path'),
+                             after_path=result.get('unguided_path') or result.get('image_path'),
                              source_layer_id=result.get('source_layer_id'), source_prior=result.get('source_prior'),
                              source_after=result.get('source_after'),
                              clip=result.get('clip'), clip_group_id=result.get('clip_group_id'),
@@ -801,6 +837,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                              comic=result.get('comic'), panel=params.get('panel'), merged_pass_ids=result.get('merged_pass_ids'),
                              prior=prior, after=state, strength=state['opacity'] / 255,
                              visible=state['visible'], rejected=False)
+                if operation == 'draw_guide':
+                    entry.update(kind='guide', element=result.get('element'), title='Guide · ' + str(result.get('element')), **(guide_record or {}))
                 session.setdefault('passes', []).append(entry)
                 self._creative_store_passes(session)
                 result['passes'] = self._creative_passes(session)
@@ -1163,7 +1201,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         # container remains untouched; new paint gets a new stage container.
         identifiers = {entry.get('group_id') for entry in session.get('passes', [])
                        if entry.get('stage_id') == stage_id and entry.get('group_id')}
-        top = children[-1] if children else None
+        # The guides group stays at the top of the painting (guide_craft.py): new paint goes under it.
+        top = next((child for child in reversed(children) if not (parent is None and self._guide_is_group(child, doc))), None)
         if top and top.uniqueId().toString() in identifiers:
             if (top.type() == 'grouplayer' and top.visible() and not top.locked() and
                     top.opacity() == 255 and top.blendingMode() == 'normal' and
@@ -1799,7 +1838,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             result.update({key: value for key, value in checkpoint.items() if key != 'status'})
             if checkpoint.get('image_path'):
                 for entry in affected:
-                    entry['after_path'] = checkpoint['image_path']
+                    entry['after_path'] = checkpoint.get('unguided_path') or checkpoint['image_path']
                 self._creative_store_passes(session)
         except Exception as error:
             result.update(status='partial', error='Checkpoint failed: ' + str(error), error_code='checkpoint_failed')
@@ -2044,9 +2083,12 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                                          {'size': getattr(self, 'current_brush_size', None), 'opacity': getattr(self, 'current_opacity', None)},
                                          stop=stop_requested.is_set)
 
-    def _creative_observe(self, doc, session, region=None):
+    def _creative_observe(self, doc, session, region=None, guides=True):
         # Where an observation's time goes: Krita's recomposite (refresh) against the plugin's own work
         # on the full-size canvas (read, revision hash, view encode, details). The canvas operation reports it.
+        # guides=False: the view is the painting without the agent's guide lines (guide_craft.py), for judging it;
+        # the revision is still the painting's own. With guides showing, a look that keeps them also saves the view
+        # without them (unguided_path), which the pass history and Luna compare.
         parts, clock = {}, [time.monotonic()]
         def lap(part):
             now = time.monotonic(); parts[part] = int((now - clock[0]) * 1000); clock[0] = now
@@ -2063,23 +2105,28 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         lap('revision')
         if region:
             self._creative_region(region, doc.width(), doc.height())
-        image = self._creative_view_image(doc, projection, region)
+        unguided, guides_note = None, None
+        if not guides or session.get('unguided_views'):   # the view without guides only for whoever judges it
+            try:
+                unguided, guides_note = self._guide_unguided(doc, projection, region, session)
+            except Exception as error:                   # a look must never fail for its guides: they stay in it
+                guides_note = 'The guide lines could not be left out of this view: ' + str(error)
+        lap('guides')
+        shown = unguided if unguided is not None and not guides else projection
+        image = self._creative_view_image(doc, shown, region, scaled_read=shown is projection)
         lap('scale')
         scale = round(image.width() / (region[2] if region else doc.width()), 3)
         previews = os.path.join(session['output'], '.previews')
         os.makedirs(previews, exist_ok=True)
-        # The whole-canvas view goes to the model after every action and stays in the chat log:
-        # as a 1024-px PNG it was ~1.2 MB per action, as JPEG ~0.2 MB with no difference a model
-        # can use. Zoomed crops (texture detail) and canvases with transparency stay PNG.
-        jpeg = not region and not self._creative_has_transparency(image)
-        filename = os.path.join(previews, 'view-' + uuid.uuid4().hex + ('.jpg' if jpeg else '.png'))
-        if not image.save(filename, 'JPEG' if jpeg else 'PNG', VIEW_JPEG_QUALITY if jpeg else -1):
-            raise RuntimeError('Could not save the canvas observation')
+        filename = self._creative_save_view(previews, image, region)
+        unguided_path = None
+        if unguided is not None and guides:
+            unguided_path = self._creative_save_view(previews, self._creative_view_image(doc, unguided, region, scaled_read=False), region)
         lap('view')
         # The details, each timed: on merged New Moscow they took 270 ms an observation together (runs 5-8).
         layers = self._creative_layer_list(doc); lap('layers')
         # Whole-canvas views say how much of the canvas is painted, so a blank document is not taken for a painting.
-        painted = None if region else self._creative_painted_share(projection); lap('painted')
+        painted = None if region else self._creative_painted_share(shown); lap('painted')
         with open(filename, 'rb') as stream:
             content_id = hashlib.sha256(stream.read()).hexdigest()
         lap('content')
@@ -2095,18 +2142,44 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 'layers': layers, 'weight': weight, 'filename': doc.fileName(), 'modified': doc.modified(),
                 **({'painted_share': painted} if painted is not None else {}),
                 'observed_at': captured_at, 'artist_focus': focus, 'comic': comic, 'protected_areas': protected}
+        if unguided_path:
+            observation['unguided_path'] = unguided_path
+        if unguided is not None and not guides:
+            observation['guides_hidden'] = True
+        if guides_note:
+            observation['guides_note'] = guides_note
         session['observe_ms'] = parts
         return observation
 
-    def _creative_view_image(self, doc, projection, region=None):
+    def _creative_save_view(self, previews, image, region):
+        """Save a view image in the previews folder: its path."""
+        # The whole-canvas view goes to the model after every action and stays in the chat log:
+        # as a 1024-px PNG it was ~1.2 MB per action, as JPEG ~0.2 MB with no difference a model
+        # can use. Zoomed crops (texture detail) and canvases with transparency stay PNG.
+        jpeg = not region and not self._creative_has_transparency(image)
+        filename = os.path.join(previews, 'view-' + uuid.uuid4().hex + ('.jpg' if jpeg else '.png'))
+        if not image.save(filename, 'JPEG' if jpeg else 'PNG', VIEW_JPEG_QUALITY if jpeg else -1):
+            raise RuntimeError('Could not save the canvas observation')
+        return filename
+
+    @staticmethod
+    def _creative_guides_flag(params):
+        """An observe's or peek's guides flag as keyword arguments for _creative_observe ({} for the default, true)."""
+        guides = params.get('guides', True)
+        if not isinstance(guides, bool):
+            raise ValueError('guides must be true or false')
+        return {} if guides else {'guides': False}
+
+    def _creative_view_image(self, doc, projection, region=None, scaled_read=True):
         """The view the model sees: the canvas, or `region` of it, shrunk to VIEW_SIDE when larger. A larger crop would
         be shrunk by the model API anyway, without the model knowing: shrink it here and report the scale, so "actual
         pixels" is only claimed when it is true. On the fork one scaled read of the area (canvas_projection.read_scaled,
         area-averaged as Qt's smooth scale); else the full-size projection already read for the revision, cropped and
-        scaled with Qt."""
+        scaled with Qt. scaled_read=False: `projection` is an image the plugin made (the painting without guides), so it is
+        always the one scaled."""
         area = list(region) if region else [0, 0, doc.width(), doc.height()]
         side = max(area[2], area[3])
-        if side > VIEW_SIDE:
+        if side > VIEW_SIDE and scaled_read:
             image = canvas_projection.read_scaled(doc, area, VIEW_SIDE / side)
             if image is not None:
                 return image
@@ -2126,15 +2199,25 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         try:
             import numpy as np
             from . import seams
-            from .qt_compat import QImage, image_bytes
             projection = doc.projection(0, 0, doc.width(), doc.height())
-            bgra = np.frombuffer(image_bytes(projection.convertToFormat(QImage.Format.Format_ARGB32)), np.uint8).reshape(doc.height(), doc.width(), 4)
+            try:
+                clean, _note = self._guide_unguided(doc, projection, None, session)   # a guide line is never a seam
+            except Exception:
+                clean = None
+            bgra = self._creative_image_bgra(clean if clean is not None else projection)
             started = time.monotonic()
             found = seams.close_ups(bgra, seams.candidates(bgra), os.path.join(session['output'], '.seams'))
             session.setdefault('observe_ms', {})['seams'] = int((time.monotonic() - started) * 1000)
             return found
         except Exception:
             return []                                    # a hint must never stop an observation
+
+    @staticmethod
+    def _creative_image_bgra(image):
+        """An image's pixels as a numpy array (height x width x BGRA)."""
+        import numpy as np
+        from .qt_compat import QImage, image_bytes
+        return np.frombuffer(image_bytes(image.convertToFormat(QImage.Format.Format_ARGB32)), np.uint8).reshape(image.height(), image.width(), 4)
 
     def _creative_painted_share(self, projection):
         from .qt_compat import QImage

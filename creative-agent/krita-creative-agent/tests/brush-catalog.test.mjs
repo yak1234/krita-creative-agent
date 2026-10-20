@@ -68,6 +68,16 @@ test('tool calling: name the Krita method first, and do not look again without a
   assert.match(rules, /without a change/);
 });
 
+test('the prompt names the guided-trace skill and stays under 13330 characters', () => {
+  assert.match(section('painting'), /load the `guided-trace` skill/, 'one line in <painting> points to the skill');
+  assert.match(section('painting'), /draw_guide/);
+  assert.ok(PAINTING_INSTRUCTIONS.length <= PROMPT_BASELINE, `${PAINTING_INSTRUCTIONS.length} > ${PROMPT_BASELINE}`);
+  const skill = readFileSync(new URL('../skills/guided-trace/SKILL.md', import.meta.url), 'utf8');
+  assert.match(skill, /^---\nname: guided-trace\ndescription: /);
+  for (const term of ['draw_guide', 'finish_guide', 'goal image', 'element reference', 'reference_id', 'paint_from_reference'])
+    assert.ok(skill.includes(term), term);
+});
+
 test('every bundled skill has a trigger line in the prompt', () => {
   const skills = readdirSync(new URL('../skills/', import.meta.url), { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name);
   assert.ok(skills.includes('repaint-area') && skills.includes('repeat-motif'));

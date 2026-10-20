@@ -93,7 +93,12 @@ export function approvedReviewScope(changes=[]) {
 export const restoredReviewStart = goal => goal?.review_start_index ?? goal?.reviews?.length ?? 0;
 const jsonResult = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }], details: value });
 const MODEL_IMAGE_SIDE = 1568;        // long side; Claude and GPT downscale larger images to about this
-const mutates = op => ['paint_pass','adjust_layer','painting_toolbox','stamp',...CRAFT_OPERATIONS,...COMIC_OPERATIONS].includes(op);
+const mutates = op => ['paint_pass','adjust_layer','painting_toolbox','stamp','draw_guide',...CRAFT_OPERATIONS,...COMIC_OPERATIONS].includes(op);
+// Guided trace (guide-tool.ts): offered in Agent and Autopilot painting while the guides setting is on.
+const GUIDE_TOOLS = ['draw_guide','finish_guide'];
+// The image Luna and the reviewer judge: the painting without the agent's guide lines. While guides show, the plugin's looks
+// carry the view without them (unguided_path, guide_craft.py); without guides it is the view itself.
+const judgedImage = observation => observation?.unguided_path ?? observation?.image_path;
 const stamp = () => new Date().toISOString();
 
 export const STUDIO_INSTRUCTIONS = `You are Creative Agent, a painting collaborator inside Krita, powered by Agent Pi.
@@ -422,12 +427,12 @@ export class StudioRuntime extends PaintingRuntime {
       unmet:review.checks.filter(c=>!c.met).map(c=>review.criteria_text?.[c.id] ?? c.id)};
     // One request per painting call: the current and next steps' visible checks, "finished?",
     // and, when the call painted, whether it introduced a known artifact (BEFORE vs AFTER).
-    const painted=this.callPasses(call,response).filter(entry=>!LAYER_SETTINGS.includes(entry.kind) && entry.before_path);
+    const painted=this.callPasses(call,response).filter(entry=>!LAYER_SETTINGS.includes(entry.kind) && entry.kind!=='guide' && entry.before_path);
     const closeUp=await this.paceCloseUp(call,response);
     const ask={steps,currentStep:step,mistakes:painted.length>0,closeUp:!!closeUp};
     let decision, result;
     try {
-      const canvas=(await imageContent(this.study.directory,canvasPath)).content;
+      const canvas=(await imageContent(this.study.directory,judgedImage(response.details) ?? canvasPath)).content;
       const before=ask.mistakes ? (await imageContent(this.study.directory,painted[0].before_path)).content : null;
       const questions=paceQuestions(ask);
       result=await (await this.luna()).decide({purpose:'pace-run',signal:this.lunaSignal(),questions,
@@ -557,9 +562,9 @@ export class StudioRuntime extends PaintingRuntime {
         const start=this.batchStarts?.get(id); this.batchStarts?.delete(id);
         const latest=details?.passes ?? this.lastObservation?.passes ?? [];
         const made=start ? latest.filter(entry=>!start.has(entry.id)) : this.callPasses({id,tool,args},{details});
-        return made.filter(entry=>entry.kind!=='stage' && !LAYER_SETTINGS.includes(entry.kind) && entry.before_path);
+        return made.filter(entry=>entry.kind!=='stage' && entry.kind!=='guide' && !LAYER_SETTINGS.includes(entry.kind) && entry.before_path);
       },
-      canvas: () => this.lastObservation?.image_path,
+      canvas: () => judgedImage(this.lastObservation),
       features: async () => {
         try {
           const listed=await super.callNative('protection_list',{},randomUUID());
@@ -622,7 +627,7 @@ export class StudioRuntime extends PaintingRuntime {
     if (!region || !details.revision) return null;
     try {
       // No recomposite: the canvas was just observed, and a crop of any other revision is dropped.
-      const crop=await this.bridge.call('peek',{output_dir:this.study.directory,region,refresh:false,...(details.document_id ? {document_id:details.document_id} : {})},this.study.id);
+      const crop=await this.bridge.call('peek',{output_dir:this.study.directory,region,refresh:false,...(this.guidesView ? {guides:false} : {}),...(details.document_id ? {document_id:details.document_id} : {})},this.study.id);
       if (crop?.revision!==details.revision || !crop.image_path) return null;
       return {region,content:(await imageContent(this.study.directory,crop.image_path)).content};
     } catch { return null; }
@@ -648,7 +653,7 @@ export class StudioRuntime extends PaintingRuntime {
     const run=async()=>{
       let check;
       try {
-        const image=(await imageContent(study.directory,canvas.image_path)).content;
+        const image=(await imageContent(study.directory,judgedImage(canvas))).content;
         const reference=study.references?.[0] ? (await imageContent(study.directory,study.references[0].path)).content : null;
         check=await layerNeedCheck({client:await this.luna(),canvas:image,reference,area:label,signal});
       } catch { check={fallback:'service_or_response_error'}; }
@@ -670,6 +675,7 @@ export class StudioRuntime extends PaintingRuntime {
     if (mode==='off' || !entry?.before_path || !entry?.after_path) return;
     // Opacity, blend and style changes cannot introduce a painted artifact (6 of 82 checked were false alarms).
     if (LAYER_SETTINGS.includes(entry.kind)) return;
+    if (entry.kind === 'guide') return;                     // construction lines, never judged as the painting
     // Autopilot with Guide asks this once per painting call, in the pacing request (afterPainting).
     if (mode==='guide' && this.mode==='autopilot' && this.executionPhase==='agent') return;
     // An Agent move's batches are reviewed whole by Luna review (extensions/luna-review.ts, reviewHost).
@@ -740,7 +746,7 @@ export class StudioRuntime extends PaintingRuntime {
     let image;
     const observed=this.decisionObservation;
     if (observed?.image_path && (this.canvasSelection?.selected || this.executionPhase==='agent')) {
-      try { image=(await imageContent(this.study?.directory ?? join(this.config.output,'previews',this.previewId),observed.image_path)).content; }
+      try { image=(await imageContent(this.study?.directory ?? join(this.config.output,'previews',this.previewId),judgedImage(observed))).content; }
       catch { image=undefined; }
     }
     if(controller.signal.aborted || this.cancelRequested)return;
@@ -759,6 +765,7 @@ export class StudioRuntime extends PaintingRuntime {
   applyExecutionSettings() {
     this.applyPhaseReasoning(this.executionPhase);
     if (this.session && this.executionPhase === 'agent') this.selectTools('agent');     // native_craft offers or hides tools
+    this.syncViewOptions().catch(()=>{});                                               // Luna on or off: the views without guides follow
     this.guardEvents?.emit(GUARDS_CHANNEL, { native_craft: this.executionSettings?.native_craft !== false });   // loop-guards.ts
     this.emitExecutionSettings();
   }
@@ -834,7 +841,7 @@ export class StudioRuntime extends PaintingRuntime {
     // Skills (read opens skill files only) and image assets, while planning and painting.
     if (vision && (phase === 'plan' || phase === 'agent')) names.push('read','make_asset','run_skill_script');
     if (phase === 'plan' && this.mode === 'autopilot' && this.goal?.brief) names.push('start_painting');
-    if (phase === 'agent') names.push('propose_protection','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','list_brushes','paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer',...CRAFT_TOOLS,'letter','finish_move','painting_toolbox','painting_tool_help','ask_question','record_progress','request_review');
+    if (phase === 'agent') names.push('propose_protection','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','list_brushes','paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer',...CRAFT_TOOLS,...GUIDE_TOOLS,'letter','finish_move','painting_toolbox','painting_tool_help','ask_question','record_progress','request_review');
     // Agent (collaborative) paints one move per turn: no review or progress bookkeeping tools.
     // With Luna pacing, Autopilot's host tracks plan steps; request_review stays as a backstop.
     const hidden = phase !== 'agent' ? [] : this.mode === 'agent' ? ['record_progress','request_review','ask_question',...(this.executionSettings?.move_size === 'quick' ? ['finish_move'] : [])]
@@ -884,6 +891,7 @@ export class StudioRuntime extends PaintingRuntime {
   }
   toolOffered(name) {
     if (name === 'letter') return !!this.goal?.comic;
+    if (GUIDE_TOOLS.includes(name)) return this.forkTools === true && this.executionSettings?.guides !== false;   // our Krita only, and the setting
     if (name === 'krita_action' && !(this.kritaActions > 0)) return false;     // an unaudited Krita: it would always refuse
     if (FORK_TOOLS.includes(name) && this.forkTools !== true) return false;     // stock Krita, or a plugin too old to say: it would always refuse
     return this.executionSettings?.native_craft !== false || !CRAFT_TOOLS.includes(name);
@@ -1412,7 +1420,7 @@ export class StudioRuntime extends PaintingRuntime {
         painting_path:path,editable_layers:this.study.editable_layers ?? []});
       this.study.bound = true; this.study.needs_resume = false; this.study.target_document_id = result.document_id;
       this.applyNativeRecovery(result);
-      this.lastObservation = result; await resultContent(this,result); await this.persist(); return;
+      this.lastObservation = result; await resultContent(this,result); await this.persist(); await this.syncViewOptions(); return;
     }
     if (this.study.canvas?.mode === 'current') {
       const canvas = this.canvasContext.canvas;
@@ -1439,7 +1447,7 @@ export class StudioRuntime extends PaintingRuntime {
     this.study.bound = true; this.study.binding_started = false; this.study.target_document_id = result.document_id;
     this.applyNativeRecovery(result);
     await writeFile(join(this.config.output, 'active-session.json'), JSON.stringify({ id:this.study.id }), { mode:0o600 });
-    await resultContent(this, result); await this.persist();
+    await resultContent(this, result); await this.persist(); await this.syncViewOptions();
   }
   async useAttachedCanvas() {
     return (await this.sessionTransition('choosing a painting',()=>this._useAttachedCanvas())).value;
@@ -1493,13 +1501,16 @@ export class StudioRuntime extends PaintingRuntime {
     // hard-edged area as a flat block; a filter layer is just as live. An Agent move bakes the filter instead.
     if (operation === 'apply_filter' && this.mode === 'agent' && (params.mode ?? 'mask') !== 'copy')
       throw new Error('An Agent move adds no live filter masks or filter layers: they recompute on every refresh. Use mode copy (filters a copy of your layer), with a feathered selection or area.');
-    if (mutates(operation)) {
+    // finish_guide changes what shows (it hides a guide), so it waits like a painting call; it is idempotent, so not journalled.
+    if (mutates(operation) || operation === 'finish_guide') {
       if (!isPaintingMode(this.mode) || this.executionPhase !== 'agent' || this.goal?.status !== 'active' || this.cancelRequested || this.goal.question)
         throw new Error('Painting is disabled in Ask, Plan, or a paused run.');
       if (this.mode === 'autopilot' && this.goal.approved_revision !== this.goal.revision) throw new Error('The revised plan must be started in Autopilot.');
       if (this.mode === 'agent' && this.currentMove?.luna_stopped) throw new Error(`Luna stopped this move for the artist: ${this.currentMove.luna_stopped} Do not paint until they answer.`);
       if (this.allowanceExceeded()) { this.goal.status = 'limited'; this.yieldRequested = true; throw new Error('Painting allowance reached.'); }
       if (!this.decisionObservation?.revision) throw new Error('A fresh canvas revision is required before painting. Inspect the canvas first.');
+    }
+    if (mutates(operation)) {
       // stage_id groups passes by plan step in the pass history; it no longer gates painting.
       params = {...params,expected_revision:this.decisionObservation.revision,
         // An Agent move's passes form one group, so Undo rejects the whole move.
@@ -1614,7 +1625,7 @@ export class StudioRuntime extends PaintingRuntime {
     let check = null;
     if (this.lunaMode()!=='off' && before?.image_path && current.image_path) {
       try {
-        const [b,a] = await Promise.all([before.image_path,current.image_path].map(path=>imageContent(this.study.directory,path)));
+        const [b,a] = await Promise.all([judgedImage(before),judgedImage(current)].map(path=>imageContent(this.study.directory,path)));
         check = await passCheck({client:await this.luna(),before:b.content,after:a.content,signal:this.lunaSignal()});
       } catch { check = {fallback:'service_or_response_error'}; }
     }
@@ -1781,6 +1792,7 @@ export class StudioRuntime extends PaintingRuntime {
       await this.mergeKept(['move-'+move.number], () => 'Move '+move.number+' · '+String(move.title ?? 'kept').slice(0,80));
       // Keep always asking for "the next move" polished a finished Rothko for six more moves (a traced run, 32 minutes).
       if (move.request_done) {
+        await this.hideGuides();                                 // the request is done: its guides go
         this.goal.status = 'complete'; await this.persist(); this.publish();               // the panel shows Finished
         this.setActivity('idle', `Kept. Move ${move.number} finished your request. Describe what to paint next.`);
         return;
@@ -1894,6 +1906,7 @@ export class StudioRuntime extends PaintingRuntime {
         await this.reviewProgress();
         if (review.verdict === 'complete') {
           this.goal.status='complete';
+          await this.hideGuides();                                 // no guide reaches the finished painting
           await this.mergeKept((this.goal.brief?.steps ?? []).map((_,i)=>'stage-'+this.goal.revision+'-'+i), stage => 'Step '+(Number(stage.split('-').at(-1))+1)+' · '+String(this.goal.brief.steps[Number(stage.split('-').at(-1))]?.title ?? '').slice(0,80));
           this.setActivity('idle','Visual review passed. The painting is finished.'); break;
         }
@@ -2008,10 +2021,38 @@ export class StudioRuntime extends PaintingRuntime {
       if (result?.checkpoint) this.study.painting_file = relative(this.paintingsDirectory,result.checkpoint);
     } catch (error) { this.diagnostics?.record({type:'checkpoint_flush_failed',message:this.redact(error.message)}); }
   }
+  /** The painting without the agent's guide lines, from a plugin that can show it (health guides_view); an older plugin, or one
+   * that refuses the flag, gives the canvas as it shows, and the diagnostics say the image may have guides. */
+  async observeJudged() {
+    if (this.guidesView) {
+      try { return await this.callNative('observe', {guides:false}); }
+      catch (error) {
+        if (!/Unknown parameters/.test(String(error?.message ?? ''))) throw error;
+        this.guidesView = false;
+        this.diagnostics?.record({type:'guides_view_refused',message:'The plugin refused observe guides:false; the reviewed image may show guide lines.'});
+      }
+    } else this.diagnostics?.record({type:'guides_view_unavailable',message:'This plugin cannot leave guide lines out; the reviewed image may show them.'});
+    return this.callNative('observe');
+  }
+  /** Every guide hidden in one step (hide_guides): a finished painting or an ended chat never keeps one showing. */
+  async hideGuides(id = this.study?.id) {
+    if (!this.guidesView || !id) return;
+    try {
+      const result = await this.bridge.call('hide_guides', {}, id);
+      if (result?.note) this.emit({type:'action', seconds:0, message:result.note});
+      if (result?.hidden) this.emit({type:'action', seconds:0, message:`Hid ${result.hidden} guide layer${result.hidden === 1 ? '' : 's'}.`});
+    } catch (error) { this.diagnostics?.record({type:'hide_guides_failed', message:this.redact(error.message)}); }
+  }
+  /** While Luna checks the painting, the plugin also saves each look without guide lines (view_options). */
+  async syncViewOptions() {
+    if (!this.guidesView || !this.study?.bound) return;
+    try { await this.bridge.call('view_options', {unguided_views:this.lunaMode() !== 'off'}, this.study.id); }
+    catch (error) { this.diagnostics?.record({type:'view_options_failed', message:this.redact(error.message)}); }
+  }
   async reviewCanvas() {
     this.goal.status = 'reviewing'; this.executionPhase = 'review'; this.publish();
     await this.flushCheckpoint();
-    const canvas = await this.callNative('observe');
+    const canvas = await this.observeJudged();                            // the painting as it is judged, without guide lines
     const operationEvidence = await this.bridge.call('list_passes',{output_dir:this.study.directory},this.study.id);
     const technicalEvidence = {source:'Native Krita document and persisted operation journal',document:{filename:canvas.filename,modified:canvas.modified,width:canvas.width,height:canvas.height},layers:canvas.layers,operations:(operationEvidence.passes ?? []).filter(p=>!p.is_stage).map(p=>({id:p.id,kind:p.kind,layer_id:p.layer_id,source_layer_id:p.source_layer_id,rejected:p.rejected,stage_id:p.stage_id})),unresolved_operations:this.study.unresolved_operations ?? []};
     this.lastObservation = canvas;
@@ -2189,6 +2230,7 @@ export class StudioRuntime extends PaintingRuntime {
     }
   }
   async releaseNativeOwnership(id) {
+    await this.hideGuides(id);                                   // a chat that ends leaves no guide showing
     try { await this.bridge.call('end',{},id); }
     catch(error) {
       // A restarted bridge may have no owner. Verify that authoritative state

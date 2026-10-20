@@ -249,7 +249,7 @@ test('Codex is the default image backend: the sign-in, a transparent cut-out fro
 
 test('workflow skills are reusable slash commands: /name and /skill:name both expand; other /words stay as typed', async () => {
   const names = listSkills().map(s => s.name).sort();
-  assert.deepEqual(names, ['fix-region', 'image-asset', 'paint-scene', 'paint-sky', 'place-subject', 'reference-transfer', 'repaint-area', 'repeat-motif']);
+  assert.deepEqual(names, ['fix-region', 'guided-trace', 'image-asset', 'paint-scene', 'paint-sky', 'place-subject', 'reference-transfer', 'repaint-area', 'repeat-motif']);
   for (const skill of listSkills()) assert.ok(skill.description.length >= 60 && skill.description.length <= 1024, skill.name + ' has a usable description');
   const sky = expandSkillCommand('/paint-sky a stormy dusk');
   assert.match(sky, /^<skill name="paint-sky"/);
@@ -269,6 +269,9 @@ test('workflow skills are reusable slash commands: /name and /skill:name both ex
     for (const tool of text.match(/\b(select|split_by_color|fill_region|apply_filter|clone_layer|transform_layer|krita_action|krita_capabilities|sample_canvas_colors|observe_canvas|set_layer|paint_recipe|create_layer|paint_from_reference|paint_reference_edges|paint_reference_surface|continue_reference_painting|list_reference_paintings|paint_contours|paint_pass)\b/g) ?? [])
       assert.ok(tools.has(tool), name + ' names ' + tool);
   }
+  const trace = await readFile(join(SKILLS_DIR, 'guided-trace', 'SKILL.md'), 'utf8');
+  for (const tool of trace.match(/\b(draw_guide|finish_guide|view_reference|paint_from_reference|paint_contours|paint_pass|fill_region)\b/g) ?? [])
+    assert.ok(tools.has(tool), 'guided-trace names ' + tool);
 });
 
 test('the painter is told its AI image allowance; with no limit, assets are free only on the Codex plan', async () => {

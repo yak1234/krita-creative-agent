@@ -5,6 +5,8 @@ import { Value } from 'typebox/value';
 import { createHash } from 'node:crypto';
 import { imageContent } from './files.mjs';
 import {referenceTools} from './reference-tool.mjs';
+import { mapReferencePoint } from './reference-generator.mjs';
+import { guideTools } from './guide-tool.ts';
 import { recipeTool } from './recipe-tool.mjs';
 import { contourTool } from './contour-tool.mjs';
 import { brushCards } from './brush-catalog.mjs';
@@ -68,7 +70,7 @@ const stroke = object({
 const LAYER_INDEX_LIMIT = 8000;
 const FEATURES_LIMIT = 3000;
 const HOST_ONLY = ['passes','image_path','path','checkpoint','painting_path','before_path','after_path','document_id',
-  'captured_at','content_id','save_number','checkpoint_deferred','unsaved_operations','source_prior','source_after','prior','after','timings_ms','weight','seam_candidates','save_job','previous_save','background_refused'];
+  'captured_at','content_id','save_number','checkpoint_deferred','unsaved_operations','source_prior','source_after','prior','after','timings_ms','weight','seam_candidates','save_job','previous_save','background_refused','unguided_path','guides_hidden'];
 export function modelResultText(result, {compactLayers=false,focusLayerIds=[],limit=compactLayers?2000:6000}=/** @type {{compactLayers?: boolean, focusLayerIds?: any[], limit?: number}} */ ({})) {
   let model=Object.fromEntries(Object.entries(result ?? {}).filter(([key,value])=>!HOST_ONLY.includes(key) && value!==undefined));
   if (compactLayers && Array.isArray(result?.layers)) {
@@ -314,6 +316,8 @@ export function paintingTools(runtime) {
   tools.push(recipeTool(runtime, tools.find(t=>t.name==='paint_pass').execute));
   tools.push(contourTool(runtime, tools.find(t=>t.name==='painting_toolbox').execute));
   tools.push(...referenceTools(runtime,tools.find(t=>t.name==='paint_pass').execute,tools.find(t=>t.name==='fill_region').execute));
+  // Guided trace: construction lines on the element's own guide layer (guide-tool.ts), mapped from reference pixels as above.
+  tools.push(...guideTools(runtime, { execute: operation => nativeExecute(runtime, operation), mapPoint: mapReferencePoint }));
   tools.push(batchTool(tools, name => runtime.toolOffered?.(name) ?? true));
   tools.push(...assetTools(runtime), skillReadTool());
   return tools;

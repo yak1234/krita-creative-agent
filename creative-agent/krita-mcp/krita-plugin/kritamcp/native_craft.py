@@ -188,6 +188,8 @@ class NativeCraft:
         found, groups = [], []
         def walk(node, inside):
             for child in node.childNodes():
+                if self._guide_is_group(child, doc):
+                    continue                               # hidden guides stay: the artist may show one again (guide_craft.py)
                 agent = child.type() == 'grouplayer' and child.name().startswith(AGENT_GROUP)
                 if agent:
                     groups.append(child)
@@ -224,7 +226,8 @@ class NativeCraft:
         fields(params, ('dry_run',))
         dry = params.get('dry_run', True) is not False
         root = doc.rootNode()
-        agent = lambda n: n.type() == 'grouplayer' and n.name().startswith(AGENT_GROUP) and n.visible()
+        guides = self._guide_group(doc)                   # by id: a guides group moved into a stage group keeps it unmerged
+        agent = lambda n: n.type() == 'grouplayer' and n.name().startswith(AGENT_GROUP) and n.visible() and not self._guide_holds(n, guides)
         runs, run, empty = [], [], []
         for child in root.childNodes():                       # bottom to top
             if agent(child) and not child.childNodes():
@@ -318,7 +321,8 @@ class NativeCraft:
         fields(params, ('stage_id',), ('stage_id',))
         stage = text(params['stage_id'], 'stage_id', 100)
         passes = [e for e in session.get('passes', []) if e.get('stage_id') == stage]
-        candidates = {e['layer_id'] for e in passes if e.get('rejected') and e.get('layer_id')}
+        # Never a guide: a rejected move's guide stays hidden for the artist, as a finished one does (guide_craft.py).
+        candidates = {e['layer_id'] for e in passes if e.get('rejected') and e.get('layer_id') and e.get('kind') != 'guide'}
         candidates |= {e['source_layer_id'] for e in passes if e.get('source_layer_id') and not e.get('rejected')}
         removed = []
         for identifier in sorted(candidates):

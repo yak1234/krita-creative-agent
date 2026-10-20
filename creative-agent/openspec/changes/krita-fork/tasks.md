@@ -163,7 +163,7 @@
 - [ ] 4.3 Canvas overlays: protected areas, Luna's findings, the move in progress.
 
 ## 5. Native agent craft (`native-agent-craft`)
-- [ ] 5.1 `createBrushTip` and `createPreset` from scripts, without a restart; material-stamp offers Krita-brush stamps.
+- [x] 5.1 `createBrushTip` and `createPreset` from scripts, without a restart; material-stamp offers Krita-brush stamps.
 - [x] 5.2 `mergeGroups` and `FilterMask.bake` on `KisImage::mergeMultipleLayers` and `flattenLayer`;
   `merge_agent_work` uses them.
   *(Fork side merged 020af6a, after one review and a fix pass: `Krita.createBrushTip` / `createPreset` replace only the

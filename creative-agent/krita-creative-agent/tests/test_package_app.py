@@ -1314,6 +1314,36 @@ class SigningReportTests(unittest.TestCase):
         self.assertIn('(allow default)', profile)
 
 
+class AppIconTests(unittest.TestCase):
+    """The app's icon (Info.plist CFBundleIconFile 'krita' -> Resources/krita.icns) is Toska's emblem, from
+    creative-agent/docs/branding/Toska.icns; the document icons (.kra, .krz) stay Krita's: they are Krita's file formats."""
+
+    class Stub(package_app.Packager):
+        def __init__(self, resources):
+            self.resources, self.log = pathlib.Path(resources), (lambda *_: None)
+
+    def test_the_app_icon_is_toskas_and_the_document_icons_stay(self):
+        with tempfile.TemporaryDirectory(prefix='krita-agent-test-') as root:
+            resources = pathlib.Path(root) / 'Resources'
+            resources.mkdir()
+            for name in ('krita.icns', 'krita-kra.icns', 'krita-krz.icns'):
+                (resources / name).write_bytes(b'icns-from-the-build-' + name.encode())
+            self.Stub(resources).brand_icon()
+            branding = package_app.ROOT / 'creative-agent' / 'docs' / 'branding' / 'Toska.icns'
+            self.assertEqual((resources / 'krita.icns').read_bytes(), branding.read_bytes())
+            self.assertEqual((resources / 'krita-kra.icns').read_bytes(), b'icns-from-the-build-krita-kra.icns')
+            self.assertEqual((resources / 'krita-krz.icns').read_bytes(), b'icns-from-the-build-krita-krz.icns')
+
+    def test_a_missing_branding_icon_refuses_instead_of_shipping_krita_s(self):
+        with tempfile.TemporaryDirectory(prefix='krita-agent-test-') as root:
+            resources = pathlib.Path(root) / 'Resources'
+            resources.mkdir()
+            (resources / 'krita.icns').write_bytes(b'x')
+            stub = self.Stub(resources)
+            with self.assertRaises(package_app.Refused):
+                stub.brand_icon(source=pathlib.Path(root) / 'nope.icns')
+
+
 class CompanionInTheAppTests(unittest.TestCase):
     """Packager.copy_release: the companion of a build-release.py release goes into Resources/creative-agent, checked."""
 

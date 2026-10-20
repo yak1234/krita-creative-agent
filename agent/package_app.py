@@ -549,6 +549,15 @@ class Packager:
                 self.sources[str(self.macos / name)] = str(source)
         for icon in (app / 'Contents/Resources').glob('*.icns'):
             self.copy_file(icon, self.resources / icon.name)
+        self.brand_icon()
+
+    def brand_icon(self, source=None):
+        """The app's icon is Toska's emblem: Info.plist names `krita` (CFBundleIconFile), so Resources/krita.icns is replaced by
+        creative-agent/docs/branding/Toska.icns. The .kra/.krz document icons stay Krita's: they are Krita's file formats."""
+        source = Path(source) if source else ROOT / 'creative-agent' / 'docs' / 'branding' / 'Toska.icns'
+        if not source.is_file():
+            raise Refused('no app icon at %s' % source)
+        shutil.copy2(source, self.resources / 'krita.icns')
 
     def copy_resources(self):
         keep_out = {'aclocal', 'doc', 'ECM', 'eigen3', 'emacs', 'gettext', 'gettext-0.21', 'info', 'kf5', 'man', 'ocio',

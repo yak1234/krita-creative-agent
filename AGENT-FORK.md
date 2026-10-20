@@ -723,9 +723,10 @@ bundled plugin.
 
 **Logo.** `creative-agent/docs/branding/toska-logo.png` (the artist's logo, 2172 x 724, transparent), `toska-emblem.png` (the
 T emblem alone, a 1024 x 1024 square with margin, the lettering cleared) and `Toska.icns` (the PNGs total about 2.6 MB: no lossless PNG optimiser (oxipng, optipng, zopflipng) is installed here, so they are not recompressed; run one over them if the repository size matters) (made from the emblem with
-`sips`/`iconutil` sizes 16 to 512 @2x; transparent background, check it in the Dock and Finder). **TODO, not wired yet:** the app
-still shows Krita's icon. To use it: copy `Toska.icns` over `Contents/Resources/krita.icns` in `agent/package_app.py` (the
-bundle's `CFBundleIconFile` is `krita`) and in `krita/CMakeLists.txt` for the install-tree app, plus the in-app splash and
+`sips`/`iconutil` sizes 16 to 512 @2x; transparent background, check it in the Dock and Finder). **Wired in the packaged app (20 Oct):**
+`Packager.brand_icon` copies `Toska.icns` over `Contents/Resources/krita.icns` (the bundle's `CFBundleIconFile` is `krita`;
+there is no `Assets.car`), and the `.kra`/`.krz` document icons stay Krita's. **Still TODO:** `krita/CMakeLists.txt` for the
+install-tree app, plus the in-app splash and
 About-box pictures (`krita/pics`, `libs/ui` resources), which still show Krita's artwork. The artist decides whether the icon
 wants an opaque rounded background.
 

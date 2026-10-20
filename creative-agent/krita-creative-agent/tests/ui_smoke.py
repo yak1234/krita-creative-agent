@@ -807,6 +807,10 @@ panel.handle_event({'type': 'decisions', 'endpoint': 'openrouter', 'selection': 
     'endpoints': [{'id': 'openrouter', 'name': 'OpenRouter', 'custom': False, 'key_configured': True, 'key_hint': ''},
                   {'id': 'openai', 'name': 'OpenAI', 'custom': False, 'key_configured': False, 'key_hint': 'An OpenAI API key'}],
     'models': [{'id': 'openai/gpt-6-luna-decisions', 'images': True, 'price_per_million_input': 0.1}, {'id': 'typesafe/jev-1.13', 'images': False}]})
+# Autopilot is offered as experimental, in its label and in the mode tooltip.
+autopilot_index = panel.mode_selector.findData('autopilot')
+assert panel.mode_selector.itemText(autopilot_index) == 'Autopilot (experimental)', panel.mode_selector.itemText(autopilot_index)
+assert 'Autopilot (experimental)' in panel.mode_selector.toolTip(), panel.mode_selector.toolTip()
 assert panel.decision_endpoint.count() == 2 and 'needs key' in panel.decision_endpoint.itemText(1)
 assert panel.decision_model.currentData() == 'openai/gpt-6-luna-decisions' and 'reads images' in panel.decision_model.currentText()
 assert 'text only' in panel.decision_model.itemText(1) and not panel.decision_key.isEnabled()

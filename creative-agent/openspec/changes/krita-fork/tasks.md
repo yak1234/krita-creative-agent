@@ -153,6 +153,7 @@
 ## 3. Photoshop-like interface (`photoshop-workspace`)
 - [ ] 3.1 Port Krita-Revamp's features from `revamp-5.2.14`, one commit each: clipping masks, folder groups, brush
   stroke previews, scrubby zoom, instant overview, toolbar sizing and smoothing slider, preset persistence.
+  *(Survey done 19 October, creative-agent/openspec/changes/krita-fork/revamp-survey.md: scrubby zoom is already native on master (nothing to port); "instant overview" is a one-line constant that does nothing on master (re-tune and measure, may drop); Revamp's clipping mask is a view and a button on top of Krita's alpha inheritance (no format change; the spec's Alt-click between two layers is OUR addition, Revamp has none); preset persistence leaks tweaks into agent strokes (needs the agent gate); order: folder groups, clipping masks, toolbar sizing, preset persistence, smoothing slider, stroke previews, overview, hide-tabs/selection-hold later; three file-disjoint worktrees: layers, brush, shell; about 38 agent-hours of C++, 50 with 3.2 and 3.3.)*
 - [ ] 3.2 Revamp's Python plugins, after 0.1: check each on Qt6, and drop those duplicated by native features.
 - [ ] 3.3 New-install defaults: Photoshop shortcuts, the workspace with the agent panel, a dark theme.
 

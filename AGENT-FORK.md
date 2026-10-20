@@ -419,3 +419,15 @@ release task (1.3).
   `agent/run-tests.sh`); it is what a CI service runs and what a merge needs green. `--no-cpp` needs no build.
 - Commits in this repository carry the artist's identity (repository config). Commits made before 19 October evening carry the machine's
   host name address: rewrite them (mailmap or filter) only as a deliberate step before anything is published.
+
+## Publishing (krita-fork, 19 October)
+- The public repository is `github.com/yak1234/krita-creative-agent`, branch `main`: the fork and the plugin in one repository.
+  Its earlier, plugin-only `main` is kept as the branch `plugin-only` by the first push.
+- Krita's own history is about 10 GB on GitHub, so it is not pushed. `agent/publish.sh` publishes a replay of the local main
+  line: a root commit with Krita's tree at the base commit, then one commit per first-parent commit (message, author and dates
+  kept; addresses other than the artist's replaced), recorded in `<git-dir>/publish-map` so later runs only append. The local
+  repository stays the truth and is never rewritten.
+- Policy (the artist): a merge into `krita-agent` that passes `agent/ci.sh` (built, tested) and `agent/prepublish-check.sh` is
+  published to `main` with `agent/publish.sh --push`. The very first push (`--first`, which replaces the old `main`) waits for
+  the artist's go. Never push anything else, never to KDE's `origin`.
+- Upstream edits: `README.md` is now ours (Krita's is `README.krita.md`, renamed). `.github/workflows/ci.yml` is ours.

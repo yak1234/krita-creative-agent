@@ -31,6 +31,13 @@ if [ "$plain" = 1 ]; then
 fi
 
 if [ "$cpp" = 1 ]; then
+    # The C++ programs are the binaries last built: refuse to call them current when the sources have moved on. The build's
+    # own ninja only (another version deletes the build log and forces a full rebuild).
+    ninja="$root/_krita-tools/ninja/ninja"
+    if [ -x "$ninja" ] && ! "$ninja" -C "$root/_build" -n 2>&1 | grep -q "no work to do"; then
+        echo "FAIL   C++ programs: the build is not current (sources changed since it was built): agent/build-macos.sh --tests"
+        exit 1
+    fi
     programs=$(grep -v '^[[:space:]]*#' "$root/agent/ci-tests.txt" | grep -v '^[[:space:]]*$')
     # shellcheck disable=SC2086
     if "$root/agent/run-tests.sh" --timeout 600 $programs > "$log" 2>&1 && ! grep -qE '^(FAIL!|HUNG|CRASH|ENDED|MISSING)' "$log"; then

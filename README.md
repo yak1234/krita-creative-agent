@@ -1,125 +1,53 @@
-![Picture](https://krita.org/images/krita-logo-light.svg)
+# Krita Agent
 
-| CI Name     | Master | Stable | Release |
-| ------------------- | ---------------- | ------ | ------- |
-| Pipeline | [![pipeline status](https://invent.kde.org/graphics/krita/badges/master/pipeline.svg)](https://invent.kde.org/graphics/krita/-/commits/master) | [![pipeline status](https://invent.kde.org/graphics/krita/badges/krita/5.2/pipeline.svg)](https://invent.kde.org/graphics/krita/-/commits/krita/5.2) | [![Latest Release](https://invent.kde.org/graphics/krita/-/badges/release.svg)](https://invent.kde.org/graphics/krita/-/releases) |
+**Agentic painting inside Krita.** This repository is a fork of [Krita](https://krita.org) (master, Qt6) with an AI painter built
+in: you chat with it in a panel, it makes one substantial move at a time on reversible layers, you keep it, undo it or correct it,
+and an independent visual reviewer checks the result against your reference. Krita Agent adds the parts of Krita's engine that a
+script needs to paint well (pen pressure, tilt and speed, async stroke jobs, one-step agent moves, named regions of the canvas,
+undoable tools), and ships the agent with the app.
 
-Note: Nightly builds are not covered by this table atm
+> Status: pre-alpha, built and run on macOS (Apple silicon). "Krita Agent" is a working name. Krita is a trademark of the
+> Krita Foundation; this is an independent fork and is not affiliated with or endorsed by the Krita project.
 
-Krita is a free and open source digital painting application. It is for artists who want to create professional work from start to end. Krita is used by comic book artists, illustrators, concept artists, matte and texture painters and in the digital VFX industry.
+## What is in this repository
 
-If you are reading this on GitHub, be aware that this is just a mirror. Our real code repository is provided by KDE: https://invent.kde.org/graphics/krita.git
+| Path | What it is |
+|---|---|
+| everything outside `creative-agent/` and `agent/` | Krita itself, with our changes (listed file by file in [AGENT-FORK.md](AGENT-FORK.md)) |
+| `creative-agent/krita-mcp` | the agent's Python plugin for Krita, and an MCP server for other clients |
+| `creative-agent/krita-creative-agent` | the companion (Node/TypeScript): models, the painter and reviewer, tools, tests |
+| `creative-agent/krita-native` | a native helper for stock Krita 5.3.3 (frozen: the fork has these abilities built in) |
+| `creative-agent/openspec` | the specs, design and task list for the fork |
+| `agent/` | build, test, CI and publishing scripts |
+| `README.krita.md` | Krita's own README, unchanged |
 
-![Picture](https://krita.org/images/hero-image-50.webp)
+The earlier plugin-only repository lives on in the branch `plugin-only` of this repository.
 
-### Repository Status
+## Build and test (macOS)
 
-For branch: `master`
+```sh
+agent/fetch-deps.sh            # once: the dependency tree and tools
+agent/build-macos.sh --tests   # configure, build and install into _install (a full build takes hours)
+agent/run-tests.sh TestDocument TestStrokeJobs   # C++ tests, safely (see the header of the script)
+agent/ci.sh                    # every suite we own: plugin Python, companion JS and typecheck, C++ programs
+agent/run.sh                   # start Krita Agent (its own settings folder and bridge port; never stock Krita's)
+```
 
-| Freeze type    | Status                                                               |
-|----------------|----------------------------------------------------------------------|
-| Feature Freeze | features are allowed                                                 |
-| String Freeze  | strings are allowed                                                  |
+## How changes get here
 
+Work is done on short-lived branches, reviewed by a fresh reviewer, and merged into `krita-agent` locally. **Every merge that
+passes `agent/ci.sh` and the pre-publication check (`agent/prepublish-check.sh`: secrets, paintings, personal data) is published
+to `main` of this repository by `agent/publish.sh`.** `main` is therefore always the last state that passed its tests.
 
-### User Manual
-https://docs.krita.org/en/user_manual.html
+The public history is a replay of the local main line: its first commit is Krita's tree at the commit this fork started from
+(Krita's own history, about 10 GB, stays at [invent.kde.org/graphics/krita](https://invent.kde.org/graphics/krita)), followed by one
+commit per merge or change, with its message and author. Krita's master is merged into the fork monthly (see AGENT-FORK.md).
 
-### Development Notes and Build Instructions
+Continuous integration on GitHub is deliberately light (the agent's Python and JS suites, on free hosted runners). Building Krita
+takes hours and runs locally.
 
-Please follow [the online documentation](https://docs.krita.org/en/untranslatable_pages/building_krita.html).
+## Licence
 
-Other developer guides, notes and wiki:
-
-https://docs.krita.org/en/untranslatable_pages.html
-
-Apidox:
-
-https://api.kde.org/legacy/krita/html/index.html
-
-### Bugs and Wishes
-
-https://bugs.kde.org/buglist.cgi?bug_status=UNCONFIRMED&bug_status=CONFIRMED&bug_status=ASSIGNED&bug_status=REOPENED&list_id=1315444&product=krita&query_format=advanced
-
-### Discussion Forum
-
-* https://krita-artists.org/
-
-### IRC channel
-
-Most of the developers hang out here. If you are interested in helping with the project this is a great place to start.
-
-libera.chat, #krita
-
-### Project Website
-
-https://www.krita.org
-
-### Nightly builds
-
-#### Unstable
-
-* https://cdn.kde.org/ci-builds/graphics/krita/master/
-
-#### Stable
-
-* https://cdn.kde.org/ci-builds/graphics/krita/krita-5.2/
-
-#### Developers builds
-
-##### Linux build with debug symbols in Qt and Krita
-
-1) Go to Jobs section of Krita's CI: https://invent.kde.org/graphics/krita/-/jobs
-2) Search for the latest `linux-debug-weekly` job
-3) Enter the job and click on Artifacts->Browse
-4) Download the AppImage
-
-##### Linux build with ASAN in Qt and Krita
-
-1) Go to Jobs section of Krita's CI: https://invent.kde.org/graphics/krita/-/jobs
-2) Search for the latest `linux-asan-weekly` job
-3) Enter the job and click on Artifacts->Browse
-4) Download the AppImage
-5) Set up environment variable for ASAN:
-    ```bash
-        export ASAN_OPTIONS=new_delete_type_mismatch=0:detect_leaks=0
-    ```
-6) Run the AppImage in the modified environment
-
-##### Windows build with ASAN in Qt and Krita
-
-1) Go to Jobs section of Krita's CI: https://invent.kde.org/graphics/krita/-/jobs
-2) Search for the latest `windows-asan-weekly` job
-3) Enter the job and click on Artifacts->Browse
-4) Download the .zip file
-5) Open terminal
-6) Set up environment variable for ASAN:
-    ```
-        set ASAN_OPTIONS=new_delete_type_mismatch=0:detect_leaks=0
-    ```
-7) Change working directory to `c:\path\where\you\downloaded\krita-5.3.0-prealpha-git12345\bin`.
-   That is important, otherwise ASAN will not be able to locate llvm-symbolizer.exe and the
-   backtraces generated by ASAN will not contain proper symbols.
-    ```
-        cd c:\path\where\you\downloaded\krita-5.3.0-prealpha-git12345\bin
-    ```
-8) Run krita
-    ```
-        krita.com
-    ```
-
-### License
-
-Krita as a whole is licensed under the GNU Public License, Version 3. Individual files may have a different, but compatible license.
-
-### AI Moratorium
-
-Since the Krita developer community cannot currently find consensus on whether the use of AI tools to assist development is acceptable or not, we have decided to put a moratorium on the use of these tools until October 2026. 
-
-The reason for pushing this off to October are:
-
-1) if we'd allow the use of AI in development right now, the backlash from our users and supporters will be furious.
-2) KDE as a whole does not have a policy in place, and if our policy would conflict with KDE's we'd potentially have to revert contributions made with AI
-3) The development of AI itself might change for the better or the worse in the next period. Microsoft is already backtracking from their CoPilot brand. Acceptance of AI can change for better or worse. The environmental impact of AI could lessen.
-
-Until we make a decision, the use of AI when working on Krita is not allowed.
+Krita is GPL-3.0-or-later (see `COPYING`); the combined work is distributed under GPL-3.0-or-later. New files in Krita's libraries
+carry that library's licence (LGPL-2.0-or-later in `libs/libkis`, GPL-2.0-or-later in `libs/image` and `libs/ui`), copyright
+Yakub Rabiutheen, so that they can be offered upstream. The agent's own code (`creative-agent/`, `agent/`) is GPL-3.0-or-later.

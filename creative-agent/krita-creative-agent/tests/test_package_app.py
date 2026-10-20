@@ -923,6 +923,9 @@ class CompanionInTheAppTests(unittest.TestCase):
     class Stub(package_app.Packager):
         def __init__(self, release, resources):
             self.release, self.resources, self.log, self.trees, self.release_info = pathlib.Path(release), pathlib.Path(resources), (lambda *_: None), [], None
+            plugin = self.resources / 'krita' / 'pykrita' / 'kritamcp'                    # the app's plugin, copied before the release
+            plugin.mkdir(parents=True, exist_ok=True)
+            (plugin / '__init__.py').write_text('')
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='krita-agent-test-')
@@ -935,7 +938,7 @@ class CompanionInTheAppTests(unittest.TestCase):
 
     def test_the_companion_and_manifest_are_copied_checked_and_the_plugin_half_is_left_out(self):
         stub = self.Stub(self.release, self.root / 'Resources')
-        stub.resources.mkdir()
+        stub.resources.mkdir(exist_ok=True)
         stub.copy_release()
         target = stub.resources / 'creative-agent-bundle'
         self.assertTrue((target / 'companion' / 'src' / 'main.mjs').is_file())
@@ -945,10 +948,23 @@ class CompanionInTheAppTests(unittest.TestCase):
         self.assertEqual(stub.release_info['node'], '22.23.2')
         self.assertIn('built_at', json.loads((target / 'bundle-info.json').read_text()))
 
+    def test_the_plugin_in_the_app_carries_the_companions_build_id(self):
+        # The companion refuses a bridge whose build_id differs (runtime.mjs acceptBridgeHealth). The plugin reads its own
+        # build-info.json next to its code: without it the packaged app says 'development-unverified' and the panel shows
+        # "Reload the matching Creative Agent build" on every first run.
+        stub = self.Stub(self.release, self.root / 'Resources')
+        plugin = stub.resources / 'krita' / 'pykrita' / 'kritamcp'
+        stub.copy_release()
+        info = json.loads((plugin / 'build-info.json').read_text())
+        self.assertEqual(info['build_id'], self.manifest['build_id'])
+        self.assertEqual(info['protocol_version'], self.manifest.get('protocol_version', 2))
+        for heavy in ('files', 'node_runtime', 'dependencies'):
+            self.assertNotIn(heavy, info)
+
     def test_a_release_that_does_not_match_its_manifest_or_is_no_release_is_refused(self):
         (self.release / 'companion' / 'src' / 'main.mjs').write_text('tampered')
         stub = self.Stub(self.release, self.root / 'Resources')
-        stub.resources.mkdir()
+        stub.resources.mkdir(exist_ok=True)
         with self.assertRaises(package_app.Refused):
             stub.copy_release()
         empty = self.root / 'empty'

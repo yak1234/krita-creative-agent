@@ -923,6 +923,13 @@ class Packager:
                 manifest = bundled_release.verify_companion(target)
             except bundled_release.BundledReleaseError as error:
                 raise Refused('the release does not match its manifest: %s' % error)
+            # The plugin reports its build from build-info.json beside its code, and the companion refuses a bridge whose build_id
+            # differs: the app's plugin (installed from the build, not from the release) must carry the release's build identity.
+            plugin = self.resources / 'krita' / 'pykrita' / 'kritamcp'
+            if not (plugin / '__init__.py').is_file():
+                raise Refused('no plugin at %s to give the release build identity to' % plugin)
+            info = {key: value for key, value in manifest.items() if key not in ('files', 'node_runtime', 'dependencies')}
+            (plugin / 'build-info.json').write_text(json.dumps(info, indent=2) + '\n')
             self.release_info = {'build_id': manifest['build_id'], 'version': manifest.get('version', ''),
                                  'node': (manifest.get('node_runtime') or {}).get('version', '')}
         finally:

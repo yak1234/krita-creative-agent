@@ -43,12 +43,13 @@
   re-check on a clean install is pending. Re-checked on a clean install: health on 5679, canvas saved, stroke read back;
   an Agent-mode move of 46 actions and 468 strokes with no errors, Luna undid 1 of 7. The fork, like stock, stalls while
   the display sleeps: unattended runs keep it awake.)*
-- [ ] 1.3 Release pipeline: the build plus its source, licence notices, and the About box.
+- [x] 1.3 Release pipeline: the build plus its source, licence notices, and the About box.
   *(Finding, 19 October: the app bundle in `_install/bin/krita.app` is a 9 MB shell that loads about 1.3 GB of libraries, Qt
   frameworks and `share` from `_install` through rpath, so it cannot be moved or handed out. 1.3 must build a self-contained
   bundle (libraries, frameworks, resources, the plugin and its Python packages inside `Contents`), installable in
   `/Applications` without a dependency on the build tree, signed with one stable identity: that also ends macOS asking
   again for Documents access after every rebuild. Priority, with 1.5.)*
+  *(Done 20 October (UTC) after two reviews and four fix rounds: the real package is 826 MB, 679 Mach-O files checked, signature verifies, smoke imports (krita, PyQt6, kritamcp, numpy, cv2, psutil, xxhash, MLT) pass from a temporary copy with forks/ unreadable; installed into ~/Applications; launched twice on a FRESH temporary settings folder, once directly and once through LaunchServices like a double-click: the launcher enabled the plugin by itself ([python] enable_kritamcp=true), the bridge answered on 5679 in about 40 s, the companion was copied to <AppData>/KritaAgent/creative-agent/<build_id> with a 0600 config, the window shows Krita's start page, quit left "CLOSING SESSION", no autosave, no prompt, the real KritaAgent folders untouched. Still to do by a person: the About box text itself ("Your Rights" tab), "Connect assistant" (Node download), MLT playback, the Documents prompt with a stable certificate; and OPEN above: Developer ID and notarisation for other artists.)*
   *(19 October evening: packaging scripts done on agent/package (agent/package-app.sh, install-app.sh, app-launcher.c, licence notices; 679 Mach-O files checked, signature verifies, headless imports of krita, PyQt6, kritamcp, numpy, cv2 pass), under review. Open: the Node companion and its runtime are NOT in the app (task 1.3b: without them the agent panel cannot run on a clean machine); the About box needs a rebuild; the source URL must default to https://github.com/yak1234/krita-creative-agent now that it is public; repackage and install to ~/Applications after the main rebuild; live checks.)*
   *(Packaging built 19-20 October: `agent/package-app.sh`, `agent/install-app.sh`, AGENT-FORK.md "Packaging".)*
   **OPEN (needs the artist and an Apple Developer account): other artists' Macs.** The app is signed ad hoc or with a local

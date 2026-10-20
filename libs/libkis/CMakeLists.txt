@@ -10,6 +10,7 @@ set(kritalibkis_LIB_SRCS
     DocumentAgentCraft.cpp
     FilterMaskBake.cpp
     DocumentFeatures.cpp
+    DocumentFeatureBuilders.cpp
     Feature.cpp
     NodeAgentTools.cpp
     Filter.cpp

@@ -19,6 +19,7 @@ kis_add_tests(
     TestDocumentFeatures.cpp
     TestNodeAgentTools.cpp
     TestStrokeJobs.cpp
+    TestDocumentFeatureBuilders.cpp
     LINK_LIBRARIES kritalibkis kritatestsdk
     )
 

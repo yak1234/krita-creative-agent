@@ -33,6 +33,11 @@ public Q_SLOTS:
     Feature *addFeature(const QString &name, const QString &kind, Selection *mask, const QString &author = QString("agent"), const QString &state = QString("proposed"), bool isProtected = false) /Factory/;
     bool renameFeature(const QString &name, const QString &newName);
     bool removeFeature(const QString &name);
+    Selection *maskFromSelection(Selection *selection = 0, const QMap<QString, QVariant> &options = QMap<QString, QVariant>()) const /Factory/;
+    Selection *maskContiguous(const QList<QPointF> &seeds, const QMap<QString, QVariant> &options = QMap<QString, QVariant>()) const /Factory/;
+    Selection *maskSimilarColor(const QList<QColor> &colors, const QMap<QString, QVariant> &options = QMap<QString, QVariant>()) const /Factory/;
+    Selection *maskSnapOutline(const QList<QPointF> &points, const QMap<QString, QVariant> &options = QMap<QString, QVariant>()) const /Factory/;
+    QList<Selection *> maskSegments(const QList<Selection *> &hints, const QMap<QString, QVariant> &options = QMap<QString, QVariant>()) const /Factory/;
 
 public Q_SLOTS:
     QList<qreal> horizontalGuides() const;

@@ -39,3 +39,10 @@ kis_fill_painter_test
 kis_gradient_painter_test
 kis_node_commands_test
 kis_stroke_strategy_undo_command_based_test
+KisMagneticWorkerTest
+TestDocumentFeatureBuilders
+TestPythonFeatureBuilders
+kis_scanline_fill_test
+kis_lazy_brush_test
+kis_colorize_mask_test
+KisWatershedWorkerTest

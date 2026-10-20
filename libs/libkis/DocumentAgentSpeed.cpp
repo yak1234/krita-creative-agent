@@ -9,6 +9,7 @@
 // Document.cpp so the upstream file carries only their declarations.
 
 #include "Document.h"
+#include "KisAgentReadLock.h"
 #include "KisAgentScaledRead.h"
 
 #include <QCoreApplication>
@@ -322,26 +323,6 @@ namespace {
 
 thread_local bool s_inScaledRead = false;
 
-/**
- * Takes a read-only barrier lock on \p image without asking any tool to end its stroke: tryBarrierLock(true) again
- * and again, processing non-input events between tries on the GUI thread (a job may wait for the GUI) and
- * sleeping a millisecond, for at most \p timeoutMs. Returns whether the image is locked.
- */
-bool tryReadLockWithoutEndingStrokes(KisImageSP image, int timeoutMs)
-{
-    QElapsedTimer timer;
-    timer.start();
-    const bool guiThread = QCoreApplication::instance() && QThread::currentThread() == QCoreApplication::instance()->thread();
-    while (!image->tryBarrierLock(true)) {
-        if (timer.elapsed() >= timeoutMs) return false;
-        if (guiThread) {
-            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-        }
-        QThread::msleep(1);
-    }
-    return true;
-}
-
 } // namespace
 
 QImage Document::projection(const QRect &rect, qreal scale) const
@@ -364,7 +345,7 @@ QImage Document::projection(const QRect &rect, qreal scale) const
         ~InReadReset() { s_inScaledRead = false; }
     } inReadReset;
 
-    if (!tryReadLockWithoutEndingStrokes(image, KisAgentScaledRead::readLockTimeoutMs())) {
+    if (!KisAgentReadLock::tryLock(image, KisAgentScaledRead::readLockTimeoutMs())) {
         return QImage();
     }
     struct Unlock {

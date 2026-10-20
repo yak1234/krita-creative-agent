@@ -188,6 +188,14 @@
 - [ ] 6.3 Builders: `fromSelection`, `similarColour`, `contiguous` (tool logic moved into functions), `snapOutline`
   (`KisMagneticWorker`), `segment` (lazy-brush). Test on runs 10 and 11: the skyline from 20 rough points leaves no
   band of old sky.
+  *(Built on `agent/builders`, reviewed once; fix round done. `Document.maskFromSelection`, `maskContiguous`,
+  `maskSimilarColor`, `maskSnapOutline`, `maskSegments` return a mask for `addFeature`; they read the image without ending
+  the artist's stroke, cap their input and have a time limit. **NOT ticked: the skyline target is not met.** From 20 rough
+  points the sky's edge sits on the painting's in the median column (band of old sky: median 1 px), but the 95th percentile
+  is 129 px and 1721 of 4752 columns have a band over 10 px (the rough polygon: median 59 px, 95th percentile 236 px).
+  The target is p95 <= 10 px (stretch goal 3 px); `testSkylineTarget` holds it as an expected failure. Follow-up, not
+  done: run the builders on a worker thread over the snapshot, so a long call never blocks the GUI thread (today they
+  process events meanwhile).)*
 - [ ] 6.4 Queries: `featuresAt`, `featuresOverlapping`, `featuresTouching`, and `selection("Sky - Moon")`.
 - [ ] 6.5 Protection as a feature property, enforced on agent jobs and script pixel writes during an agent move; the
   pass result names the features it was kept out of. Test: "leave the buildings alone" over a whole-canvas pass.

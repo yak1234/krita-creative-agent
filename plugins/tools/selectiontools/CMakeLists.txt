@@ -8,7 +8,6 @@ set(kritaselectiontools_SOURCES
     kis_tool_select_path.cc
     kis_tool_select_similar.cc
     kis_selection_modifier_mapper.cc
-    KisMagneticWorker.cc
     KisToolSelectMagnetic.cc
 )
 

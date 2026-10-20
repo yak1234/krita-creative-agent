@@ -176,3 +176,10 @@ if(APPLE)
 
     macos_test_fixrpath(KisRandomGenerator2DDemo)
 endif()
+
+# Krita Agent: the magnetic worker's corridor, limits and clipping (krita-fork 6.3), run in a temporary home.
+kis_add_test(
+    KisMagneticWorkerTest.cpp
+    TEST_NAME KisMagneticWorkerTest
+    LINK_LIBRARIES kritaimage kritatestsdk
+    )

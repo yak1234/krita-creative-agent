@@ -173,6 +173,88 @@ public Q_SLOTS:
      */
     bool removeFeature(const QString &name);
 
+    // Krita Agent: feature builders (krita-fork 6.3; implemented in DocumentFeatureBuilders.cpp). Each returns a new
+    // mask (255 inside, 0 outside) to give to addFeature(), built by Krita's own selection logic without a view. None
+    // changes a pixel, the selection or the undo history. The caller owns the returned objects.
+    //
+    // Reading the painting: each call reads the composited image, or the projection of one layer given as "layer" in
+    // \p options (its unique id, or its name when no other node has it; not a mask or a group; the layer's own pixels
+    // with its effect masks, its opacity, blend mode and visibility not applied). It never asks the artist's open
+    // stroke to end and never waits for the pen: it needs the image idle for a moment, and gives None with a warning
+    // ("image busy") when it is not within the call's time.
+    //
+    // Limits: input is capped (256 seeds; 64 colours and points together; 128 outline points; 32 hints; grow, shrink
+    // and feather 100 px; search radius 200 px; settle 100 px) and the call has a time limit, "timeoutMs" (default
+    // 5000, at most 30000), after which it gives None with a warning. Numbers and points must be finite. Options are
+    // checked: an unknown key or a bad value gives None and a warning (Python: the options are a dict).
+    //
+    // @code
+    // sky = doc.maskContiguous([QPointF(40, 30), QPointF(5000, 60)], {"threshold": 12, "grow": 1})
+    // doc.addFeature("Sky", "sky", sky)
+    // @endcode
+
+    /**
+     * @brief maskFromSelection a mask from \p selection, or from the document's selection when none is given, cut
+     * to the document
+     * @param options "timeoutMs"
+     * @return the mask, or None when there is no selection or the image stays busy
+     */
+    Selection *maskFromSelection(Selection *selection = 0, const QVariantMap &options = QVariantMap()) const;
+
+    /**
+     * @brief maskContiguous the contiguous selection tool's region from each seed, together: the pixels joined to a
+     * seed whose colour is close to the seed's own.
+     * @param seeds one or more points in the document
+     * @param options "threshold" (0-255, Krita's colour difference, as the tool's slider (1-100); default 8),
+     * "spread" (0-100, default 100: a hard edge), "closeGap" (0-32 pixels), "grow" (pixels, negative shrinks),
+     * "stopGrowingAtDarkestPixel", "feather" (pixels), "antiAlias", "within" (a Selection or a feature's name the
+     * search stays inside), "layer", "timeoutMs"
+     * @return the mask, or None for a seed outside the document, a bad option or input past the limits
+     */
+    Selection *maskContiguous(const QList<QPointF> &seeds, const QVariantMap &options = QVariantMap()) const;
+
+    /**
+     * @brief maskSimilarColor the similar colour selection tool's pixels: all those, joined or not, whose colour is
+     * close to any of \p colors. Searched in patches on the thread pool, as the tool does.
+     * @param colors the colours to match (may be empty when "points" gives them)
+     * @param options "points" (points whose colours are matched too), "threshold" (0-255, default 20), "spread",
+     * "grow", "stopGrowingAtDarkestPixel", "feather", "antiAlias", "within", "layer", "timeoutMs", as maskContiguous()
+     * @return the mask, or None for no colour, a bad option or input past the limits
+     */
+    Selection *maskSimilarColor(const QList<QColor> &colors, const QVariantMap &options = QVariantMap()) const;
+
+    /**
+     * @brief maskSnapOutline the inside of a closed outline through rough \p points, each stretch between two points
+     * traced along the painting's strongest edges by the magnetic selection tool's worker, within "searchRadius" of
+     * the straight line between them. Each point first moves to the strongest edge near it; a stretch between two
+     * points on the same side of the canvas runs along that side; a stretch that finds no way (within 2 s) is straight.
+     * @param points three or more points, in order around the region (points on the canvas edge may be at x = width
+     * or y = height)
+     * @param options "searchRadius" (pixels the edge may stray from the line between points, 1-200, default 30),
+     * "filterRadius" (the edge filter's radius, default 3), "anchorRadius" (how far a point moves to an edge, 0-200,
+     * default 10; 0 keeps it), "settle" (pixels, 0-100: the edge is then settled by the colorize mask's lazy brush
+     * within this distance of the outline, as maskSegments() splits; default 0, off), "edgeDetection", "edgeSize",
+     * "fuzzyRadius", "cleanUp" (for "settle", as maskSegments()), "antiAlias", "layer", "timeoutMs". A mask thinner
+     * than twice "settle" is returned unsettled, with a warning.
+     * @return the mask, or None for fewer than three points, a point outside the document, a bad option, input past
+     * the limits or a call that ran out of time
+     */
+    Selection *maskSnapOutline(const QList<QPointF> &points, const QVariantMap &options = QVariantMap()) const;
+
+    /**
+     * @brief maskSegments splits the painting into one region per hint with the colorize mask's lazy brush: each
+     * pixel joins the hint it reaches across the weakest edges. A hint is a few strokes inside its region; later
+     * hints win where hints overlap.
+     * @param hints two to 32 Selections, one per region
+     * @param options "rect" ([x, y, w, h], the part split; default the whole document), "edgeDetection" (default
+     * True, for paintings; False for clean line art), "edgeSize" (0.5-100, default 4 pixels: the scale of the edges it
+     * looks for; the split lands within about that of a sharp boundary, so a smaller size is tighter on clean edges),
+     * "fuzzyRadius", "cleanUp" (0-1), "layer", "timeoutMs"
+     * @return one mask per hint, in order; an empty list for a bad hint or option, input past the limits or a call
+     * that ran out of time (its stroke is then cancelled)
+     */
+    QList<Selection *> maskSegments(const QList<Selection *> &hints, const QVariantMap &options = QVariantMap()) const;
+
 public Q_SLOTS:
     /**
      * @brief DEPRECATED - use guidesConfig() instead

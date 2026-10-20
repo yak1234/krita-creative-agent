@@ -130,6 +130,13 @@ Keep this table current: every upstream file the `krita-agent` branch changes, a
 | `libs/libkis/CMakeLists.txt`, `libs/libkis/tests/CMakeLists.txt` | Build `NodeStrokeJobs.cpp` and `StrokeJob.cpp`; add `TestStrokeJobs` and the `AgentStrokeJobsBenchmark` timing program | stroke jobs (2.4) |
 | `plugins/extensions/pykrita/sip/krita/Node.sip`, `kritamod.sip` | Python binding of `paintStrokes()`; `%Include StrokeJob.sip` | stroke jobs (2.4) |
 | `plugins/extensions/pykrita/tests/CMakeLists.txt` | Adds `TestPythonStrokeJobs` | stroke jobs (2.4) |
+| `libs/image/KisMagneticWorker.h`, `KisMagneticWorker.cc`, `KisMagneticGraph.h` | Moved from `plugins/tools/selectiontools/` into `kritaimage` (export macro `KRITAIMAGE_EXPORT`), so `snapOutline` can trace edges without the tool; the magnetic tool includes it from there. Edited, in a commit of their own ("KisMagneticWorker: search on flat arrays"): the search keeps its per-vertex data in flat vectors over the search rectangle instead of `std::map`s (a 20-point outline of a 6000x4500 painting went from 40 s to 1 s); `computeEdge()` takes an optional `KisMagneticSearchLimits` (a corridor of `bounds` pixels around the line between the points; a give-up callback asked every 4096 vertices), which the tool does not pass; the rectangle is cut to the image and the lazy filter only touches tiles that exist (a radius past the top or left edge gave negative tile numbers, past the right edge the next row's); no graph is kept between calls (it was leaked each time), and `intensity()` reads the filtered device directly; the first neighbour of a vertex is checked against the rectangle too; helper types and functions of the graph header are in an unnamed namespace and inline | feature builders (6.3) |
+| `plugins/tools/selectiontools/CMakeLists.txt` | No longer builds `KisMagneticWorker.cc` (`kritaimage` does) | feature builders (6.3) |
+| `libs/image/CMakeLists.txt` | Builds `KisMagneticWorker.cc` and `KisFeatureBuilders.cpp` | feature builders (6.3) |
+| `libs/libkis/Document.h`, `plugins/extensions/pykrita/sip/krita/Document.sip` | Declare `maskFromSelection()`, `maskContiguous()`, `maskSimilarColor()`, `maskSnapOutline()`, `maskSegments()` in a block of their own after `removeFeature()`; bodies in our `DocumentFeatureBuilders.cpp` | feature builders (6.3) |
+| `libs/libkis/CMakeLists.txt`, `libs/libkis/tests/CMakeLists.txt`, `plugins/extensions/pykrita/tests/CMakeLists.txt` | Build `DocumentFeatureBuilders.cpp`; add `TestDocumentFeatureBuilders` and `TestPythonFeatureBuilders` | feature builders (6.3) |
+| `libs/libkis/DocumentAgentSpeed.cpp` | `tryReadLockWithoutEndingStrokes` moved unchanged into our `KisAgentReadLock.h` (`tryLock`, `Scoped`), shared with the builders | feature builders (6.3), scaled read (2.3) |
+| `libs/image/tests/CMakeLists.txt` | Adds `KisMagneticWorkerTest` | feature builders (6.3) |
 
 Our own files for the identity: `cmake/modules/KritaAppIdentity.cmake`, `libs/global/KisAppIdentity.{h,cpp}`,
 `libs/global/config-app-identity.h.cmake`; tests `libs/global/tests/KisAppIdentityTest.{h,cpp}`,
@@ -172,6 +179,26 @@ tests `libs/image/tests/KisFeatureListTest`, `libs/image/tests/KisFeatureImageCo
 a configure option (an exception to rule 4): a document without features writes no element and no file, so its `.kra`
 is what stock Krita writes, an image operation on it runs as upstream, and an empty list costs one object per image.
 Stock Krita opens our `.kra` files but drops their features: saving the file again from stock Krita loses them.
+
+Our own files for the feature builders (6.3): `libs/libkis/KisAgentReadLock.h`, `libs/image/KisFeatureBuilders.{h,cpp}` (the selection tools' logic as
+functions on a reference device: the contiguous and similar colour searches through `KisFillPainter`, grow, shrink,
+feather and anti-alias through Krita's selection filters, edge tracing through `KisMagneticWorker`, and lazy-brush
+segmentation through the colorize mask's own `KisColorizeStrokeStrategy`, run as a stroke that is never undoable,
+never asks other strokes to end and never runs at a lower level of detail), `libs/libkis/DocumentFeatureBuilders.cpp`;
+tests `libs/libkis/tests/TestDocumentFeatureBuilders` (with the New Moscow skyline: it copies
+`digital_art/new_moscow_finished.kra`, or `$KRITA_AGENT_NEW_MOSCOW`, into a temporary folder; it runs only with
+`KRITA_AGENT_SLOW_TESTS=1` and skips when the file is missing), `libs/image/tests/KisMagneticWorkerTest` and
+`plugins/extensions/pykrita/tests/TestPythonFeatureBuilders`. The builders change no pixel, selection or undo history;
+only `addFeature()` of their result is a step. Each call reads the image under a read-only barrier lock that never ends
+the artist's stroke (`tryBarrierLock`, retried), works on a copy, takes capped input and has a time limit (`timeoutMs`,
+5 s, at most 30 s); on a busy image or a spent limit it gives None with a warning. They still run on the GUI thread (the
+events are processed meanwhile): moving the work to a worker thread over the snapshot is a follow-up (tasks.md 6.3).
+
+**The skyline target of 6.3 is NOT met.** On New Moscow, 20 rough points give a sky whose edge is within 2 px of the
+painting's in the median column (median band of old sky 1 px), but the 95th percentile is 129 px and 1721 of 4752
+columns have a band over 10 px: along the misty horizon and the sky-coloured glass towers the flood leaks or stops short.
+The test `testSkylineRegressionFloor` guards what is reached; `testSkylineTarget` holds the target (95th percentile
+within 10 px, stretch goal 3 px) as an expected failure that flips when it is met.
 
 Feature masks and image operations (6.1b): Image > Crop, Resize Canvas, Scale, Rotate, Shear, Mirror Image and
 Layer > Mirror All Layers without a selection move the masks (they are one path in `KisNodeManager::mirrorNodes`).

@@ -13,8 +13,15 @@
 #include <kis_random_accessor_ng.h>
 
 #include <QDebug>
+#include <QPointF>
 #include <QRect>
 #include <QColor>
+
+#include <cmath>
+
+// Helper types of KisMagneticWorker.cc only: in an unnamed namespace, so including this header elsewhere never
+// clashes, and its functions inline.
+namespace {
 
 struct VertexDescriptor {
     long x, y;
@@ -103,7 +110,7 @@ struct VertexDescriptor {
     } // neighbor
 };
 
-QDebug operator << (QDebug dbg, const VertexDescriptor &v)
+inline QDebug operator << (QDebug dbg, const VertexDescriptor &v)
 {
     dbg.nospace() << "(" << v.x << ", " << v.y << ")";
     return dbg.space();
@@ -168,9 +175,36 @@ struct KisMagneticGraph {
         return 8;
     }
 
+    /**
+     * Krita Agent (krita-fork 6.3): only vertices within \p radius of the straight line from \p a to \p b are in
+     * the graph (the magnetic tool asks for none: the whole rectangle).
+     */
+    void setCorridor(const QPoint &a, const QPoint &b, qreal radius)
+    {
+        m_corridor = true;
+        m_a = QPointF(a);
+        m_ab = QPointF(b) - m_a;
+        m_abLength2 = m_ab.x() * m_ab.x() + m_ab.y() * m_ab.y();
+        m_radius2 = radius * radius;
+    }
+
+    bool contains(long x, long y) const
+    {
+        if (!m_rect.contains(int(x), int(y))) return false;
+        if (!m_corridor) return true;
+        const qreal px = qreal(x) - m_a.x(), py = qreal(y) - m_a.y();
+        qreal t = m_abLength2 > 0 ? (px * m_ab.x() + py * m_ab.y()) / m_abLength2 : 0.0;
+        t = qBound(0.0, t, 1.0);
+        const qreal dx = px - t * m_ab.x(), dy = py - t * m_ab.y();
+        return dx * dx + dy * dy <= m_radius2;
+    }
+
     QRect               m_rect;
 
 private:
+    bool                m_corridor {false};
+    QPointF             m_a, m_ab;
+    qreal               m_abLength2 {0}, m_radius2 {0};
     KisPaintDeviceSP    m_dev;
     KisRandomAccessorSP m_randAccess;
 };
@@ -181,7 +215,12 @@ struct neighbour_iterator : public boost::iterator_facade<neighbour_iterator
                                                           , std::pair<VertexDescriptor, VertexDescriptor> > {
     neighbour_iterator(VertexDescriptor v, KisMagneticGraph g, VertexDescriptor::Direction d) :
         m_point(v), m_direction(d), m_graph(g)
-    { }
+    {
+        // Krita Agent: the first neighbour may lie outside the graph too (the rectangle's top row, the corridor).
+        if (m_direction != VertexDescriptor::NONE && !m_graph.contains(m_point.neighbor(m_direction).x, m_point.neighbor(m_direction).y)) {
+            operator ++ ();
+        }
+    }
 
     neighbour_iterator()
     { }
@@ -200,7 +239,7 @@ struct neighbour_iterator : public boost::iterator_facade<neighbour_iterator
         if (m_direction == VertexDescriptor::NONE) {
             return;
         }
-        if (!m_graph.m_rect.contains(next.x, next.y)) {
+        if (!m_graph.contains(next.x, next.y)) {
             operator ++ ();
         }
     }
@@ -226,6 +265,8 @@ private:
     KisMagneticGraph            m_graph;
 };
 
+} // namespace
+
 // Requirements for an Incidence Graph,
 // https://www.boost.org/doc/libs/1_70_0/libs/graph/doc/IncidenceGraph.html
 
@@ -248,20 +289,22 @@ struct graph_traits<KisMagneticGraph> {
 };
 }
 
-typename KisMagneticGraph::vertex_descriptor source(typename KisMagneticGraph::edge_descriptor e, KisMagneticGraph g)
+namespace {
+
+inline KisMagneticGraph::vertex_descriptor source(KisMagneticGraph::edge_descriptor e, KisMagneticGraph g)
 {
     Q_UNUSED(g);
     return e.first;
 }
 
-typename KisMagneticGraph::vertex_descriptor target(typename KisMagneticGraph::edge_descriptor e, KisMagneticGraph g)
+inline KisMagneticGraph::vertex_descriptor target(KisMagneticGraph::edge_descriptor e, KisMagneticGraph g)
 {
     Q_UNUSED(g);
     return e.second;
 }
 
-std::pair<KisMagneticGraph::out_edge_iterator, KisMagneticGraph::out_edge_iterator> out_edges(
-     typename KisMagneticGraph::vertex_descriptor v, KisMagneticGraph g)
+inline std::pair<KisMagneticGraph::out_edge_iterator, KisMagneticGraph::out_edge_iterator> out_edges(
+     KisMagneticGraph::vertex_descriptor v, KisMagneticGraph g)
 {
     return std::make_pair(
         KisMagneticGraph::out_edge_iterator(v, g, VertexDescriptor::Direction::MIN),
@@ -269,10 +312,11 @@ std::pair<KisMagneticGraph::out_edge_iterator, KisMagneticGraph::out_edge_iterat
         );
 }
 
-typename KisMagneticGraph::degree_size_type out_degree(typename KisMagneticGraph::vertex_descriptor v,
-     KisMagneticGraph                                                                               g)
+inline KisMagneticGraph::degree_size_type out_degree(KisMagneticGraph::vertex_descriptor v, KisMagneticGraph g)
 {
     return g.outDegree(v);
 }
+
+} // namespace
 
 #endif // ifndef KISMAGNETICGRAPH_H

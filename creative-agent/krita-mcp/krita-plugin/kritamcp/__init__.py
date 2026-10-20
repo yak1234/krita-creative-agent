@@ -31,6 +31,7 @@ from .brush_controls import control_changes
 from .precision_tools import PrecisionTools
 from .creative_tools import CreativeTools
 from .script_steps import one_step
+from .creative_validation import command_error
 from .stamp_names import list_presets
 from .command_queue import CommandQueue
 from .bridge_config import bridge_port, output_dir
@@ -290,7 +291,7 @@ class KritaMCPExtension(CreativeTools, PrecisionTools, Extension):
                 return {"error": f"Unknown action: {action}"}
             return handler(params)
         except Exception as e:
-            return {"error": f"{type(e).__name__}: {e}", "error_code": "internal"}
+            return command_error(e)
 
     # ── Context resolution ─────────────────────────────────────────────
 

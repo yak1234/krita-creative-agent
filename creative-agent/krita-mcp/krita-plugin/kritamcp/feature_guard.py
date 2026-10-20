@@ -135,23 +135,38 @@ class FeatureCraft:
 
     # ----- reporting what Krita kept out -------------------------------------------------------------------------------------
     def _feature_kept_out(self, doc, *recorded):
-        """The protected features Krita kept the call's writes out of: the last write, the agent move and the given
-        records (a stroke job's keptOut()). Empty without the fork."""
+        """The protected features Krita kept the call's writes out of, read while the call's agent move is still open.
+        A move the call began is fresh (it starts again with each move), so its record is this call's. A move someone else
+        holds open has a cumulative record: there only the last write's record is read (every write replaces it, even with
+        nothing), so the caller must not read it for a call that wrote nothing. `recorded` are names the call already
+        has, such as a stroke job's own keptOut()."""
         if not self._feature_ready(doc):
             return merge_names(*recorded)
         try:
-            # Inside an agent move the move's own record is fresh (it starts again with each move); the last write's
-            # record may be an earlier call's, so it is only read when no move is open.
-            moved = hasattr(doc, 'agentMoveOpen') and doc.agentMoveOpen()
-            move = doc.agentMoveKeptOut() if hasattr(doc, 'agentMoveKeptOut') else []
-            last = [] if moved else (doc.lastKeptOut() if hasattr(doc, 'lastKeptOut') else [])
+            if self.__dict__.get('_feature_move_ours'):
+                names = doc.agentMoveKeptOut() if hasattr(doc, 'agentMoveKeptOut') else []
+            else:
+                names = doc.lastKeptOut() if hasattr(doc, 'lastKeptOut') else []
         except RuntimeError:
-            move = last = []                          # the document was closed during the call
-        return merge_names(move, last, *recorded)
+            names = []                                   # the document was closed during the call
+        return merge_names(names, *recorded)
+
+    TOOLBOX_QUIET = ('set_brush', 'selection', 'modify_selection', 'eraser', 'blend_mode', 'layer_settings', 'brush_controls',
+                     'configure_brush', 'restore_brush', 'set_color', 'set_brush_texture')
+
+    @classmethod
+    def _feature_call_writes(cls, operation, params):
+        """False for a call that cannot write pixels (a toolbox call of settings only), whose kept_out must stay empty
+        whatever the document's record says."""
+        if operation == 'painting_toolbox':
+            return any(isinstance(item, dict) and item.get('tool') not in cls.TOOLBOX_QUIET for item in params.get('commands') or [])
+        return True
 
     def _feature_report(self, doc, result, *recorded):
-        """Put `kept_out` (and why) in a tool result when protection kept a write out of features."""
-        names = self._feature_kept_out(doc, result.get('kept_out'), self.__dict__.get('_feature_clipped'), *recorded)
+        """Put `kept_out` (and why) in a tool result when protection kept a write out of features. Only what the call
+        recorded while it ran (its result, the areas it left out, the names read inside its move): never the document's
+        record now, which may be an earlier call's."""
+        names = merge_names(result.get('kept_out'), self.__dict__.get('_feature_clipped'), *recorded)
         if names:
             result['kept_out'] = names
             # One vocabulary: a name reported as a feature is not also reported as a legacy protected area.
@@ -209,6 +224,18 @@ class FeatureCraft:
                              % entry.get('id'))
 
     # ----- filter layers, filter masks and fill layers ----------------------------------------------------------------------
+    def _feature_entirely_protected(self, doc, selection):
+        """Names of the protected features when nothing of `selection` lies outside them (else empty): a change there
+        would be clipped away whole."""
+        if not self._feature_active(doc):
+            return []
+        hit = [f.name() for f in doc.featuresOverlapping(selection) if f.isProtected()]
+        if not hit:
+            return []
+        rest = selection.duplicate()
+        rest.subtract(doc.protectedSelection())
+        return hit if rest.width() <= 0 or rest.height() <= 0 else []
+
     def _feature_limit_area(self, doc, area):
         """The area for a filter layer, filter mask or fill layer, without the protected features, so the new layer does not
         change how a protected feature looks (Krita does not clip these: they write no pixels). `area` is a fresh selection

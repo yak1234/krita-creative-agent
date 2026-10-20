@@ -71,9 +71,12 @@ class FeatureDocument(merge_tests.Document):
         return [f for f in self.feature_list if f.bounds().intersects(area)]
     # agent moves: the record of what was kept out starts again with each move, as in the fork
     def beginAgentMove(self, name):
+        if getattr(self, 'move_held', False): return False        # someone else's move stays open
         self.move_open, self.move_ids = True, getattr(self, 'move_ids', 0) + 1
         self.kept, self.move_kept = [], []; return True
-    def endAgentMove(self): self.move_open = False; self.kept, self.move_kept = [], []; return True
+    def endAgentMove(self):
+        if getattr(self, 'move_held', False): return False
+        self.move_open = False; self.kept, self.move_kept = [], []; return True
     def agentMoveOpen(self): return getattr(self, 'move_open', False)
     def agentMoveId(self): return getattr(self, 'move_ids', 0)
     def keep_out(self, *names):
@@ -369,6 +372,86 @@ class ListingTests(Setup, unittest.TestCase):
     def test_an_unknown_feature_is_an_error(self):
         with self.assertRaisesRegex(ValueError, 'Ghost'):
             self.h._feature_set_protected(self.doc, 'Ghost', True)
+
+
+if not hasattr(Mask, 'duplicate'):
+    def _duplicate(self):
+        copy = Mask(); copy.m = bytearray(self.m); return copy
+    Mask.duplicate = _duplicate
+
+
+class KeptOutFreshTests(Setup, unittest.TestCase):
+    """A move someone else holds open: its record is cumulative, so a call must not read it."""
+    FEATURES = (Feature('Sky', (0, 0, 4, 2)), Feature('Buildings', (0, 2, 4, 2), protected=True))
+
+    def setUp(self):
+        super().setUp()
+        self.doc.move_held = self.doc.move_open = True
+        self.doc.keep_out('Buildings')                          # left by an earlier whole-canvas pass
+
+    def test_a_tiny_pass_far_from_the_feature_reports_nothing(self):
+        def new_layer(doc, session, params):
+            node = doc.createNode(params['name'], 'paintlayer'); doc.root.addChildNode(node, None); return {'id': node.id}
+        self.h._creative_new_layer = new_layer
+        self.h._creative_stroke_job = lambda *args, **kwargs: {'stroke_job': {'state': 'done'}}      # the job kept out of nothing
+        native.module._FORK = True
+        self.addCleanup(setattr, native.module, '_FORK', None)
+        stroke = {'start': [1, 1], 'segments': [[1, 1, 2, 2, 3, 3]], 'size': 2, 'opacity': 1, 'flow': 1, 'color': '#806040'}
+        done = run(self.h, 'paint_pass', {'name': 'Dab', 'preset': 'b) Basic-1', 'strokes': [stroke]}, 'dab')
+        self.assertEqual(done['status'], 'ok', done.get('error'))
+        self.assertNotIn('kept_out', done)
+
+    def test_a_pass_reports_its_own_jobs_names(self):
+        def new_layer(doc, session, params):
+            node = doc.createNode(params['name'], 'paintlayer'); doc.root.addChildNode(node, None); return {'id': node.id}
+        self.h._creative_new_layer = new_layer
+        self.h._creative_stroke_job = lambda *args, **kwargs: {'stroke_job': {'state': 'done'}, 'kept_out': ['Buildings']}
+        native.module._FORK = True
+        self.addCleanup(setattr, native.module, '_FORK', None)
+        stroke = {'start': [1, 1], 'segments': [[1, 1, 2, 2, 3, 3]], 'size': 2, 'opacity': 1, 'flow': 1, 'color': '#806040'}
+        done = run(self.h, 'paint_pass', {'name': 'Wide', 'preset': 'b) Basic-1', 'strokes': [stroke]}, 'wide')
+        self.assertEqual(done['kept_out'], ['Buildings'])
+
+    def test_a_toolbox_call_that_writes_nothing_reports_nothing(self):
+        self.h._creative_toolbox = lambda doc, session, params: {'layer_id': None}
+        done = run(self.h, 'painting_toolbox', {'name': 'Colour', 'commands': [{'tool': 'set_color', 'parameters_json': '{"color": "#112233"}'}]}, 'colour')
+        self.assertNotIn('kept_out', done)
+
+    def test_a_write_replaces_the_last_record_so_its_own_result_is_reported(self):
+        fill = self.h._region_fill
+        self.h._region_fill = lambda *args: setattr(self.doc, 'kept', []) or fill(*args)      # a write that kept out of nothing
+        self.assertNotIn('kept_out', run(self.h, 'fill_region', dict(FILL, selection='Sky'), 'clear'))
+        self.h._region_fill = lambda *args: setattr(self.doc, 'kept', ['Buildings']) or fill(*args)
+        self.assertEqual(run(self.h, 'fill_region', dict(FILL, name='B', selection='Sky'), 'hit')['kept_out'], ['Buildings'])
+
+    def test_the_report_does_not_read_the_document_again(self):
+        self.assertEqual(self.h._feature_report(self.doc, {'status': 'ok'}), {'status': 'ok'})
+
+
+class ErrorAndEmptyFillTests(Setup, unittest.TestCase):
+    FEATURES = (Feature('Sky', (0, 0, 4, 2)), Feature('Buildings', (0, 2, 4, 2), protected=True))
+
+    def test_a_validation_error_carries_validation_rejected(self):
+        from creative_test_package.creative_validation import command_error
+        self.assertEqual(command_error(ValueError("'allowProtected' lifts protection")),
+                         {'error': "ValueError: 'allowProtected' lifts protection", 'error_code': 'validation_rejected'})
+        self.assertEqual(command_error(RuntimeError('boom')), {'error': 'RuntimeError: boom', 'error_code': 'internal'})
+
+    def test_a_fill_wholly_inside_a_protected_feature_is_rejected_and_leaves_no_layer(self):
+        self.doc.protectedSelection = lambda inverted=False: _Columns(0, 2, SIZE, 2, inverted)
+        before = len(self.doc.root.childNodes())
+        done = run(self.h, 'fill_region', dict(FILL, selection='Sky - Moon'), 'ok-first')
+        self.assertEqual(done['status'], 'ok')
+        done = run(self.h, 'fill_region', {'name': 'Walls', 'color': '#203040', 'area': [{'shape': 'rectangle', 'bounds': [0, 2, 4, 2]}]}, 'all-protected')
+        self.assertEqual((done['status'], done['error_code']), ('rejected', 'validation_rejected'))
+        self.assertIn("'Buildings'", done['error'])
+        self.assertEqual(len(self.doc.root.childNodes()), before + 1, 'only the first fill made a layer')
+
+
+class _Columns(Mask):
+    def __init__(self, x, y, w, h, inverted=False):
+        super().__init__(); self.select(x, y, w, h, 255)
+        if inverted: self.invert()
 
 
 class ReviewFixTests(Setup, unittest.TestCase):

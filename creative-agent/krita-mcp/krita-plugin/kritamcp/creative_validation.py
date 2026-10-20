@@ -267,3 +267,10 @@ def check_patch_area(width, height):
     if width * height > PATCH_AREA_LIMIT:
         raise ValueError('The area to patch is %d x %d pixels (%d), larger than the %d-pixel limit (512 x 512). Patch it in '
                          'pieces: select a smaller area around the seam or damage.' % (width, height, width * height, PATCH_AREA_LIMIT))
+
+
+def command_error(error):
+    """A command's failure as the bridge's error result. A ValueError is a refused request (bad or forbidden input), so the
+    companion gets validation_rejected, not an internal error."""
+    code = 'validation_rejected' if isinstance(error, ValueError) else 'internal'
+    return {'error': '%s: %s' % (type(error).__name__, error), 'error_code': code}

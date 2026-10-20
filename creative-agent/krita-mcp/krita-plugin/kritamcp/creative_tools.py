@@ -642,8 +642,11 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         writing = contextlib.ExitStack()
         writing.enter_context(agent_writing(doc))
         self._feature_clipped, kept_names = [], []
+        self._feature_move_ours = False
         if self._feature_ready(doc):
+            fresh = not doc.agentMoveOpen()
             writing.enter_context(one_step(doc, params.get('name') or operation.replace('_', ' ')))
+            self._feature_move_ours = fresh and doc.agentMoveOpen()      # a move this call began has a fresh record
         try:
             if operation == 'painting_toolbox':
                 result.update(self._creative_toolbox(doc, session, params))
@@ -739,7 +742,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             try:
                 if operation != 'paint_pass' or not on_fork():
                     doc.waitForDone()                      # a write inside the move lands after the call returns (a job has been waited on: never end the artist's strokes)
-                kept_names = self._feature_kept_out(doc)   # read before the move ends (it starts the record again)
+                if self._feature_call_writes(operation, params) and not (operation == 'paint_pass' and on_fork()):
+                    kept_names = self._feature_kept_out(doc)   # read before the move ends; a fork pass has its job's own names
             except RuntimeError:
                 pass                                       # the document was closed during the call
             writing.close()

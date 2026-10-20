@@ -492,6 +492,11 @@ class RegionCraft:
             # Nothing changed yet: the journal records this as a refused call.
             return {'status': 'rejected', 'error': 'The area is empty inside the canvas. Nothing was filled.',
                     'error_code': 'validation_rejected'}
+        blocked = self._feature_entirely_protected(doc, selection)
+        if blocked:
+            return {'status': 'rejected', 'error': "The area lies entirely inside the protected %s %s, so nothing would be filled. Fill an "
+                    "area outside %s." % ('features' if len(blocked) > 1 else 'feature', ', '.join("'%s'" % n for n in blocked),
+                                          'them' if len(blocked) > 1 else 'it'), 'error_code': 'validation_rejected'}
         rect, pixels = extent
         x, y, w, h = rect
         spec = self._region_paint(doc, params)

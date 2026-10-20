@@ -1,0 +1,15 @@
+<!DOCTYPE RCC>
+<!--
+  SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
+  SPDX-License-Identifier: CC0-1.0
+
+  Toska's welcome page background. krita/CMakeLists.txt compiles this file into the app only when KRITA_APP_OWN_WELCOME
+  is 1 (the build named Toska, cmake/modules/KritaAppIdentity.cmake); every other build has no :/welcome resource at
+  all. KisWelcomePageWidget loads the alias only when KisAppIdentity::hasOwnWelcome() says so. The painting is the
+  artist's artwork (toska/README.md).
+-->
+<RCC version="1.0">
+    <qresource prefix="/welcome">
+        <file alias="toska-welcome.jpg">toska/toska-welcome.jpg</file>
+    </qresource>
+</RCC>

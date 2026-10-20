@@ -90,6 +90,16 @@
 #include <QRandomGenerator>
 #endif
 
+// Krita Agent: Toska's welcome page background (paintEvent()), compiled in every build
+#include <QHideEvent>
+#include <QLinearGradient>
+#include <QPaintEvent>
+#include <QPainter>
+#include <QResizeEvent>
+#include <QTimer>
+#include <KisAppIdentity.h>
+#include "KisWelcomeBackgroundLayout.h"
+
 // Used for triggering a QAction::setChecked signal from a QLabel::linkActivated signal
 void ShowNewsAction::enableFromLink(QString unused_url)
 {
@@ -124,6 +134,25 @@ KisWelcomePageWidget::KisWelcomePageWidget(QWidget *parent)
     : QWidget(parent)
 {
     setupUi(this);
+
+    // Krita Agent: the build named Toska paints its painting under the welcome page (paintEvent()). Only that build
+    // compiles :/welcome in (krita/data/welcome/welcome-toska.qrc); every other build leaves the pixmap null
+    if (KisAppIdentity::hasOwnWelcome()) {
+        m_ownBackground = QPixmap(QStringLiteral(":/welcome/toska-welcome.jpg"));
+        if (m_ownBackground.isNull()) {
+            qWarning("KisWelcomePageWidget: the welcome page background :/welcome/toska-welcome.jpg is missing");
+        } else {
+            // during a live resize the painting is scaled fast; once the size has rested, once more, smoothly
+            m_ownBackgroundSmoothTimer = new QTimer(this);
+            m_ownBackgroundSmoothTimer->setSingleShot(true);
+            m_ownBackgroundSmoothTimer->setInterval(150);
+            connect(m_ownBackgroundSmoothTimer, &QTimer::timeout, this, [this]() {
+                m_ownBackgroundResizing = false;
+                m_ownBackgroundScaled = QPixmap();
+                update();
+            });
+        }
+    }
 
     // URLs that go to web browser...
     devBuildIcon->setIcon(KisIconUtils::loadIcon("warning"));
@@ -471,6 +500,69 @@ void KisWelcomePageWidget::changeEvent(QEvent *event)
     if (event->type() == QEvent::FontChange) {
         labelSupportText->setFont(largerFont());
     }
+}
+
+void KisWelcomePageWidget::paintEvent(QPaintEvent *event)
+{
+    // Krita Agent: Toska's painting covers the welcome page, anchored right, under a veil of the window colour and a
+    // darker fade on the left where the New/Open column sits (KisWelcomeBackgroundLayout.h). This widget is only the
+    // welcome page (KisMainWindow's welcomeScroller), never the canvas area, which stays as it was
+    if (m_ownBackground.isNull()) {
+        QWidget::paintEvent(event);
+        return;
+    }
+
+    const qreal dpr = devicePixelRatioF();
+    const QSize pixelSize = (QSizeF(size()) * dpr).toSize();
+    if (pixelSize.isEmpty()) {
+        return;
+    }
+    const QColor shade = palette().color(QPalette::Window);
+    if (m_ownBackgroundScaled.size() != pixelSize || m_ownBackgroundShade != shade
+        || !qFuzzyCompare(m_ownBackgroundScaled.devicePixelRatio(), dpr)) {
+        const QRect source = KisWelcomeBackgroundLayout::coverSourceRect(m_ownBackground.size(), pixelSize);
+        QPixmap scaled = m_ownBackground.copy(source).scaled(
+            pixelSize, Qt::IgnoreAspectRatio, m_ownBackgroundResizing ? Qt::FastTransformation : Qt::SmoothTransformation);
+        {
+            QPainter shadePainter(&scaled);
+            QColor veil = shade;
+            veil.setAlphaF(float(KisWelcomeBackgroundLayout::veilFor(shade.lightness())));
+            shadePainter.fillRect(scaled.rect(), veil);
+
+            QColor edge = shade;
+            edge.setAlphaF(float(KisWelcomeBackgroundLayout::kLeftShade));
+            QColor clear = shade;
+            clear.setAlpha(0);
+            QLinearGradient leftShade(0.0, 0.0, KisWelcomeBackgroundLayout::kLeftFadeEnd * scaled.width(), 0.0);
+            leftShade.setColorAt(0.0, edge);
+            leftShade.setColorAt(1.0, clear);
+            shadePainter.fillRect(scaled.rect(), leftShade);
+        }
+        scaled.setDevicePixelRatio(dpr);
+        m_ownBackgroundScaled = scaled;
+        m_ownBackgroundShade = shade;
+    }
+
+    QPainter painter(this);
+    painter.drawPixmap(QPoint(0, 0), m_ownBackgroundScaled);
+}
+
+void KisWelcomePageWidget::resizeEvent(QResizeEvent *event)
+{
+    // Krita Agent: see the constructor (Toska's welcome page background)
+    if (m_ownBackgroundSmoothTimer && isVisible()) {
+        m_ownBackgroundResizing = true;
+        m_ownBackgroundSmoothTimer->start();
+    }
+    QWidget::resizeEvent(event);
+}
+
+void KisWelcomePageWidget::hideEvent(QHideEvent *event)
+{
+    // Krita Agent: the scaled painting (tens of MB on a large Retina window) is not kept while a document is open;
+    // the next paint makes it again
+    m_ownBackgroundScaled = QPixmap();
+    QWidget::hideEvent(event);
 }
 
 bool KisWelcomePageWidget::eventFilter(QObject *watched, QEvent *event)

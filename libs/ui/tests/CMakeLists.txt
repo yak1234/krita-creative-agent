@@ -236,6 +236,15 @@ kis_add_test(KisSplashBannerLayoutTest.cpp
 target_compile_definitions(KisSplashBannerLayoutTest PRIVATE
     TOSKA_SPLASH_DIR="${CMAKE_SOURCE_DIR}/krita/data/splash/toska")
 
+# Krita Agent: how Toska's painting covers the welcome page in the build named Toska (KisWelcomeBackgroundLayout.h), and
+# the shipped painting (krita/data/welcome/toska/toska-welcome.jpg) decodes with the moon where the layout expects it
+kis_add_test(KisWelcomeBackgroundLayoutTest.cpp
+    TEST_NAME KisWelcomeBackgroundLayoutTest
+    LINK_LIBRARIES kritaui kritaglobal kritatestsdk
+    )
+target_compile_definitions(KisWelcomeBackgroundLayoutTest PRIVATE
+    TOSKA_WELCOME_DIR="${CMAKE_SOURCE_DIR}/krita/data/welcome/toska")
+
 # Krita Agent: the brush preset session storage ported from Krita-Revamp (krita-fork 3.1): tweaks persist, keyed by
 # resource id and MD5, in the build's own settings folder; refused while the agent works; run in a temporary home.
 kis_add_test(TestPresetSessionStorage.cpp

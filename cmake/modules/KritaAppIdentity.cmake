@@ -121,6 +121,15 @@ if (_identity_is_toska AND NOT ANDROID)
     set(KRITA_APP_OWN_SPLASH 1)
 endif()
 
+# KRITA_APP_OWN_WELCOME (0 or 1) decides Toska's welcome page background the same way: krita/CMakeLists.txt compiles
+# krita/data/welcome/welcome-toska.qrc into the app by it, and config-app-identity.h hands it to
+# KisAppIdentity::hasOwnWelcome(), which libs/ui/KisWelcomePageWidget.cpp reads. Only the build named Toska, and never
+# Android (whose welcome page keeps upstream's donation banner): any other build has no :/welcome resource at all.
+set(KRITA_APP_OWN_WELCOME 0)
+if (_identity_is_toska AND NOT ANDROID)
+    set(KRITA_APP_OWN_WELCOME 1)
+endif()
+
 # KRITA_APP_DEFAULT_THEME is the colour theme a new install opens with, by the theme's name ([General] Name in a
 # krita/data/themes/*.colors file). Empty: the shipped krita/data/kritarc's own [theme] Theme ("Krita dark"), which stock
 # Krita and every other identity keep. The build named Toska opens with "Toska Night"; the value goes into the identity's

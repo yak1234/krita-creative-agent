@@ -64,6 +64,9 @@ Keep this table current: every upstream file the `krita-agent` branch changes, a
 | `libs/ui/KisApplication.cpp` | `kritarc` reset/backup in the identity's config folder | identity (1.1) |
 | `libs/ui/KisAutoSaveRecoveryDialog.cpp`, `.h` | Autosaves of never-saved documents, and the start-up recovery that deletes those not recovered, in the identity's own folder, never stock Krita's home or temp folder; the class exported so `KisAutoSaveLocationTest` can call it | identity (1.1) |
 | `libs/ui/thememanager.cpp` | A theme name with no installed scheme (a removed `.colors` file, a typo in kritarc) gets Krita dark instead of an empty `KSharedConfig`, whose defaults are light (one line in `slotChangePalette`; not built yet) | Toska colour theme |
+| `libs/ui/thememanager.cpp` | `slotChangePalette` reads the theme's optional `[KritaAgent] SliderFill` and sets it as the application property `kritaAgentSliderFillColor` before the palette (cleared for a theme without it and for "System") | Toska slider fill |
+| `libs/ui/thememanager.cpp`, `libs/ui/osx.h`, `libs/ui/osx.mm` | macOS only (`Q_OS_MACOS`): `slotChangePalette` asks `setMacosApplicationAppearance()` for the theme's `[KritaAgent] MacOSAppearance` (Dark: `NSAppearanceNameDarkAqua`, Light: `NSAppearanceNameAqua`); a theme without it, and "System", give back the system's appearance if the fork changed it, and otherwise touch nothing | Toska title bar |
+| `libs/widgetutils/kis_slider_spin_box_p.h` | `sliderFillColor()`: the slider spin boxes fill with `kritaAgentSliderFillColor` when a theme set it (halfway to the base colour when disabled), else upstream's `palette().highlight()` | Toska slider fill |
 | `libs/ui/KoDocumentInfo.cpp` | Author info read from the identity's `kritarc` | identity (1.1) |
 | `libs/ui/kis_config.cc` | `kritadisplayrc` and other config files in the identity's config folder | identity (1.1) |
 | `libs/ui/dialogs/kis_dlg_preferences.cc` | Same, for the preferences dialog | identity (1.1) |
@@ -173,6 +176,9 @@ Keep this table current: every upstream file the `krita-agent` branch changes, a
 | `krita/CMakeLists.txt` | `krita_splash_qrc` is `splash-toska.qrc` when `KRITA_APP_OWN_SPLASH` is 1 (the build named Toska, not Android) | Toska splash |
 | `libs/ui/kis_splash_screen.cpp` | When `KisAppIdentity::hasOwnSplash()`: window title from the identity, Krita's logo (`:/krita-branding.svgz`) not loaded, no dark drop shadow on the banner, banner placed by `KisSplashBannerLayout.h`, loading text at the top right, no art credit; every other build runs upstream's lines unchanged | Toska splash |
 | `libs/ui/tests/CMakeLists.txt` | Adds `KisSplashBannerLayoutTest` | Toska splash |
+| `krita/CMakeLists.txt` | `krita_welcome_qrc` (in `krita_QRCS`) is `krita/data/welcome/welcome-toska.qrc` when `KRITA_APP_OWN_WELCOME` is 1, empty otherwise | Toska welcome page |
+| `libs/ui/KisWelcomePageWidget.h`, `KisWelcomePageWidget.cpp` | When `KisAppIdentity::hasOwnWelcome()`: loads `:/welcome/toska-welcome.jpg` and paints it under the page (`paintEvent()`, laid out by `KisWelcomeBackgroundLayout.h`); in every other build the pixmap is null and `paintEvent()` calls `QWidget::paintEvent()` only | Toska welcome page |
+| `libs/ui/tests/CMakeLists.txt`, `agent/ci-tests.txt` | Adds `KisWelcomeBackgroundLayoutTest` | Toska welcome page |
 
 Our own files for the identity: `cmake/modules/KritaAppIdentity.cmake`, `libs/global/KisAppIdentity.{h,cpp}`,
 `libs/global/config-app-identity.h.cmake`; tests `libs/global/tests/KisAppIdentityTest.{h,cpp}`,
@@ -786,6 +792,39 @@ it is unchanged.
   `kritaui` (`kis_splash_screen.cpp`) and `krita` (the qrc is compiled into it), then
   `agent/run-tests.sh KisSplashBannerLayoutTest KisAppIdentityTest`. Not seen in the running app yet.
 
+**Welcome page (20 Oct).** The build named Toska shows the artist's welcome painting (a dark, empty left third, a red
+moon and a cream and ember brush stroke on the right) behind the welcome page, the start page shown with no document
+open. Every other build (stock Krita, another identity, any Android build) has no `:/welcome` resource and paints the
+page as upstream.
+
+- *One switch, the splash's rule.* `KRITA_APP_OWN_WELCOME` (0 or 1) in `cmake/modules/KritaAppIdentity.cmake`: 1 only
+  when `_identity_is_toska` and `NOT ANDROID`. `krita/CMakeLists.txt` adds `krita/data/welcome/welcome-toska.qrc` to
+  `krita_QRCS` through `krita_welcome_qrc` (empty in every other build), and `config-app-identity.h` passes it to
+  `KisAppIdentity::hasOwnWelcome()`, which `KisWelcomePageWidget`'s constructor reads before it loads the alias.
+- *Resources.* `:/welcome/toska-welcome.jpg` = `krita/data/welcome/toska/toska-welcome.jpg`: the artist's
+  `creative-agent/docs/branding/toska-welcome-source.png` (kept there as the source) at its own 1774 x 887, a progressive
+  JPEG at quality 88 with 4:4:4 colour (525 KB; untagged, so Qt reads it as sRGB, as the source is), made by
+  `toska/make_welcome.py`. Artwork owned by the artist, licence to be decided (`toska/README.md`).
+- *Layout* (`libs/ui/KisWelcomeBackgroundLayout.h`). The painting covers the page with its aspect ratio kept, anchored
+  right (a narrower page crops the empty left side first) and a quarter of the way down (a wide, short page crops more
+  of the dark bottom band than of the sky), so the moon stays in view from a portrait page to about 3.5:1. Over it lies
+  the window colour: 30 % everywhere on a dark theme (62 % on a light one such as Toska Day, whose text is dark), and a
+  fade from 88 % at the left edge to nothing at 45 % of the width, under the New/Open/help column. The scaled and shaded
+  picture is cached per size, device pixel ratio and window colour, so a repaint is one `drawPixmap`; during a live resize
+  it is scaled fast and re-rendered smoothly once the size rests for 150 ms, and the cache is dropped when the page hides
+  (a document opens), so its tens of MB are not kept behind the canvas.
+- *Only the welcome page.* The painting is drawn in `KisWelcomePageWidget::paintEvent()`; that widget is the
+  `welcomeScroller` page of the main window's stack, never the MDI area, so the canvas and its surroundings are
+  unchanged. The links (Krita's website, KDE, the manual, the source code) stay; stock Krita's desktop welcome page has
+  no art of its own to hide (its donation banner is Android-only).
+- *Tests.* `creative-agent/krita-creative-agent/tests/test_toska_welcome.py` (the qrc, the copy against the source, the
+  artwork note, the define for every identity through `cmake -P` with the qrc only for `KritaAgent` off Android, the
+  widget's guard, no other source touching the painting, the layout numbers). C++: `KisWelcomeBackgroundLayoutTest`
+  (cover and anchoring, the moon in view, the veils, the shipped JPEG decodes, `hasOwnWelcome()` against CMake's rule;
+  listed in `agent/ci-tests.txt`). A mock of the composite was made outside the tree.
+- *Needs a rebuild to show.* A CMake re-configure (the define and the qrc), then `kritaglobal`, `kritaui` and `krita`,
+  then `agent/run-tests.sh KisWelcomeBackgroundLayoutTest KisAppIdentityTest`. Not seen in the running app yet.
+
 **Later migration (a separate task, with a profile move).** Rename the internal identifiers together, once, so nothing is
 half-moved: (1) settings folder `KritaAgent` -> `Toska` (`KRITA_APP_SETTINGS_FOLDER`; config, resources, caches, logs, autosaves,
 `creative-agent-config.json`, the paintings folder and the companion's data folder move with it); (2) bundle id `local.kritaagent`
@@ -992,6 +1031,36 @@ Match choice by palette, name and lightness, and the switches away from Toska wh
 and light one and checks the panel's colours in Match mode and that it applied its theme once per change.
 C++: `KisAppIdentityTest::testShippedConfigDefaultsAreRead` (the two kritarc themes). A mock of both themes (menu bar, toolbox,
 docker with a selected row, tooltip, buttons, text roles) was made outside the tree for review.
+
+*Slider fill (20 Oct).* Krita's slider spin boxes (Opacity, Size, Flow, layer opacity: `KisSliderSpinBox`,
+`KisDoubleSliderSpinBox`) fill with `palette().highlight()`, the selection colour, which made every slider ember. Ember is
+Toska's one accent (focus, the active mode, the primary action), so the Toska themes fill sliders with steel: Night
+`#475d74` (the brand's steel), Day `#5a6f86` (lighter, muted); the slider's number over the fill keeps the selection text
+colour (6.27:1 and 4.91:1). No colour role could carry it: the fill and text selection both read `QPalette::Highlight`
+(the `.colors` file's `[Colors:Selection] BackgroundNormal`), so a data-only change would have recoloured selected text
+too. The value is data all the same: an optional `[KritaAgent]` group in the `.colors` file (`SliderFill=r,g,b`; KDE's
+readers ignore unknown groups), which `ThemeManager::slotChangePalette` reads and sets as the application property
+`kritaAgentSliderFillColor` before it sets the palette; `kis_slider_spin_box_p.h` fills with it when set (halfway to the
+base colour when the slider is disabled) and with upstream's highlight otherwise. A slider whose own palette (or a
+parent's) sets another Highlight keeps it: the fill replaces only the application's Highlight, compared by colour with
+`QApplication::palette(widget)` (a widget palette's resolve mask also carries the application palette's bits, so
+`isBrushSet` cannot tell). Only the two Toska files have the group,
+so every other theme, "System" included, draws as before. Tests: `test_toska_theme.py` (`AgentGroupTest`: only the Toska
+files have the group, the values, the contrast, the selection still ember, the property name on both sides, set before the
+palette and cleared for "System"). Needs `kritawidgetutils` and `kritaui` rebuilt and the `.colors` files installed.
+
+*macOS title bar (20 Oct).* With Toska Night the window title bars (and native dialogs) use the dark appearance
+(`NSAppearanceNameDarkAqua`), with Toska Day the light one (`NSAppearanceNameAqua`), also on a live switch: the same
+`[KritaAgent]` group says `MacOSAppearance=Dark` or `Light`, and `ThemeManager::slotChangePalette` (run on every theme switch,
+before it sets the palette) calls `setMacosApplicationAppearance()` in `libs/ui/osx.mm` (Objective-C++, built on Apple only),
+which sets `NSApp.appearance`; every window without an appearance of its own (Qt sets none) follows at once. A theme
+without the key, and "System", pass 0: if the fork had set an appearance it goes back to `nil` (the system's, what the
+app had before), otherwise nothing is touched, so every other theme behaves as before. Qt resolves Krita's explicit palette
+against the new system palette when AppKit's change reaches it, so the theme's roles stay. Tests: `test_toska_theme.py`
+(`MacosAppearanceTest`: the values, the calls on both paths under `Q_OS_MACOS`, the `extern "C"` declarations on both
+sides, the nil only after a change); `osx.mm` passes `clang++ -fsyntax-only` with and without ARC. Needs `kritaui` rebuilt
+and the `.colors` files installed; to see live: switch Toska Night, Toska Day and Krita dark with the system in light and
+in dark mode.
 
 *Needs a rebuild to show.* A CMake re-configure (the identity kritarc copy, the qrc alias and the header), then `krita` (the qrc is
 compiled into it), the install step (the `.colors` files go to `share/color-schemes`), and `KisAppIdentityTest`:

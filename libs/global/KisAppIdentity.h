@@ -35,6 +35,12 @@ KRITAGLOBAL_EXPORT QString displayName();
 /// (KRITA_APP_OWN_SPLASH, cmake/modules/KritaAppIdentity.cmake) picks that qrc, so the two never disagree.
 KRITAGLOBAL_EXPORT bool hasOwnSplash();
 
+/// True only in the build named Toska, and never on Android: the welcome page (no document open) shows Toska's
+/// painting as its background (krita/data/welcome/welcome-toska.qrc, KisWelcomeBackgroundLayout). The same
+/// configure-time value (KRITA_APP_OWN_WELCOME, cmake/modules/KritaAppIdentity.cmake) compiles that qrc in, so the two
+/// never disagree.
+KRITAGLOBAL_EXPORT bool hasOwnWelcome();
+
 /// The organization domain ("krita.org" for stock Krita).
 KRITAGLOBAL_EXPORT QString organizationDomain();
 

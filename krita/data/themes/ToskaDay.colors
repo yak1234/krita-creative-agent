@@ -3,6 +3,9 @@
 #
 # Toska's light companion theme (paper cream, navy text, ember accents).
 # Contrast is tested: creative-agent/krita-creative-agent/tests/test_toska_theme.py.
+# [KritaAgent] is read by this fork only (libs/ui/thememanager.cpp); KDE ignores it. SliderFill: the fill of
+# the slider spin boxes (Opacity, Size, ...), steel (#5a6f86) instead of the ember selection colour.
+# MacOSAppearance: the macOS title bars and native dialogs (light, NSAppearanceNameAqua).
 [ColorEffects:Disabled]
 Color=128,128,128
 ColorAmount=0.2
@@ -111,6 +114,10 @@ ForegroundVisited=125,90,69
 ColorScheme=Toska Day
 Name=Toska Day
 shadeSortColumn=true
+
+[KritaAgent]
+MacOSAppearance=Light
+SliderFill=90,111,134
 
 [KDE]
 contrast=2

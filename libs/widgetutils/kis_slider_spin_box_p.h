@@ -24,6 +24,7 @@
 #include <QMenu>
 #include <QVariantAnimation>
 #include <QPointer>
+#include <QColor>
 
 #include <cmath>
 #include <utility>
@@ -625,10 +626,31 @@ public:
         paintSliderText(painter, text, rect, sliderRect, m_lineEdit->palette().highlightedText().color(), textOption);
     };
 
+    // Krita Agent: the slider's fill. A colour theme may give it its own, quieter colour than the selection's
+    // ([KritaAgent] SliderFill in the theme's .colors file, handed over by ThemeManager as this application property;
+    // Toska Night and Toska Day keep ember for focus and selection only). Without it, the selection colour, as upstream.
+    // Only the application's Highlight is replaced: a slider whose own palette (or a parent's) sets another Highlight
+    // keeps it. Compared by colour with the application palette for this widget, because a widget palette's resolve
+    // mask also carries the bits of the application palette, which the theme sets for every role.
+    QColor sliderFillColor() const
+    {
+        const QPalette ownPalette = m_q->palette();
+        const QColor ownHighlight = ownPalette.color(ownPalette.currentColorGroup(), QPalette::Highlight);
+        const QColor themeFill = qApp->property("kritaAgentSliderFillColor").value<QColor>();
+        if (!themeFill.isValid()
+            || ownHighlight != QApplication::palette(m_q).color(ownPalette.currentColorGroup(), QPalette::Highlight)) {
+            return ownHighlight;
+        }
+        if (!m_q->isEnabled()) {
+            return KisPaintingTweaks::blendColors(themeFill, m_q->palette().base().color(), 0.5);
+        }
+        return themeFill;
+    }
+
     void paintSlider(QPainter &painter, const QString &text, double slider01Width, double slider02Width = -1.0)
     {
         const QRectF rect = m_lineEdit->rect();
-        const QColor highlightColor = m_q->palette().highlight().color();
+        const QColor highlightColor = sliderFillColor();
         if (slider02Width < 0.0) {
             const QRectF sliderRect = rect.adjusted(0, 0, -(rect.width() - slider01Width), 0);
             paintSliderRect(painter, sliderRect, highlightColor);

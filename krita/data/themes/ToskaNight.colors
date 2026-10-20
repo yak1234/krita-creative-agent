@@ -4,6 +4,9 @@
 # Toska's dark colour theme (night navy, ember, cream, steel blue: sampled from the artist's logo and splash).
 # The build named Toska opens with it on a new install (AGENT-FORK.md, 'Colour theme: Toska').
 # Contrast is tested: creative-agent/krita-creative-agent/tests/test_toska_theme.py.
+# [KritaAgent] is read by this fork only (libs/ui/thememanager.cpp); KDE ignores it. SliderFill: the fill of
+# the slider spin boxes (Opacity, Size, ...), steel (#475d74) instead of the ember selection colour.
+# MacOSAppearance: the macOS title bars and native dialogs (dark, NSAppearanceNameDarkAqua).
 [ColorEffects:Disabled]
 Color=56,56,56
 ColorAmount=0
@@ -112,6 +115,10 @@ ForegroundVisited=185,138,106
 ColorScheme=Toska Night
 Name=Toska Night
 shadeSortColumn=true
+
+[KritaAgent]
+MacOSAppearance=Dark
+SliderFill=71,93,116
 
 [KDE]
 contrast=4

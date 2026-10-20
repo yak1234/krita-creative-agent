@@ -93,6 +93,11 @@ bool KisAppIdentity::hasOwnSplash()
     return KRITA_APP_OWN_SPLASH != 0;
 }
 
+bool KisAppIdentity::hasOwnWelcome()
+{
+    return KRITA_APP_OWN_WELCOME != 0;
+}
+
 QString KisAppIdentity::organizationDomain()
 {
     const QString domain = QStringLiteral(KRITA_APP_ORGANIZATION_DOMAIN);

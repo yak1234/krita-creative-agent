@@ -18,9 +18,11 @@
 #include <QStandardItemModel>
 #include <QScopedPointer>
 #include <QFont>
+#include <QPixmap>
 
 #include "config-updaters.h"
 class RecentItemDelegate;
+class QTimer;
 class KisMainWindow;
 
 // Custom QAction to bridge a QLabel::linkActivated signal to a QAction::setChecked signal
@@ -92,6 +94,9 @@ protected:
     void dragMoveEvent(QDragMoveEvent * event) override;
     void dragLeaveEvent(QDragLeaveEvent * event) override;
     void changeEvent(QEvent *event) override;
+    void paintEvent(QPaintEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
 
     bool eventFilter(QObject *watched, QEvent *event) override;
 
@@ -132,6 +137,15 @@ private:
     bool m_networkIsAllowed {false};
 
     QScopedPointer<RecentItemDelegate> recentItemDelegate;
+
+    /// Krita Agent: Toska's welcome page background (KisAppIdentity::hasOwnWelcome(), KisWelcomeBackgroundLayout.h).
+    /// Null in every other build, where paintEvent() paints nothing, as upstream. m_ownBackgroundScaled is the painting
+    /// cropped, scaled and shaded for the current size, device pixel ratio and window colour.
+    QPixmap m_ownBackground;
+    QPixmap m_ownBackgroundScaled;
+    QColor m_ownBackgroundShade;
+    QTimer *m_ownBackgroundSmoothTimer {nullptr}; ///< null without the painting
+    bool m_ownBackgroundResizing {false};
 
 };
 

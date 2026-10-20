@@ -35,6 +35,8 @@ panel_theme = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(panel_theme)
 
 COLOR_SECTIONS = ('Window', 'View', 'Button', 'Selection', 'Tooltip', 'Complementary')
+AGENT_GROUP = 'KritaAgent'
+SLIDER_FILL_PROPERTY = 'kritaAgentSliderFillColor'
 
 
 def scheme(path):
@@ -94,7 +96,8 @@ class SchemeFileTest(unittest.TestCase):
         for path in (NIGHT, DAY):
             with self.subTest(path=path.name):
                 parsed = scheme(path)
-                self.assertEqual(sorted(parsed.sections()), sorted(reference.sections()))
+                # plus the fork's own [KritaAgent] group (AgentGroupTest), which KDE's readers ignore
+                self.assertEqual(sorted(set(parsed.sections()) - {AGENT_GROUP}), sorted(reference.sections()))
                 for section in reference.sections():
                     self.assertEqual(sorted(parsed[section]), sorted(reference[section]), section)
 
@@ -166,6 +169,104 @@ class ContrastTest(unittest.TestCase):
             self.assertAlmostEqual(got[0], proposed[0], delta=0.01)
             self.assertAlmostEqual(got[2], proposed[2], delta=0.03)
             self.assertLess(got[1], proposed[1])
+
+
+class AgentGroupTest(unittest.TestCase):
+    """[KritaAgent] in a .colors file: what a theme says beyond KDE's colour roles, read by ThemeManager. SliderFill is the
+    fill of the slider spin boxes (KisSliderSpinBox and its kin), which otherwise use the selection colour: ember is
+    Toska's one accent (focus, the active mode, the primary action), so the Toska themes fill sliders with steel."""
+
+    def agent(self, path):
+        return scheme(path)[AGENT_GROUP]
+
+    def test_only_the_toska_themes_have_the_group(self):
+        for path in THEMES.glob('*.colors'):
+            with self.subTest(theme=path.stem):
+                self.assertEqual(AGENT_GROUP in scheme(path).sections(), path in (NIGHT, DAY))
+
+    def test_slider_fill_is_steel_not_the_selection(self):
+        self.assertEqual(hex_of(self.agent(NIGHT)['SliderFill']), '#475d74')     # the brand's steel
+        self.assertEqual(hex_of(self.agent(DAY)['SliderFill']), '#5a6f86')       # a lighter, muted steel for Day
+        for path in (NIGHT, DAY):
+            with self.subTest(theme=path.stem):
+                fill = hex_of(self.agent(path)['SliderFill'])
+                selection = colors(path, 'Selection')
+                self.assertNotEqual(fill, selection['BackgroundNormal'])
+                # the slider's number over the fill is drawn in the selection text colour (highlightedText)
+                self.assertGreaterEqual(contrast(selection['ForegroundNormal'], fill), 4.5)
+        # the text selection itself keeps ember (also pinned in test_the_proposed_roles_are_kept)
+        self.assertEqual(colors(NIGHT, 'Selection')['BackgroundNormal'], '#b8432a')
+        self.assertEqual(colors(DAY, 'Selection')['BackgroundNormal'], '#c4432a')
+
+    def test_theme_manager_hands_the_fill_to_the_sliders(self):
+        manager = (REPO / 'libs/ui/thememanager.cpp').read_text()
+        body = manager[manager.index('void ThemeManager::slotChangePalette()'):]
+        body = body[:body.index('\n}\n')]
+        self.assertIn('KConfigGroup agentGroup(config, "%s");' % AGENT_GROUP, body)
+        self.assertIn('agentGroup.readEntry("SliderFill", QColor())', body)
+        self.assertIn('"%s"' % SLIDER_FILL_PROPERTY, manager)
+        # set (or cleared) before the palette, and cleared for "System" too, so a theme without the key draws as upstream
+        system = body[:body.index('return;')]
+        self.assertIn('qApp->setProperty(kSliderFillProperty, QVariant());', system)
+        self.assertLess(body.index('qApp->setProperty(kSliderFillProperty, sliderFill.isValid()'),
+                        body.index('qApp->setPalette(palette);'))
+
+    def test_the_slider_reads_the_same_property(self):
+        slider = (REPO / 'libs/widgetutils/kis_slider_spin_box_p.h').read_text()
+        self.assertIn('qApp->property("%s").value<QColor>()' % SLIDER_FILL_PROPERTY, slider)
+        body = slider[slider.index('    QColor sliderFillColor() const'):]
+        body = body[:body.index('\n    }\n')]
+        # without the property: upstream's selection colour
+        self.assertIn('const QColor ownHighlight = ownPalette.color(ownPalette.currentColorGroup(), QPalette::Highlight);', body)
+        self.assertRegex(body, r'if \(!themeFill\.isValid\(\)\n\s+\|\| ownHighlight != QApplication::palette\(m_q\)'
+                               r'\.color\(ownPalette\.currentColorGroup\(\), QPalette::Highlight\)\) \{\n\s+return ownHighlight;')
+        paint = slider[slider.index('    void paintSlider('):]
+        paint = paint[:paint.index('\n    }\n')]
+        self.assertIn('const QColor highlightColor = sliderFillColor();', paint)
+        self.assertNotIn('palette().highlight()', paint)
+
+
+class MacosAppearanceTest(unittest.TestCase):
+    """[KritaAgent] MacOSAppearance: Toska Night gives dark macOS title bars (NSAppearanceNameDarkAqua), Toska Day light
+    ones (NSAppearanceNameAqua); a theme without the key leaves the system's appearance, or gives it back after a Toska
+    theme, also on a live theme switch (ThemeManager::slotChangePalette runs on every switch)."""
+
+    def test_values(self):
+        self.assertEqual(scheme(NIGHT)[AGENT_GROUP]['MacOSAppearance'], 'Dark')
+        self.assertEqual(scheme(DAY)[AGENT_GROUP]['MacOSAppearance'], 'Light')
+
+    def test_theme_manager_asks_for_it_on_every_switch(self):
+        manager = (REPO / 'libs/ui/thememanager.cpp').read_text()
+        self.assertRegex(manager, r'#ifdef Q_OS_MACOS\n#include "osx.h"')
+        body = manager[manager.index('void ThemeManager::slotChangePalette()'):]
+        body = body[:body.index('\n}\n')]
+        system = body[:body.index('return;')]
+        self.assertIn('#ifdef Q_OS_MACOS\n        setMacosApplicationAppearance(0);', system)
+        rest = body[body.index('return;'):]
+        self.assertIn('agentGroup.readEntry("MacOSAppearance", QString()).toLower()', rest)
+        self.assertIn('setMacosApplicationAppearance(macAppearance == QLatin1String("dark") ? 2 : '
+                      'macAppearance == QLatin1String("light") ? 1 : 0);', rest)
+        self.assertEqual(body.count('setMacosApplicationAppearance('), body.count('#ifdef Q_OS_MACOS'))
+        # the palette change (and signalThemeChanged) is what a live switch delivers; the call comes on the same path
+        self.assertLess(rest.index('setMacosApplicationAppearance('), rest.index('qApp->setPalette(palette);'))
+
+    def test_the_objective_c_side(self):
+        header = (REPO / 'libs/ui/osx.h').read_text()
+        source = (REPO / 'libs/ui/osx.mm').read_text()
+        # declared extern "C" on both sides, or the names would not link
+        for text in (header, source):
+            block = text[text.index('extern "C" {'):]
+            block = block[:block.index('}')]
+            self.assertIn('void setMacosApplicationAppearance(int appearance);', block)
+        body = source[source.index('void setMacosApplicationAppearance(int appearance) {'):]
+        self.assertIn('@available(macOS 10.14, *)', body)
+        self.assertIn('NSAppearanceNameDarkAqua', body)
+        self.assertIn('NSAppearanceNameAqua', body)
+        # gives back nil (the system's) only after it changed something itself
+        self.assertRegex(body, r'if \(s_changed\) \{\n\s+NSApp\.appearance = nil;')
+        cmake = (REPO / 'libs/ui/CMakeLists.txt').read_text()
+        self.assertRegex(cmake, r'if\(APPLE\)\n    set\(kritaui_LIB_SRCS\n        \$\{kritaui_LIB_SRCS\}\n'
+                                r'        input/kis_extended_modifiers_mapper_osx\.mm\n        osx\.mm\n')
 
 
 def configure(folder):

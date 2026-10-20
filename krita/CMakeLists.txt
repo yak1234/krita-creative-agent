@@ -114,6 +114,14 @@ else()
     set(krita_splash_qrc splash.qrc)
 endif()
 
+# Krita Agent: the build named Toska also has its welcome page background (krita/data/welcome/welcome-toska.qrc, read
+# by KisWelcomePageWidget through KisAppIdentity::hasOwnWelcome()); KRITA_APP_OWN_WELCOME (0 or 1,
+# cmake/modules/KritaAppIdentity.cmake) decides both. Every other build gets an empty value: no :/welcome resource
+set(krita_welcome_qrc "")
+if(KRITA_APP_OWN_WELCOME)
+    set(krita_welcome_qrc ${CMAKE_SOURCE_DIR}/krita/data/welcome/welcome-toska.qrc)
+endif()
+
 # ==============================================================================
 # KRITA5.XMLGUI UPDATE
 #
@@ -196,6 +204,7 @@ set(krita_QRCS
     ${CMAKE_SOURCE_DIR}/plugins/paintops/defaultpresets/defaultpresets.qrc
     ${CMAKE_SOURCE_DIR}/krita/pics/branding/${BRANDING}/branding.qrc
     ${CMAKE_SOURCE_DIR}/krita/data/splash/${krita_splash_qrc}
+    ${krita_welcome_qrc}
     ${CMAKE_SOURCE_DIR}/krita/pics/sponsors/sponsors.qrc
     ${KRITA_APP_IDENTITY_QRC}
     CACHE INTERNAL "krita_QRCS"

@@ -52,6 +52,10 @@
 #include <QStyle>
 #endif
 
+#ifdef Q_OS_MACOS
+#include "osx.h" // Krita Agent: setMacosApplicationAppearance()
+#endif
+
 namespace Digikam
 {
 
@@ -131,9 +135,20 @@ void ThemeManager::setCurrentTheme(const QString& name)
     slotChangePalette();
 }
 
+// Krita Agent: what a colour theme says beyond KDE's colour roles, in an optional [KritaAgent] group of its .colors
+// file (only Toska Night and Toska Day have one). SliderFill: the fill of Krita's slider spin boxes, which otherwise
+// use the selection colour; the application property below hands it to them (libs/widgetutils/kis_slider_spin_box_p.h),
+// unset for every theme without the key, so those draw exactly as before. MacOSAppearance (Dark or Light): the macOS
+// title bars and native dialogs follow the theme; any theme without the key leaves (or gives back) the system's.
+static const char *const kSliderFillProperty = "kritaAgentSliderFillColor";
+
 void ThemeManager::slotChangePalette()
 {
     if (currentThemeName() == "System") {
+        qApp->setProperty(kSliderFillProperty, QVariant()); // Krita Agent: the selection colour, as upstream
+#ifdef Q_OS_MACOS
+        setMacosApplicationAppearance(0); // Krita Agent: the system's appearance, as upstream
+#endif
         qApp->setPalette(QPalette());
         Q_EMIT signalThemeChanged();
         return;
@@ -189,6 +204,16 @@ void ThemeManager::slotChangePalette()
     //qDebug() << ">>>>>>>>>>>>>>>>>> going to set palette on app" << theme;
     // hint for the style to synchronize the color scheme with the window manager/compositor
     qApp->setProperty("KDE_COLOR_SCHEME_PATH", filename);
+    // Krita Agent: set before the palette, so the sliders repaint (on the palette change) with the new fill
+    KConfigGroup agentGroup(config, "KritaAgent");
+    const QColor sliderFill = agentGroup.readEntry("SliderFill", QColor());
+    qApp->setProperty(kSliderFillProperty, sliderFill.isValid() ? QVariant::fromValue(sliderFill) : QVariant());
+#ifdef Q_OS_MACOS
+    // Krita Agent: when AppKit's change reaches Qt (now or later), Qt resolves the palette set below against the new
+    // system palette, so every role Krita sets here stays as the theme says
+    const QString macAppearance = agentGroup.readEntry("MacOSAppearance", QString()).toLower();
+    setMacosApplicationAppearance(macAppearance == QLatin1String("dark") ? 2 : macAppearance == QLatin1String("light") ? 1 : 0);
+#endif
     qApp->setPalette(palette);
     KisConfigNotifier::instance()->notifyColorThemeChanged(filename);
 

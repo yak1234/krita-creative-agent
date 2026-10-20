@@ -11,6 +11,7 @@
 
 #include <QAtomicInt>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QImage>
 #include <QPointer>
 #include <QScopedPointer>
@@ -33,6 +34,7 @@
 #include <KisResourceTypes.h>
 #include <KoColorSpaceRegistry.h>
 #include <brushengine/kis_paintop_preset.h>
+#include <brushengine/kis_paintop_settings.h>
 #include <kis_image.h>
 #include <kis_paint_device.h>
 #include <kis_paint_layer.h>
@@ -696,6 +698,17 @@ void TestStrokeJobs::testWindowRespondsWhileAJobPaints()
 
 void TestStrokeJobs::testWashBrushLandsBeforeTheJobEnds()
 {
+    // KRITA_AGENT_WASH_ROUNDS repeats the test in one process, for hunting a rare failure (default: once).
+    const int rounds = qEnvironmentVariableIsSet("KRITA_AGENT_WASH_ROUNDS") ? qEnvironmentVariableIntValue("KRITA_AGENT_WASH_ROUNDS") : 1;
+    for (int round = 0; round < rounds; round++) {
+        washRound(round);
+        if (QTest::currentTestFailed()) return;
+    }
+}
+
+void TestStrokeJobs::washRound(int round)
+{
+    Q_UNUSED(round);
     // A Wash-mode preset paints on a temporary layer merged after the stroke's finish: the job ends after that.
     const QString preset = presetName("b) Basic-5 Size Opacity");
     QVERIFY2(!preset.isEmpty(), "Krita's preset b) Basic-5 Size Opacity is in the resource database");
@@ -721,9 +734,11 @@ void TestStrokeJobs::testWashBrushLandsBeforeTheJobEnds()
     const QRect changed = job->changedRect();
     const QRect painted = d.layer->paintDevice()->exactBounds();
     QObject::disconnect(connection);
-    QVERIFY2(lastRow > 100000, qPrintable(QString("the last stroke has %1 px when the job ends (%2, %3 of %4, painted %5,%6 %7x%8)")
+    d.image->waitForDone();
+    const int lastRowLater = areaCount(d.alpha(), QRect(100, 1600, 2800, 100));
+    QVERIFY2(lastRow > 100000, qPrintable(QString("the last stroke has %1 px when the job ends, %9 once idle (%2, %3 of %4, painted %5,%6 %7x%8)")
                                               .arg(lastRow).arg(job->state()).arg(job->strokesDone()).arg(job->strokesTotal())
-                                              .arg(painted.x()).arg(painted.y()).arg(painted.width()).arg(painted.height())));
+                                              .arg(painted.x()).arg(painted.y()).arg(painted.width()).arg(painted.height()).arg(lastRowLater)));
     QVERIFY2(changed.contains(painted), "changedRect covers the merged pixels");
     QVERIFY(agentReports.load() > 0);
     QVERIFY2(artistReports.load() == 0, qPrintable(QString("%1 reports marked the artist's").arg(artistReports.load())));
@@ -805,6 +820,8 @@ void TestStrokeJobs::testClosingTheDocumentStopsAJob()
     const qint64 closeMs = clock.elapsed();
     QVERIFY(settle(job.data(), 5000));
     QCOMPARE(job->state(), QString("cancelled"));
+    QCOMPARE(job->cancelReason(), QString("document_closed"));
+    QCOMPARE(job->status().value("cancelReason").toString(), QString("document_closed"));
     const int done = job->strokesDone();
     QVERIFY2(done < count, qPrintable(QString("%1 strokes painted").arg(done)));
     QVERIFY2(closeMs < 3000, qPrintable(QString("closing took %1 ms").arg(closeMs)));
@@ -947,15 +964,24 @@ void TestStrokeJobs::testArtistUndoStopsTheJobThenUndoes()
     // The artist presses Ctrl+Z.
     d.kisdoc->undoStack()->undo();
     QVERIFY(settle(job.data()));
-    QCOMPARE(job->state(), QString("cancelled"));
-    QVERIFY(job->strokesDone() < count);
+    QVERIFY2(job->state() == "cancelled" && job->cancelReason() == "undo" && job->strokesDone() < count,
+             qPrintable(QString("state %1, reason \"%2\", %3 of %4 strokes").arg(job->state(), job->cancelReason())
+                            .arg(job->strokesDone()).arg(count)));
     // Then the undo is carried out: the job's step is undone, the earlier step stays.
-    QTRY_COMPARE_WITH_TIMEOUT(d.kisdoc->undoStack()->index(), 1, 10000);
-    QCOMPARE(d.kisdoc->undoStack()->count(), 2);
-    QCOMPARE(d.kisdoc->undoStack()->text(1), QString("long"));
-    QCOMPARE(d.kisdoc->undoStack()->text(0), QString("earlier"));
+    QElapsedTimer wait;
+    wait.start();
+    // The index is 1 before the job's step has landed too: wait for the step (count 2) and the undo (index 1).
+    while (!(d.kisdoc->undoStack()->count() == 2 && d.kisdoc->undoStack()->index() == 1) && wait.elapsed() < 10000)
+        QCoreApplication::processEvents();
+    QVERIFY2(d.kisdoc->undoStack()->index() == 1 && d.kisdoc->undoStack()->count() == 2
+                 && d.kisdoc->undoStack()->text(1) == "long" && d.kisdoc->undoStack()->text(0) == "earlier",
+             qPrintable(QString("index %1, count %2, texts \"%3\" \"%4\"").arg(d.kisdoc->undoStack()->index())
+                            .arg(d.kisdoc->undoStack()->count())
+                            .arg(d.kisdoc->undoStack()->count() > 1 ? d.kisdoc->undoStack()->text(1) : QString(),
+                                 d.kisdoc->undoStack()->count() > 0 ? d.kisdoc->undoStack()->text(0) : QString())));
     d.image->waitForDone();
-    QCOMPARE(areaCount(d.alpha(), QRect(0, 0, 620, 285)), 0);
+    QVERIFY2(areaCount(d.alpha(), QRect(0, 0, 620, 285)) == 0,
+             qPrintable(QString("%1 px of the job remain").arg(areaCount(d.alpha(), QRect(0, 0, 620, 285)))));
     QVERIFY(areaCount(d.alpha(), QRect(0, 285, 620, 15)) > 0);
 }
 
@@ -1010,6 +1036,128 @@ void TestStrokeJobs::testOffGuiThreadRefusedAndALoneStartDabs()
     QVERIFY(settle(dab.data()));
     const QRect bounds = d.layer->paintDevice()->exactBounds();
     QVERIFY(!bounds.isEmpty() && bounds.width() <= 24 && bounds.contains(QPoint(100, 50)));
+}
+
+void TestStrokeJobs::testCancelReasons()
+{
+    const QString preset = pressurePreset();
+    QVERIFY(!preset.isEmpty());
+    JobDocument d;
+    // No reason while the job is not cancelled, and none when it ends done.
+    {
+        Gate gate(d.image);
+        QScopedPointer<StrokeJob> job(d.paint->paintStrokes(rows(5, QRect(10, 10, 180, 40)), {{"preset", preset}}));
+        QVERIFY(job);
+        QCOMPARE(job->cancelReason(), QString());
+        QCOMPARE(job->status().value("cancelReason").toString(), QString());
+        gate.release();
+        QVERIFY(settle(job.data()));
+        QCOMPARE(job->state(), QString("done"));
+        QCOMPARE(job->cancelReason(), QString());
+        QVERIFY(!job->cancel()); // too late: no reason is recorded
+        QCOMPARE(job->cancelReason(), QString());
+    }
+    // cancel() is the script's (or the plugin's Stop).
+    {
+        Gate gate(d.image);
+        QScopedPointer<StrokeJob> job(d.paint->paintStrokes(rows(40, QRect(10, 10, 180, 40)), {{"preset", preset}}));
+        QVERIFY(job);
+        QVERIFY(job->cancel());
+        QCOMPARE(job->cancelReason(), QString("script"));
+        gate.release();
+        QVERIFY(settle(job.data()));
+        QCOMPARE(job->state(), QString("cancelled"));
+        QCOMPARE(job->cancelReason(), QString("script"));
+        QCOMPARE(job->status().value("cancelReason").toString(), QString("script"));
+    }
+    // The first reason stays: a script's cancel, then the artist's undo, is still the script's.
+    {
+        Gate gate(d.image);
+        QScopedPointer<StrokeJob> job(d.paint->paintStrokes(rows(40, QRect(10, 10, 180, 40)), {{"preset", preset}}));
+        QVERIFY(job);
+        QVERIFY(job->cancel());
+        d.kisdoc->undoStack()->undo();
+        gate.release();
+        QVERIFY(settle(job.data()));
+        QCOMPARE(job->cancelReason(), QString("script"));
+    }
+    // (The undo and document_closed reasons: testArtistUndoStopsTheJobThenUndoes, testClosingTheDocumentStopsAJob.)
+}
+
+void TestStrokeJobs::testBrushIsFixedAtTheCall()
+{
+    const QString name = pressurePreset();
+    QVERIFY(!name.isEmpty());
+    KisPaintOpPresetSP live = KisGlobalResourcesInterface::instance()->source(ResourceType::PaintOpPresets)
+                                  .bestMatch(QString(), QString(), name).dynamicCast<KisPaintOpPreset>();
+    QVERIFY(live);
+    const qreal opacity = live->settings()->paintOpOpacity();
+    const qreal size = live->settings()->paintOpSize();
+    // Put the live preset back, whatever happens.
+    struct Restore {
+        KisPaintOpPresetSP preset; qreal opacity, size;
+        ~Restore() { preset->settings()->setPaintOpOpacity(opacity); preset->settings()->setPaintOpSize(size); }
+    } restore {live, opacity, size};
+
+    JobDocument d(200, 400);
+    live->settings()->setPaintOpOpacity(1.0);
+    Gate gate(d.image);
+    // 100 dabs; the later ones give a size of their own, so each of those windows sets up its brush when it is queued.
+    QVariantList strokes;
+    for (int i = 0; i < 100; i++) {
+        strokes << QVariantMap{{"points", QVariantList{QVariant(QVariantList{20 + 8 * (i % 20), 20 + 18 * (i / 20)})}},
+                               {"size", i < 32 ? 12.0 : 13.0}};
+    }
+    QScopedPointer<StrokeJob> job(d.paint->paintStrokes(strokes, {{"preset", name}}));
+    QVERIFY(job);
+    QVERIFY2(job->state() != "failed", qPrintable(job->errorString()));
+    // The view's brush changes after the call (a different tool, or a toggle the plugin restores later).
+    live->settings()->setPaintOpOpacity(0.2);
+    live->settings()->setPaintOpSize(60);
+    gate.release();
+    QVERIFY(settle(job.data()));
+    QCOMPARE(job->state(), QString("done"));
+    d.image->waitForDone();
+    const QImage alpha = d.alpha();
+    const int early = alpha.constScanLine(20)[20], late = alpha.constScanLine(20 + 18 * 4)[20 + 8 * 19];
+    QVERIFY2(early > 240, qPrintable(QString("an early dab has alpha %1").arg(early)));
+    QVERIFY2(late > 240, qPrintable(QString("a late dab has alpha %1 (it used the brush as changed after the call)").arg(late)));
+}
+
+void TestStrokeJobs::testUndoBetweenTopUpsUndoesTheJob()
+{
+    // While the job waits for the GUI thread to queue its next strokes, the image is idle, and Krita takes an undo at
+    // once: it must undo the job's step, not the one before it (which the job's step landing later would wipe).
+    const QString preset = pressurePreset();
+    QVERIFY(!preset.isEmpty());
+    JobDocument d(620, 300);
+    QScopedPointer<StrokeJob> earlier(d.paint->paintStrokes({line({{5, 295}, {600, 295}}, 4)}, {{"preset", preset}, {"name", "earlier"}}));
+    QVERIFY(settle(earlier.data()));
+    QTRY_COMPARE(d.kisdoc->undoStack()->count(), 1);
+    QVariantList strokes;
+    for (int i = 0; i < 100; i++) strokes << line({{20 + 5 * (i % 100), 20}, {20 + 5 * (i % 100), 100}}, 4);
+    QScopedPointer<StrokeJob> job(d.paint->paintStrokes(strokes, {{"preset", preset}, {"name", "long"}}));
+    QVERIFY(job);
+    // No event loop turn: the first window paints, and then nothing queues the rest.
+    QElapsedTimer clock;
+    clock.start();
+    while (!d.image->isIdle() && clock.elapsed() < 20000) QThread::msleep(2);
+    QVERIFY(d.image->isIdle());
+    QVERIFY2(job->strokesDone() > 0 && job->strokesDone() < 100, qPrintable(QString("%1 strokes done").arg(job->strokesDone())));
+    d.kisdoc->undoStack()->undo();
+    QVERIFY(settle(job.data()));
+    d.image->waitForDone();
+    QVERIFY2(job->state() == "cancelled" && job->cancelReason() == "undo",
+             qPrintable(QString("state %1, reason \"%2\"").arg(job->state(), job->cancelReason())));
+    clock.restart();
+    while (!(d.kisdoc->undoStack()->count() == 2 && d.kisdoc->undoStack()->index() == 1) && clock.elapsed() < 10000)
+        QCoreApplication::processEvents();
+    QVERIFY2(d.kisdoc->undoStack()->count() == 2 && d.kisdoc->undoStack()->index() == 1
+                 && d.kisdoc->undoStack()->text(1) == "long" && d.kisdoc->undoStack()->text(0) == "earlier",
+             qPrintable(QString("count %1, index %2").arg(d.kisdoc->undoStack()->count()).arg(d.kisdoc->undoStack()->index())));
+    d.image->waitForDone();
+    QCOMPARE(areaCount(d.alpha(), QRect(0, 0, 620, 285)), 0);
+    QVERIFY(areaCount(d.alpha(), QRect(0, 285, 620, 15)) > 0);
 }
 
 KISTEST_TEMPORARY_HOME_MAIN(TestStrokeJobs)

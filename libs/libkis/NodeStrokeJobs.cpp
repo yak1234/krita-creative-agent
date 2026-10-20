@@ -327,7 +327,7 @@ private:
     {
         connect(image.data(), &KisImage::sigUndoDuringStrokeRequested, this, [this] () { undoRequested(); },
                 Qt::DirectConnection);
-        connect(image.data(), &KisImage::sigAboutToBeDeleted, this, [this] () { stopAll(); }, Qt::DirectConnection);
+        connect(image.data(), &KisImage::sigAboutToBeDeleted, this, [this] () { stopAll(StrokeJobShared::DocumentClosed); }, Qt::DirectConnection);
         connect(image.data(), &QObject::destroyed, this, [this] () {
             if (registry().value(m_key) == this) registry().remove(m_key);
             deleteLater();
@@ -356,24 +356,37 @@ private:
         return running;
     }
 
-    void stopAll()
+    void stopAll(StrokeJobShared::CancelReason reason)
     {
         for (const QPointer<StrokeJobFeeder> &feeder : active()) {
             if (!feeder) continue;
-            feeder->shared()->cancelRequested = true;
+            feeder->shared()->requestCancel(reason);
             feeder->pump(); // drops what is not queued yet; may finish the feeder
         }
     }
 
     void undoRequested()
     {
-        if (active().isEmpty() || m_undoPending) return;
-        stopAll();
+        if (active().isEmpty() || m_undoPending || m_stopping) return;
+        stopAll(StrokeJobShared::Undo);
         KisImageSP image = m_image;
         KisDocument *document = image ? documentOf(image) : nullptr;
         if (!document) return;
-        // Krita tries the undo right after this signal and drops it on a busy image; it is carried out here, after
-        // the jobs have stopped, unless the history moved back at once.
+        // Krita tries the undo right after this signal, and takes it at once whenever the image happens to be idle
+        // (between two of a job's top-ups, say), which would undo the step before the job's, and the job's step
+        // landing later would wipe it from the redo list. So the stopped jobs are given a moment to end and land
+        // their step first: they stop between strokes, so this is short. The signal comes from the undo itself, on
+        // the GUI thread; only events that are not input are processed meanwhile.
+        m_stopping = true;
+        QElapsedTimer waited;
+        waited.start();
+        while (waited.elapsed() < kStopWaitMs && (!active().isEmpty() || !image->isIdle())) {
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+        }
+        m_stopping = false;
+        if (active().isEmpty() && image->isIdle()) return; // landed: Krita's own undo now undoes the job's step
+        // Not done in time: the undo is carried out after the jobs have stopped, unless the history moved back at
+        // once.
         const int index = document->undoStack()->index();
         QPointer<KisDocument> target(document);
         m_undoPending = true;
@@ -420,6 +433,8 @@ private:
     KisImage *m_key;
     QList<QPointer<StrokeJobFeeder>> m_feeders;
     bool m_undoPending = false;
+    bool m_stopping = false;                ///< undoRequested() is waiting for the stopped jobs
+    static const int kStopWaitMs = 3000;
     QPointer<KisDocument> m_undoDocument;
     QElapsedTimer m_undoClock;
     QTimer m_idleTimer;
@@ -456,7 +471,7 @@ void StrokeJobFeeder::pump()
 {
     if (m_finished) return;
     if (!KisImageSP(m_image)) {
-        m_shared->cancelRequested = true;
+        m_shared->requestCancel(StrokeJobShared::DocumentClosed);
     }
     if (m_shared->cancelRequested && m_next < m_shared->total) {
         const int dropped = m_shared->total - m_next;
@@ -487,10 +502,9 @@ KisResourcesSnapshotSP StrokeJobFeeder::snapshotFor(const StrokeJobInput &input)
         preset->settings()->setPaintOpCompositeOp(compositeOp);
         m_presets.insert(presetKey, preset);
     }
-    const QString key = QStringLiteral("%1/%2/%3").arg(presetKey).arg(input.opacity).arg(input.color.rgba());
-    KisResourcesSnapshotSP snapshot = m_snapshots.value(key);
-    if (snapshot) return snapshot;
-
+    // A snapshot of its own for every stroke, as Krita's tools make: it deep-copies the preset, and with it the brush
+    // tip and the settings the stroke's paint op reads and updates. Sharing one between strokes let a stroke begin
+    // while the one before it was still finishing with the same brush objects.
     KisImageSP image = m_image;
     KoCanvasResourceProvider *resources = m_shared->resources.data();
     resources->setResource(KoCanvasResource::CurrentKritaNode, QVariant::fromValue(m_node));
@@ -499,12 +513,11 @@ KisResourcesSnapshotSP StrokeJobFeeder::snapshotFor(const StrokeJobInput &input)
     resources->setResource(KoCanvasResource::Opacity, input.opacity >= 0 ? input.opacity : preset->settings()->paintOpOpacity());
     resources->setResource(KoCanvasResource::EraserMode, false);
     resources->setResource(KoCanvasResource::CurrentCompositeOp, compositeOp);
-    snapshot = new KisResourcesSnapshot(image, m_node, resources);
+    KisResourcesSnapshotSP snapshot = new KisResourcesSnapshot(image, m_node, resources);
     snapshot->setStrokeStyle(KisPainter::StrokeStyleBrush);
     snapshot->setFillStyle(KisPainter::FillStyleNone);
     snapshot->setSelectionOverride(clip);
     snapshot->setPostExecutionUndoAdapterOverride(hold ? hold->adapter() : nullptr);
-    m_snapshots.insert(key, snapshot);
     return snapshot;
 }
 
@@ -536,7 +549,6 @@ void StrokeJobFeeder::queueWindow(int count)
     if (m_next == m_shared->total) {
         // Everything is queued: let go of what only queueing needed (the strokes keep their own snapshots).
         m_presets.clear();
-        m_snapshots.clear();
         inputs.clear();
         inputs.squeeze();
         basePreset.clear();
@@ -663,7 +675,7 @@ StrokeJob *Node::paintStrokes(const QVariantList &strokes, const QVariantMap &op
     StrokeJob *job = new StrokeJob(shared);
     StrokeJobFeeder *feeder = new StrokeJobFeeder(shared, image, target, document);
     feeder->inputs = inputs;
-    feeder->basePreset = base;
+    feeder->basePreset = base->clone().dynamicCast<KisPaintOpPreset>(); // the view's own object may change later
     feeder->compositeOp = compositeOp;
     feeder->clip = selection && selection->selection() ? new KisSelection(*selection->selection()) : nullptr;
     feeder->hold = hold;

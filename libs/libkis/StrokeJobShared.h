@@ -61,6 +61,12 @@ public:
     /// paint nothing, and the one painting rolls back.
     std::atomic<bool> cancelRequested {false};
 
+    /// Why the job is being cancelled; the first reason asked for stays. Any thread.
+    enum CancelReason { NotCancelled = 0, Script, Undo, DocumentClosed };
+    void requestCancel(CancelReason reason);
+    /// "", "script", "undo" or "document_closed" (StrokeJob::cancelReason()).
+    QString cancelReason() const;
+
     // ---- reported by the strokes (any thread) ----
     void strokeStarted(int index);
     void strokeEnded(int index, bool painted);
@@ -104,6 +110,7 @@ private:
     qint64 m_endMs = -1;
     StrokeJob *m_job = nullptr;
     StrokeJobFeeder *m_feeder = nullptr;
+    std::atomic<int> m_cancelReason {NotCancelled};
     std::atomic<int> m_running {-1};          ///< the index of the stroke painting now, or -1
 };
 
@@ -162,7 +169,6 @@ private:
     int m_next = 0;
     bool m_finished = false;
     QHash<QString, KisPaintOpPresetSP> m_presets;
-    QHash<QString, KisResourcesSnapshotSP> m_snapshots;
 };
 
 /**

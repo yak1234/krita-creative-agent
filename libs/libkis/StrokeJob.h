@@ -77,6 +77,14 @@ public Q_SLOTS:
     /// Why the job failed, or an empty string.
     QString errorString() const;
 
+    /**
+     * Why the job was cancelled, once it has been: "script" (cancel() was called, by a script or the plugin's Stop),
+     * "undo" (the artist pressed Undo during the job), "document_closed" (the document was closing), or an empty
+     * string while the job is not cancelled. The first reason stays. A cancel that came too late to stop anything
+     * (every stroke had painted) leaves the job "done" and the reason empty.
+     */
+    QString cancelReason() const;
+
     /// The job's undo step name: the name given to paintStrokes(), or the open agent move's step.
     QString name() const;
 
@@ -85,7 +93,7 @@ public Q_SLOTS:
 
     /**
      * Everything above in one map, for a bridge to send on: state, done, total, progress, rect ([x, y, w, h]), error,
-     * name and ms.
+     * cancelReason, name and ms.
      */
     QVariantMap status() const;
 

@@ -208,11 +208,57 @@ void TestPythonStrokeJobs::testPollsStatusAndCancels()
                        "job.finished.connect(ended.append)\n"
                        "status = job.status()\n"
                        "result = (sorted(status.keys()), status['state'], status['done'], status['total'], job.cancel())"),
-             QString("(['done', 'error', 'ms', 'name', 'progress', 'rect', 'state', 'total'], 'queued', 0, 20, True)"));
+             QString("(['cancelReason', 'done', 'error', 'ms', 'name', 'progress', 'rect', 'state', 'total'], 'queued', 0, 20, True)"));
     gate.release();
     QCOMPARE(runPython("final = settle(job)\n"
                        "result = (final, job.strokesDone(), ended, job.status()['done'], job.cancel(), column(layer, 10))"),
              QString("('cancelled', 0, ['cancelled'], 0, False, 0)"));
+}
+
+void TestPythonStrokeJobs::testCancelReasonsFromPython()
+{
+    {
+        PythonDocument d;
+        // "" while not cancelled and when done; "script" for cancel(); the first reason stays.
+        Gate gate(d.image);
+        QCOMPARE(runPython("strokes = [{'points': [[10 + 9 * i, 10], [10 + 9 * i, 90]], 'size': 6} for i in range(20)]\n"
+                           "job = layer.paintStrokes(strokes, {'preset': preset})\n"
+                           "before = job.cancelReason()\n"
+                           "job.cancel()\n"
+                           "result = (before, job.cancelReason(), job.status()['cancelReason'])"),
+                 QString("('', 'script', 'script')"));
+        gate.release();
+        QCOMPARE(runPython("final = settle(job)\nresult = (final, job.cancelReason())"), QString("('cancelled', 'script')"));
+        QCOMPARE(runPython("job = layer.paintStrokes(strokes[:2], {'preset': preset})\n"
+                           "final = settle(job)\n"
+                           "result = (final, job.cancelReason(), job.cancel(), job.cancelReason())"),
+                 QString("('done', '', False, '')"));
+    }
+    {
+        // The artist's undo during the job.
+        PythonDocument d;
+        Gate gate(d.image);
+        QCOMPARE(runPython("job = layer.paintStrokes([{'points': [[10 + 9 * (i % 20), 10], [10 + 9 * (i % 20), 90]], 'size': 6}\n"
+                           "                          for i in range(100)], {'preset': preset, 'name': 'long'})\n"
+                           "result = job.cancelReason()"),
+                 QString(""));
+        d.kisdoc->undoStack()->undo();
+        gate.release();
+        QCOMPARE(runPython("final = settle(job)\nresult = (final, job.cancelReason())"), QString("('cancelled', 'undo')"));
+    }
+    {
+        // The document closing: the job (a Python object) outlives it.
+        QScopedPointer<PythonDocument> d(new PythonDocument());
+        Gate gate(d->image);
+        QCOMPARE(runPython("job = layer.paintStrokes([{'points': [[10 + 9 * (i % 20), 10], [10 + 9 * (i % 20), 90]], 'size': 6}\n"
+                           "                          for i in range(100)], {'preset': preset})\n"
+                           "layer = None\n"
+                           "result = job.cancelReason()"),
+                 QString(""));
+        d->image->notifyAboutToBeDeleted(); // what closing a document does first
+        gate.release();
+        QCOMPARE(runPython("final = settle(job)\nresult = (final, job.cancelReason())"), QString("('cancelled', 'document_closed')"));
+    }
 }
 
 void TestPythonStrokeJobs::testDroppingTheJobKeepsPainting()

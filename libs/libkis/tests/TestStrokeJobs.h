@@ -12,6 +12,9 @@
 class TestStrokeJobs : public QObject
 {
     Q_OBJECT
+private:
+    void washRound(int round);
+
 private Q_SLOTS:
     void testPaintsWithoutAView();
     void testRefusesCleanly();
@@ -36,6 +39,9 @@ private Q_SLOTS:
     void testArtistStrokeRunsBeforeTheJobEnds();
     void testArtistUndoStopsTheJobThenUndoes();
     void testEraseOpacityAndFlow();
+    void testCancelReasons();
+    void testBrushIsFixedAtTheCall();
+    void testUndoBetweenTopUpsUndoesTheJob();
     void testOffGuiThreadRefusedAndALoneStartDabs();
 };
 

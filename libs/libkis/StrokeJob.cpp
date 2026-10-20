@@ -43,6 +43,25 @@ QSharedPointer<StrokeJobShared> StrokeJobShared::failed(const QString &error, co
     return shared;
 }
 
+void StrokeJobShared::requestCancel(CancelReason reason)
+{
+    int none = NotCancelled;
+    m_cancelReason.compare_exchange_strong(none, reason);
+    cancelRequested = true;
+}
+
+QString StrokeJobShared::cancelReason() const
+{
+    // A cancel that came too late to stop anything (every stroke had painted) leaves the job "done": no reason.
+    if (state() == QLatin1String("done") || state() == QLatin1String("failed")) return QString();
+    switch (m_cancelReason.load()) {
+    case Script: return QStringLiteral("script");
+    case Undo: return QStringLiteral("undo");
+    case DocumentClosed: return QStringLiteral("document_closed");
+    default: return QString();
+    }
+}
+
 void StrokeJobShared::strokeStarted(int index)
 {
     QMutexLocker locker(&m_mutex);
@@ -365,6 +384,11 @@ QString StrokeJob::errorString() const
     return m_shared->error();
 }
 
+QString StrokeJob::cancelReason() const
+{
+    return m_shared->cancelReason();
+}
+
 QString StrokeJob::name() const
 {
     return m_shared->name;
@@ -385,6 +409,7 @@ QVariantMap StrokeJob::status() const
         {QStringLiteral("progress"), progress()},
         {QStringLiteral("rect"), QVariantList{rect.x(), rect.y(), rect.width(), rect.height()}},
         {QStringLiteral("error"), errorString()},
+        {QStringLiteral("cancelReason"), cancelReason()},
         {QStringLiteral("name"), name()},
         {QStringLiteral("ms"), elapsedMs()},
     };
@@ -421,7 +446,7 @@ bool StrokeJob::cancel()
     // Not KisImage::cancelStroke(): the queued strokes are already ended, and cancelling an ended stroke would count
     // it out of the queue's open strokes a second time. Each stroke reads the flag instead, and the feeder drops the
     // strokes not queued yet.
-    m_shared->cancelRequested = true;
+    m_shared->requestCancel(StrokeJobShared::Script);
     if (onGuiThread()) {
         if (StrokeJobFeeder *feeder = m_shared->feeder()) feeder->pump();
     } else {

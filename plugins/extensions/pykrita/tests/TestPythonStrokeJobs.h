@@ -16,6 +16,7 @@ private Q_SLOTS:
     void initTestCase();
     void testPaintsAPressureStrokeFromPython();
     void testPollsStatusAndCancels();
+    void testCancelReasonsFromPython();
     void testDroppingTheJobKeepsPainting();
     void testWaitFromAnotherPythonThread();
     void testAgentMoveJobsAreOneStep();

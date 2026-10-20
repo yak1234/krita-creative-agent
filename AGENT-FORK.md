@@ -265,9 +265,18 @@ job's strokes queued and tops them up when half have painted, so an artist's str
 at most 32 job strokes. Job strokes never ask open strokes to end (`setRequestsOtherStrokesToEnd(false)`) and are not
 asynchronously cancellable, so Esc, the Undo History docker and closing views leave them alone. Per image, a guard
 (`StrokeJobImageGuard`) listens for `KisImage::sigUndoDuringStrokeRequested`: the artist's Undo during a job stops every
-job on the image and, once the image is idle, carries out that undo (Krita drops it on a busy image), unless Krita
-managed it at once. `KisImage::sigAboutToBeDeleted` stops the jobs too, so closing a document waits only for the
+job on the image and waits (at most 3 s, processing no input events) for them to stop and land their step, so Krita's
+own undo, which follows the signal and succeeds whenever the image is idle, undoes the job's step and never the one
+before it; if the jobs have not stopped in time, the undo is carried out after they have (Krita drops it on a busy
+image). `KisImage::sigAboutToBeDeleted` stops the jobs too, so closing a document waits only for the
 strokes painting at that moment.
+
+**Why a job was cancelled.** `StrokeJob.cancelReason()` (also `status()["cancelReason"]`) is empty while the job is not
+cancelled, then `"script"` (`cancel()`, so the plugin's Stop), `"undo"` (the artist's Undo, through the image guard) or
+`"document_closed"` (the document closing, or its image gone). The first reason stays; a cancel that came too late to
+stop anything leaves the job "done" with an empty reason. **The brush is fixed at the call:** `paintStrokes()` clones the
+preset once, so a change to the view's preset (or a plugin toggling a setting on it and restoring it) after the call
+never reaches the windows queued later.
 
 **Ends and waiting.** Each stroke reports its start and its end; the end is a barrier job queued from its finish
 callback before the base class queues a Wash brush's merge (jobs a callback adds go in front of the stroke's remaining
@@ -279,7 +288,8 @@ stroke reads: strokes not started paint nothing (they skip their painters altoge
 (its transaction reverted), and the feeder drops the strokes not yet queued, so the layer keeps a whole prefix. It never
 calls `KisImage::cancelStroke()`, since the job's strokes are already ended. Job strokes make no level-of-detail copy
 and ignore wrap-around mode. While a job stroke paints, its changes are reported as the agent's
-(`DocumentChanges::beginAgentWork`, ended after the merge).
+(`DocumentChanges::beginAgentWork`, ended after the merge). Every stroke gets a resources snapshot of its own, as Krita's
+tools make them (each deep-copies the preset and its brush settings), never one shared between strokes.
 
 **Undo.** The job holds its undo step (`DocumentHistory::holdStep`, a `ScriptStepHold`): the open agent move or script
 macro, or else a step of the job's own named by `name`. A held step does not land, so strokes queued in later top-ups

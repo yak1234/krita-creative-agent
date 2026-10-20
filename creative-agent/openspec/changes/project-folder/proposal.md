@@ -1,7 +1,6 @@
 # Project folders and guided trace
 
-Status: ON HOLD (the artist, 2026-10-20). Design discussed and written; not started. When resumed: **guided trace first**,
-then the project folder.
+Status: APPROVED by the artist (2026-10-20), to be built: **guided trace first**, then the project folder.
 
 ## Why
 
@@ -137,8 +136,8 @@ and finish.
   `paint_reference_surface` turn a reference into brush dabs (optionally over a toned ground). The artist had not known
   they existed and likes them: keep them as they are. The rule above therefore means: no pasted, filtered or projected
   reference pixels; brush strokes the agent lays from a reference (these tools) are fine.
-- **Open, for the artist:** after the plan is approved, does the agent stop after each element for Keep / Undo / Refine
-  (recommended: matches Agent mode today) or run the whole list until Stop?
+- **Pacing (the artist):** after the plan is approved, the agent stops after each element for Keep / Undo / Refine, as
+  Agent mode does today; it never runs the whole list on its own.
 - **Lead's calls (recorded so a builder need not guess):** `PLAN.md` mirrors the agent's own durable brief; edits the
   artist makes to it between sessions are shown on resume and confirmed before they are followed. An element's guide
   lives on its own layer until the element is ticked, across several moves; undoing the element's first move removes it.

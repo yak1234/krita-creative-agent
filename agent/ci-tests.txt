@@ -53,3 +53,4 @@ kis_stroke_test
 kis_transaction_test
 kis_selection_test
 kis_paint_device_test
+KisAboutAgentTest

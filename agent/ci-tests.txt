@@ -54,13 +54,10 @@ kis_transaction_test
 kis_selection_test
 kis_paint_device_test
 KisAboutAgentTest
-<<<<<<< HEAD
 KisFeatureProtectionTest
 TestDocumentFeatureQueries
 TestFeatureProtection
 TestPythonProtection
-=======
 TestNodeDelegate
 KisClippingUtilsTest
 TestNodeView
->>>>>>> agent/revamp-layers

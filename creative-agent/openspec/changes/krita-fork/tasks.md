@@ -49,6 +49,7 @@
   bundle (libraries, frameworks, resources, the plugin and its Python packages inside `Contents`), installable in
   `/Applications` without a dependency on the build tree, signed with one stable identity: that also ends macOS asking
   again for Documents access after every rebuild. Priority, with 1.5.)*
+  *(19 October evening: packaging scripts done on agent/package (agent/package-app.sh, install-app.sh, app-launcher.c, licence notices; 679 Mach-O files checked, signature verifies, headless imports of krita, PyQt6, kritamcp, numpy, cv2 pass), under review. Open: the Node companion and its runtime are NOT in the app (task 1.3b: without them the agent panel cannot run on a clean machine); the About box needs a rebuild; the source URL must default to https://github.com/yak1234/krita-creative-agent now that it is public; repackage and install to ~/Applications after the main rebuild; live checks.)*
 - [x] 1.4 Upstream policy written down: the list of files we edit, the rebase cadence, and what is offered upstream.
   *(`AGENT-FORK.md` in the fork, 09ef936.)*
 

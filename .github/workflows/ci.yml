@@ -29,7 +29,11 @@ jobs:
           cache: npm
           cache-dependency-path: creative-agent/krita-creative-agent/package-lock.json
       - name: Install uv (runs the Python tests)
-        run: python3 -m pip install --user uv && echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        # A virtual environment: the hosted runners' system Python refuses `pip install --user` (externally managed).
+        run: |
+          python3 -m venv "$RUNNER_TEMP/uv-venv"
+          "$RUNNER_TEMP/uv-venv/bin/pip" install uv
+          echo "$RUNNER_TEMP/uv-venv/bin" >> "$GITHUB_PATH"
       - name: Install the companion's packages
         working-directory: creative-agent/krita-creative-agent
         run: npm ci --ignore-scripts

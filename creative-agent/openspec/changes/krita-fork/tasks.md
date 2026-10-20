@@ -151,14 +151,14 @@
   under 2 s.
 
 ## 3. Photoshop-like interface (`photoshop-workspace`)
-- [ ] 3.1 Port Krita-Revamp's features from `revamp-5.2.14`, one commit each: clipping masks, folder groups, brush
+- [ ] 3.1 Port Krita-Revamp's features from `revamp-5.2.14`, one commit each: clipping masks, folder groups, brush [partly done 20 Oct: folder groups, clipping masks, preset persistence merged; smoothing slider, stroke previews and the rest are parked]
   stroke previews, scrubby zoom, instant overview, toolbar sizing and smoothing slider, preset persistence.
   *(Survey done 19 October, creative-agent/openspec/changes/krita-fork/revamp-survey.md: scrubby zoom is already native on master (nothing to port); "instant overview" is a one-line constant that does nothing on master (re-tune and measure, may drop); Revamp's clipping mask is a view and a button on top of Krita's alpha inheritance (no format change; the spec's Alt-click between two layers is OUR addition, Revamp has none); preset persistence leaks tweaks into agent strokes (needs the agent gate); order: folder groups, clipping masks, toolbar sizing, preset persistence, smoothing slider, stroke previews, overview, hide-tabs/selection-hold later; three file-disjoint worktrees: layers, brush, shell; about 38 agent-hours of C++, 50 with 3.2 and 3.3.)*
 - [ ] 3.2 Revamp's Python plugins, after 0.1: check each on Qt6, and drop those duplicated by native features.
-- [ ] 3.3 New-install defaults: Photoshop shortcuts, the workspace with the agent panel, a dark theme.
+- [x] 3.3 New-install defaults: Photoshop shortcuts, the workspace with the agent panel, a dark theme. (merged 20 Oct; live look pending)
 
 ## 4. The agent built in (`built-in-agent`)
-- [ ] 4.1 The agent panel loads with the window; new-painting chats with no document open.
+- [x] 4.1 The agent panel loads with the window; new-painting chats with no document open. (merged 20 Oct; live look pending)
 - [ ] 4.2 Project view docker.
 - [ ] 4.3 Canvas overlays: protected areas, Luna's findings, the move in progress.
 
@@ -213,10 +213,10 @@
   The target is p95 <= 10 px (stretch goal 3 px); `testSkylineTarget` holds it as an expected failure. Follow-up, not
   done: run the builders on a worker thread over the snapshot, so a long call never blocks the GUI thread (today they
   process events meanwhile).)*
-- [ ] 6.4 Queries: `featuresAt`, `featuresOverlapping`, `featuresTouching`, and `selection("Sky - Moon")`.
-- [ ] 6.5 Protection as a feature property, enforced on agent jobs and script pixel writes during an agent move; the
+- [x] 6.4 Queries: `featuresAt`, `featuresOverlapping`, `featuresTouching`, and `selection("Sky - Moon")`. (merged 20 Oct)
+- [x] 6.5 Protection as a feature property, enforced on agent jobs and script pixel writes during an agent move; the (merged 20 Oct; reviewed, mutation-tested)
   pass result names the features it was kept out of. Test: "leave the buildings alone" over a whole-canvas pass.
-- [ ] 6.6 Plugin and companion: the panel's features list replaces protected areas; `select`, `fill_region`,
+- [ ] 6.6 Plugin and companion: the panel's features list replaces protected areas; `select`, `fill_region`, [partly done 20 Oct: the plugin and companion use features and protection; the panel features list UI is open]
   `stamp_material` and passes accept feature names (fork-first: no stock fallback).
 - [ ] 6.7 Proposed features drawn by the canvas overlay (task 4.3) until kept, adjusted or discarded.
 - [ ] 6.8 Measure feature memory with 30 features on New Moscow.
@@ -232,9 +232,9 @@ The demo, in order: (1) open Krita Agent from the Desktop or Applications; (2) w
 at night" in the agent panel and it creates the painting and starts; (3) it paints with real pen strokes in moves you keep or undo
 (Undo takes a whole move); (4) "leave the buildings alone" over a whole-canvas pass and the buildings do not change; (5) it feels like
 a Photoshop-style app (layers with folder groups and a clipping button, B/E/Ctrl+J shortcuts, the panel docked).
-- [ ] 7.1 Merge what is in flight, each after review: 6.4/6.5 protection, Revamp layers, Revamp preset persistence (with the agent gate).
-- [ ] 7.2 6.6 The plugin and companion use features and protection (the demo's "leave the buildings alone" and "the sky").
-- [ ] 7.3 4.1 The panel loads with the window; new-painting chats with no painting open.
-- [ ] 7.4 3.3 Photoshop defaults for new installs: shortcut scheme, a workspace with the panel docked, dark theme.
+- [x] 7.1 Merge what is in flight, each after review: 6.4/6.5 protection, Revamp layers, Revamp preset persistence (with the agent gate). (done 20 Oct: protection, Revamp layers, preset persistence)
+- [x] 7.2 6.6 The plugin and companion use features and protection (the demo's "leave the buildings alone" and "the sky"). (done 20 Oct for the plugin and companion; live-tested on a fresh canvas; the panel list UI is still open)
+- [x] 7.3 4.1 The panel loads with the window; new-painting chats with no painting open. (done 20 Oct)
+- [x] 7.4 3.3 Photoshop defaults for new installs: shortcut scheme, a workspace with the panel docked, dark theme. (done 20 Oct)
 - [ ] 7.5 Repackage and install, then a rehearsal with the artist at the keyboard: the Ctrl+Z, painting-during-a-pass, About box and
   panel checks only a person can make, then a bug list and fixes. Stretch, only if time remains: 4.3 canvas overlays for proposed areas.

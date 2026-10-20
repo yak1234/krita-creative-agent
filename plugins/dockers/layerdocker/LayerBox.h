@@ -96,6 +96,7 @@ private Q_SLOTS:
 
     // from the layerbox to the node manager
     void slotRmClicked();
+    void slotClipToLayerBelowRequested(const QModelIndex &upper);
     void slotRaiseClicked();
     void slotLowerClicked();
     void slotPropertiesClicked();

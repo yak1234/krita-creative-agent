@@ -172,7 +172,7 @@
     </layout>
    </item>
    <item>
-    <layout class="QHBoxLayout" name="hbox1" stretch="0,0,0,0,0,1,0">
+    <layout class="QHBoxLayout" name="hbox1" stretch="0,0,0,0,0,0,1,0">
      <property name="spacing">
       <number>2</number>
      </property>
@@ -214,6 +214,31 @@
        </property>
        <property name="toolTip">
         <string>Duplicate layer or mask</string>
+       </property>
+       <property name="text">
+        <string>...</string>
+       </property>
+       <property name="iconSize">
+        <size>
+         <width>22</width>
+         <height>22</height>
+        </size>
+       </property>
+       <property name="autoRaise">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QToolButton" name="bnClippingMask">
+       <property name="minimumSize">
+        <size>
+         <width>28</width>
+         <height>28</height>
+        </size>
+       </property>
+       <property name="toolTip">
+        <string>Clip to layer below (clipping mask); on a clipped layer, release it. Alt-click between two layers does the same.</string>
        </property>
        <property name="text">
         <string>...</string>
@@ -385,6 +410,7 @@
  <tabstops>
   <tabstop>cmbComposite</tabstop>
   <tabstop>bnDuplicate</tabstop>
+  <tabstop>bnClippingMask</tabstop>
   <tabstop>bnLower</tabstop>
   <tabstop>bnRaise</tabstop>
   <tabstop>bnProperties</tabstop>

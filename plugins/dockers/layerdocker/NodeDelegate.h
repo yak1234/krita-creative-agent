@@ -40,6 +40,10 @@ public:
 
     void slotUpdateIcon();
 
+    /// Height of a group row: baseRowHeight times percent (clamped to 40..100), at least minHeight (so the property
+    /// icons are not cut), never taller than baseRowHeight.
+    static int groupRowHeight(int baseRowHeight, int percent, int minHeight = 1);
+
 Q_SIGNALS:
     void resetVisibilityStasis();
 

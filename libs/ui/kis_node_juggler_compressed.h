@@ -33,9 +33,19 @@ public:
     void removeNode(const KisNodeList &nodes);
     void duplicateNode(const KisNodeList &nodes);
 
-    void copyNode(const KisNodeList &nodes, KisNodeSP dstParent, KisNodeSP dstAbove);
-    void moveNode(const KisNodeList &nodes, KisNodeSP dstParent, KisNodeSP dstAbove);
-    void addNode(const KisNodeList &nodes, KisNodeSP dstParent, KisNodeSP dstAbove);
+    /**
+     * enableInheritAlpha (Krita-Revamp, clipping masks): after the nodes land, every dropped layer that does not inherit
+     * alpha yet gets it, in the same undo step. It is false everywhere except drops into a clipping group.
+     */
+    void copyNode(const KisNodeList &nodes, KisNodeSP dstParent, KisNodeSP dstAbove,
+                  bool enableInheritAlpha = false);
+    void moveNode(const KisNodeList &nodes, KisNodeSP dstParent, KisNodeSP dstAbove,
+                  bool enableInheritAlpha = false);
+    void addNode(const KisNodeList &nodes, KisNodeSP dstParent, KisNodeSP dstAbove,
+                 bool enableInheritAlpha = false);
+
+    /// Adds one more command to the same undo step (used for the clip action's blend mode and opacity move).
+    void applyExtraCommand(KUndo2Command *command);
 
     bool canMergeAction(const KUndo2MagicString &actionName);
 

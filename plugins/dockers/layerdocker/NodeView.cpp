@@ -1,5 +1,7 @@
 /*
   SPDX-FileCopyrightText: 2006 Gábor Lehel <illissius@gmail.com>
+  SPDX-FileCopyrightText: 2026 Tenzin Rangdol (Krita-Revamp): clipping mask view relayout and page index
+  SPDX-FileCopyrightText: 2026 Yakub Rabiutheen: Qt 6 fit
 
   SPDX-License-Identifier: LGPL-2.0-or-later
 */
@@ -8,18 +10,23 @@
 #include "NodeDelegate.h"
 #include "NodeViewVisibilityDelegate.h"
 #include "kis_node_model.h"
+#include "kis_node_filter_proxy_model.h"
+#include "kis_layer_properties_icons.h"
+#include <kis_node.h>
 #include "kis_signals_blocker.h"
 
 
 #include <kconfig.h>
 #include <kconfiggroup.h>
 #include <kis_config.h>
+#include <kis_config_notifier.h>
 #include <kis_icon.h>
 #include <ksharedconfig.h>
 #include <KisKineticScroller.h>
 #include <KoConfig.h>
 
 #include <QtDebug>
+#include <QHash>
 #include <QContextMenuEvent>
 #include <QHeaderView>
 #include <QHelpEvent>
@@ -51,6 +58,36 @@
 #endif
 
 
+namespace {
+
+KisNodeSP viewNodeForIndex(const QModelIndex &index)
+{
+    if (!index.isValid()) return KisNodeSP();
+    const QModelIndex col0 = index.sibling(index.row(), 0);
+    if (auto proxy = qobject_cast<const KisNodeFilterProxyModel *>(col0.model())) {
+        return proxy->nodeFromIndex(col0);
+    }
+    if (auto model = qobject_cast<const KisNodeModel *>(col0.model())) {
+        return model->nodeFromIndex(col0);
+    }
+    return KisNodeSP();
+}
+
+bool viewHasInheritAlpha(const QModelIndex &index)
+{
+    if (!index.isValid()) return false;
+    const KisBaseNode::PropertyList props =
+        index.data(KisNodeModel::PropertiesRole).value<KisBaseNode::PropertyList>();
+    for (const auto &prop : props) {
+        if (prop.id == KisLayerPropertiesIcons::inheritAlpha.id()) {
+            return prop.state.toBool();
+        }
+    }
+    return false;
+}
+
+} // namespace
+
 class Q_DECL_HIDDEN NodeView::Private
 {
 public:
@@ -67,6 +104,9 @@ public:
     NodeDelegate delegate;
     QPersistentModelIndex hovered;
     QPoint lastPos;
+    bool clippingMaskView {false};
+    // last known "inherits alpha" of each row, to relayout only when it changes (thumbnails fire dataChanged constantly)
+    QHash<QPersistentModelIndex, bool> clipState;
 
 #ifdef DRAG_WHILE_DRAG_WORKAROUND
     bool isDragging;
@@ -98,6 +138,10 @@ NodeView::NodeView(QWidget *parent)
     setAcceptDrops(true);
     setDropIndicatorShown(true);
 
+    d->clippingMaskView = KisConfig(true).clippingMaskViewEnabled();
+    connect(KisConfigNotifier::instance(), SIGNAL(configChanged()),
+            this, SLOT(slotUpdateClippingMaskView()));
+
     {
         QScroller *scroller = KisKineticScroller::createPreconfiguredScroller(this);
         if (scroller) {
@@ -115,6 +159,10 @@ NodeView::~NodeView()
 void NodeView::setModel(QAbstractItemModel *model)
 {
     QTreeView::setModel(model);
+    d->clipState.clear();
+    if (model) {
+        connect(model, &QAbstractItemModel::modelReset, this, [this] () { d->clipState.clear(); });
+    }
 
     if (!this->model()->inherits("KisNodeModel") && !this->model()->inherits("KisNodeFilterProxyModel")) {
         qWarning() << "NodeView may not work with" << model->metaObject()->className();
@@ -322,6 +370,38 @@ void NodeView::dataChanged(const QModelIndex &topLeft, const QModelIndex &bottom
 {
     QTreeView::dataChanged(topLeft, bottomRight);
 
+    if (d->clippingMaskView) {
+        // Krita-Revamp (f754aab): whether a group is a hidden clip group depends on the properties of its top child.
+        // Relayout only when the inherit-alpha state of a changed row really changed (our own bookkeeping: most
+        // dataChanged calls are thumbnails while painting).
+        bool changed = false;
+        for (int row = topLeft.row(); row <= bottomRight.row(); ++row) {
+            const QModelIndex index = topLeft.sibling(row, 0);
+            if (!index.isValid()) {
+                continue;
+            }
+            const bool now = viewHasInheritAlpha(index);
+            const QPersistentModelIndex key(index);
+            // a row never seen before counts as "not clipped": the first change on an untouched row is a change
+            auto known = d->clipState.find(key);
+            if (known == d->clipState.end()) {
+                known = d->clipState.insert(key, false);
+            }
+            if (known.value() != now) {
+                known.value() = now;
+                changed = true;
+                const QModelIndex parent = index.parent();
+                if (parent.isValid() && index.row() == 0) {
+                    d->delegate.sizeHintChanged(parent);
+                }
+            }
+        }
+        if (changed) {
+            scheduleDelayedItemsLayout();
+            expandClippingWrappers();
+        }
+    }
+
     if (d->ignoreDataChanged){
       d->ignoreDataChanged = false;
       return;
@@ -478,7 +558,12 @@ void NodeView::dropEvent(QDropEvent *ev)
 
 int NodeView::cursorPageIndex() const
 {
-    QSize size(visualRect(model()->index(0, 0, QModelIndex())).width(), visualRect(model()->index(0, 0, QModelIndex())).height());
+    // Krita-Revamp (f754aab): the first row can be a hidden clip group of height 0 (and group rows are shorter than layer
+    // rows), so the row height is the scheme's layer row height, never the first row's rectangle.
+    QSize size(visualRect(model()->index(0, 0, QModelIndex())).width(), KisNodeViewColorScheme::instance()->rowHeight());
+    if (size.height() <= 0) {
+        return 0;
+    }
     int scrollBarValue = verticalScrollBar()->value();
 
     QPoint cursorPosition = QWidget::mapFromGlobal(QCursor::pos());
@@ -521,7 +606,70 @@ void NodeView::dragLeaveEvent(QDragLeaveEvent *e)
     DRAG_WHILE_DRAG_WORKAROUND_STOP();
 }
 
+QModelIndex NodeView::clipBoundaryUpperIndexAt(const QPoint &pos) const
+{
+    if (!model()) {
+        return QModelIndex();
+    }
+
+    const QModelIndex hit = indexAt(pos);
+    if (!hit.isValid()) {
+        return QModelIndex();
+    }
+
+    const QModelIndex row = hit.sibling(hit.row(), DEFAULT_COL);
+    const QRect rc = visualRect(row);
+    if (rc.height() <= 0) {
+        return QModelIndex();
+    }
+
+    const int strip = qBound(2, rc.height() / 6, 4);
+    // an expanded group with children is followed (below) / preceded (above) on screen by its children, not by its sibling
+    auto openWithChildren = [this] (const QModelIndex &idx) {
+        return idx.isValid() && isExpanded(idx) && model()->hasChildren(idx);
+    };
+
+    QModelIndex upper;
+    QModelIndex lower;
+    if (pos.y() - rc.top() < strip) {
+        lower = row;
+        if (row.row() == 0 && row.parent().isValid() && isClippingWrapper(row.parent())) {
+            // the top clipped layer touches whatever is above the hidden wrapper: that boundary is the wrapper's
+            lower = row.parent();
+            upper = lower.sibling(lower.row() - 1, DEFAULT_COL);
+        } else {
+            upper = row.sibling(row.row() - 1, DEFAULT_COL);
+        }
+        if (openWithChildren(upper)) {
+            return QModelIndex();
+        }
+    } else if (rc.bottom() - pos.y() < strip) {
+        if (openWithChildren(row)) {
+            return QModelIndex();
+        }
+        upper = row;
+        lower = row.sibling(row.row() + 1, DEFAULT_COL);
+    }
+
+    if (!upper.isValid() || !lower.isValid()) {
+        return QModelIndex();
+    }
+
+    return upper;
+}
+
 void NodeView::mousePressEvent(QMouseEvent *e) {
+    // Alt-click on the boundary between two layers clips the upper one to the lower one
+    if (e->button() == Qt::LeftButton &&
+        (e->modifiers() & (Qt::AltModifier | Qt::ControlModifier | Qt::ShiftModifier)) == Qt::AltModifier) {
+        const QModelIndex upper = clipBoundaryUpperIndexAt(e->pos());
+        if (upper.isValid()) {
+            Q_EMIT sigClipToLayerBelowRequested(upper);
+            e->accept();
+            return;
+        }
+    }
+
     if (!(e->modifiers() & Qt::ControlModifier)) {
         QTreeView::mousePressEvent(e);
         return;
@@ -559,6 +707,116 @@ void NodeView::slotConfigurationChanged()
     setIndentation(KisNodeViewColorScheme::instance()->indentation());
     updateSelectedCheckboxColumn();
     d->delegate.slotConfigChanged();
+    slotUpdateClippingMaskView();
+}
+
+bool NodeView::isClippingWrapper(const QModelIndex &index) const
+{
+    if (!d->clippingMaskView || !index.isValid()) return false;
+    const QModelIndex col0 = index.sibling(index.row(), 0);
+    KisNodeSP node = viewNodeForIndex(col0);
+    if (!node || !node->inherits("KisGroupLayer")) return false;
+    const QModelIndex topChild = col0.model()->index(0, 0, col0);
+    return topChild.isValid() && viewHasInheritAlpha(topChild);
+}
+
+void NodeView::expandClippingWrappers()
+{
+    if (!d->clippingMaskView || !model()) return;
+
+    const bool wasBlocked = blockSignals(true); // LayerBox writes expanded/collapsed back to the nodes: not for this
+    QList<QModelIndex> todo;
+    todo << QModelIndex();
+    while (!todo.isEmpty()) {
+        const QModelIndex parent = todo.takeLast();
+        const int rows = model()->rowCount(parent);
+        for (int row = 0; row < rows; ++row) {
+            const QModelIndex idx = model()->index(row, 0, parent);
+            if (idx.isValid()) {
+                d->clipState.insert(QPersistentModelIndex(idx), viewHasInheritAlpha(idx)); // seed the bookkeeping
+            }
+            if (!idx.isValid() || !model()->hasChildren(idx)) continue;
+            if (isClippingWrapper(idx) && !isExpanded(idx)) {
+                setExpanded(idx, true);
+            }
+            if (isExpanded(idx)) {
+                todo << idx;
+            }
+        }
+    }
+    blockSignals(wasBlocked);
+}
+
+QModelIndex NodeView::moveCursor(CursorAction cursorAction, Qt::KeyboardModifiers modifiers)
+{
+    QModelIndex result = QTreeView::moveCursor(cursorAction, modifiers);
+    if (!d->clippingMaskView) return result;
+
+    // Hidden clip wrappers have no height: a key press must never leave the current index on one (it would be the
+    // active node with no highlight, and Delete would remove the whole stack).
+    // Left goes to the parent (up on screen), Right and End go down
+    const bool up = cursorAction == MoveUp || cursorAction == MovePrevious || cursorAction == MoveLeft ||
+                    cursorAction == MovePageUp || cursorAction == MoveHome;
+    auto hidden = [this] (const QModelIndex &idx) {
+        return idx.isValid() && isClippingWrapper(idx);
+    };
+
+    QModelIndex idx = result;
+    int guard = 0;
+    while (hidden(idx) && guard++ < 1000) {
+        idx = up ? indexAbove(idx) : indexBelow(idx);
+    }
+    if (!idx.isValid() || hidden(idx)) {
+        // ran off the end: step back the other way from where we started
+        idx = result;
+        guard = 0;
+        while (hidden(idx) && guard++ < 1000) {
+            idx = up ? indexBelow(idx) : indexAbove(idx);
+        }
+    }
+    return (idx.isValid() && !hidden(idx)) ? idx : currentIndex();
+}
+
+void NodeView::rowsInserted(const QModelIndex &parent, int start, int end)
+{
+    QTreeView::rowsInserted(parent, start, end);
+    if (d->clippingMaskView && parent.isValid()) {
+        // a new top child can turn the group into a clip wrapper, or stop it being one
+        d->delegate.sizeHintChanged(parent);
+        expandClippingWrappers();
+    }
+}
+
+void NodeView::rowsAboutToBeRemoved(const QModelIndex &parent, int start, int end)
+{
+    // forget the removed rows (and everything below them)
+    for (auto it = d->clipState.begin(); it != d->clipState.end();) {
+        bool removed = !it.key().isValid();
+        for (QModelIndex idx = QModelIndex(it.key()); !removed && idx.isValid(); idx = idx.parent()) {
+            removed = idx.parent() == parent && idx.row() >= start && idx.row() <= end;
+        }
+        if (removed) {
+            it = d->clipState.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    QTreeView::rowsAboutToBeRemoved(parent, start, end);
+}
+
+void NodeView::slotUpdateClippingMaskView()
+{
+    // The delegate has read the new config already (it is connected first); lay the rows out again when the view mode
+    // or the group row height changed.
+    const bool enabled = KisConfig(true).clippingMaskViewEnabled();
+    if (enabled != d->clippingMaskView) {
+        d->clippingMaskView = enabled;
+        d->clipState.clear();
+        expandClippingWrappers();
+        d->delegate.sizeHintChanged(QModelIndex());
+        scheduleDelayedItemsLayout();
+        viewport()->update();
+    }
 }
 
 void NodeView::updateSelectedCheckboxColumn()

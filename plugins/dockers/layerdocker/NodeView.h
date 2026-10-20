@@ -37,6 +37,8 @@ Q_SIGNALS:
      */
     void contextMenuRequested(const QPoint &globalPos, const QModelIndex &index);
     void selectionChanged(const QModelIndexList &);
+    /// Alt-click on the boundary between two layer rows: the upper layer (index) is to be clipped to the one below it.
+    void sigClipToLayerBelowRequested(const QModelIndex &upper);
 public:
 
     enum ColumnIndex {
@@ -50,6 +52,21 @@ public:
      */
     explicit NodeView(QWidget *parent = 0);
     ~NodeView() override;
+
+    /**
+     * The upper row of the boundary between two sibling rows when pos is within a few pixels of it, otherwise an invalid
+     * index. This is where an Alt-click clips the upper layer to the lower one (Photoshop's gesture).
+     */
+    QModelIndex clipBoundaryUpperIndexAt(const QPoint &pos) const;
+
+    /// True (clipping mask view on) if the index is a group whose top child inherits alpha: a hidden clip wrapper.
+    bool isClippingWrapper(const QModelIndex &index) const;
+
+    /**
+     * With the clipping mask view on, expands every clip wrapper (a collapsed one would hide its whole stack). The
+     * nodes' own "collapsed" flag is not written, so the saved file keeps what the artist had.
+     */
+    void expandClippingWrappers();
 
     void setModel(QAbstractItemModel *model) override;
     void resizeEvent(QResizeEvent * event) override;
@@ -100,6 +117,9 @@ public:
     void toggleSolo(const QModelIndex &index);
 
 protected:
+    QModelIndex moveCursor(CursorAction cursorAction, Qt::KeyboardModifiers modifiers) override;
+    void rowsInserted(const QModelIndex &parent, int start, int end) override;
+    void rowsAboutToBeRemoved(const QModelIndex &parent, int start, int end) override;
     QItemSelectionModel::SelectionFlags selectionCommand(const QModelIndex &index, const QEvent *event) const override;
     QModelIndex indexAt(const QPoint &point) const override;
     bool viewportEvent(QEvent *event) override;
@@ -113,11 +133,13 @@ protected:
      */
     int cursorPageIndex() const;
 
+
 public Q_SLOTS:
     /// called with a theme change to refresh icon colors
     void slotUpdateIcons();
     void slotScrollerStateChanged(QScroller::State state);
     void slotConfigurationChanged();
+    void slotUpdateClippingMaskView();
 
 protected Q_SLOTS:
     void currentChanged(const QModelIndex &current, const QModelIndex &previous) override;

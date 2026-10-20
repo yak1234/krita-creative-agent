@@ -628,6 +628,48 @@ without it (it finds its prefix through the framework), so after the rebuild che
 **Known limits.** The process is `krita-app` in Activity Monitor (the launcher `exec`s). Editing files inside the installed app
 is not supported.
 
+## Ported from Krita-Revamp (task 3.1, layers docker)
+
+Source: Krita-Revamp (github.com/10zindraws/Krita-Revamp, branch revamp-5.2.14, GPL-3.0; author "10zindraws" / "Tenzin Rangdol",
+one person). We took ideas and the code of the commits named below, adapted to master and Qt 6; their SPDX lines stay in the files
+they touch. Their two folder PNGs and the clipping-mask PNG are NOT used (art origin and licence unknown): the icons are our own SVGs.
+
+| Feature | Revamp commits | Our files |
+|---|---|---|
+| Folder-style groups | e76a4e1 (group-row part only) | `plugins/dockers/layerdocker/NodeDelegate.cpp/.h`, new `krita/pics/layers/{dark,light}_folder{Closed,Opened}.svg`, preference `groupRowHeightPercent` (default 70) |
+| Alpha-inheritance indentation | 3b598ec | `NodeDelegate.cpp` (drawn only in the clipping mask view) |
+| Clipping mask view (default OFF) | f754aab, bd64c4e, 02fbd9b | `NodeDelegate.cpp`, `NodeView.cpp/.h`, `libs/ui/KisClippingUtils.*` (new, shared rules), preference `enableClippingMaskView` |
+| Clipping button / action | 697c81b (button), 48ba22a (not taken) | `LayerBox.cpp/.h`, `WdgLayerBox.ui`, action `clip_to_layer_below`, icon `clip-to-layer` (own SVG) |
+| Alt-click between two layers | none (our addition) | `NodeView.cpp/.h`, `LayerBox.cpp` |
+| Icons | none (own SVGs) | `krita/pics/layers/*_folder*.svg`, `krita/pics/layerbox/{dark,light}_clip-to-layer.svg` and their `.qrc` lists |
+| Tests | none | `libs/ui/tests/KisClippingUtilsTest.*`, `plugins/dockers/layerdocker/tests/TestNodeDelegate.*`; `agent/ci-tests.txt` lists them and `TestNodeView` |
+
+Upstream (Krita) files edited, each small and listed here:
+- `libs/ui/kis_node_juggler_compressed.cpp/.h`: `enableInheritAlpha` (default false) on `copyNode/moveNode/addNode`.
+- `libs/ui/kis_node_manager.cpp/.h`: drops pass through `KisClippingUtils::adjustDropTarget` when the view mode is on; new slot `clipActiveLayerToLayerBelow` and its action.
+- `libs/ui/kis_layer_manager.cc`: `adjustLayerPosition` and `addLayerCommon` follow the clipping mask view rules (only when the mode is on).
+- `libs/ui/kis_config.cc/.h`, `libs/ui/dialogs/kis_dlg_preferences.cc`, `libs/ui/forms/wdgdisplaysettings.ui`: the two preferences (Settings > Display > Miscellaneous).
+- `libs/ui/CMakeLists.txt` (one source file), `krita/krita.action` (the action is in the layers docker menu and button; krita5.xmlgui is hash-guarded and left alone), `krita/pics/layers/layers-icons.qrc`, `krita/pics/layerbox/layerbox-icons.qrc`.
+- `plugins/dockers/layerdocker/*` as listed above.
+
+Licence of the new files: `libs/ui/KisClippingUtils.*` and its test are GPL-3.0-or-later because the rules in them are Revamp's helpers
+(`isClippingMaskGroup`, `shouldEnableInheritAlphaForNewLayer`, `shouldEnableInheritAlphaForDrop`, GPL-3.0) moved into one place, not a clean-room
+rewrite; the planning and apply code in them is ours. Revamp's copyright lines are added to `kis_node_manager.cpp`, `kis_layer_manager.cc` and the
+juggler where its code was taken over. Further juggler edit: `applyExtraCommand` (one more command in the same undo step, for the clip action).
+
+Behaviour to know with the clipping mask view ON (default OFF):
+- The hidden wrapper group's own opacity, blend mode, visibility and lock are unreachable in the docker: the stack cannot be dragged, hidden or
+  deleted as one object (select its layers, or switch the view off). "Clip to layer below" moves a base's blend mode and opacity onto the new group
+  (Photoshop-faithful) so a Multiply base keeps its look; `create_quick_clipping_group` is unchanged.
+- Clip wrappers are always shown expanded (the node's collapsed flag is not written); Up/Down/Page keys skip the hidden wrapper rows.
+- The selection highlight's left edge for a child of a hidden wrapper may start one indent too far right (live look).
+- Agent gate: with the view ON, `KisLayerManager::addLayerCommon/adjustLayerPosition` change layer placement for any caller that goes through an
+  ACTION by name (`add_new_paint_layer` etc.) when the active layer is in a clip stack. The agent's libkis paths are not affected, but the live gate
+  must run one agent chat with the view ON.
+- Group rows show a static folder icon instead of the group's composite thumbnail, at any height.
+
+Not ported on purpose: Revamp's `layer_kit` plugin; its selection sync (selecting the top clipped layer also selects the hidden wrapper group, which would make Delete remove the whole stack); the Alt+click isolate gesture (bb9cc08); the properties button row (48ba22a); the narrow docker (c94e713). libs/image is untouched, there is no `.kra` change, and libkis `Node.setInheritAlpha` (the plugin's `clip_to`) does not pass through any of the changed paths.
+
 ## Licence
 
 Every binary release publishes the exact source it was built from (this branch at the release tag) under

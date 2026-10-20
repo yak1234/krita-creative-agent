@@ -1,6 +1,7 @@
 /*
  *  SPDX-FileCopyrightText: 2006 Boudewijn Rempt <boud@valdyas.org>
  *  SPDX-FileCopyrightText: 2020 L. E. Segovia <amy@amyspark.me>
+ *  SPDX-FileCopyrightText: 2026 Tenzin Rangdol (Krita-Revamp): clipping mask view placement of new layers, from f754aab and 02fbd9b
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -92,6 +93,7 @@
 #include "kis_post_execution_undo_adapter.h"
 #include "kis_selection_mask.h"
 #include "kis_layer_utils.h"
+#include "KisClippingUtils.h"
 #include "lazybrush/kis_colorize_mask.h"
 #include "kis_processing_applicator.h"
 #include "kis_projection_leaf.h"
@@ -630,6 +632,32 @@ void KisLayerManager::adjustLayerPosition(KisNodeSP node, KisNodeSP activeNode, 
 {
     Q_ASSERT(activeNode);
 
+    // Krita-Revamp (f754aab): in the clipping mask view a new layer added while the top clipped layer of a clip group is
+    // active lands above the whole group, not inside it.
+    if (KisConfig(true).clippingMaskViewEnabled() && KisClippingUtils::isTopClippedLayer(activeNode)) {
+        KisNodeSP group = activeNode->parent();
+        if (group && group->parent()) {
+            parent = group->parent();
+            above = group;
+
+            while (parent &&
+                   (!parent->allowAsChild(node) || !parent->isEditable(false))) {
+
+                above = parent;
+                parent = parent->parent();
+            }
+
+            if (!parent) {
+                warnKrita << "KisLayerManager::adjustLayerPosition:"
+                          << "No node accepted newly created node";
+
+                parent = m_view->image()->root();
+                above = parent->lastChild();
+            }
+            return;
+        }
+    }
+
     parent = activeNode;
     above = parent->lastChild();
 
@@ -657,9 +685,26 @@ void KisLayerManager::adjustLayerPosition(KisNodeSP node, KisNodeSP activeNode, 
 
 void KisLayerManager::addLayerCommon(KisNodeSP activeNode, KisNodeSP layer, bool updateImage, KisProcessingApplicator *applicator)
 {
+    // Krita-Revamp (02fbd9b): the hidden wrapper group of a clip stack is never the target, its top layer is
+    KisNodeSP effectiveActiveNode = activeNode;
+    const bool clippingView = KisConfig(true).clippingMaskViewEnabled();
+    if (clippingView && activeNode && KisClippingUtils::isClippingGroup(activeNode)) {
+        KisNodeSP topChild = activeNode->lastChild();
+        if (topChild) {
+            effectiveActiveNode = topChild;
+        }
+    }
+
     KisNodeSP parent;
     KisNodeSP above;
-    adjustLayerPosition(layer, activeNode, parent, above);
+    adjustLayerPosition(layer, effectiveActiveNode, parent, above);
+
+    if (clippingView &&
+        KisClippingUtils::shouldEnableInheritAlphaForNewLayer(effectiveActiveNode, parent, above)) {
+        if (KisLayer *layerPtr = qobject_cast<KisLayer*>(layer.data())) {
+            layerPtr->disableAlphaChannel(true);
+        }
+    }
 
     KisGroupLayer *group = dynamic_cast<KisGroupLayer*>(parent.data());
 

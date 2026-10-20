@@ -86,6 +86,7 @@
 #include "KisIdleTasksManager.h"
 
 #include "kis_layer_utils.h"
+#include "KisClippingUtils.h"
 
 #include "ui_WdgLayerBox.h"
 #include "NodeView.h"
@@ -190,6 +191,8 @@ LayerBox::LayerBox()
             SIGNAL(expanded(QModelIndex)), SLOT(slotExpanded(QModelIndex)));
     connect(m_wdgLayerBox->listLayers,
             SIGNAL(selectionChanged(QModelIndexList)), SLOT(selectionChanged(QModelIndexList)));
+    connect(m_wdgLayerBox->listLayers,
+            SIGNAL(sigClipToLayerBelowRequested(QModelIndex)), SLOT(slotClipToLayerBelowRequested(QModelIndex)));
 
     slotUpdateIcons();
 
@@ -199,6 +202,7 @@ LayerBox::LayerBox()
     m_wdgLayerBox->bnLower->setIconSize(QSize(22, 22));
     m_wdgLayerBox->bnProperties->setIconSize(QSize(22, 22));
     m_wdgLayerBox->bnDuplicate->setIconSize(QSize(22, 22));
+    m_wdgLayerBox->bnClippingMask->setIconSize(QSize(22, 22));
 
     m_wdgLayerBox->bnLower->setEnabled(false);
     m_wdgLayerBox->bnRaise->setEnabled(false);
@@ -456,13 +460,18 @@ void expandNodesRecursively(KisNodeSP root, QPointer<KisNodeFilterProxyModel> fi
 
     nodeView->blockSignals(true);
 
+    // In the clipping mask view a clip group is a hidden wrapper: collapsed, it would hide its whole stack, so it is
+    // always shown open (the node's own collapsed flag is left as it is).
+    const bool clippingView = KisConfig(true).clippingMaskViewEnabled();
+
     KisNodeSP node = root->firstChild();
     while (node) {
+        const bool collapsed = node->collapsed() && !(clippingView && KisClippingUtils::isClippingGroup(node));
         QModelIndex idx = filteringModel->indexFromNode(node);
         if (idx.isValid()) {
-            nodeView->setExpanded(idx, !node->collapsed());
+            nodeView->setExpanded(idx, !collapsed);
         }
-        if (!node->collapsed() && node->childCount() > 0) {
+        if (!collapsed && node->childCount() > 0) {
             expandNodesRecursively(node, filteringModel, nodeView);
         }
         node = node->nextSibling();
@@ -500,6 +509,8 @@ void LayerBox::setViewManager(KisViewManager* kisview)
     connect(m_wdgLayerBox->bnAdd, SIGNAL(clicked()), this, SLOT(slotAddLayerBnClicked()));
 
     connectActionToButton(kisview, m_wdgLayerBox->bnDuplicate, "duplicatelayer");
+    // Clipping mask button (Krita-Revamp 697c81b, 10zindraws/Tenzin Rangdol): here it runs the "clip_to_layer_below" action
+    connectActionToButton(kisview, m_wdgLayerBox->bnClippingMask, "clip_to_layer_below");
 
     KisActionManager *actionManager = kisview->actionManager();
 
@@ -889,6 +900,21 @@ void LayerBox::slotOpacitySliderMoved(qreal opacity)
     m_nodeOpacityCompressor.start();
 }
 
+void LayerBox::slotClipToLayerBelowRequested(const QModelIndex &upper)
+{
+    if (!m_nodeManager || !m_filteringModel) return;
+
+    KisNodeSP node = m_filteringModel->nodeFromIndex(upper);
+    if (!node) return;
+
+    // a locked layer is refused (with a message) before the selection changes
+    if (!m_nodeManager->canModifyLayer(node)) return;
+
+    // the gesture acts on the layer above the boundary, whatever was selected
+    m_nodeManager->slotUiActivatedNode(node);
+    m_nodeManager->clipActiveLayerToLayerBelow();
+}
+
 void LayerBox::slotCollapsed(const QModelIndex &index)
 {
     KisNodeSP node = m_filteringModel->nodeFromIndex(index);
@@ -1242,6 +1268,7 @@ void LayerBox::updateLayerOpMenu(const QModelIndex &index, QMenu &menu) {
         QMenu *groupMenu = menu.addMenu(i18nc("A group of layers", "&Group"));
         addActionToMenu(groupMenu, "create_quick_group");
         addActionToMenu(groupMenu, "create_quick_clipping_group");
+        addActionToMenu(groupMenu, "clip_to_layer_below");
         addActionToMenu(groupMenu, "quick_ungroup");
         QMenu *locksMenu = menu.addMenu(i18n("&Toggle Locks && Visibility"));
         addActionToMenu(locksMenu, "toggle_layer_visibility");
@@ -1308,6 +1335,7 @@ void LayerBox::slotUpdateIcons() {
     m_wdgLayerBox->bnLower->setIcon(KisIconUtils::loadIcon("arrowdown"));
     m_wdgLayerBox->bnProperties->setIcon(KisIconUtils::loadIcon("properties"));
     m_wdgLayerBox->bnDuplicate->setIcon(KisIconUtils::loadIcon("duplicatelayer"));
+    m_wdgLayerBox->bnClippingMask->setIcon(KisIconUtils::loadIcon("clip-to-layer"));
     m_wdgLayerBox->configureLayerDockerToolbar->setIcon(KisIconUtils::loadIcon("view-choose"));
 
     // call child function about needing to update icons

@@ -1,5 +1,7 @@
 /*
  *  SPDX-FileCopyrightText: 2007 Boudewijn Rempt <boud@valdyas.org>
+ *  SPDX-FileCopyrightText: 2026 Tenzin Rangdol (Krita-Revamp): clipping mask drop rules, from f754aab
+ *  SPDX-FileCopyrightText: 2026 Yakub Rabiutheen: clip to layer below
  *
  *  SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -79,6 +81,8 @@
 
 #include <kis_signals_blocker.h>
 #include <libs/image/kis_layer_properties_icons.h>
+#include "kis_config.h"
+#include "KisClippingUtils.h"
 #include <libs/image/commands/kis_node_property_list_command.h>
 #include <KisSynchronizedConnection.h>
 
@@ -331,6 +335,9 @@ void KisNodeManager::setup(KisKActionCollection * actionCollection, KisActionMan
     action = actionManager->createAction("create_quick_clipping_group");
     connect(action, SIGNAL(triggered()), this, SLOT(createQuickClippingGroup()));
 
+    action = actionManager->createAction("clip_to_layer_below");
+    connect(action, SIGNAL(triggered()), this, SLOT(clipActiveLayerToLayerBelow()));
+
     action = actionManager->createAction("quick_ungroup");
     connect(action, SIGNAL(triggered()), this, SLOT(quickUngroup()));
 
@@ -541,21 +548,34 @@ void KisNodeManager::moveNodesDirect(KisNodeList nodes, KisNodeSP parent, KisNod
 {
     KUndo2MagicString actionName = kundo2_i18n("Move Nodes");
     KisNodeJugglerCompressed *juggler = m_d->lazyGetJuggler(actionName);
-    juggler->moveNode(nodes, parent, aboveThis);
+    bool enableInheritAlpha = false;
+    if (KisConfig(true).clippingMaskViewEnabled()) {
+        // Krita-Revamp (f754aab): drops into a clipping group join its clip stack
+        enableInheritAlpha = KisClippingUtils::adjustDropTarget(&parent, &aboveThis);
+    }
+    juggler->moveNode(nodes, parent, aboveThis, enableInheritAlpha);
 }
 
 void KisNodeManager::copyNodesDirect(KisNodeList nodes, KisNodeSP parent, KisNodeSP aboveThis)
 {
     KUndo2MagicString actionName = kundo2_i18n("Copy Nodes");
     KisNodeJugglerCompressed *juggler = m_d->lazyGetJuggler(actionName);
-    juggler->copyNode(nodes, parent, aboveThis);
+    bool enableInheritAlpha = false;
+    if (KisConfig(true).clippingMaskViewEnabled()) {
+        enableInheritAlpha = KisClippingUtils::adjustDropTarget(&parent, &aboveThis);
+    }
+    juggler->copyNode(nodes, parent, aboveThis, enableInheritAlpha);
 }
 
 void KisNodeManager::addNodesDirect(KisNodeList nodes, KisNodeSP parent, KisNodeSP aboveThis)
 {
     KUndo2MagicString actionName = kundo2_i18n("Add Nodes");
     KisNodeJugglerCompressed *juggler = m_d->lazyGetJuggler(actionName);
-    juggler->addNode(nodes, parent, aboveThis);
+    bool enableInheritAlpha = false;
+    if (KisConfig(true).clippingMaskViewEnabled()) {
+        enableInheritAlpha = KisClippingUtils::adjustDropTarget(&parent, &aboveThis);
+    }
+    juggler->addNode(nodes, parent, aboveThis, enableInheritAlpha);
 }
 
 void KisNodeManager::toggleIsolateActiveNode()
@@ -1681,6 +1701,43 @@ void KisNodeManager::createQuickClippingGroup()
 
         juggler->addNode(KisNodeList() << maskLayer, parent, above);
     }
+}
+
+bool KisNodeManager::clipActiveLayerToLayerBelow()
+{
+    KisNodeSP active = activeNode();
+    if (!active) return false;
+
+    const KisClippingUtils::ClipPlan plan =
+        KisClippingUtils::planClipToLayerBelow(active, KisConfig(true).clippingMaskViewEnabled());
+
+    if (plan.action == KisClippingUtils::ClipPlan::None) {
+        // never silent: say why
+        m_d->view->showFloatingMessage(plan.reason.isEmpty() ? i18n("Nothing to clip.") : plan.reason, QIcon());
+        return false;
+    }
+
+    // the same lock checks for every plan; each shows its own message
+    if (!canModifyLayer(active)) return false;
+    switch (plan.action) {
+    case KisClippingUtils::ClipPlan::None:
+    case KisClippingUtils::ClipPlan::Release:
+    case KisClippingUtils::ClipPlan::ClipInPlace:
+        break;
+    case KisClippingUtils::ClipPlan::JoinGroup:
+        if (!canModifyLayer(plan.group)) return false;
+        if (!canMoveLayers(KisNodeList() << active << plan.group)) return false;
+        break;
+    case KisClippingUtils::ClipPlan::GroupAndClip:
+        if (!canModifyLayers(plan.stack)) return false;
+        if (!canMoveLayers(plan.stack)) return false;
+        break;
+    }
+
+    // One undo step for the grouping and the moves; the juggler is made only if the plan needs one
+    return KisClippingUtils::applyClipPlan(plan, m_d->view->image(), [this] () {
+        return m_d->lazyGetJuggler(kundo2_i18n("Clip to Layer Below"));
+    });
 }
 
 void KisNodeManager::quickUngroup()

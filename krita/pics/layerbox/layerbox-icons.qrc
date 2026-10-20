@@ -8,12 +8,14 @@
     <file>dark_addlayer.svg</file>
     <file>dark_arrowdown.svg</file>
     <file>dark_arrowup.svg</file>
+    <file>dark_clip-to-layer.svg</file>
     <file>dark_deletelayer.svg</file>
     <file>dark_duplicatelayer.svg</file>
     <file>dark_properties.svg</file>
     <file>light_addlayer.svg</file>
     <file>light_arrowdown.svg</file>
     <file>light_arrowup.svg</file>
+    <file>light_clip-to-layer.svg</file>
     <file>light_deletelayer.svg</file>
     <file>light_duplicatelayer.svg</file>
     <file>light_properties.svg</file>

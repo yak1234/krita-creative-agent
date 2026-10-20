@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-FileCopyrightText: 2026 Yakub Rabiutheen
+  SPDX-License-Identifier: CC-BY-SA-4.0
+  Clip to layer below: a clipped layer (outline) over its base (solid), with the clipping arrow. Drawn for this fork in
+  Krita's flat single-colour icon style.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+  <path style="fill:#d2d2d2;fill-opacity:1;fill-rule:evenodd;stroke:none" d="M7 3h13v7H7zM8.5 4.5h10v4h-10zM3 13h17v6H3zM3 4h1.5v6H6l-2.25 2.5L1.5 10H3z"/>
+</svg>

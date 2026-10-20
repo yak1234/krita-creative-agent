@@ -2945,6 +2945,18 @@
       <isCheckable>false</isCheckable>
       <statusTip/>
     </Action>
+    <Action name="clip_to_layer_below">
+      <icon>clip-to-layer</icon>
+      <text>Clip to Layer Below</text>
+      <whatsThis/>
+      <toolTip>Clip the active layer to the layer below it (Photoshop's clipping mask); on a clipped layer it releases the clipping</toolTip>
+      <iconText>Clip to Layer Below</iconText>
+      <activationFlags>100000</activationFlags>
+      <activationConditions>0</activationConditions>
+      <shortcut/>
+      <isCheckable>false</isCheckable>
+      <statusTip/>
+    </Action>
     <Action name="select_all_layers">
       <icon>layers-select-all</icon>
       <text>All Layers</text>

@@ -524,7 +524,43 @@
        <string>Miscellaneous</string>
       </attribute>
       <layout class="QFormLayout" name="formLayout_5">
-       <item row="6" column="0" colspan="2">
+       <item row="6" column="0">
+        <widget class="QLabel" name="lblGroupRowHeight">
+         <property name="text">
+          <string>Layers docker: group row height:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="6" column="1">
+        <widget class="QSpinBox" name="spnGroupRowHeight">
+         <property name="toolTip">
+          <string>Height of group rows as a percentage of a normal layer row (never shorter than the property icons). Group rows show a static folder icon, closed or open, instead of the group's composite thumbnail, at any height including 100%. 70% is the Photoshop-like default.</string>
+         </property>
+         <property name="suffix">
+          <string> %</string>
+         </property>
+         <property name="minimum">
+          <number>40</number>
+         </property>
+         <property name="maximum">
+          <number>100</number>
+         </property>
+         <property name="value">
+          <number>70</number>
+         </property>
+        </widget>
+       </item>
+       <item row="7" column="1">
+        <widget class="QCheckBox" name="chkClippingMaskView">
+         <property name="toolTip">
+          <string>Layers docker: hide the groups that hold a clipping stack and draw clipped layers indented under the layer they are clipped to, as in Photoshop. New layers added above a clipped layer join the stack. Nothing changes in the image or in the saved file.</string>
+         </property>
+         <property name="text">
+          <string>Enable Clipping Mask view in the layers docker</string>
+         </property>
+        </widget>
+       </item>
+       <item row="8" column="0" colspan="2">
         <spacer name="verticalSpacer_5">
          <property name="orientation">
           <enum>Qt::Orientation::Vertical</enum>

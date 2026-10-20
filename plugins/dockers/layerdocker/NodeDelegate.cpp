@@ -2,12 +2,16 @@
   SPDX-FileCopyrightText: 2006 Gábor Lehel <illissius@gmail.com>
   SPDX-FileCopyrightText: 2008 Cyrille Berger <cberger@cberger.net>
   SPDX-FileCopyrightText: 2011 José Luis Vergara <pentalis@gmail.com>
+  SPDX-FileCopyrightText: 2026 10zindraws (Krita-Revamp): folder-style group rows
+  SPDX-FileCopyrightText: 2026 Tenzin Rangdol (Krita-Revamp): alpha inheritance indentation, clipping mask view
+  SPDX-FileCopyrightText: 2026 Yakub Rabiutheen: group row height preference, SVG folder icons, Qt 6 fit
 
   SPDX-License-Identifier: LGPL-2.0-or-later
 */
 #include "kis_config.h"
 #include "NodeDelegate.h"
 #include "kis_node_model.h"
+#include "kis_node_filter_proxy_model.h"
 #include "NodeToolTip.h"
 #include "NodeView.h"
 #include "KisPart.h"
@@ -15,6 +19,7 @@
 
 #include <QtDebug>
 #include <QApplication>
+#include <QAbstractItemModel>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QModelIndex>
@@ -24,6 +29,7 @@
 #include <QStyle>
 #include <QStyleOptionViewItem>
 #include <QBitmap>
+#include <QPixmap>
 #include <QToolTip>
 
 #include <klocalizedstring.h>
@@ -37,6 +43,64 @@
 typedef KisBaseNode::Property* OptionalProperty;
 
 #include <kis_base_node.h>
+#include <kis_node.h>
+
+namespace {
+
+// Ported from Krita-Revamp (10zindraws, e76a4e1): the node behind a view index, whichever model the view uses.
+KisNodeSP nodeForIndex(const QModelIndex &index)
+{
+    if (!index.isValid()) {
+        return KisNodeSP();
+    }
+
+    const QModelIndex columnIndex = index.sibling(index.row(), 0);
+
+    if (auto proxy = qobject_cast<const KisNodeFilterProxyModel *>(columnIndex.model())) {
+        return proxy->nodeFromIndex(columnIndex);
+    }
+    if (auto model = qobject_cast<const KisNodeModel *>(columnIndex.model())) {
+        return model->nodeFromIndex(columnIndex);
+    }
+
+    return KisNodeSP();
+}
+
+bool isGroupLayerIndex(const QModelIndex &index)
+{
+    KisNodeSP node = nodeForIndex(index);
+    return node && node->inherits("KisGroupLayer");
+}
+
+
+// Ported from Krita-Revamp (Tenzin Rangdol, 3b598ec): paint an icon in the text colour.
+QPixmap tintIconPixmap(const QPixmap &source, const QColor &color)
+{
+    if (source.isNull()) {
+        return source;
+    }
+
+    QPixmap tinted(source.size());
+    tinted.fill(Qt::transparent);
+
+    QPainter painter(&tinted);
+    painter.setCompositionMode(QPainter::CompositionMode_Source);
+    painter.drawPixmap(0, 0, source);
+    painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    painter.fillRect(tinted.rect(), color);
+    painter.end();
+
+    return tinted;
+}
+
+} // namespace
+
+int NodeDelegate::groupRowHeight(int baseRowHeight, int percent, int minHeight)
+{
+    const int clamped = qBound(40, percent, 100);
+    const int scaled = (baseRowHeight * clamped + 50) / 100;
+    return qBound(1, qMax(scaled, minHeight), qMax(1, baseRowHeight));
+}
 
 class NodeDelegate::Private
 {
@@ -56,6 +120,26 @@ public:
     QRect thumbnailGeometry;
     int thumbnailSize {-1};
     int rowHeight {-1};
+    int groupRowHeightPercent {70};
+    bool clippingMaskViewEnabled {false};
+
+    int rowHeightForIndex(const QModelIndex &index) const
+    {
+        if (!isGroupLayerIndex(index)) return rowHeight;
+        KisNodeViewColorScheme scm;
+        // never shorter than the property icons with their borders
+        return NodeDelegate::groupRowHeight(rowHeight, groupRowHeightPercent, scm.iconSize() + 2 * scm.border());
+    }
+
+    // Alpha inheritance (3b598ec) and the clipping mask view (f754aab, bd64c4e), Krita-Revamp
+    int alphaInheritanceIndentation() const;
+    bool isBottomLayerIndex(const QModelIndex &index) const;
+    bool shouldApplyAlphaInheritanceAppearance(const QModelIndex &index) const;
+    bool hasInheritAlpha(const QModelIndex &index) const;
+    bool isClippingMaskGroupIndex(const QModelIndex &index) const;
+    int clippingMaskHiddenDepth(const QModelIndex &index) const;
+    QRect baseOptionRect(const QStyleOptionViewItem &option, const QModelIndex &index) const;
+    QRect adjustedOptionRect(const QStyleOptionViewItem &option, const QModelIndex &index) const;
 
     QList<QModelIndex> shiftClickedIndexes;
 
@@ -104,14 +188,23 @@ NodeDelegate::~NodeDelegate()
 QSize NodeDelegate::sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
     KisNodeViewColorScheme scm;
-    if (index.column() == NodeView::VISIBILITY_COL) {
-        return QSize(scm.visibilityColumnWidth(), d->rowHeight);
+    const int rowHeight = d->rowHeightForIndex(index);
+    if (d->isClippingMaskGroupIndex(index)) {
+        // the group that holds a clip stack is not shown in the clipping mask view
+        return QSize(option.rect.width(), 0);
     }
-    return QSize(option.rect.width(), d->rowHeight);
+    if (index.column() == NodeView::VISIBILITY_COL) {
+        return QSize(scm.visibilityColumnWidth(), rowHeight);
+    }
+    return QSize(option.rect.width(), rowHeight);
 }
 
 void NodeDelegate::paint(QPainter *p, const QStyleOptionViewItem &o, const QModelIndex &index) const
 {
+    if (d->isClippingMaskGroupIndex(index)) {
+        return;
+    }
+
     p->save();
 
     {
@@ -148,6 +241,10 @@ void NodeDelegate::paint(QPainter *p, const QStyleOptionViewItem &o, const QMode
 
 void NodeDelegate::drawBranches(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
+    if (d->isClippingMaskGroupIndex(index)) {
+        return;
+    }
+
     p->save();
     drawFrame(p, option, index);
     p->restore();
@@ -158,12 +255,16 @@ void NodeDelegate::drawBranches(QPainter *p, const QStyleOptionViewItem &option,
     if (!tmp.isValid()) return;
 
     const KisNodeViewColorScheme &scm = *KisNodeViewColorScheme::instance();
+    const bool showAlphaInheritance = d->shouldApplyAlphaInheritanceAppearance(index);
+    const bool parentIsHiddenGroup = d->isClippingMaskGroupIndex(tmp);
 
     int rtlNum = (option.direction == Qt::RightToLeft) ? 1 : -1;
-    QPoint nodeCorner = (option.direction == Qt::RightToLeft) ? option.rect.topLeft() : option.rect.topRight();
-    int branchSpacing = rtlNum * d->view->indentation();
+    const QRect optionRect = d->baseOptionRect(option, index);
+    QPoint nodeCorner = (option.direction == Qt::RightToLeft) ? optionRect.topLeft() : optionRect.topRight();
+    const int indentation = d->view->indentation();
+    int branchSpacing = rtlNum * indentation;
 
-    QPoint base = nodeCorner + 0.5 * QPoint(branchSpacing, option.rect.height()) + QPoint(0, scm.iconSize()/4);
+    QPoint base = nodeCorner + 0.5 * QPoint(branchSpacing, optionRect.height()) + QPoint(0, scm.iconSize()/4);
 
     QColor color = scm.gridColor(option, d->view);
     QColor bgColor = option.state & QStyle::State_Selected ?
@@ -175,10 +276,37 @@ void NodeDelegate::drawBranches(QPainter *p, const QStyleOptionViewItem &option,
     // p->setPen(QPen(p->pen().color(), 2, Qt::DashLine, Qt::RoundCap, Qt::RoundJoin));
     p->setPen(QPen(color, 0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
 
-    QPoint p2 = base - QPoint(rtlNum*(qMin(d->view->indentation(), scm.iconSize())/2), 0);
+    QPoint p2 = base - QPoint(rtlNum*(qMin(indentation, scm.iconSize())/2), 0);
     QPoint p3 = base - QPoint(0, scm.iconSize()/2);
-    p->drawLine(base, p2);
-    p->drawLine(base, p3);
+
+    if (showAlphaInheritance) {
+        const int rowHeight = d->rowHeightForIndex(index);
+        const int indentWidth = qMax(1, indentation);
+        const int maxIconSize = qMax(1, qMin(indentWidth, rowHeight - 2 * scm.border()));
+        const int iconSide = qMin(scm.iconSize(), maxIconSize);
+
+        if (iconSide > 0) {
+            QIcon icon = KisIconUtils::loadIcon(QStringLiteral("arrow-topleft"));
+            QPixmap pixmap = icon.pixmap(iconSide, iconSide,
+                                         (option.state & QStyle::State_Enabled) ? QIcon::Normal : QIcon::Disabled);
+            pixmap = tintIconPixmap(pixmap, option.palette.color(QPalette::Text));
+
+            QRect iconRect(0, 0, iconSide, iconSide);
+            const int halfSpacing = qRound(branchSpacing / 2.0);
+            iconRect.moveCenter(QPoint(nodeCorner.x() + halfSpacing, optionRect.center().y()));
+
+            const qreal oldOpacity = p->opacity();
+            if (!(option.state & QStyle::State_Enabled)) {
+                p->setOpacity(0.55);
+            }
+
+            p->drawPixmap(iconRect.topLeft(), pixmap);
+            p->setOpacity(oldOpacity);
+        }
+    } else if (!parentIsHiddenGroup) {
+        p->drawLine(base, p2);
+        p->drawLine(base, p3);
+    }
 
     // draw parent lines (keep drawing until x position is less than 0
     QPoint parentBase1 = base + QPoint(branchSpacing, 0);
@@ -193,6 +321,15 @@ void NodeDelegate::drawBranches(QPainter *p, const QStyleOptionViewItem &option,
     tmp = tmp.parent(); // Ignore the first group as it was already painted
 
     while (tmp.isValid()) {
+        if (d->isClippingMaskGroupIndex(tmp)) {
+            // a hidden group has no indentation column of its own
+            levelRowIndex = tmp.row();
+            tmp = tmp.parent();
+            parentBase1 += QPoint(branchSpacing, 0);
+            parentBase2 += QPoint(branchSpacing, 0);
+            continue;
+        }
+
         bool moreSiblings = index.model()->rowCount(tmp) > (levelRowIndex + 1);
         if (moreSiblings) {
             p->drawLine(parentBase1, parentBase2);
@@ -261,33 +398,202 @@ void NodeDelegate::drawFrame(QPainter *p, const QStyleOptionViewItem &option, co
 
 QRect NodeDelegate::thumbnailClickRect(const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
-    Q_UNUSED(index);
+    // Clipping mask groups are hidden in the clipping mask view: they have no click rect
+    if (d->isClippingMaskGroupIndex(index)) {
+        return QRect();
+    }
 
     QRect rc = d->thumbnailGeometry;
+    const QRect optionRect = d->adjustedOptionRect(option, index);
+    rc.setHeight(d->rowHeightForIndex(index));
 
     // Move to current index
-    rc.moveTop(option.rect.topLeft().y());
+    rc.moveTop(optionRect.topLeft().y());
     // Move to correct location.
     if (option.direction == Qt::RightToLeft) {
-        rc.moveRight(option.rect.right());
+        rc.moveRight(optionRect.right());
     } else {
-        rc.moveLeft(option.rect.left());
+        rc.moveLeft(optionRect.left());
     }
 
     return rc;
+}
+
+int NodeDelegate::Private::alphaInheritanceIndentation() const
+{
+    const int indentation = view ? view->indentation() : 0;
+    if (indentation <= 0) {
+        return 0;
+    }
+
+    return qMax(1, qRound(indentation * 0.7));
+}
+
+bool NodeDelegate::Private::isBottomLayerIndex(const QModelIndex &index) const
+{
+    if (!index.isValid()) {
+        return true;
+    }
+
+    const QAbstractItemModel *model = index.model();
+    if (!model) {
+        return true;
+    }
+
+    const QModelIndex parentIndex = index.parent();
+    const int rowCount = model->rowCount(parentIndex);
+    if (rowCount <= 0) {
+        return true;
+    }
+
+    return index.row() >= (rowCount - 1);
+}
+
+bool NodeDelegate::Private::shouldApplyAlphaInheritanceAppearance(const QModelIndex &index) const
+{
+    // The indentation and the arrow belong to the clipping mask view (off by default)
+    if (!clippingMaskViewEnabled || !index.isValid() || isBottomLayerIndex(index)) {
+        return false;
+    }
+
+    return hasInheritAlpha(index);
+}
+
+bool NodeDelegate::Private::hasInheritAlpha(const QModelIndex &index) const
+{
+    if (!index.isValid()) {
+        return false;
+    }
+
+    const KisBaseNode::PropertyList props =
+        index.data(KisNodeModel::PropertiesRole).value<KisBaseNode::PropertyList>();
+
+    for (const auto &prop : props) {
+        if (prop.id == KisLayerPropertiesIcons::inheritAlpha.id()) {
+            return prop.state.toBool();
+        }
+    }
+
+    return false;
+}
+
+bool NodeDelegate::Private::isClippingMaskGroupIndex(const QModelIndex &index) const
+{
+    if (!clippingMaskViewEnabled || !index.isValid()) {
+        return false;
+    }
+
+    const QModelIndex columnIndex = index.sibling(index.row(), 0);
+    if (!columnIndex.isValid() || !isGroupLayerIndex(columnIndex)) {
+        return false;
+    }
+
+    // row 0 of a group is its top child
+    const QModelIndex topChild = columnIndex.model()->index(0, 0, columnIndex);
+    if (!topChild.isValid()) {
+        return false;
+    }
+
+    return hasInheritAlpha(topChild);
+}
+
+int NodeDelegate::Private::clippingMaskHiddenDepth(const QModelIndex &index) const
+{
+    if (!clippingMaskViewEnabled) {
+        return 0;
+    }
+
+    int depth = 0;
+    QModelIndex parent = index.parent();
+    while (parent.isValid()) {
+        if (isClippingMaskGroupIndex(parent)) {
+            depth++;
+        }
+        parent = parent.parent();
+    }
+
+    return depth;
+}
+
+// The row rectangle with the columns of hidden clip groups taken out of the indentation
+QRect NodeDelegate::Private::baseOptionRect(const QStyleOptionViewItem &option, const QModelIndex &index) const
+{
+    QRect rect = option.rect;
+    const int hiddenDepth = clippingMaskHiddenDepth(index);
+    const int indentation = view ? view->indentation() : 0;
+    const int offset = qMax(0, indentation * hiddenDepth);
+
+    if (offset > 0) {
+        if (option.direction == Qt::RightToLeft) {
+            rect.adjust(offset, 0, 0, 0);
+        } else {
+            rect.adjust(-offset, 0, 0, 0);
+        }
+    }
+
+    return rect;
+}
+
+// The same, and a clipped layer is moved in a little to make room for the arrow
+QRect NodeDelegate::Private::adjustedOptionRect(const QStyleOptionViewItem &option, const QModelIndex &index) const
+{
+    QRect rect = baseOptionRect(option, index);
+    if (!shouldApplyAlphaInheritanceAppearance(index)) {
+        return rect;
+    }
+
+    const int extraIndent = alphaInheritanceIndentation();
+    if (extraIndent <= 0) {
+        return rect;
+    }
+
+    if (option.direction == Qt::RightToLeft) {
+        rect.adjust(0, 0, -extraIndent, 0);
+    } else {
+        rect.adjust(extraIndent, 0, 0, 0);
+    }
+
+    return rect;
 }
 
 void NodeDelegate::drawThumbnail(QPainter *p, const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
     KisNodeViewColorScheme scm;
 
-    const qreal devicePixelRatio = p->device()->devicePixelRatioF();
-    const int thumbSizeHighRes = d->thumbnailSize*devicePixelRatio;
-
     const qreal oldOpacity = p->opacity(); // remember previous opacity
 
-    QImage img = index.data(int(KisNodeModel::BeginThumbnailRole) + thumbSizeHighRes).value<QImage>();
-    img.setDevicePixelRatio(devicePixelRatio);
+    if (d->shouldApplyAlphaInheritanceAppearance(index) && !index.parent().isValid()) {
+        const int extraIndent = d->alphaInheritanceIndentation();
+        const int rowHeight = d->rowHeightForIndex(index);
+        const int iconSide = qMin(scm.iconSize(), qMax(1, qMin(extraIndent, rowHeight - 2 * scm.border())));
+
+        if (extraIndent > 0 && iconSide > 0) {
+            QRect indentRect = d->baseOptionRect(option, index);
+            if (option.direction == Qt::RightToLeft) {
+                indentRect.setLeft(indentRect.right() - extraIndent + 1);
+                indentRect.setWidth(extraIndent);
+            } else {
+                indentRect.setWidth(extraIndent);
+            }
+
+            QIcon icon = KisIconUtils::loadIcon(QStringLiteral("arrow-topleft"));
+            QPixmap pixmap = icon.pixmap(iconSide, iconSide,
+                                         (option.state & QStyle::State_Enabled) ? QIcon::Normal : QIcon::Disabled);
+            pixmap = tintIconPixmap(pixmap, option.palette.color(QPalette::Text));
+
+            QRect iconRect(0, 0, iconSide, iconSide);
+            iconRect.moveCenter(QPoint(indentRect.center().x(), indentRect.center().y()));
+
+            const qreal oldArrowOpacity = p->opacity();
+            if (!(option.state & QStyle::State_Enabled)) {
+                p->setOpacity(0.55);
+            }
+
+            p->drawPixmap(iconRect.topLeft(), pixmap);
+            p->setOpacity(oldArrowOpacity);
+        }
+    }
+
     if (!(option.state & QStyle::State_Enabled)) {
         p->setOpacity(0.35);
     }
@@ -295,6 +601,30 @@ void NodeDelegate::drawThumbnail(QPainter *p, const QStyleOptionViewItem &option
     QRect fitRect = thumbnailClickRect(option, index);
     // Shrink to icon rect
     fitRect = kisGrowRect(fitRect, -(scm.thumbnailMargin()+scm.border()));
+
+    // Folder-style group rows (ported from Krita-Revamp, 10zindraws, e76a4e1): a folder icon instead of a thumbnail.
+    // The icons are our own SVGs (layers/{light,dark}_folderClosed.svg, folderOpened.svg), themed by loadIcon.
+    if (isGroupLayerIndex(index)) {
+        const bool isExpanded = option.state & QStyle::State_Open;
+        QIcon icon = KisIconUtils::loadIcon(isExpanded ? QLatin1String("folderOpened") : QLatin1String("folderClosed"));
+        const int iconSide = qMin(fitRect.width(), fitRect.height());
+        if (!icon.isNull() && iconSide > 0) {
+            QPixmap pixmap = icon.pixmap(iconSide,
+                                         (option.state & QStyle::State_Enabled) ?
+                                         QIcon::Normal : QIcon::Disabled);
+            const QPoint offset = fitRect.topLeft() +
+                QPoint((fitRect.width() - iconSide) / 2, (fitRect.height() - iconSide) / 2);
+            p->drawPixmap(offset, pixmap);
+            p->setOpacity(oldOpacity); // restore old opacity
+            return;
+        }
+    }
+
+    const qreal devicePixelRatio = p->device()->devicePixelRatioF();
+    const int thumbSizeHighRes = d->thumbnailSize*devicePixelRatio;
+
+    QImage img = index.data(int(KisNodeModel::BeginThumbnailRole) + thumbSizeHighRes).value<QImage>();
+    img.setDevicePixelRatio(devicePixelRatio);
 
     QPoint offset;
     offset.setX((fitRect.width() - img.width()/devicePixelRatio) / 2);
@@ -318,19 +648,21 @@ QRect NodeDelegate::iconsRect(const QStyleOptionViewItem &option, const QModelIn
     KisNodeViewColorScheme scm;
 
     int propCount = d->numProperties(index);
+    const int rowHeight = d->rowHeightForIndex(index);
 
     const int iconsWidth =
         propCount * (scm.iconSize() + 2 * scm.iconMargin()) +
         (propCount + 1) * scm.border();
 
-    QRect fitRect = QRect(0, 0, iconsWidth, d->rowHeight - scm.border());
+    QRect fitRect = QRect(0, 0, iconsWidth, rowHeight - scm.border());
+    const QRect optionRect = d->baseOptionRect(option, index);
     // Move to current index
-    fitRect.moveTop(option.rect.topLeft().y());
+    fitRect.moveTop(optionRect.topLeft().y());
     // Move to correct location.
     if (option.direction == Qt::RightToLeft) {
-        fitRect.moveLeft(option.rect.topLeft().x());
+        fitRect.moveLeft(optionRect.topLeft().x());
     } else {
-        fitRect.moveRight(option.rect.topRight().x());
+        fitRect.moveRight(optionRect.topRight().x());
     }
 
     return fitRect;
@@ -730,6 +1062,7 @@ void NodeDelegate::drawIcons(QPainter *p, const QStyleOptionViewItem &option, co
 {
     KisNodeViewColorScheme scm;
     const QRect rc = iconsRect(option, index);
+    const int rowHeight = d->rowHeightForIndex(index);
 
     QTransform oldTransform = p->transform();
     QPen oldPen = p->pen();
@@ -737,7 +1070,7 @@ void NodeDelegate::drawIcons(QPainter *p, const QStyleOptionViewItem &option, co
     p->setPen(scm.gridColor(option, d->view));
 
     int x = 0;
-    const int y = (d->rowHeight - scm.border() - scm.iconSize()) / 2;
+    const int y = (rowHeight - scm.border() - scm.iconSize()) / 2;
     KisBaseNode::PropertyList props = index.data(KisNodeModel::PropertiesRole).value<KisBaseNode::PropertyList>();
     QList<OptionalProperty> realProps = d->rightmostProperties(props);
 
@@ -795,11 +1128,15 @@ void NodeDelegate::drawIcons(QPainter *p, const QStyleOptionViewItem &option, co
 
 QRect NodeDelegate::visibilityClickRect(const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
-    Q_UNUSED(index);
+    // Clipping mask groups are hidden in the clipping mask view: no visibility click rect
+    if (d->isClippingMaskGroupIndex(index)) {
+        return QRect();
+    }
+
     KisNodeViewColorScheme scm;
 
     QRect rc = scm.relVisibilityRect();
-    rc.setHeight(d->rowHeight);
+    rc.setHeight(d->rowHeightForIndex(index));
 
     // Move to current index
     rc.moveCenter(option.rect.center());
@@ -815,19 +1152,23 @@ QRect NodeDelegate::visibilityClickRect(const QStyleOptionViewItem &option, cons
 
 QRect NodeDelegate::decorationClickRect(const QStyleOptionViewItem &option, const QModelIndex &index) const
 {
-    Q_UNUSED(index);
+    if (d->isClippingMaskGroupIndex(index)) {
+        return QRect();
+    }
+
     KisNodeViewColorScheme scm;
 
     QRect rc = scm.relDecorationRect();
+    const QRect optionRect = d->adjustedOptionRect(option, index);
 
     // Move to current index
-    rc.moveTop(option.rect.topLeft().y());
-    rc.setHeight(d->rowHeight);
+    rc.moveTop(optionRect.topLeft().y());
+    rc.setHeight(d->rowHeightForIndex(index));
     // Move to correct location.
     if (option.direction == Qt::RightToLeft) {
-        rc.moveRight(option.rect.right() - d->thumbnailGeometry.width());
+        rc.moveRight(optionRect.right() - d->thumbnailGeometry.width());
     } else {
-        rc.moveLeft(option.rect.left() + d->thumbnailGeometry.width());
+        rc.moveLeft(optionRect.left() + d->thumbnailGeometry.width());
     }
 
     return rc;
@@ -1035,6 +1376,10 @@ NodeDelegate::Private::propForMousePos(const QModelIndex &index, const QPoint &m
 
 bool NodeDelegate::editorEvent(QEvent *event, QAbstractItemModel *model, const QStyleOptionViewItem &option, const QModelIndex &index)
 {
+    if (d->isClippingMaskGroupIndex(index)) {
+        return false;
+    }
+
     //Explicitly handle mouse release events
     if (event->type() == QEvent::MouseButtonRelease &&index.flags() & Qt::ItemIsEnabled)  {
         //For some reason qt5 doesn't give us which button was released, From my testing i couldn't get a release event on rmb, so we assume that it's lmb
@@ -1366,10 +1711,14 @@ void NodeDelegate::slotConfigChanged()
 {
     KisConfig cfg(true);
     const int oldHeight = d->rowHeight;
+    const int oldGroupPercent = d->groupRowHeightPercent;
+    const bool oldClippingView = d->clippingMaskViewEnabled;
     // cache values that require a config lookup and get used frequently
     d->thumbnailSize = KisNodeViewColorScheme::instance()->thumbnailSize();
     d->thumbnailGeometry = KisNodeViewColorScheme::instance()->relThumbnailRect();
     d->rowHeight = KisNodeViewColorScheme::instance()->rowHeight();
+    d->groupRowHeightPercent = cfg.groupRowHeightPercent();
+    d->clippingMaskViewEnabled = cfg.clippingMaskViewEnabled();
 
     const QColor newCheckersColor1 = cfg.checkersColor1();
     const QColor newCheckersColor2 = cfg.checkersColor2();
@@ -1391,7 +1740,8 @@ void NodeDelegate::slotConfigChanged()
         gc.fillRect(QRect(0, step, step, step), newCheckersColor2);
     }
 
-    if (d->rowHeight != oldHeight) {
+    if (d->rowHeight != oldHeight || d->groupRowHeightPercent != oldGroupPercent ||
+        d->clippingMaskViewEnabled != oldClippingView) {
         // QAbstractItemView/QTreeView don't even look at the index and redo the whole layout...
         Q_EMIT sizeHintChanged(QModelIndex());
     }

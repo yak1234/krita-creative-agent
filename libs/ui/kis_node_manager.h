@@ -252,6 +252,12 @@ public Q_SLOTS:
 
     void createQuickGroup();
     void createQuickClippingGroup();
+    /**
+     * "Clip to layer below" (Photoshop's clipping mask, on Krita's alpha inheritance): the active layer inherits alpha
+     * and is grouped with the layer it clips to; on an already clipped layer it releases the clipping. One undo step.
+     * Returns false if there was nothing to do.
+     */
+    bool clipActiveLayerToLayerBelow();
     void quickUngroup();
 
     void selectAllNodes();

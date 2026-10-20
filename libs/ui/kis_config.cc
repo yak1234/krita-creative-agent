@@ -2192,6 +2192,26 @@ void KisConfig::setHidePopups(bool hidePopups)
     m_cfg.writeEntry("hidePopups", hidePopups);
 }
 
+int KisConfig::groupRowHeightPercent(bool defaultValue) const
+{
+    return defaultValue ? 70 : qBound(40, m_cfg.readEntry("groupRowHeightPercent", 70), 100);
+}
+
+void KisConfig::setGroupRowHeightPercent(int percent)
+{
+    m_cfg.writeEntry("groupRowHeightPercent", qBound(40, percent, 100));
+}
+
+bool KisConfig::clippingMaskViewEnabled(bool defaultValue) const
+{
+    return (defaultValue ? false : m_cfg.readEntry("enableClippingMaskView", false));
+}
+
+void KisConfig::setClippingMaskViewEnabled(bool enabled)
+{
+    m_cfg.writeEntry("enableClippingMaskView", enabled);
+}
+
 int KisConfig::numDefaultLayers(const QLatin1String &dialogType, bool defaultValue) const
 {
     return (defaultValue ? 2 : m_cfg.readEntry(dialogType + "NumberOfLayersForNewImage", 2));

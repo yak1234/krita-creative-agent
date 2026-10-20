@@ -130,6 +130,7 @@ set(kritaui_LIB_SRCS
     kis_mimedata.cpp
     kis_node_commands_adapter.cpp
     kis_node_manager.cpp
+    KisClippingUtils.cpp
     kis_node_juggler_compressed.cpp
     kis_node_selection_adapter.cpp
     kis_node_insertion_adapter.cpp

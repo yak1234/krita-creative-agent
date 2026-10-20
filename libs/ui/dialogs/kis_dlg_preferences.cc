@@ -2463,6 +2463,8 @@ DisplaySettingsTab::DisplaySettingsTab(QWidget *parent, const char *name)
     chkSelectionOutlineAntialiasing->setChecked(cfg.antialiasSelectionOutline());
     chkChannelsAsColor->setChecked(cfg.showSingleChannelAsColor());
     chkHidePopups->setChecked(cfg.hidePopups());
+    spnGroupRowHeight->setValue(cfg.groupRowHeightPercent());
+    chkClippingMaskView->setChecked(cfg.clippingMaskViewEnabled());
 
     connect(grpOpenGL, SIGNAL(toggled(bool)), SLOT(slotUseOpenGLToggled(bool)));
 
@@ -2523,6 +2525,8 @@ void DisplaySettingsTab::setDefault()
     chkSelectionOutlineAntialiasing->setChecked(cfg.antialiasSelectionOutline(true));
     chkChannelsAsColor->setChecked(cfg.showSingleChannelAsColor(true));
     chkHidePopups->setChecked(cfg.hidePopups(true));
+    spnGroupRowHeight->setValue(cfg.groupRowHeightPercent(true));
+    chkClippingMaskView->setChecked(cfg.clippingMaskViewEnabled(true));
 
     KoColor gridColor(KoColorSpaceRegistry::instance()->rgb8());
     gridColor.fromQColor(cfg.getPixelGridColor(true));
@@ -3258,6 +3262,8 @@ bool KisDlgPreferences::editPreferences(std::optional<PageDesc>page)
         cfg.setAntialiasSelectionOutline(m_displaySettings->chkSelectionOutlineAntialiasing->isChecked());
         cfg.setShowSingleChannelAsColor(m_displaySettings->chkChannelsAsColor->isChecked());
         cfg.setHidePopups(m_displaySettings->chkHidePopups->isChecked());
+        cfg.setGroupRowHeightPercent(m_displaySettings->spnGroupRowHeight->value());
+        cfg.setClippingMaskViewEnabled(m_displaySettings->chkClippingMaskView->isChecked());
 
         cfg.setHideDockersFullscreen(m_fullscreenSettings->chkDockers->checkState());
         cfg.setHideMenuFullscreen(m_fullscreenSettings->chkMenu->checkState());

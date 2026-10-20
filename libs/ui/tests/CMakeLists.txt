@@ -85,6 +85,11 @@ kis_add_test( kis_node_juggler_compressed_test.cpp  ../../../sdk/tests/testutil.
     LINK_LIBRARIES kritaui kritatestsdk
     )
 
+kis_add_test( KisClippingUtilsTest.cpp  ../../../sdk/tests/testutil.cpp
+    TEST_NAME KisClippingUtilsTest
+    LINK_LIBRARIES kritaui kritalibkis kritatestsdk
+    )
+
 set_source_files_properties(
     kis_input_manager_test.cpp
     PROPERTIES

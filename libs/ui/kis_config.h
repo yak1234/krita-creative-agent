@@ -591,6 +591,15 @@ public:
     bool hidePopups(bool defaultValue = false) const;
     void setHidePopups(bool hidePopups);
 
+    /// Height of group rows in the layers docker as a percentage of a normal layer row (40..100, default 70, the Photoshop-like folder row).
+    int groupRowHeightPercent(bool defaultValue = false) const;
+    void setGroupRowHeightPercent(int percent);
+
+    /// Layers docker "clipping mask view" (Krita-Revamp, key enableClippingMaskView): clip groups are hidden wrappers and
+    /// clipped layers are drawn indented under their base. Off by default.
+    bool clippingMaskViewEnabled(bool defaultValue = false) const;
+    void setClippingMaskViewEnabled(bool enabled);
+
     int numDefaultLayers(const QLatin1String &dialogType, bool defaultValue = false) const;
     void setNumDefaultLayers(const QLatin1String &dialogType, int num);
 

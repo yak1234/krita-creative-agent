@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-FileCopyrightText: 2026 Yakub Rabiutheen
+  SPDX-License-Identifier: CC-BY-SA-4.0
+  Folder icon for group rows in the layers docker, drawn for this fork in Krita's flat single-colour icon style.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <path style="fill:#373737;fill-opacity:1;stroke:none" d="M1 3h5l1.5 1.5H15V13H1z"/>
+</svg>

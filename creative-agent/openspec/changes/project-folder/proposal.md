@@ -172,6 +172,6 @@ the reference mapping.
 The artist (2026-10-20) moved Autopilot to experimental: it leans on Luna's weakest judgements (is the painting done,
 what next) and its worst runs were Autopilot runs. It stays for unattended test runs. Once the project folder's plan
 exists, Autopilot could run only the plan the artist approved, element by element, stopping as soon as Luna flags a
-move, instead of painting open-ended until a review passes. Note for Group B: Plan mode's "Paint this plan" button
-(`start_plan` in creative_docker.py) still switches to Autopilot; decide then whether it should start Agent mode on the
-plan's first element instead.
+move, instead of painting open-ended until a review passes. Done already (2026-10-20, f2ab881): Plan mode's "Paint this
+plan" button starts Agent mode on the plan's current step. Left for Group B: the visible checklist that offers the
+next step after Keep.

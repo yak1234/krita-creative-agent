@@ -223,3 +223,18 @@
 - [ ] 6.9 Export features as GeoJSON outlines and COCO RLE masks for Luna and training scripts.
 - [ ] 6.10 Seams as features: confirmed baked-in seams (the plugin's seams.py and Luna) proposed as `seam` features,
   outlined on the canvas, and repaired by the painter before it paints near them.
+
+## 7. Demo v1 (the artist, 20 October: "after our current set of tasks is done I want a product I can demo")
+Scope freeze. After the tasks below nothing else is started until the demo has been rehearsed with the artist. Parked:
+Pigment-style mixing (own change `pigment-mixing`), Revamp's stroke previews, smoothing slider and Python plugins (3.2), 5.3 part 2,
+6.7 to 6.10, 2.6, Developer ID and notarisation (only needed to hand the app to other artists' Macs).
+The demo, in order: (1) open Krita Agent from the Desktop or Applications; (2) with NO painting open, type "a winter street in Moscow
+at night" in the agent panel and it creates the painting and starts; (3) it paints with real pen strokes in moves you keep or undo
+(Undo takes a whole move); (4) "leave the buildings alone" over a whole-canvas pass and the buildings do not change; (5) it feels like
+a Photoshop-style app (layers with folder groups and a clipping button, B/E/Ctrl+J shortcuts, the panel docked).
+- [ ] 7.1 Merge what is in flight, each after review: 6.4/6.5 protection, Revamp layers, Revamp preset persistence (with the agent gate).
+- [ ] 7.2 6.6 The plugin and companion use features and protection (the demo's "leave the buildings alone" and "the sky").
+- [ ] 7.3 4.1 The panel loads with the window; new-painting chats with no painting open.
+- [ ] 7.4 3.3 Photoshop defaults for new installs: shortcut scheme, a workspace with the panel docked, dark theme.
+- [ ] 7.5 Repackage and install, then a rehearsal with the artist at the keyboard: the Ctrl+Z, painting-during-a-pass, About box and
+  panel checks only a person can make, then a bug list and fixes. Stretch, only if time remains: 4.3 canvas overlays for proposed areas.

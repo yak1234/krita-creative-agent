@@ -2543,3 +2543,55 @@ test('Paint this plan in Agent mode starts one move on the plan\'s current step,
   assert.equal(h.runtime.goal.reviews.length,0);
  } finally {await h.close();}
 });
+
+/** Agent mode with a canvas the artist switches to: `paints` decides whether the first move painted anything. */
+async function canvasSwitchHarness(paints) {
+ let active='doc';
+ const h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(!names.includes('paint_batch')) return {content:'Hello.'};
+  return paints ? call('paint_batch',{summary:'Sky block-in',actions:[{tool:'paint_pass',arguments:pass}]}) : {content:'I looked at the canvas first.'};
+ },async(operation,params)=>{
+  if(operation==='context') return {document_id:active,active_document_id:active,name:active==='doc'?'Untitled':'Unnamed',filename:'',width:768,height:1024,modified:true,revision:'revision-'+active};
+  if(['begin','peek','paint_pass','observe','review_pass'].includes(operation) && active!=='doc'){
+   const dir=params.output_dir ?? h.runtime.study.directory, path=join(dir,'view-'+active+'.png'); await writeFile(path,png);
+   const checkpoint=operation==='begin' ? (params.painting_path ?? join(dir,'painting.kra')) : undefined;
+   if(checkpoint) await writeFile(checkpoint,'test painting');
+   return {status:'ok',document_id:active,name:'Unnamed',filename:'',modified:true,width:768,height:1024,image_path:path,layers:[],revision:'r-'+active,content_id:'c-'+active,passes:[],...(checkpoint?{checkpoint}:{})};
+  }
+  if(['paint_pass','review_pass'].includes(operation)){
+   const dir=h.runtime.study.directory; await writeFile(join(dir,'view.png'),png);
+   return {status:'ok',document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,image_path:join(dir,'view.png'),layers:[],revision:'r-paint',content_id:'c-paint',passes:[]};
+  }
+  return undefined;
+ });
+ await h.start('ask','Hello'); await h.runtime.setExecutionSettings({move_size:'quick'}); await h.runtime.setMode('agent');
+ await h.runtime.prompt('Start with the sky.');
+ return {h, switchTo:id=>{active=id;}};
+}
+
+test('a new canvas the artist switches to before anything was painted becomes the chat\'s painting',{timeout:30000},async()=>{
+ const {h,switchTo}=await canvasSwitchHarness(false);
+ try {
+  assert.equal(h.runtime.study.target_document_id,'doc');
+  switchTo('doc2');
+  await h.runtime.prompt('I created a new canvas, trace the outline first.');
+  assert.equal(h.runtime.study.target_document_id,'doc2','the chat now paints the active canvas');
+  const ends=h.calls.filter(c=>c.operation==='end'), begins=h.calls.filter(c=>c.operation==='begin');
+  assert.equal(begins.length,2); assert.ok(ends.length>=1,'the first canvas is released before the new one is taken');
+  assert.equal(begins[1].params.mode,'current');
+  assert.ok(!('source_document_id' in begins[1].params) || begins[1].params.source_document_id==='doc2','nothing is copied from the old canvas');
+  assert.ok(h.events.some(e=>e.type==='action' && /new canvas/i.test(e.message)),'the panel says it switched');
+ } finally {await h.close();}
+});
+
+test('after painting, a different active canvas is refused with what to do, and the chat keeps its painting',{timeout:30000},async()=>{
+ const {h,switchTo}=await canvasSwitchHarness(true);
+ try {
+  assert.ok(h.runtime.goal.passes>0);
+  switchTo('doc2');
+  await assert.rejects(h.runtime.prompt('Paint on this one now.'),/Switch back to it to continue, or start a new chat/);
+  assert.equal(h.runtime.study.target_document_id,'doc');
+  assert.equal(h.calls.filter(c=>c.operation==='begin').length,1);
+ } finally {await h.close();}
+});

@@ -1457,6 +1457,31 @@ export class StudioRuntime extends PaintingRuntime {
     await writeFile(join(this.config.output, 'active-session.json'), JSON.stringify({ id:this.study.id }), { mode:0o600 });
     await resultContent(this, result); await this.persist(); await this.syncViewOptions();
   }
+  /** The artist moved to another canvas mid-chat. Before anything was painted, the chat simply moves with them (the
+   *  canvas their message attached becomes the painting; the first one is left as it is). After painting, the chat
+   *  stays with its painting, because its moves, undo and review belong to it. */
+  async followActiveCanvas(active) {
+    const painted = this.goal.passes || this.study.unresolved_operations?.length || this.faulted;
+    if (painted) throw new Error('This chat paints "' + (this.study.name || 'its painting') + '". Switch back to it to continue, or start a new chat to paint the new canvas.');
+    const selection = this.canvasSelection, canvas = this.canvasContext.canvas;
+    const attached = selection.selected && (selection.follow_active || selection.document_id === active.active_document_id);
+    if (!attached || !active.active_document_id || canvas?.document_id !== active.active_document_id)
+      throw new Error('Return to the painting before continuing. The active document is different.');
+    await this.releaseNativeOwnership(this.study.id);
+    this.study.previous_targets ??= [];
+    this.study.previous_targets.push({painting_file:this.study.painting_file,at:stamp()});
+    const saved = canvas.filename?.toLowerCase().endsWith('.kra');
+    this.study.canvas = {...this.study.canvas, mode:'current'};
+    this.study.painting_file = saved ? relative(this.paintingsDirectory, canvas.filename) : undefined;
+    if (saved) this.study.name = basename(canvas.filename, '.kra');
+    else if (canvas.name) this.study.name = canvas.name;
+    this.study.bound = false; this.study.needs_resume = false; this.study.binding_started = false;
+    this.study.painting_missing = false; this.study.target_document_id = active.active_document_id; this.study.editable_layers = [];
+    this.goal.plan_target = {document_id:canvas.document_id, width:canvas.width, height:canvas.height,
+      ...(canvas.filename ? {filename:canvas.filename} : {})};
+    await this.persist();
+    this.emit({type:'action', message:'Painting on the new canvas "' + (this.study.name || 'Unnamed') + '" now; the first one is left as it was.', seconds:0});
+  }
   async useAttachedCanvas() {
     return (await this.sessionTransition('choosing a painting',()=>this._useAttachedCanvas())).value;
   }
@@ -1754,7 +1779,7 @@ export class StudioRuntime extends PaintingRuntime {
     if (this.study.binding_started && !this.study.bound) throw new Error('An earlier canvas creation needs inspection. Resume its saved painting before continuing.');
     if (this.study.bound) {
       const active = await this.bridge.call('context');
-      if (active.active_document_id !== this.study.target_document_id) throw new Error('Return to the painting before continuing. The active document is different.');
+      if (active.active_document_id !== this.study.target_document_id) await this.followActiveCanvas(active);
     }
     const move = {number:(this.goal.moves?.length ?? 0)+1, request:String(command.display_text ?? text).slice(0,500), status:'painting', actions:0, strokes:0, started_at:stamp(),
       ...(command.move_kind ? {kind:command.move_kind} : {})};

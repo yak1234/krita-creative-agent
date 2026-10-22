@@ -383,4 +383,90 @@ class ArtistOnly(unittest.TestCase):
         self.assertIn('if operation in FEATURE_PANEL_ONLY:', tools)
 
 
+
+# The "/" menu (skill-commands.ts): the companion sends the commands in its skills event, so the panel names no skill.
+import subprocess
+SKILLS_EVENT = json.loads(subprocess.run(['node', '-e', "import('./src/skills.mjs').then(m=>process.stdout.write(JSON.stringify(m.skillsEvent())))"],
+    cwd=str(Path(__file__).resolve().parents[1]), capture_output=True, text=True, check=True, env={**os.environ, 'NODE_OPTIONS': ''}).stdout)
+from panel_features_test.qt_compat import QKeyEvent, QEvent, Qt
+
+
+class SlashMenu(unittest.TestCase):
+    def setUp(self):
+        state.document = None
+        self.panel = module.CreativeAgentDocker(); self.panel.resize(440, 820); self.panel.show()
+        self.panel.handle_event(SKILLS_EVENT)
+        self.menu = self.panel.slash_menu; self.prompt = self.panel.prompt
+
+    def tearDown(self):
+        self.panel.process = None; self.panel.close(); KEEP.append(self.panel)
+        for _ in range(4): app.processEvents()
+
+    def rows(self): return [self.menu.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.menu.count())]
+    def key(self, key): self.prompt.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier))
+
+    def test_typing_a_slash_lists_the_short_commands_then_every_skill(self):
+        self.prompt.setPlainText('/')
+        self.assertTrue(self.menu.isVisible())
+        self.assertEqual(self.rows(), [entry['command'] for entry in SKILLS_EVENT['commands']])
+        self.assertEqual(self.rows()[:3], ['/trace', '/colour', '/refine'])
+        self.assertIn('/skill:guided-trace', self.rows())
+        self.assertIn('Draw guides', self.menu.item(0).text(), 'each entry shows its one-line description')
+
+    def test_the_list_filters_by_command_and_alias(self):
+        self.prompt.setPlainText('/col'); self.assertEqual(self.rows(), ['/colour'])
+        self.prompt.setPlainText('/color'); self.assertEqual(self.rows(), ['/colour'], 'an alias finds its command')
+        self.prompt.setPlainText('/skill:paint'); self.assertEqual(self.rows(), ['/skill:paint-scene', '/skill:paint-sky'])
+        self.prompt.setPlainText('/x'); self.assertFalse(self.menu.isVisible())
+        self.prompt.setPlainText('trace /'); self.assertFalse(self.menu.isVisible(), 'only at the start of the input')
+
+    def test_arrows_then_enter_or_tab_insert_and_escape_closes(self):
+        self.prompt.setPlainText('/'); self.key(Qt.Key.Key_Down)
+        self.key(Qt.Key.Key_Return)
+        self.assertEqual(self.prompt.toPlainText(), '/colour ')
+        self.assertFalse(self.menu.isVisible())
+        self.prompt.setPlainText('/tr'); self.key(Qt.Key.Key_Tab)
+        self.assertEqual(self.prompt.toPlainText(), '/trace ')
+        self.prompt.setPlainText('/'); self.assertTrue(self.menu.isVisible())
+        self.key(Qt.Key.Key_Escape)
+        self.assertFalse(self.menu.isVisible()); self.assertEqual(self.prompt.toPlainText(), '/')
+
+    def test_choosing_an_entry_inserts_it(self):
+        self.prompt.setPlainText('/skill:guid')
+        self.panel.choose_skill(self.menu.item(0))
+        self.assertEqual(self.prompt.toPlainText(), '/skill:guided-trace ')
+        self.assertFalse(self.menu.isVisible())
+
+    def test_the_panel_lists_exactly_the_commands_the_companion_sends(self):
+        self.panel.handle_event({'type': 'skills', 'skills': [{'name': 'zap-sky', 'description': 'A made-up skill.'}],
+                                 'commands': [{'command': '/zap', 'aliases': ['/zip'], 'description': 'A made-up command.'},
+                                              {'command': '/skill:zap-sky', 'aliases': [], 'description': 'A made-up skill.'}]})
+        self.prompt.setPlainText('/')
+        self.assertEqual(self.rows(), ['/zap', '/skill:zap-sky'], 'only what the companion sent: the panel adds no skill of its own')
+        self.prompt.setPlainText('/zi'); self.assertEqual(self.rows(), ['/zap'])
+
+    def test_an_older_companion_sends_skills_only_and_they_list_as_skill_commands(self):
+        self.panel.handle_event({'type': 'skills', 'skills': [{'name': 'paint-sky', 'description': 'Paint a sky.'}]})
+        self.prompt.setPlainText('/')
+        self.assertEqual(self.rows(), ['/skill:paint-sky'])
+        self.prompt.setPlainText('/pa'); self.assertEqual(self.rows(), ['/skill:paint-sky'], 'the bare skill name finds it')
+        self.key(Qt.Key.Key_Return)
+        self.assertEqual(self.prompt.toPlainText(), '/skill:paint-sky ')
+
+    def test_typing_matches_whatever_the_case(self):
+        self.prompt.setPlainText('/TR'); self.assertEqual(self.rows(), ['/trace'])
+
+    def test_enter_sends_when_the_menu_is_closed(self):
+        sent = []
+        self.prompt.submitted.connect(lambda: sent.append(self.prompt.toPlainText()))
+        self.prompt.setPlainText('/trace the moon'); self.assertFalse(self.menu.isVisible())
+        self.key(Qt.Key.Key_Return)
+        self.assertEqual(sent, ['/trace the moon'])
+        self.prompt.setPlainText('/trace'); self.assertTrue(self.menu.isVisible())
+        self.key(Qt.Key.Key_Return)
+        self.assertEqual(sent, ['/trace the moon'], 'Enter on an open menu inserts the command, it does not send')
+        self.assertEqual(self.prompt.toPlainText(), '/trace ')
+        self.assertFalse(self.menu.isVisible())
+
+
 if __name__ == '__main__': unittest.main()

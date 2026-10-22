@@ -8,6 +8,7 @@ import { Type } from 'typebox';
 import { readFileSync, readdirSync, existsSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { skillCommand, slashMenu } from './skill-commands.ts';
 
 // A checkout runs src/skills.mjs; the release bundle runs src/main.mjs. Both sit one folder below skills/.
 export const SKILLS_DIR = fileURLToPath(new URL('../skills/', import.meta.url));
@@ -32,7 +33,10 @@ export function listSkills(directory = SKILLS_DIR) {
 // The artist's "/skill:name rest" (Pi's form) or "/name rest" (the panel's slash menu) becomes the
 // skill's instructions followed by the rest, as Pi does. The studio expands before it adds its own
 // context, which would otherwise hide the command from Pi. "/word" that names no skill is left as typed.
+// The short commands (skill-commands.ts: /trace, /colour, /refine) expand as /skill:<their skill>.
 export function expandSkillCommand(text, directory = SKILLS_DIR) {
+  const short = skillCommand(text);
+  if (short) return expandSkillCommand('/skill:' + short.skill + (short.rest ? ' ' + short.rest : ''), directory);
   const match = /^\/(skill:)?([a-z0-9-]+)(?:\s+([\s\S]*))?$/.exec(text?.trim() ?? '');
   if (!match) return text;
   const skill = listSkills(directory).find(s => s.name === match[2]);
@@ -41,6 +45,12 @@ export function expandSkillCommand(text, directory = SKILLS_DIR) {
   const body = frontmatter(readFileSync(skill.filePath, 'utf8')).body.trim();
   const block = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
   return match[3]?.trim() ? block + '\n\n' + match[3].trim() : block;
+}
+
+/** The panel's "/" menu: the bundled skills, and the commands it lists (skill-commands.ts), so the panel names none itself. */
+export function skillsEvent(directory = SKILLS_DIR, { guides = true } = {}) {
+  const skills = listSkills(directory).map(({ name, description }) => ({ name, description }));
+  return { type: 'skills', skills, commands: slashMenu(skills, { guides }) };
 }
 
 // The real path must stay inside the skills folder: no "..", no absolute paths elsewhere, no symlinks out.

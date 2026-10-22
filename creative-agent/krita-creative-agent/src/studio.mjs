@@ -17,7 +17,7 @@ import { Value } from 'typebox/value';
 import { PaintingRuntime, signInMessage } from './runtime.mjs';
 import { stopAfterTurn } from './turn-control.mjs';
 import { paintingTools, resultContent, batchPrefix, nativeExecute } from './tools.mjs';
-import { expandSkillCommand, listSkills } from './skills.mjs';
+import { expandSkillCommand, skillsEvent } from './skills.mjs';
 import { containedFile, imageContent, imageInfo } from './files.mjs';
 import { CONSTRUCTION_REVIEW_INSTRUCTIONS, PAINTING_INSTRUCTIONS, TEACHER_INSTRUCTIONS, lessonFrom } from './prompt.mjs';
 import { ProjectStore } from './project-store.mjs';
@@ -29,6 +29,9 @@ import { IdleSleepGuard } from './idle-sleep-guard.mjs';
 import { connectLangfuse } from './langfuse-tracing.mjs';
 import { paceQuestions, paceState, paceAction, parsePace, stalled, levelledOff, foundMistakes, stepChecks, stepWork, handPaintedBy, callMethod, exhaustedMethods, MIN_ACTIONS_BEFORE_REVIEW, closeUpRegion } from './pacing.ts';
 import { decisionId } from './decision-records.mjs';
+import { skillCommand } from './skill-commands.ts';
+import { fillNudge, massGuidance, hasGoalReference, paintedTransfers, referenceColourPassMade, referenceFirstContext } from './reference-first.ts';
+import { transferRefusal, existingPainting } from './reference-tool.mjs';
 
 const object = fields => Type.Object(fields, { additionalProperties: false });
 const line = Type.String({ minLength: 1, maxLength: 2000 });
@@ -96,6 +99,8 @@ const MODEL_IMAGE_SIDE = 1568;        // long side; Claude and GPT downscale lar
 const mutates = op => ['paint_pass','adjust_layer','painting_toolbox','stamp','draw_guide',...CRAFT_OPERATIONS,...COMIC_OPERATIONS].includes(op);
 // Guided trace (guide-tool.ts): offered in Agent and Autopilot painting while the guides setting is on.
 const GUIDE_TOOLS = ['draw_guide','finish_guide'];
+// A guide-only move (/trace, skill-commands.ts): guides, looking and finish_move; nothing paints.
+const GUIDE_MOVE_TOOLS = [...GUIDE_TOOLS,'observe_canvas','sample_canvas_colors','view_reference','read','finish_move'];
 // The image Luna and the reviewer judge: the painting without the agent's guide lines. While guides show, the plugin's looks
 // carry the view without them (unguided_path, guide_craft.py); without guides it is the view itself.
 const judgedImage = observation => observation?.unguided_path ?? observation?.image_path;
@@ -133,7 +138,8 @@ export function freshGoal(mode = 'ask', aiImages = 0) {
 const TRACING_RETRY_MS=5*60*1000;
 // How much one Agent move may do: Quick is one painting call; Subject and Large finish a subject.
 export const MOVE_LIMITS = { quick:{calls:1, minutes:0}, subject:{calls:8, minutes:6}, large:{calls:20, minutes:15} };
-const BATCH_GUIDANCE = `For a sky, background or large mass, select it (a seed step or split_by_color) and lay it in with fill_region or a fill layer; paint_recipe strokes go on a layer clipped to it, as texture. Send several complementary actions (mass, light, texture, accents) in the same batch. Never paint single strokes or tiny tests. Give each batch a short summary naming what it paints. Look first only when needed (observe_canvas, list_brushes). Do not ask questions; make sound artistic choices within the request and recent_moves.`;
+const MASS_GUIDANCE = 'For a sky, background or large mass, select it (a seed step or split_by_color) and lay it in with fill_region or a fill layer; paint_recipe strokes go on a layer clipped to it, as texture.';
+const BATCH_GUIDANCE = `Send several complementary actions (mass, light, texture, accents) in the same batch. Never paint single strokes or tiny tests. Give each batch a short summary naming what it paints. Look first only when needed (observe_canvas, list_brushes). Do not ask questions; make sound artistic choices within the request and recent_moves.`;
 // With the Codex backend, image assets come out of the artist's ChatGPT plan, so Agent mode may use them
 // as freely as a coding agent uses its tools; OpenRouter assets cost money and stay occasional.
 const SKILL_HINT = 'Before a workflow such as a sky, a new subject, a repair or a whole scene, read the matching skill (paint-sky, place-subject, fix-region, paint-scene) with read and follow it.';
@@ -150,13 +156,22 @@ export function aiImageGuidance(allowance, used = 0, backend = 'codex') {
     'Use one only where hand painting would fall short; a sky, a colour field or a background is usually better painted by hand. ' +
     (backend === 'openrouter' ? 'Each one costs the artist money. ' : '') + SKILL_HINT;
 }
-export function agentMoveInstructions(size = 'subject') {
+// A plain-words guides request ("trace the outline first") went on through 21 fills and passes in one move.
+const GUIDES_ONLY = 'When the artist asks only for guides, an outline or a tracing, draw the guides and call finish_move, painting nothing.';
+// A guide-only move (/trace): the subject-move text ("work the subject through", masses, batches) contradicted it.
+const GUIDES_MOVE = 'COLLABORATIVE AGENT MODE. GUIDE-ONLY MOVE: the artist asked for guides. Draw the guides for what they named with draw_guide (placement and shape from the references), look at the result, then call finish_move with a one-line summary. Paint nothing: the painting tools are off in this move.';
+/** referenceFirst ({transfer}, reference-first.ts): flat fills over guide shapes made grey blocks in two live chats with a goal
+ * reference, so the masses are laid from the reference instead. guidesOnly: a /trace move. */
+export function agentMoveInstructions(size = 'subject', { referenceFirst = null, guidesOnly = false } = {}) {
+  if (guidesOnly) return GUIDES_MOVE;
+  const batch = (referenceFirst ? massGuidance(referenceFirst.transfer) : MASS_GUIDANCE) + ' ' + BATCH_GUIDANCE;
   if (size === 'quick') return `COLLABORATIVE AGENT MODE. Make exactly ONE substantial move toward the artist's request, then stop: the artist will keep it, undo it, or type a correction.
-A move is one paint_batch (2-10 actions) or one painting tool call, sized to complete a visible step. ${BATCH_GUIDANCE} After the painting call, stop.`;
+A move is one paint_batch (2-10 actions) or one painting tool call, sized to complete a visible step. ${batch} After the painting call, stop. ${GUIDES_ONLY}`;
   const { calls } = MOVE_LIMITS[size];
   return `COLLABORATIVE AGENT MODE. A move finishes ONE subject from the artist's message, such as "the Kremlin", "a building" or "the sky", then stops for the artist to keep it, undo it, or correct it.
 Work the subject through in several painting calls, as a painter would: the big shapes first, then form and light, then the details that make it read. After each call, look at the returned canvas and choose the next call; do not stop after a block-in. You have up to ${calls} painting calls, each a paint_batch of 2-10 actions where useful. If the message asks for several subjects, paint them all if they fit; otherwise finish the first well and say which comes next. Do not repaint other parts of the painting unless asked.
-${BATCH_GUIDANCE}
+${batch}
+${GUIDES_ONLY}
 When the subject reads as finished at this painting's level of detail, call finish_move with a one-line summary, e.g. "Kremlin: red walls, five towers with green spires, lit windows". If that completes everything the artist asked for, also pass request_done: true, so Keep ends the request rather than asking for another move. Then stop.`;
 }
 // Strokes in a painting call, for the move card (recipes give stroke_count, passes give strokes).
@@ -306,7 +321,7 @@ export class StudioRuntime extends PaintingRuntime {
     await this.capabilityService();this.emitModels();
     this.emit({type:'build',...BUILD_INFO});
     // The panel's slash menu: typing "/" lists these skills.
-    this.emit({type:'skills',skills:listSkills().map(({name,description})=>({name,description}))});
+    this.emitSkills();
     await this.canvas({action:'refresh'}).catch(()=>{});
   }
   // One Luna client for routing and visual checks. Reuses the OpenRouter API key
@@ -783,7 +798,7 @@ export class StudioRuntime extends PaintingRuntime {
     this.executionSettings=executionSettings({...this.executionSettings,...value});
     if (this.goal) this.goal.execution_settings=this.executionSettings;
     this.parallelPreparation=undefined;
-    this.applyExecutionSettings();
+    this.applyExecutionSettings(); this.emitSkills();
     await this.store.initialize();
     await writeFile(join(this.store.stateDirectory,'execution-settings.json'),JSON.stringify(this.executionSettings,null,2));
     await this.persist();
@@ -891,19 +906,50 @@ export class StudioRuntime extends PaintingRuntime {
     if (!move) return false;
     if (move.finished) return true;
     const limit = MOVE_LIMITS[this.executionSettings?.move_size ?? 'subject'] ?? MOVE_LIMITS.subject;
-    const reached = (move.calls ?? 0) >= limit.calls || (limit.minutes > 0 && Date.now() - Date.parse(move.started_at) >= limit.minutes * 60000);
+    const late = limit.minutes > 0 && Date.now() - Date.parse(move.started_at) >= limit.minutes * 60000;
+    if (move.kind === 'guides') return (move.guides ?? 0) >= limit.calls || late;     // counted in guide calls: nothing else is offered
+    const reached = (move.calls ?? 0) >= limit.calls || late;
     if (reached && limit.calls > 1) move.limited = true;
     return reached;
   }
+  /** Guides need our Krita (fork tools) and the Guides setting. */
+  guidesAvailable() { return this.forkTools === true && this.executionSettings?.guides !== false; }
+  /** The panel's "/" menu; /trace only while guides are available. */
+  emitSkills() { this.emit(skillsEvent(undefined, {guides:this.guidesAvailable()})); }
+  acceptBridgeHealth(bridgeStatus) { super.acceptBridgeHealth(bridgeStatus); this.emitSkills(); }
   toolOffered(name) {
+    if (this.currentMove?.kind === 'guides' && !GUIDE_MOVE_TOOLS.includes(name)) return false;
     if (name === 'letter') return !!this.goal?.comic;
-    if (GUIDE_TOOLS.includes(name)) return this.forkTools === true && this.executionSettings?.guides !== false;   // our Krita only, and the setting
+    if (GUIDE_TOOLS.includes(name)) return this.forkTools === true && this.executionSettings?.guides !== false;   // our Krita only, and the setting (guidesAvailable)
     if (name === 'krita_action' && !(this.kritaActions > 0)) return false;     // an unaudited Krita: it would always refuse
     if (FORK_TOOLS.includes(name) && this.forkTools !== true) return false;     // stock Krita, or a plugin too old to say: it would always refuse
     return this.executionSettings?.native_craft !== false || !CRAFT_TOOLS.includes(name);
   }
   buildTools() {
     const tools = paintingTools(this);
+    // Reference first: each transfer job's moves, so an Undo of its move makes the chat's colour pass not done (reference-first.ts).
+    // The job id is the reference tools' own (reference-tool.mjs: the call id's sha256, or continue's job_id), recorded before it paints.
+    for (const tool of tools.filter(t=>['paint_from_reference','continue_reference_painting'].includes(t.name))) {
+      const execute = tool.execute;
+      tool.execute = (id, args, ...rest) => {
+        const job = tool.name === 'paint_from_reference' ? createHash('sha256').update(id).digest('hex').slice(0,32) : args?.job_id;
+        if (this.mode==='agent' && this.currentMove && job) {
+          const jobs = this.goal.reference_jobs ??= {};
+          jobs[job] = [...new Set([...(jobs[job] ?? []), this.currentMove.number])];
+        }
+        return execute(id, args, ...rest);
+      };
+    }
+    // An Agent move counts its guides, so a guides-only move (/trace, or "trace the outline") is a move to keep or undo.
+    const drawGuide = tools.find(t=>t.name==='draw_guide');
+    if (drawGuide) {
+      const execute = drawGuide.execute;
+      drawGuide.execute = async (...args) => {
+        const result = await execute(...args);
+        if (this.mode==='agent' && this.currentMove) this.currentMove.guides = (this.currentMove.guides ?? 0) + 1;
+        return result;
+      };
+    }
     // Each painting call the painter makes (a batch counts once) is followed by one pacing decision.
     for (const tool of tools.filter(t=>PACED_TOOLS.includes(t.name))) {
       const execute = tool.execute;
@@ -920,7 +966,11 @@ export class StudioRuntime extends PaintingRuntime {
     add('finish_move', 'Agent mode: the subject of this move reads as finished. Give a one-line summary of what the move painted; the artist then keeps it, undoes it or corrects it. request_done: true when everything the artist asked for is now painted, so keeping this move ends the request instead of starting another move.',
       object({ summary: Type.String({ minLength: 1, maxLength: 160 }), request_done: Type.Optional(Type.Boolean()) }), async ({ summary, request_done }) => {
         if (this.mode !== 'agent' || !this.currentMove) throw new Error('finish_move ends an Agent move; there is no move in progress.');
-        if (!this.currentMove.actions) throw new Error('Paint the subject first; this move has no painting yet.');
+        if (!this.currentMove.actions && !this.currentMove.guides) throw new Error('Paint the subject first; this move has no painting yet.');
+        if (!this.currentMove.actions) {                            // a guides-only move: its card shows the guides
+          const seen = await this.callNative('observe').catch(() => null);
+          if (seen?.image_path) this.currentMove.canvas = seen.image_path;
+        }
         this.currentMove.finished = true; this.currentMove.title = summary;
         if (request_done) this.currentMove.request_done = true;
         return { message: 'Move finished. Stop now; the artist will keep it, undo it or correct it.' };
@@ -1282,6 +1332,8 @@ export class StudioRuntime extends PaintingRuntime {
       : 'Generate a painting plan from our discussion and references.';
     // "/skill:name ..." becomes the skill's instructions for the model; the transcript keeps what the artist typed.
     const modelText = expandSkillCommand(text);
+    if (this.mode === 'agent' && (skillCommand(text)?.move_kind ?? command.move_kind) === 'guides' && !this.guidesAvailable())
+      throw new Error('Tracing needs the Guides setting on (Settings › Guides) in Toska.');
     if (this.busy) {
       this.pendingText.push({ text, command }); this.stop(false);
       this.setActivity('stopping', 'Finishing this brush action, then reading your message…'); return;
@@ -1322,7 +1374,8 @@ export class StudioRuntime extends PaintingRuntime {
       const phase = this.mode === 'ask' ? 'ask' : 'plan';
       await this.refreshPlanIdentity();
       if (command.start_plan && this.goal.target_needs_review) throw new Error('The canvas changed since this plan was made. Review or regenerate the plan before painting.');
-      if (this.mode === 'agent') { await this.runMove(modelText, images, {...command, display_text:text}); return; }
+      const moveKind = skillCommand(text)?.move_kind ?? (command.move_kind === 'guides' ? 'guides' : undefined);
+      if (this.mode === 'agent') { await this.runMove(modelText, images, {...command, display_text:text, ...(moveKind ? {move_kind:moveKind} : {})}); return; }
       // Autopilot works toward the brief like a goal: an answer to a question the painter asked
       // mid-run goes straight back to painting, without a planning turn.
       const resumeRun = this.mode === 'autopilot' && answered?.asked_in === 'agent' && this.goal.brief && this.goal.approved_revision === this.goal.revision;
@@ -1800,21 +1853,58 @@ export class StudioRuntime extends PaintingRuntime {
       canvas = await this.ensureComicPage() ?? canvas;
       await this.checkLayerNeed(text, canvas);
       const images = contextImages?.length ? contextImages : [...(await this.painterReferenceImages()), (await imageContent(this.study.directory, canvas.image_path)).content];
-      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size) + '\nArtist:\n' + text, images);
+      // Reference first: the skills in full once a chat (and after an Undo of its colour pass), then a one-line reminder.
+      const guidesOnly = move.kind === 'guides';
+      const state = guidesOnly ? null : await this.referenceFirstState(canvas);
+      const full = !this.goal.reference_skills_shown;
+      const referenceFirst = state ? referenceFirstContext(text, name => expandSkillCommand('/skill:' + name), {transfer:state.transfer, full}) : '';
+      if (state && full) this.goal.reference_skills_shown = true;
+      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + '\nArtist:\n' + text, images);
     } finally {
       this.goal.used_ms += Date.now() - this.goalStartedAt; this.goalStartedAt = undefined;
-      move.status = move.actions ? 'ready' : 'empty'; move.finished_at = stamp();
+      const guidesOnly = !move.actions && move.guides > 0;
+      if (guidesOnly) move.guides_only = true;
+      if (guidesOnly) move.title = 'Drew guides' + (move.finished && move.title ? ': ' + move.title : ' (' + move.guides + ')');
+      move.status = move.actions || guidesOnly ? 'ready' : 'empty'; move.finished_at = stamp();
       if (move.limited && !move.finished) move.title = move.request.slice(0,120);     // a first batch's summary would describe only part of it
       this.currentMove = undefined;
-      if (this.goal.status === 'active') this.goal.status = move.actions ? 'move_ready' : 'paused';
+      if (this.goal.status === 'active') this.goal.status = move.status === 'ready' ? 'move_ready' : 'paused';
       await this.flushCheckpoint();
       this.emit({type:'move', move}); await this.persist(); this.publish();
       if (!this.runError && !this.cancelRequested)
-        this.setActivity('idle', !move.actions ? 'No painting this turn. Describe the move you want.'
+        this.setActivity('idle', guidesOnly ? `Move ${move.number} drew guides: keep them, undo them, or type a correction.`
+          : !move.actions ? 'No painting this turn. Describe the move you want.'
           : move.luna_stopped ? `Move ${move.number} stopped: ${move.luna_stopped} Keep it, undo it, or type a correction.`
           : (move.limited ? `Move ${move.number} reached its size limit: keep it, undo it, or say continue to finish it.`
           : `Move ${move.number} painted: keep it, undo it, or type a correction.`)+(move.review_line ? ' '+move.review_line+'.' : ''));
     }
+  }
+  /** Reference first (reference-first.ts): an Agent move, the setting on, a goal reference, and no reference colour pass in
+   * this chat yet (a transfer whose moves were all undone counts as not done). Null, or whether a whole transfer is available. */
+  async referenceFirstState(observation = this.decisionObservation ?? this.lastObservation) {
+    if (this.mode !== 'agent' || this.executionSettings?.reference_first === false || !hasGoalReference(this.study?.references)) return null;
+    const moves = new Map((this.goal?.moves ?? []).map(m => [m.number, m.status]));
+    const undone = new Set(Object.entries(this.goal?.reference_jobs ?? {}).filter(([, numbers]) => numbers.every(n => moves.get(n) === 'undone')).map(([job]) => job));
+    if (await referenceColourPassMade(this.study.directory, {revision:this.goal?.revision, undone})) return null;
+    return {transfer: await this.wholeTransferAvailable(observation)};
+  }
+  /** Would a whole-canvas transfer be accepted now? The question transferRefusal (reference-tool.mjs, unchanged) asks, with the
+   * painted transfers it counts (undone ones included: their job files stay) and the canvas as it is. */
+  async wholeTransferAvailable(observation) {
+    if (!observation?.width || !observation?.height) return true;
+    const painted = (await paintedTransfers(this.study.directory, {revision:this.goal?.revision})).length;
+    const whole = {source:[0,0,observation.width,observation.height], target:[0,0,observation.width,observation.height]};
+    return !transferRefusal(this.goal, whole, observation, painted, {established:existingPainting(this, observation), protectedAreas:observation.protected_areas?.length ?? 0});
+  }
+  /** The first fill_region of a move, while reference first holds, is not run: its result points to the reference tools. A repeat
+   * runs. In a batch it is checked before anything paints (tools.mjs), so the whole batch is refused and not counted. */
+  async fillNudge({batch = false} = {}) {
+    const move = this.currentMove;
+    if (!move || this.fillNudged === move) return;
+    const state = await this.referenceFirstState();
+    if (!state) return;
+    this.fillNudged = move;
+    throw new Error((batch ? 'Nothing was painted: ' : '') + fillNudge(state.transfer));
   }
   async moveAction({action, move: number}) {
     const move = (this.goal?.moves ?? []).find(m => m.number === number) ?? this.goal?.moves?.at(-1);
@@ -1823,9 +1913,15 @@ export class StudioRuntime extends PaintingRuntime {
     if (action === 'keep') {
       move.status = 'kept'; await this.persist();
       await this.mergeKept(['move-'+move.number], () => 'Move '+move.number+' · '+String(move.title ?? 'kept').slice(0,80));
+      // Kept guides are for the artist to see: a guides-only request leaves them showing, and nothing paints until asked.
+      if (move.guides_only && !move.request_done) {
+        this.goal.status = 'paused'; await this.persist(); this.publish();
+        this.setActivity('idle', 'Guides kept. Tell me what to paint next.');
+        return;
+      }
       // Keep always asking for "the next move" polished a finished Rothko for six more moves (a traced run, 32 minutes).
       if (move.request_done) {
-        await this.hideGuides();                                 // the request is done: its guides go
+        if (!move.guides_only) await this.hideGuides();          // the request is done: its guides go
         this.goal.status = 'complete'; await this.persist(); this.publish();               // the panel shows Finished
         this.setActivity('idle', `Kept. Move ${move.number} finished your request. Describe what to paint next.`);
         return;
@@ -1834,11 +1930,14 @@ export class StudioRuntime extends PaintingRuntime {
     }
     if (action === 'undo') {
       await this.reviewPass({action:'reject', pass_id:'stage:move-'+move.number});
-      move.status = 'undone'; await this.persist();
+      move.status = 'undone';
+      // An undone colour pass is not done: the reference-first skills go in again in full (reference-first.ts).
+      if (Object.values(this.goal.reference_jobs ?? {}).some(numbers => numbers.includes(move.number))) delete this.goal.reference_skills_shown;
+      await this.persist();
       // Say what the undone move did, so the retry avoids it, and keep what already works ("clearly different" made
       // a retry drop good cloud forms and fill flat over the moon, in a live test).
       const did = move.summary ?? move.title;
-      return this.prompt(`I undid move ${move.number}${did ? ` (it ${String(did).replace(/^[A-Z]/, c => c.toLowerCase())})` : ''}. Try a different way to do the same request: keep what already works in the painting, refine existing forms rather than repainting them, and do not repeat what that move did.`, {move_kind:'retry'});
+      return this.prompt(`I undid move ${move.number}${did ? ` (it ${String(did).replace(/^[A-Z]/, c => c.toLowerCase())})` : ''}. Try a different way to do the same request: keep what already works in the painting, refine existing forms rather than repainting them, and do not repeat what that move did.`, {move_kind:move.guides_only ? 'guides' : 'retry'});
     }
     throw new Error('Choose Keep or Undo, or type a correction.');
   }

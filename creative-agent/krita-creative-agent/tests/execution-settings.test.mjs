@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { executionSettings, thinkingLevel } from '../src/execution-settings.mjs';
 import { StudioRuntime } from '../src/studio.mjs';
 test('execution defaults preserve one painter and capability-aware reasoning',()=>{
- assert.deepEqual(executionSettings(),{concurrency:1,reasoning:'auto',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,guides:true,assets:'codex',ai_images:0,keep_screen_awake:false,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
+ assert.deepEqual(executionSettings(),{concurrency:1,reasoning:'auto',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,guides:true,reference_first:true,assets:'codex',ai_images:0,keep_screen_awake:false,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
  assert.equal(thinkingLevel(executionSettings(),{reasoning:true}),'low');
  assert.equal(thinkingLevel(executionSettings({reasoning:'high'}),{reasoning:true}),'high');
  assert.equal(thinkingLevel(executionSettings({reasoning:'high'}),{reasoning:false}),'off');
@@ -27,11 +27,25 @@ test('settings are declared once: validation, defaults and the panel schema come
   if (setting.panel==='generic') assert.ok(setting.label && setting.accessible && setting.options.length>=2,setting.key+' can be built by the panel');
  }
  const schema=panelSchema();
- assert.deepEqual(schema.map(f=>f.key),['concurrency','move_size','merge_kept','guides','assets','ai_images','keep_screen_awake','routing'],'reasoning is custom and native_craft hidden');
+ assert.deepEqual(schema.map(f=>f.key),['concurrency','move_size','merge_kept','guides','reference_first','assets','ai_images','keep_screen_awake','routing'],'reasoning is custom and native_craft hidden');
  assert.deepEqual(schema.find(f=>f.key==='merge_kept').options,[{value:true,label:'Merge kept passes'},{value:false,label:'Keep every pass'}]);
  assert.deepEqual(Object.keys(schema[0]).sort(),['accessible','control','key','label','note','options','tooltip']);
  assert.equal(schema.find(f=>f.key==='keep_screen_awake').control,'checkbox');assert.equal(schema[0].control,'combo');
  assert.equal(executionSettings().keep_screen_awake,false,'a screen that never sleeps is the artist\'s choice');
+});
+
+test('Start from the reference\'s colours is on by default, a combo, and says when it applies and when to turn it off', async () => {
+ const { SETTINGS, panelSchema } = await import('../src/settings-schema.mjs');
+ assert.equal(executionSettings().reference_first,true);
+ assert.equal(executionSettings({reference_first:false}).reference_first,false);
+ assert.throws(()=>executionSettings({reference_first:'yes'}),/reference_first must be true or false/);
+ const field=panelSchema().find(f=>f.key==='reference_first');
+ assert.equal(field.control,'combo','a default-on setting is a combo, as guides');
+ assert.equal(field.accessible,'Start from the reference\'s colours');
+ assert.deepEqual(field.options.map(o=>o.value),[true,false]);
+ const tooltip=SETTINGS.find(s=>s.key==='reference_first').tooltip;
+ assert.match(tooltip,/goal reference is attached/);
+ assert.match(tooltip,/stylised/); assert.match(tooltip,/yourself/);
 });
 
 test('Auto reasons at medium for the plan and the review and at low while painting; a chosen level holds in every phase',()=>{

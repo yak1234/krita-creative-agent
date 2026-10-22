@@ -78,6 +78,20 @@ test('the prompt names the guided-trace skill and stays under 13330 characters',
     assert.ok(skill.includes(term), term);
 });
 
+test('guided-trace pairs guides with a reference colour pass, never fills a guide flat and keeps the lights brightest, in under 700 words', () => {
+  const skill = readFileSync(new URL('../skills/guided-trace/SKILL.md', import.meta.url), 'utf8');
+  assert.match(skill, /reference first/i);
+  assert.match(skill, /paint_reference_surface/);
+  assert.match(skill, /never (flood-)?fill a guide shape flat/i);
+  assert.match(skill, /moon or (a )?lamp/i);
+  assert.match(skill, /lightest value/i);
+  assert.match(skill, /fresh canvas[^.]*paint_from_reference|paint_from_reference[^.]*fresh canvas/, 'a transfer is for a fresh canvas');
+  assert.match(skill, /established painting[^.]*paint_reference_surface/, 'surface and edges go over paint already there');
+  assert.match(skill, /no goal reference/i, 'a chat without a goal reference is covered');
+  assert.doesNotMatch(skill, /over the colour the reference pass laid/, 'step 3 does not assume a reference pass exists');
+  assert.ok(skill.split(/\s+/).length <= 700, skill.split(/\s+/).length + ' words');
+});
+
 test('every bundled skill has a trigger line in the prompt', () => {
   const skills = readdirSync(new URL('../skills/', import.meta.url), { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name);
   assert.ok(skills.includes('repaint-area') && skills.includes('repeat-motif'));

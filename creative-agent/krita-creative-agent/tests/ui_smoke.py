@@ -550,9 +550,9 @@ SCHEMA=json.loads(subprocess.run(['node','-e',"import('./src/settings-schema.mjs
   cwd=str(Path(__file__).resolve().parents[1]),capture_output=True,text=True,check=True,env={**os.environ,'NODE_OPTIONS':''}).stdout)
 panel.handle_event({'type':'settings_schema','fields':SCHEMA})
 W=panel.setting_widgets
-assert list(W)==['concurrency','move_size','merge_kept','guides','assets','ai_images','keep_screen_awake','routing'], 'one control per generic setting, in declaration order'
+assert list(W)==['concurrency','move_size','merge_kept','guides','reference_first','assets','ai_images','keep_screen_awake','routing'], 'one control per generic setting, in declaration order'
 W['concurrency'].setCurrentIndex(W['concurrency'].findData(2))
-assert commands[-1]=={'type':'set_execution_settings','settings':{'concurrency':2,'reasoning':'auto','routing':'off','native_craft':True,'move_size':'subject','merge_kept':True,'guides':True,'assets':'codex','ai_images':0,'keep_screen_awake':False}}
+assert commands[-1]=={'type':'set_execution_settings','settings':{'concurrency':2,'reasoning':'auto','routing':'off','native_craft':True,'move_size':'subject','merge_kept':True,'guides':True,'reference_first':True,'assets':'codex','ai_images':0,'keep_screen_awake':False}}
 from creative_ui_test.qt_compat import QCheckBox as _QCheckBox
 assert isinstance(W['keep_screen_awake'], _QCheckBox) and not W['keep_screen_awake'].isChecked(), 'the screen setting is a checkbox, off'
 assert W['keep_screen_awake'].accessibleName() == 'Keep the screen awake while painting'
@@ -566,7 +566,7 @@ panel.handle_event({'type':'keep_awake','active':True,'display':True}); assert n
 panel.handle_event({'type':'keep_awake','active':False,'display':False}); assert panel.awake_indicator.isHidden()
 panel.handle_event({'type':'execution_settings','settings':{**commands[-1]['settings'],'keep_screen_awake':False}})   # back to off for the checks below
 panel.reasoning_selector.setCurrentIndex(panel.reasoning_selector.findData('high'))
-assert commands[-1]['settings']=={'concurrency':2,'reasoning':'high','routing':'off','native_craft':True,'move_size':'subject','merge_kept':True,'guides':True,'assets':'codex','ai_images':0,'keep_screen_awake':False}
+assert commands[-1]['settings']=={'concurrency':2,'reasoning':'high','routing':'off','native_craft':True,'move_size':'subject','merge_kept':True,'guides':True,'reference_first':True,'assets':'codex','ai_images':0,'keep_screen_awake':False}
 W['move_size'].setCurrentIndex(W['move_size'].findData('large'))
 assert commands[-1]['settings']['move_size']=='large' and W['move_size'].accessibleName()=='Agent move size'
 panel.handle_event({'type':'execution_settings','settings':{'concurrency':1,'reasoning':'auto','routing':'off','native_craft':True,'move_size':'quick'}})
@@ -581,11 +581,21 @@ panel.handle_event({'type':'skills','skills':[{'name':'paint-sky','description':
 panel.prompt.setPlainText('/')
 assert panel.slash_menu.isVisible() and panel.slash_menu.count()==3, 'typing / lists the skills'
 panel.prompt.setPlainText('/pa')
-assert [panel.slash_menu.item(i).data(Qt.ItemDataRole.UserRole) for i in range(panel.slash_menu.count())]==['paint-sky'], 'the list filters as you type'
+assert [panel.slash_menu.item(i).data(Qt.ItemDataRole.UserRole) for i in range(panel.slash_menu.count())]==['/skill:paint-sky'], 'the list filters as you type (an older companion: skills only)'
 panel.choose_skill(panel.slash_menu.item(0))
-assert panel.prompt.toPlainText()=='/paint-sky ' and not panel.slash_menu.isVisible(), 'choosing a skill inserts /name'
+assert panel.prompt.toPlainText()=='/skill:paint-sky ' and not panel.slash_menu.isVisible(), 'choosing a skill inserts /skill:name'
 panel.prompt.setPlainText('/paint-sky a stormy dusk')
 assert not panel.slash_menu.isVisible(), 'the menu closes once the request is being typed'
+panel.prompt.setPlainText('')
+# The companion's commands (its skills event): the short ones with their descriptions, then /skill:<name>.
+panel.handle_event({'type':'skills','skills':[{'name':'guided-trace','description':'Sketch guides.'}],'commands':[
+  {'command':'/trace','aliases':[],'description':'Draw guides, painting nothing.'},{'command':'/colour','aliases':['/color'],'description':'Lay the reference colours.'},
+  {'command':'/skill:guided-trace','aliases':[],'description':'Sketch guides.'}]})
+panel.prompt.setPlainText('/')
+assert panel.slash_menu.isVisible() and [panel.slash_menu.item(i).data(Qt.ItemDataRole.UserRole) for i in range(panel.slash_menu.count())]==['/trace','/colour','/skill:guided-trace']
+assert panel.slash_menu.item(0).text()=='/trace — Draw guides, painting nothing.', 'each command shows its one-line description'
+panel.choose_skill(panel.slash_menu.item(1))
+assert panel.prompt.toPlainText()=='/colour ' and not panel.slash_menu.isVisible(), 'choosing a command inserts it'
 panel.prompt.setPlainText('')
 # A new setting is one schema entry: the panel shows it, sends it and restores it with no panel code.
 panel.handle_event({'type':'settings_schema','fields':SCHEMA+[{'key':'brush_style','label':'Brush style','accessible':'Brush style','tooltip':'','note':'A test setting.',

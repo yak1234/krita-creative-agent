@@ -200,7 +200,7 @@ class ChatInput(QPlainTextEdit):
         self.slash_menu = None
 
     def keyPressEvent(self, event):
-        # The slash menu (skills) takes Up/Down to move, Tab/Return to choose, Escape to close.
+        # The slash menu (commands) takes Up/Down to move, Tab/Return to choose, Escape to close.
         menu = self.slash_menu
         if menu is not None and menu.isVisible():
             if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up):
@@ -1457,9 +1457,9 @@ class CreativeAgentDocker(DockWidget):
         cancel_part = QPushButton('Cancel'); cancel_part.clicked.connect(self.close_part); part_bar.addWidget(cancel_part)
         compose.addWidget(self.part_bar); self.part_bar.hide()
         self.part_timer = QTimer(self); self.part_timer.setInterval(1000); self.part_timer.timeout.connect(self.check_part_session)
-        # Slash commands: typing "/" lists the agent's skills; choosing one inserts "/name ".
-        self.skills = []
-        self.slash_menu = QListWidget(); self.slash_menu.setAccessibleName('Skills'); self.slash_menu.setMaximumHeight(150)
+        # Slash commands: typing "/" lists the companion's commands; choosing one inserts it.
+        self.skills = []; self.slash_commands = []
+        self.slash_menu = QListWidget(); self.slash_menu.setAccessibleName('Commands'); self.slash_menu.setMaximumHeight(150)
         self.slash_menu.itemActivated.connect(self.choose_skill); self.slash_menu.itemClicked.connect(self.choose_skill)
         compose.addWidget(self.slash_menu); self.slash_menu.hide()
         self.prompt = ChatInput(); self.prompt.setAccessibleName('Message Creative Agent'); self.prompt.slash_menu = self.slash_menu
@@ -2080,14 +2080,20 @@ class CreativeAgentDocker(DockWidget):
             self.show_references()
 
     def update_slash_menu(self):
+        # The companion's commands (its skills event: /trace, /colour, ... then /skill:<name>); an older companion sends
+        # skills only, listed as /skill:<name>. Typing filters by a command or its aliases, or by a skill's bare name.
         text = self.prompt.toPlainText()
-        typed = text[1:] if text.startswith('/') and ' ' not in text and '\n' not in text else None
-        if typed is not None and typed.startswith('skill:'): typed = typed[6:]
-        matches = [s for s in self.skills if typed is not None and s['name'].startswith(typed)]
+        typed = text.lower() if text.startswith('/') and ' ' not in text and '\n' not in text else None   # any case, as the companion matches
+        def matches_typed(entry):
+            names = [entry['command']] + list(entry.get('aliases') or [])
+            if entry['command'].startswith('/skill:'): names.append('/' + entry['command'][7:])
+            return any(name.startswith(typed) for name in names)
+        matches = [c for c in self.slash_commands if typed is not None and matches_typed(c)]
         self.slash_menu.clear()
-        for skill in matches:
-            item = QListWidgetItem('/' + skill['name'] + ' — ' + skill['description'][:90] + ('…' if len(skill['description']) > 90 else ''))
-            item.setData(Qt.ItemDataRole.UserRole, skill['name']); item.setToolTip(skill['description'])
+        for entry in matches:
+            description = entry.get('description') or ''
+            item = QListWidgetItem(entry['command'] + ' — ' + description[:90] + ('…' if len(description) > 90 else ''))
+            item.setData(Qt.ItemDataRole.UserRole, entry['command']); item.setToolTip(description)
             self.slash_menu.addItem(item)
         if matches:
             self.slash_menu.setCurrentRow(0); self.slash_menu.show()
@@ -2095,7 +2101,7 @@ class CreativeAgentDocker(DockWidget):
             self.slash_menu.hide()
 
     def choose_skill(self, item):
-        self.prompt.setPlainText('/' + item.data(Qt.ItemDataRole.UserRole) + ' ')
+        self.prompt.setPlainText(item.data(Qt.ItemDataRole.UserRole) + ' ')
         cursor = self.prompt.textCursor(); cursor.movePosition(QTextCursor.MoveOperation.End); self.prompt.setTextCursor(cursor)
         self.slash_menu.hide(); self.prompt.setFocus()
 
@@ -2477,6 +2483,8 @@ class CreativeAgentDocker(DockWidget):
             self.show_decisions(event)
         elif kind == 'skills':
             self.skills = [s for s in event.get('skills', []) if s.get('name') and s.get('description')]
+            commands = [c for c in event.get('commands') or [] if isinstance(c, dict) and str(c.get('command', '')).startswith('/')]
+            self.slash_commands = commands or [{'command': '/skill:' + s['name'], 'description': s['description']} for s in self.skills]
             self.update_slash_menu()
         elif kind == 'settings_schema':
             self.build_generic_settings(event.get('fields', []))

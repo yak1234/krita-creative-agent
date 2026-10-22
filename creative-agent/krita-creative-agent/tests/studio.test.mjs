@@ -2,13 +2,13 @@ import { recordingTracing } from './fake-langfuse.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, rm, writeFile, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Value } from 'typebox/value';
-import { StudioRuntime, freshGoal, validateReview, normalizeBrief, repeatedReviewFailures, progressStalled, approvedReviewScope, restoredReviewStart } from '../src/studio.mjs';
+import { StudioRuntime, freshGoal, validateReview, normalizeBrief, repeatedReviewFailures, progressStalled, approvedReviewScope, restoredReviewStart, agentMoveInstructions } from '../src/studio.mjs';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64');
 const brief = { title:'Two characters', objective:'A quiet portrait of two people.', requirements:['Mara wears a red coat.','Ivo has green eyes.'],
@@ -976,7 +976,7 @@ test('parallel preparation runs two isolated model requests beside one painter t
     assert.equal(peak,2);assert.equal(proposals,2);assert.equal(h.runtime.goal.status,'complete');
     assert.equal(h.calls.filter(c=>c.operation==='paint_pass').length,1);
     const id=h.runtime.study.id;await h.runtime.end();await h.runtime.resume(id);
-    assert.deepEqual(h.runtime.executionSettings,{concurrency:2,reasoning:'high',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,guides:true,assets:'codex',ai_images:0,keep_screen_awake:false,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
+    assert.deepEqual(h.runtime.executionSettings,{concurrency:2,reasoning:'high',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,guides:true,reference_first:true,assets:'codex',ai_images:0,keep_screen_awake:false,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
     assert.equal(h.runtime.session.thinkingLevel,'off');
     assert.equal(h.runtime.goal.status,'paused');
   } finally {await h.close();}
@@ -2593,5 +2593,325 @@ test('after painting, a different active canvas is refused with what to do, and 
   await assert.rejects(h.runtime.prompt('Paint on this one now.'),/Switch back to it to continue, or start a new chat/);
   assert.equal(h.runtime.study.target_document_id,'doc');
   assert.equal(h.calls.filter(c=>c.operation==='begin').length,1);
+ } finally {await h.close();}
+});
+
+// Reference first (reference-first.ts): a goal reference's chat starts from the reference's colours. A live chat with
+// final_goal.png and "trace the outline" drew guides, then flat-filled them grey and never used the reference tools.
+async function referenceFirstMove({settings={}, references=[{purpose:'general'}], colourPass=null, text='Trace the outline.', respond}={}) {
+ const painted=[];
+ const h=await harness((req,n)=>{
+  if(!req.tools.some(t=>t.function.name==='paint_batch')) return {content:'Hello.'};
+  painted.push(req);
+  return respond?.(req,painted.length) ?? {content:'Done.'};
+ });
+ const path=join(h.output,'final_goal.png'); await writeFile(path,png);
+ await h.start('ask','Hello',references.length ? {references:references.map(r=>({path,...r}))} : {});
+ await h.runtime.setExecutionSettings({move_size:'quick',...settings}); await h.runtime.setMode('agent');
+ if(colourPass){
+  const folder=join(h.runtime.study.directory,'reference-paintings'); await mkdir(folder,{recursive:true});
+  await writeFile(join(folder,'a'.repeat(32)+'.json'),JSON.stringify({id:'a'.repeat(32),recipe:{name:'Goal',...(colourPass==='transfer'?{}:{mode:colourPass})},completed:400,total:400,status:'complete',scope:JSON.stringify([h.runtime.goal.revision])}));
+ }
+ await h.runtime.prompt(text);
+ const moveText=painted.length ? JSON.stringify(painted[0].messages.at(-1)) : '';
+ return {h,painted,moveText};
+}
+const skillCount=(text,name)=>text.split('<skill name=\\"'+name+'\\"').length-1;
+
+test('reference first: with a goal reference and no colour pass yet, the move\'s context carries the reference-transfer and guided-trace skills once each',{timeout:30000},async()=>{
+ const {h,moveText}=await referenceFirstMove();
+ try {
+  assert.equal(skillCount(moveText,'reference-transfer'),1);
+  assert.equal(skillCount(moveText,'guided-trace'),1);
+  assert.match(moveText,/Trace the outline\./,'the artist\'s request is still there');
+  const system=JSON.stringify(h.requests.at(-1).messages[0]);
+  assert.equal(skillCount(system,'reference-transfer'),0,'the skills are per-move context, not system prompt');
+ } finally {await h.close();}
+});
+
+test('reference first: no skills are injected with the setting off, with no reference, with only a palette reference, or after a reference colour pass',{timeout:60000},async()=>{
+ for (const [label,options] of [['setting off',{settings:{reference_first:false}}],['no reference',{references:[]}],
+   ['a palette reference only',{references:[{purpose:'palette'}]}],
+   ['after a transfer',{colourPass:'transfer'}]]) {
+  const {h,moveText}=await referenceFirstMove(options);
+  try {
+   assert.ok(moveText,label+': the move ran');
+   assert.equal(skillCount(moveText,'reference-transfer')+skillCount(moveText,'guided-trace'),0,label);
+  } finally {await h.close();}
+ }
+ for (const mode of ['edges','surface']) {
+  const {h,moveText}=await referenceFirstMove({colourPass:mode});
+  try { assert.equal(skillCount(moveText,'reference-transfer'),1,'a '+mode+' pass lays no reference colours: still injected'); } finally {await h.close();}
+ }
+});
+
+const flatFill={name:'Moon',area:[{shape:'ellipse',bounds:[100,100,200,200]}],color:'#808080'};
+const twoFills=(req,n)=>n<=2 ? call('fill_region',flatFill) : {content:'Done.'};
+const toolResults=painted=>painted.flatMap(r=>r.messages.filter(m=>m.role==='tool').map(m=>JSON.stringify(m.content)));
+
+test('reference first: a move\'s first fill_region is nudged toward the reference tools without running; a repeated fill runs',{timeout:30000},async()=>{
+ const {h,painted}=await referenceFirstMove({respond:twoFills});
+ try {
+  assert.ok(painted.length>=2);
+  const nudge=toolResults(painted.slice(1,2)).join();
+  assert.match(nudge,/This painting has a reference\. Lay its colours first with paint_from_reference/);
+  assert.doesNotMatch(nudge,/paint_reference_surface/,'a surface pass smudges paint already there: not on a fresh canvas');
+  assert.equal(h.calls.filter(c=>c.operation==='fill_region').length,1,'the nudged fill made no native call; the repeat ran');
+  assert.equal(h.runtime.goal.moves[0].actions,1);
+ } finally {await h.close();}
+});
+
+test('reference first: no nudge with the setting off, with no reference, or after a reference colour pass',{timeout:60000},async()=>{
+ for (const [label,options] of [['setting off',{settings:{reference_first:false}}],['no reference',{references:[]}],['after a transfer',{colourPass:'transfer'}]]) {
+  const {h,painted}=await referenceFirstMove({...options,respond:twoFills});
+  try {
+   assert.ok(!toolResults(painted).join().includes('This painting has a reference'),label);
+   assert.equal(h.calls.filter(c=>c.operation==='fill_region').length,1,label+': the first fill ran (a quick move ends there)');
+  } finally {await h.close();}
+ }
+});
+
+test('reference first: a flat fill inside a paint_batch is nudged too',{timeout:30000},async()=>{
+ const {h,painted}=await referenceFirstMove({respond:(req,n)=>n===1 ? call('paint_batch',{summary:'Flats',actions:[{tool:'fill_region',arguments:flatFill}]}) : {content:'Done.'}});
+ try {
+  assert.match(toolResults(painted).join(),/This painting has a reference/);
+  assert.equal(h.calls.filter(c=>c.operation==='fill_region').length,0);
+ } finally {await h.close();}
+});
+
+test('reference first: the move\'s batch guidance lays masses from the reference instead of flat fills; without a reference it is unchanged',{timeout:60000},async()=>{
+ for (const size of ['quick','subject']) {
+  const plain=agentMoveInstructions(size), reference=agentMoveInstructions(size,{referenceFirst:{transfer:true}}),
+   established=agentMoveInstructions(size,{referenceFirst:{transfer:false}});
+  assert.match(plain,/lay it in with fill_region or a fill layer/,size);
+  assert.doesNotMatch(reference,/lay it in with fill_region or a fill layer/,size);
+  assert.match(reference,/paint_from_reference/); assert.doesNotMatch(reference,/paint_reference_surface/);
+  assert.match(reference,/fill_region only for flat design areas/);
+  assert.doesNotMatch(established,/paint_from_reference/,'no second whole transfer where one would be refused');
+  assert.match(established,/paint_reference_surface and paint_reference_edges over the paint already there/);
+  assert.match(established,/fill_region only for flat design areas/);
+ }
+ const withRef=await referenceFirstMove(), without=await referenceFirstMove({references:[]});
+ try {
+  assert.match(withRef.moveText,/fill_region only for flat design areas/);
+  assert.doesNotMatch(withRef.moveText,/lay it in with fill_region or a fill layer/);
+  assert.match(without.moveText,/lay it in with fill_region or a fill layer/);
+  assert.doesNotMatch(without.moveText,/fill_region only for flat design areas/);
+ } finally {await withRef.h.close(); await without.h.close();}
+});
+
+test('the move instructions say a guides-only request draws guides, paints nothing and finishes the move',()=>{
+ for (const size of ['quick','subject','large'])
+  assert.match(agentMoveInstructions(size),/asks only for guides, an outline or a tracing, draw the guides and call finish_move, painting nothing/,size);
+});
+
+// /trace starts a guide-only move: "trace the outline first" drew 7 guides, then 21 fills and passes in the same move.
+async function traceMove(respond, {size='subject', text='/trace the moon and the towers'}={}) {
+ let h; const offered=[], reqs=[];
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(!names.includes('finish_guide')) return {content:'Hello.'};
+  offered.push(names); reqs.push(req);
+  return respond(offered.length);
+ },async(operation,params,_study,id)=>{
+  if(operation==='protection_list') return {status:'ok',areas:[]};
+  if(operation==='merge_passes') return {status:'ok',merged_layers:0,remaining_runs:0,passes:[]};
+  if(operation==='hide_guides') return {status:'ok',hidden:1};
+  if(!['observe','draw_guide','finish_guide'].includes(operation)) return undefined;
+  return guideViews(h,operation,params,id,{revision:'r-'+id,...(operation==='draw_guide' ? {layer_id:'guide-layer',passes:[{id,kind:'guide',title:'Moon',layer_id:'guide-layer'}]} : {})});
+ });
+ const path=join(h.output,'final_goal.png'); await writeFile(path,png);
+ await h.start('ask','Hello',{references:[{path}]}); h.runtime.forkTools=true;
+ await h.runtime.setExecutionSettings({move_size:size}); await h.runtime.setMode('agent');
+ if (text) await h.runtime.prompt(text);
+ return {h,offered,reqs};
+}
+const guide=n=>call('draw_guide',{element:'Moon '+n,lines:[{points:[[100,100],[200,100],[200,200]]}]});
+
+test('/trace starts a guide-only move: only guide and look tools are offered, and finish_move ends it with a guides card',{timeout:30000},async()=>{
+ const {h,offered}=await traceMove(n=>n===1 ? guide(1) : n===2 ? call('finish_move',{summary:'Moon and towers'}) : {content:'Done.'});
+ try {
+  assert.equal(offered.length,2,'the move ended at finish_move');
+  for (const names of offered) {
+   for (const name of ['draw_guide','finish_guide','observe_canvas','finish_move']) assert.ok(names.includes(name),name);
+   for (const name of ['paint_batch','paint_pass','fill_region','paint_recipe','paint_contours','paint_from_reference','paint_reference_surface','painting_toolbox','create_layer'])
+    assert.ok(!names.includes(name),name+' is not offered in a guide-only move');
+  }
+  const [move]=h.runtime.goal.moves;
+  assert.deepEqual([move.kind,move.status,move.guides],['guides','ready',1]);
+  assert.match(move.title,/^Drew guides: Moon and towers/);
+  assert.match(h.events.filter(e=>e.type==='status').at(-1)?.message ?? '',/drew guides/);
+  assert.equal(h.runtime.goal.messages.filter(m=>m.role==='user').at(-1).text,'/trace the moon and the towers','the transcript shows what the artist typed');
+  assert.ok(!h.calls.some(c=>['paint_pass','fill_region'].includes(c.operation)));
+ } finally {await h.close();}
+});
+
+test('a guide-only move ends after its guide calls even without finish_move',{timeout:60000},async()=>{
+ const {h,offered}=await traceMove(n=>guide(n));
+ try {
+  assert.equal(h.calls.filter(c=>c.operation==='draw_guide').length,8,'a subject move\'s 8 calls, counted in guides');
+  assert.equal(offered.length,8);
+  assert.equal(h.runtime.goal.moves[0].status,'ready');
+  assert.match(h.runtime.goal.moves[0].title,/^Drew guides/);
+ } finally {await h.close();}
+});
+
+test('the next move after a guide-only move offers the painting tools again',{timeout:30000},async()=>{
+ const {h}=await traceMove(n=>n===1 ? guide(1) : call('finish_move',{summary:'Moon'}));
+ try {
+  await h.runtime.moveAction({action:'keep',move:1}).catch(()=>{});
+  assert.ok(h.runtime.toolOffered('paint_batch'),'outside a guide-only move the painting tools are back');
+ } finally {await h.close();}
+});
+
+// Review fixes (agent/reference-defaults).
+test('reference first: a flat fill anywhere in a batch refuses the whole batch before anything paints, and it is not counted',{timeout:30000},async()=>{
+ const batch=call('paint_batch',{summary:'Sky then flats',actions:[{tool:'paint_pass',arguments:pass},{tool:'fill_region',arguments:flatFill}]});
+ const {h,painted}=await referenceFirstMove({respond:(req,n)=>n<=2 ? batch : {content:'Done.'}});
+ try {
+  const first=toolResults(painted.slice(1,2)).join();
+  assert.match(first,/Nothing was painted: This painting has a reference/);
+  assert.equal(painted.length,2,'the Quick move went on to the repeated batch: the refused one was not its one call');
+  assert.equal(h.calls.filter(c=>c.operation==='paint_pass').length,1,'only the repeated batch painted');
+  assert.equal(h.calls.filter(c=>c.operation==='fill_region').length,1);
+  assert.equal(h.runtime.goal.moves[0].calls,1);
+ } finally {await h.close();}
+});
+
+test('reference first: the nudge shows calmly in the panel, not as a failed action',{timeout:30000},async()=>{
+ const {h}=await referenceFirstMove({respond:twoFills});
+ try {
+  assert.ok(h.events.some(e=>e.type==='action' && e.message==='Reference first: suggested laying the reference colours before a flat fill.' && !e.error));
+  assert.equal(h.events.filter(e=>e.type==='action' && e.message==='Painting action needs attention').length,0);
+ } finally {await h.close();}
+});
+
+test('a /trace move with a reference gets only guide-only instructions: no reference-transfer, transfer or subject-move text',{timeout:30000},async()=>{
+ const {h,reqs}=await traceMove(n=>n===1 ? guide(1) : call('finish_move',{summary:'Moon'}));
+ try {
+  const text=JSON.stringify(reqs[0].messages.at(-1)).replace(/<skill name=\\"guided-trace\\"[\s\S]*?<\/skill>/,'');
+  assert.equal(skillCount(JSON.stringify(reqs[0].messages.at(-1)),'guided-trace'),1,'the /trace skill itself');
+  assert.equal(skillCount(text,'reference-transfer'),0);
+  assert.doesNotMatch(text,/paint_from_reference|REFERENCE FIRST|work the subject through|Work the subject through/);
+  assert.match(text,/GUIDE-ONLY MOVE/); assert.match(text,/finish_move/);
+ } finally {await h.close();}
+});
+
+test('/trace where guides are unavailable tells the artist and leaves /trace out of the menu',{timeout:60000},async()=>{
+ for (const [label,setup] of [['stock Krita',h=>{h.runtime.forkTools=false;}],['Guides off',async h=>{await h.runtime.setExecutionSettings({guides:false});}]]) {
+  const {h}=await traceMove(()=>({content:'Done.'}),{text:null});
+  try {
+   await setup(h);
+   await assert.rejects(h.runtime.prompt('/trace the moon'),/Tracing needs the Guides setting on \(Settings › Guides\) in Toska\./,label);
+   assert.equal(h.runtime.goal.moves?.length ?? 0,0,label+': no move started');
+   h.runtime.emitSkills();
+   const menu=h.events.filter(e=>e.type==='skills').at(-1);
+   assert.ok(!menu.commands.some(c=>c.command==='/trace'),label);
+   assert.ok(menu.commands.some(c=>c.command==='/colour'),label);
+  } finally {await h.close();}
+ }
+ const {h}=await traceMove(()=>({content:'Done.'}),{text:null});
+ try { h.runtime.emitSkills(); assert.ok(h.events.filter(e=>e.type==='skills').at(-1).commands.some(c=>c.command==='/trace'),'available: listed'); }
+ finally {await h.close();}
+});
+
+test('Keep of a guides move waits for the artist; with request_done its guides stay showing; Undo retries a guides move',{timeout:60000},async()=>{
+ {
+  const {h,offered}=await traceMove(n=>n===1 ? guide(1) : call('finish_move',{summary:'Moon'}));
+  try {
+   await h.runtime.moveAction({action:'keep',move:1});
+   assert.equal(h.runtime.goal.moves.length,1,'no painting move starts by itself');
+   assert.equal(offered.length,2);
+   assert.equal(h.events.filter(e=>e.type==='status').at(-1).message,'Guides kept. Tell me what to paint next.');
+  } finally {await h.close();}
+ }
+ {
+  const {h}=await traceMove(n=>n===1 ? guide(1) : call('finish_move',{summary:'Moon',request_done:true}));
+  try {
+   await h.runtime.moveAction({action:'keep',move:1});
+   assert.equal(h.calls.filter(c=>c.operation==='hide_guides').length,0,'the guides just kept stay showing');
+   assert.equal(h.runtime.goal.status,'complete');
+  } finally {await h.close();}
+ }
+ {
+  const {h,offered}=await traceMove(n=>n%2 ? guide(n) : call('finish_move',{summary:'Moon'}));
+  try {
+   await h.runtime.moveAction({action:'undo',move:1});
+   assert.equal(h.runtime.goal.moves[1].kind,'guides','the retry is a guides move');
+   assert.ok(!offered.at(-1).includes('paint_batch'));
+  } finally {await h.close();}
+ }
+});
+
+test('a guide-only move honours the move\'s minutes and its card gets an image at finish_move',{timeout:30000},async()=>{
+ const {h}=await traceMove(n=>n===1 ? guide(1) : call('finish_move',{summary:'Moon'}));
+ try {
+  const [move]=h.runtime.goal.moves;
+  assert.match(move.canvas ?? '',/guides\.png$/,'the card shows the guides');
+  const finish=h.calls.findLastIndex(c=>c.operation==='observe'), drew=h.calls.findLastIndex(c=>c.operation==='draw_guide');
+  assert.ok(finish>drew,'observed once at finish_move');
+  h.runtime.currentMove={kind:'guides',guides:1,started_at:new Date(Date.now()-7*60000).toISOString()};
+  assert.equal(h.runtime.moveDone(),true,'past the Subject move\'s 6 minutes');
+  h.runtime.currentMove={kind:'guides',guides:1,started_at:new Date().toISOString()};
+  assert.equal(h.runtime.moveDone(),false);
+  h.runtime.currentMove=undefined;
+ } finally {await h.close();}
+});
+
+// A real transfer in an Agent move: the 24 px reference fixture onto a small focal target (no ground, no refusal).
+const transferArgs=h=>({name:'Goal colours',reference_id:h.runtime.study.references[0].id,preset:'Test brush',source:[0,0,24,24],target:[10,10,48,48],steps:[6,2,1]});
+async function transferMoves(respond) {
+ let h, revision='revision-0', painted=0; const moves=[];
+ h=await harness(async req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(!names.includes('paint_batch')) return {content:'Hello.'};
+  moves.push(req);
+  return respond(h,moves.length);
+ },async(op,params)=>{
+  if(op==='decode_reference')return {width:24,height:24,sha256:params.sha256,rgba_base64:Buffer.alloc(24*24*4,255).toString('base64')};
+  if(op==='paint_pass'){painted++;revision='paint-'+painted;return {status:'ok',width:768,height:1024,revision,layer_id:params.continue_layer_id??'layer-'+painted,image_path:join(h.runtime.study.directory,'view.png'),layers:[],passes:[]};}
+  if(op==='observe')return {status:'ok',width:768,height:1024,revision,image_path:join(h.runtime.study.directory,'view.png'),layers:[],painted_share:0};
+  if(op==='review_pass')return {status:'ok',width:768,height:1024,revision,image_path:join(h.runtime.study.directory,'view.png'),layers:[],passes:[]};
+ });
+ const path=join(h.output,'final_goal.png'); await writeFile(path,png);
+ await h.start('ask','Hello',{references:[{path}]});
+ await h.runtime.setExecutionSettings({move_size:'quick'}); await h.runtime.setMode('agent');
+ return {h,moves};
+}
+const moveText=req=>JSON.stringify(req.messages.at(-1));
+
+test('reference first: the skills go in once a chat, later moves get a one-line reminder, and an Undo of the colour pass brings them back in full',{timeout:60000},async()=>{
+ const {h,moves}=await transferMoves((h,n)=>n===1 ? call('paint_pass',pass) : n===3 ? call('paint_from_reference',transferArgs(h)) : n===2 || n===4 ? {content:'Done.'} : {content:'Done.'});
+ try {
+  await h.runtime.prompt('Paint the sky.');                     // move 1: no colour pass yet, skills in full
+  assert.equal(skillCount(moveText(moves[0]),'reference-transfer'),1);
+  await h.runtime.prompt('Now the moon.');                      // move 2: a reminder line, not the skills again
+  const second=moveText(moves[1]);
+  assert.equal(skillCount(second,'reference-transfer'),0); assert.match(second,/REFERENCE FIRST/); assert.match(second,/skills given earlier/);
+  await h.runtime.prompt('Lay the reference colours.');         // move 3: the transfer
+  await h.runtime.prompt('Refine the towers.');                 // move 4: a colour pass exists, nothing added
+  assert.doesNotMatch(moveText(moves[3]),/REFERENCE FIRST/);
+  await h.runtime.moveAction({action:'undo',move:3});           // the artist undoes the colour pass: move 5 retries
+  const after=moveText(moves.at(-1));
+  assert.equal(skillCount(after,'reference-transfer'),1,'the situation changed: the skills again in full');
+  assert.match(after,/REFERENCE FIRST/);
+  assert.doesNotMatch(after.split('Follow these skills')[0],/paint_from_reference/,'a second whole transfer would be refused: the lead points to surface and edges');
+  assert.match(after,/paint_reference_surface and paint_reference_edges over the paint already there/);
+ } finally {await h.close();}
+});
+
+test('reference first: whether a whole transfer is available asks transferRefusal\'s own question',{timeout:30000},async()=>{
+ const {transferRefusal,existingPainting}=await import('../src/reference-tool.mjs');
+ const {h}=await transferMoves(()=>({content:'Done.'}));
+ try {
+  const fresh={width:768,height:1024,painted_share:0,layers:[],protected_areas:[]};
+  const whole={source:[0,0,768,1024],target:[0,0,768,1024]};
+  assert.equal(await h.runtime.wholeTransferAvailable(fresh),true);
+  assert.equal(transferRefusal(h.runtime.goal,whole,fresh,0,{established:existingPainting(h.runtime,fresh)}),null);
+  const folder=join(h.runtime.study.directory,'reference-paintings'); await mkdir(folder,{recursive:true});
+  await writeFile(join(folder,'b'.repeat(32)+'.json'),JSON.stringify({id:'b'.repeat(32),recipe:{name:'Goal'},completed:50,scope:JSON.stringify([h.runtime.goal.revision])}));
+  assert.equal(await h.runtime.wholeTransferAvailable(fresh),false,'a transfer already ran (undone or not): a second whole one is refused');
+  assert.ok(transferRefusal(h.runtime.goal,whole,fresh,1,{established:false}));
+  assert.equal(await h.runtime.wholeTransferAvailable({...fresh,protected_areas:[{id:'a'}]}),true,'protected areas lift the size caps, as in transferRefusal');
  } finally {await h.close();}
 });

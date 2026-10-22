@@ -10,6 +10,23 @@ It is never the painting. It is never merged, Luna and the review never see it, 
 finished. The guide gives **placement and shape**; the reference tools give **colour and light**; your own strokes
 give **edges, detail and finish**.
 
+## Reference first, then guides, then your strokes
+
+With a goal reference, guides pair with a reference colour pass:
+
+1. **Reference first:** on a fresh canvas, lay the reference's colours and light with `paint_from_reference` (the
+   whole picture). On an established painting, bring them in with `paint_reference_surface` and
+   `paint_reference_edges` over the paint already there.
+2. **Guides** for placement and shape, over that colour.
+3. **Your own strokes** for edges, detail and finish, following the guides.
+
+With no goal reference (an element reference only, or none), guides give placement and your own strokes give the
+colour, from the element reference or the artist's description.
+
+Never fill a guide shape flat (a grey block per outline): a guide marks where a form goes, not its colour. Keep the
+light sources bright: a moon or a lamp is the lightest value in the picture, and the brightest element stays the
+brightest; never paint it dark or mid-grey.
+
 ## When to guide
 
 - Before painting an element whose placement or shape comes from a reference: a building, a figure, a vehicle, a
@@ -43,8 +60,7 @@ A few dozen lines at most, never outlines of every detail:
    default the whole reference) and the points are that reference's pixels, mapped onto the target exactly as the
    reference tools map them (same aspect ratio: crop, never stretch). Draw again for the same element to add lines.
 3. Look at the returned image: the guide shows over the painting. Paint the element **under** it in your own strokes
-   (`paint_contours`, `paint_pass`, fills in a selection); `paint_from_reference` and its finishing tools may lay the
-   colour and light. The guide is for placement: follow it, do not trace its lines as the final linework.
+   (`paint_contours`, `paint_pass`), over whatever colour is already there. The guide is for placement: follow it, do not trace its lines as the final linework.
 4. When the element is painted, `finish_guide` with the same `element`. Its guide is hidden; the artist can show it
    again. Then move on to the next element.
 

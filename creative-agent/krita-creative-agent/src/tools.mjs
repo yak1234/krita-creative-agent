@@ -316,9 +316,15 @@ export function paintingTools(runtime) {
   tools.push(recipeTool(runtime, tools.find(t=>t.name==='paint_pass').execute));
   tools.push(contourTool(runtime, tools.find(t=>t.name==='painting_toolbox').execute));
   tools.push(...referenceTools(runtime,tools.find(t=>t.name==='paint_pass').execute,tools.find(t=>t.name==='fill_region').execute));
+  // Reference first (studio.mjs fillNudge): the painter's own fill_region, alone or in a batch, may be nudged toward the
+  // reference tools once a move. The reference tools' toned ground (above) keeps the plain fill.
+  const fill = tools.find(t=>t.name==='fill_region'), fillRegion = fill.execute;
+  fill.execute = async (...args) => { await runtime.fillNudge?.(); return fillRegion(...args); };
   // Guided trace: construction lines on the element's own guide layer (guide-tool.ts), mapped from reference pixels as above.
   tools.push(...guideTools(runtime, { execute: operation => nativeExecute(runtime, operation), mapPoint: mapReferencePoint }));
-  tools.push(batchTool(tools, name => runtime.toolOffered?.(name) ?? true));
+  // A flat fill anywhere in a batch is nudged before anything paints (studio.mjs fillNudge), so the batch is refused whole.
+  tools.push(batchTool(tools, name => runtime.toolOffered?.(name) ?? true,
+    async actions => { if (actions.some(a => a.tool === 'fill_region')) await runtime.fillNudge?.({batch:true}); }));
   tools.push(...assetTools(runtime), skillReadTool());
   return tools;
 }
@@ -342,7 +348,8 @@ export function batchReferences(args, ran, index) {
   return resolved;
 }
 
-export function batchTool(tools, offered = /** @type {(name: string) => boolean} */ (() => true)) {
+/** beforePaint: a check of the whole batch after validation, before anything paints (it throws to refuse the batch). */
+export function batchTool(tools, offered = /** @type {(name: string) => boolean} */ (() => true), beforePaint = /** @type {(actions: any[]) => Promise<void>} */ (async () => {})) {
   const byName = Object.fromEntries(tools.filter(t => BATCH_TOOLS.includes(t.name)).map(t => [t.name, t]));
   // The original executes, captured now: wrappers added later (pacing) apply once per batch, not per action.
   const run = Object.fromEntries(Object.entries(byName).map(([name, t]) => [name, t.execute]));
@@ -367,6 +374,7 @@ export function batchTool(tools, offered = /** @type {(name: string) => boolean}
           throw new Error(`Action ${index + 1} (${tool}) does not match its schema${issue ? ` at ${issue.instancePath || '/'}: ${issue.message}` : ''}. Nothing was painted.`);
         }
       });
+      await beforePaint(actions);
       const prefix = batchPrefix(id);
       const ran = [];
       let last;

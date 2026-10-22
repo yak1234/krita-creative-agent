@@ -22,6 +22,11 @@ export const SETTINGS = Object.freeze([
   { key: 'guides', type: 'boolean', default: true, panel: 'generic', label: 'Guides', accessible: 'Draw guides from references',
     error: 'guides must be true or false.', options: [[true, 'Draw guides from references'], [false, 'No guides']],
     tooltip: 'Before painting an element from a reference, sketch construction lines on a guide layer. It shows until the element is finished, then hides.' },
+  // Reference first (reference-first.ts): with a goal reference, an Agent move gets the reference-transfer and guided-trace
+  // skills and a nudge before a flat fill, until a reference colour pass exists. A combo, as guides (default on).
+  { key: 'reference_first', type: 'boolean', default: true, panel: 'generic', label: 'Reference colours', accessible: 'Start from the reference\'s colours',
+    error: 'reference_first must be true or false.', options: [[true, 'Start from the reference\'s colours'], [false, 'Choose colours freely']],
+    tooltip: 'Applies when a goal reference is attached: Agent mode lays the reference\'s colours first, then refines with guides and its own strokes. Turn it off for stylised work, or for a base you paint yourself.' },
   { key: 'assets', type: 'choice', default: 'codex', panel: 'generic', label: 'Image assets', accessible: 'Image assets',
     error: 'Choose image assets from codex or openrouter.', options: [['codex', 'ChatGPT (Codex sign-in)'], ['openrouter', 'OpenRouter image models']],
     tooltip: 'Where the painter makes image assets (a tree, a sky) that it then repaints with brush strokes. ChatGPT uses your Codex sign-in and is included in your ChatGPT plan; OpenRouter costs about 1-2 cents an image.' },

@@ -34,6 +34,44 @@ def decode_reference(params):
             'color_space': 'sRGB; untagged input assumed sRGB', 'status': 'ok'}
 
 
+TRACE_PIXELS = 4_000_000    # the decode a guide traces from never holds more
+
+
+def trace_reference(params):
+    """Guided trace's decode of a reference (draw_guide from_reference), reduced while it is read so a full-size goal
+    image traces: at most max_side pixels on its long side and TRACE_PIXELS in all, never enlarged. A path of its own:
+    decode_reference keeps its limits for the reference tools. Returns the decoded and the original size."""
+    fields(params, ('image_base64', 'sha256', 'max_side'), ('image_base64', 'sha256', 'max_side'))
+    encoded, side = params['image_base64'], params['max_side']
+    if not isinstance(encoded, str) or len(encoded) > 17 * 1024 * 1024:
+        raise ValueError('A reference to trace must be at most 12 MB.')
+    if isinstance(side, bool) or not isinstance(side, int) or not 16 <= side <= 8192:
+        raise ValueError('max_side must be 16-8192 pixels')
+    data = base64.b64decode(encoded, validate=True)
+    if hashlib.sha256(data).hexdigest() != params['sha256']:
+        raise ValueError('Reference content changed.')
+    from .qt_compat import QByteArray, QBuffer, QIODevice, QSize
+    from .qt_compat import QImage, QImageReader, QColorSpace
+    buffer = QBuffer(); buffer.setData(QByteArray(data)); buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+    reader = QImageReader(buffer)
+    size = reader.size()
+    if not size.isValid() or size.width() <= 0 or size.height() <= 0:
+        raise ValueError('Could not decode the reference to trace.')
+    width, height = size.width(), size.height()
+    scale = min(1.0, side / max(width, height), (TRACE_PIXELS / (width * height)) ** 0.5)
+    if scale < 1:
+        reader.setScaledSize(QSize(max(1, round(width * scale)), max(1, round(height * scale))))
+    image = reader.read()
+    if image.isNull():
+        raise ValueError('Could not decode the reference to trace.')
+    if image.colorSpace().isValid():
+        image.convertToColorSpace(QColorSpace(QColorSpace.NamedColorSpace.SRgb))
+    image = image.convertToFormat(QImage.Format.Format_RGBA8888)
+    raw = image.constBits().asstring(image.sizeInBytes())
+    return {'status': 'ok', 'width': image.width(), 'height': image.height(), 'original_width': width, 'original_height': height,
+            'sha256': params['sha256'], 'rgba_base64': base64.b64encode(raw).decode('ascii')}
+
+
 SMALL_REFERENCE = 1024 * 1024    # bytes; a reference this small that fits is sent as it is
 
 

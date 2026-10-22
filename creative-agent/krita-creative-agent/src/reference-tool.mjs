@@ -117,6 +117,25 @@ export function groundStops(pixels,source){
 }
 // A part keeps its original's size, mostly transparent: it may be as large as any attached reference (12 MB).
 async function reference(runtime,id){const ref=runtime.study.references.find(r=>r.id===id);if(!ref)throw new Error('Use an attached reference ID.');const file=await containedFile(runtime.study.directory,ref.path),limit=ref.part_kind==='part'?12:5;if((await stat(file)).size>limit*1024*1024)throw new Error('Use a reference smaller than '+limit+' MB for native reconstruction.');const data=await readFile(file);return {data,sha256:hash(data)};}
+// Guided trace (guide-tool.ts from_reference) traces lines from a reference; the pixels themselves never go to the
+// canvas. It has its own decode (the plugin's trace_reference): reduced to max_side on the long side, from an
+// attachment of up to TRACE_REFERENCE_MB (a full-size goal image), cached for the chat per reference, content and size.
+// The reference tools' own decode and limits are not touched.
+export const TRACE_REFERENCE_MB=12;
+const TRACE_CACHE=4;
+export async function traceReferencePixels(runtime,id,maxSide){
+ const ref=runtime.study.references.find(r=>r.id===id);if(!ref)throw new Error('Use an attached reference ID.');
+ const file=await containedFile(runtime.study.directory,ref.path);
+ if((await stat(file)).size>TRACE_REFERENCE_MB*1024*1024)throw new Error(`This reference is too large to trace a guide from (over ${TRACE_REFERENCE_MB} MB). Attach a smaller copy, or draw the guide's lines yourself.`);
+ const data=await readFile(file),sha256=hash(data),key=`${id}:${sha256}:${maxSide}`;
+ const cache=runtime.guideTraceCache??=new Map();
+ const cached=cache.get(key);if(cached)return cached;
+ const decoded=await runtime.callNative('trace_reference',{image_base64:data.toString('base64'),sha256,max_side:maxSide});
+ if(decoded.sha256!==sha256)throw new Error('Decoded reference identity differs.');
+ const pixels={width:decoded.width,height:decoded.height,data:Buffer.from(decoded.rgba_base64,'base64')};
+ cache.set(key,pixels);while(cache.size>TRACE_CACHE)cache.delete(cache.keys().next().value);
+ return pixels;
+}
 export function referenceTools(runtime,executePass,fillRegion){
  const folder=()=>join(runtime.study.directory,'reference-paintings');
  const path=id=>{if(!/^[a-f0-9]{32}$/.test(id))throw new Error('Invalid reference painting ID.');return join(folder(),id+'.json');};

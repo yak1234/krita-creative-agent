@@ -142,6 +142,10 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         if operation == 'decode_reference':
             from .creative_reference import decode_reference
             return decode_reference(params)
+        if operation == 'trace_reference':
+            # Guided trace's own reduced decode (from_reference); decode_reference keeps the reference tools' limits.
+            from .creative_reference import trace_reference
+            return trace_reference(params)
         if operation == 'model_image':
             from .creative_reference import model_image
             return model_image(params)
@@ -1804,6 +1808,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                         node.setVisible(False)
                         if entry.get('source_layer_id'):
                             self._creative_node(doc, entry['source_layer_id']).setVisible(entry['source_prior']['visible'])
+                        self._guide_restore_replaced(doc, session, entry)   # a tightened guide's rough one shows again
                     entry['rejected'] = True
             else:
                 for layer_id, target in targets.items():

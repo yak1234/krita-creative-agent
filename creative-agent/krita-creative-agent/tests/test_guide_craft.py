@@ -29,10 +29,15 @@ class Job:
 
 
 class Layer(region_tests.Layer):
-    """A fork layer: paintStrokes marks its first pixel; mergeDown and remove as Krita."""
+    """A fork layer: paintStrokes marks its first pixel, and each line's colour where it starts; mergeDown and remove as
+    Krita."""
     def paintStrokes(self, strokes, options=None, selection=None):
         self.doc.jobs.append((self, [dict(s) for s in strokes], dict(options or {}), selection))
         self.pixels[0:4] = bytes([255, 179, 79, 255])
+        for stroke in strokes:
+            x, y = (min(3, max(0, int(v))) for v in stroke['start'])
+            colour = bytes.fromhex(stroke['color'][1:])
+            self.pixels[(y * 4 + x) * 4:(y * 4 + x) * 4 + 4] = bytes([colour[2], colour[1], colour[0], 255])
         return Job(len(strokes))
     def mergeDown(self):
         parent = self.parent; index = parent.children.index(self); below = parent.children[index - 1]
@@ -104,19 +109,19 @@ class DrawGuideTests(GuideSetup, unittest.TestCase):
         self.assertEqual(options['preset'], 'b) Basic-1')
         self.assertIsNone(selection)
         self.assertEqual([(s['color'], s['opacity'], s['flow']) for s in strokes], [('#4fb3ff', 1, 1)], 'the guide brush is forced')
-        self.assertTrue(all(2 <= s['size'] <= 4 for s in strokes))
+        self.assertEqual([s['size'] for s in strokes], [3], 'a contour line by default, its width from the canvas size')
         entry = next(p for p in self.h._creative_session['passes'] if p['id'] == 'guide-Towers')
         self.assertEqual((entry['kind'], entry['stage_id'], entry['layer_id'], entry['element']), ('guide', 'move-1', result['layer_id'], 'Towers'))
         self.assertIn(result['layer_id'], self.h._creative_session['layers'])
 
     def test_a_second_guide_in_the_same_move_extends_its_layer(self):
         first = self.guide(identifier='g1')
-        second = self.guide(element='  towers ', strokes=[dict(LINE, size=40)], identifier='g2')
+        second = self.guide(element='  towers ', strokes=[dict(LINE, weight='contour')], identifier='g2')
         other = self.guide(element='Sky', identifier='g3')
         self.assertEqual(first['layer_id'], second['layer_id'], 'names match case-insensitively: one element, one layer per move')
         self.assertNotEqual(first['layer_id'], other['layer_id'])
         self.assertEqual(len(self.guides_group().children), 2)
-        self.assertEqual(self.h.doc.jobs[1][1][0]['size'], 4, 'a guide line stays thin whatever size is asked')
+        self.assertEqual(self.h.doc.jobs[1][1][0]['size'], 3, 'a guide line takes its weight\'s width')
         self.assertEqual(len([c for c in self.h.doc.root.children if c.name() == 'Guides · Creative Agent']), 1)
         later = self.guide(stage='move-2', identifier='g4')
         self.assertNotEqual(later['layer_id'], first['layer_id'], 'a later move draws on a layer of its own')
@@ -279,6 +284,103 @@ class DrawGuideTests(GuideSetup, unittest.TestCase):
         self.assertIn(self.node(drawn['layer_id']), self.guides_group().children, 'the artist may show it again')
         self.assertFalse(self.node(drawn['layer_id']).visible())
 
+    def test_line_weights_scale_with_the_canvas(self):
+        """Construction about 0.08 % and contour about 0.16 % of the long side, each within its bounds; light lines as
+        wide as contours. A 4800 px canvas gets 4 and 8 px lines, visible at fit-to-screen."""
+        self.assertEqual(guide.guide_widths(4800, 3200), {'construction': 4, 'contour': 8, 'light': 8})
+        self.assertEqual(guide.guide_widths(2400, 3600), {'construction': 3, 'contour': 6, 'light': 6}, 'the long side, either way')
+        self.assertEqual(guide.guide_widths(800, 600), {'construction': 2, 'contour': 3, 'light': 3}, 'never thinner than the minimums')
+        self.assertEqual(guide.guide_widths(30000, 20000), {'construction': 8, 'contour': 16, 'light': 16}, 'never past the maximums')
+
+    def test_each_line_is_drawn_in_its_weight(self):
+        lines = [dict(LINE, weight='construction'), dict(LINE, weight='contour'), dict(LINE, weight='light', start=[3, 3]), dict(LINE)]
+        result = self.guide(strokes=lines)
+        self.assertEqual(result['status'], 'ok', result.get('error'))
+        _node, strokes, _options, _selection = self.h.doc.jobs[-1]
+        self.assertEqual([(s['size'], s['color']) for s in strokes],
+                         [(2, '#4fb3ff'), (3, '#4fb3ff'), (3, '#ffb347'), (3, '#4fb3ff')],
+                         'construction thin, contour the default, light in the warm guide colour')
+        self.assertTrue(all((s['opacity'], s['flow']) == (1, 1) for s in strokes))
+        entry = next(p for p in self.h._creative_session['passes'] if p['id'] == 'guide-Towers')
+        self.assertEqual(entry['guide_raws'], {'#4fb3ff': 'ffb34f', '#ffb347': '47b3ff'},
+                         'both guide colours are recorded as the document stores them, for the rebuild')
+
+    def test_replace_tightens_an_element_guide(self):
+        """replace: true hides the element's earlier guide and draws on a new layer, in the same move; undoing the move
+        shows the rough guide again."""
+        rough = self.guide(identifier='rough')
+        sky = self.guide(element='Sky', identifier='sky')
+        tight = run(self.h, 'draw_guide', {'element': 'towers', 'strokes': [LINE], 'stage_id': 'move-2', 'replace': True}, 'tight')
+        self.assertEqual(tight['status'], 'ok', tight.get('error'))
+        self.assertNotEqual(tight['layer_id'], rough['layer_id'])
+        self.assertFalse(self.node(rough['layer_id']).visible(), 'the rough guide is hidden, not stacked under the tight one')
+        self.assertTrue(self.node(tight['layer_id']).visible())
+        self.assertTrue(self.node(sky['layer_id']).visible(), 'only the element\'s own guide')
+        self.assertEqual(tight['replaced'], ['Guide · Towers'])
+        run(self.h, 'review_pass', {'pass_id': 'stage:move-2', 'action': 'reject'}, 'undo-tight')
+        self.assertFalse(self.node(tight['layer_id']).visible())
+        self.assertTrue(self.node(rough['layer_id']).visible(), 'undoing the tightening move brings the rough guide back')
+        # In the same move, replace starts a fresh layer rather than extending this move's.
+        again = run(self.h, 'draw_guide', {'element': 'Towers', 'strokes': [LINE], 'stage_id': 'move-1', 'replace': True}, 'again')
+        self.assertNotEqual(again['layer_id'], rough['layer_id'])
+        self.assertFalse(self.node(rough['layer_id']).visible())
+        # A guide the artist painted on is never hidden, not even by a tightening pass.
+        painted = self.guide(element='Car', identifier='car')
+        self.node(painted['layer_id']).pixels[4:8] = bytes([0, 0, 255, 255])
+        car = run(self.h, 'draw_guide', {'element': 'Car', 'strokes': [LINE], 'stage_id': 'move-3', 'replace': True}, 'car-tight')
+        self.assertTrue(self.node(painted['layer_id']).visible())
+        self.assertIn('painted on', car['note'])
+        # Nothing to replace: a plain new guide.
+        fresh = run(self.h, 'draw_guide', {'element': 'Moon', 'strokes': [LINE], 'stage_id': 'move-3', 'replace': True}, 'moon')
+        self.assertEqual((fresh['status'], fresh['replaced']), ('ok', []))
+
+    def test_each_colour_records_its_own_stored_value_not_what_lies_on_top(self):
+        """A warm light outline drawn over a blue silhouette on the same rim: the fake paints each line's colour where it
+        starts, so the blue line's start ends up warm. Each colour's stored value comes from the colour itself."""
+        silhouette = {'start': [1, 1], 'segments': [[1, 1, 2, 1, 3, 1]], 'weight': 'contour'}
+        rim = {'start': [1, 1], 'segments': [[1, 1, 2, 1, 3, 1]], 'weight': 'light'}
+        self.guide(element='Moon', strokes=[silhouette, rim], identifier='moon')
+        entry = next(p for p in self.h._creative_session['passes'] if p['id'] == 'moon')
+        self.assertEqual(entry['guide_raws'], {'#4fb3ff': 'ffb34f', '#ffb347': '47b3ff'})
+
+    def test_sampled_values_skip_points_under_a_later_line_of_the_other_colour(self):
+        """Where the colour cannot be converted (here: a profile the plugin does not know as sRGB, and no ManagedColor),
+        a colour is read back from the layer, but never where a later line of the other colour covers it."""
+        self.h.doc.colorProfile = lambda: 'AdobeRGB-elle-V2-g22.icc'
+        silhouette = {'start': [1, 1], 'segments': [[1, 1, 2, 1, 3, 1]], 'weight': 'contour'}
+        rim = {'start': [1, 1], 'segments': [[1, 1, 2, 1, 3, 1]], 'weight': 'light'}
+        self.guide(element='Moon', strokes=[silhouette, rim], identifier='moon')
+        entry = next(p for p in self.h._creative_session['passes'] if p['id'] == 'moon')
+        self.assertEqual(entry['guide_raws'], {'#ffb347': '47b3ff'}, 'no value for blue rather than the warm one')
+
+    def test_a_failed_tightening_job_leaves_the_rough_guide_showing(self):
+        rough = self.guide(identifier='rough')
+        failing = Job(1); failing.state = lambda: 'failed'; failing.errorString = lambda: 'refused'
+        original = Layer.paintStrokes
+        Layer.paintStrokes = lambda layer, strokes, options=None, selection=None: failing
+        self.addCleanup(setattr, Layer, 'paintStrokes', original)
+        tight = run(self.h, 'draw_guide', {'element': 'Towers', 'strokes': [LINE], 'stage_id': 'move-2', 'replace': True}, 'tight')
+        self.assertEqual(tight['status'], 'rejected')
+        self.assertTrue(self.node(rough['layer_id']).visible(), 'nothing painted, nothing replaced')
+
+    def test_undoing_a_tightening_restores_only_a_guide_still_in_use(self):
+        for finish in ('finish_guide', 'hide_guides'):
+            with self.subTest(after=finish):
+                self.setUp()
+                rough = self.guide(identifier='rough')
+                tight = run(self.h, 'draw_guide', {'element': 'Towers', 'strokes': [LINE], 'stage_id': 'move-2', 'replace': True}, 'tight')
+                run(self.h, finish, {'element': 'Towers'} if finish == 'finish_guide' else {}, 'done')
+                run(self.h, 'review_pass', {'pass_id': 'stage:move-2', 'action': 'reject'}, 'undo-tight')
+                self.assertFalse(self.node(tight['layer_id']).visible())
+                self.assertFalse(self.node(rough['layer_id']).visible(), 'the element was finished: its rough guide stays hidden')
+        self.setUp()
+        rough = self.guide(identifier='rough')
+        tight = run(self.h, 'draw_guide', {'element': 'Towers', 'strokes': [LINE], 'stage_id': 'move-2', 'replace': True}, 'tight')
+        run(self.h, 'review_pass', {'pass_id': 'stage:move-1', 'action': 'reject'}, 'undo-1')
+        run(self.h, 'review_pass', {'pass_id': 'stage:move-2', 'action': 'reject'}, 'undo-2')
+        self.assertFalse(self.node(rough['layer_id']).visible(), 'a rejected rough guide is never shown again')
+        self.assertFalse(self.node(tight['layer_id']).visible())
+
     def test_guide_rejects_bad_input(self):
         bad = [
             {'element': '', 'strokes': [LINE]}, {'element': '   ', 'strokes': [LINE]}, {'element': 'x' * 61, 'strokes': [LINE]},
@@ -290,7 +392,8 @@ class DrawGuideTests(GuideSetup, unittest.TestCase):
             {'element': 'Sky', 'strokes': [{'start': [0, 0]}]}, {'element': 'Sky', 'strokes': [dict(LINE, start=[float('nan'), 0])]},
             {'element': 'Sky', 'strokes': [dict(LINE, start=[10 ** 400, 0])]}, {'element': 'Sky', 'strokes': [dict(LINE, start=[900, 0])]},
             {'element': 'Sky', 'strokes': [dict(LINE, color='blue')]}, {'element': 'Sky', 'strokes': [dict(LINE, segments=[[1, 2, 3]])]},
-            {'element': 'Sky'},
+            {'element': 'Sky'}, {'element': 'Sky', 'strokes': [dict(LINE, weight='bold')]},
+            {'element': 'Sky', 'strokes': [dict(LINE, weight=2)]}, {'element': 'Sky', 'strokes': [dict(LINE, size=4)]}, {'element': 'Sky', 'strokes': [LINE], 'replace': 'yes'},
         ]
         for index, params in enumerate(bad):
             with self.subTest(params=str(params)[:80]):
@@ -433,6 +536,14 @@ class ObserveWithoutGuidesTests(GuideSetup, unittest.TestCase):
         filled, _ = guide.strip(solid, np.array([[1.0, 0, 0, 0]], np.float32))
         self.assertEqual(filled[0, 0].tolist(), sky.tolist(), 'a guide that covers fully is filled from around it')
         self.assertIs(guide.strip(painting, np.zeros((1, 4), np.float32))[1], 0)
+        warm = np.array([71, 179, 255], np.float32)                           # #ffb347 as BGR
+        mixed = np.tile(sky, (1, 4, 1))
+        mixed[0, 0, :3] = np.rint(guide_bgr * 0.7 + sky[:3] * 0.3)
+        mixed[0, 1, :3] = np.rint(warm * 0.7 + sky[:3] * 0.3)
+        colours = np.zeros((1, 4, 3), np.float32); colours[0, 0] = guide_bgr; colours[0, 1] = warm
+        out, processed = guide.strip(mixed, cover, guide=colours)
+        self.assertEqual(processed, 2)
+        self.assertTrue(np.abs(out.astype(int) - sky.astype(int)).max() <= 2, 'each pixel unblended with its own guide colour')
 
 
 SIZE = (4096, 3072)
@@ -507,10 +618,21 @@ class UnguidedViewTests(GuideSetup, unittest.TestCase):
         self.h._guide_patched = patched
         return doc, group, layer
 
-    def check_clean(self, image):
+    def check_clean(self, image, tolerance=2):
         np = __import__('numpy')
         difference = np.abs(image.astype(int) - self.sky.astype(int)).max(axis=-1)
-        self.assertLessEqual(int(difference.max()), 2, 'the lines are gone, the sky is back')
+        self.assertLessEqual(int(difference.max()), tolerance, 'the lines are gone, the sky is back')
+
+    def linear_tolerance(self, cover):
+        """Ruling: on a linear painting the rebuild reads the 8-bit sRGB view, which is the composite rounded to half a
+        level. Unblending in linear light divides that rounding by 1 - coverage, and a dark sky's sRGB is steep in linear
+        light, so the sky comes back only within this bound (in levels), plus one for the final rounding."""
+        np = __import__('numpy')
+        to_linear, to_srgb = guide._srgb_to_linear, guide._linear_to_srgb
+        view = self.painting[..., :3][self.line_mask].astype(np.float32)
+        spread = (to_linear(np.clip(view + 0.5, 0, 255)) - to_linear(np.clip(view - 0.5, 0, 255))) / 2 / (1 - cover)
+        sky = to_linear(self.sky[:3].astype(np.float32))
+        return int(np.ceil((to_srgb(sky + spread) - to_srgb(sky)).max())) + 1
 
     def test_a_horizon_and_a_vertical_line_never_make_the_work_span_the_canvas(self):
         doc, group, _layer = self.make()
@@ -522,6 +644,119 @@ class UnguidedViewTests(GuideSetup, unittest.TestCase):
         self.assertLess(read, canvas * 0.08, 'only the tiles the two lines touched are read (%d of %d pixels)' % (read, canvas))
         self.assertLess(max(w * h for _x, _y, w, h in group.reads), canvas * 0.05, 'no single read spans the canvas')
         self.assertEqual(self.h._guide_work['pixels'], int(self.line.sum()), 'only covered pixels are worked on')
+
+    def test_light_lines_in_the_warm_colour_are_rebuilt_too(self):
+        """A light line (#ffb347) crossing the blue horizon: both colours recorded, the crossing a mix of the two, and
+        all of it taken out of the view without a note."""
+        np = __import__('numpy')
+        doc, group, _layer = self.make()
+        warm = np.array([0x47, 0xb3, 0xff], np.float32)
+        light = np.zeros(self.line.shape, bool); light[:, 2999:3003] = True
+        group.array[light, :3] = warm.astype(np.uint8)
+        group.array[light, 3] = round(0.7 * 255)
+        crossing = light & self.line
+        group.array[crossing, :3] = np.rint(warm * 0.5 + np.array(GUIDE_BGRA[:3]) * 0.5).astype(np.uint8)   # anti-aliased overlap
+        cover = round(0.7 * 255) / 255                                              # the coverage the group's alpha byte holds
+        self.painting[light, :3] = np.rint(group.array[light, :3].astype(np.float32) * cover + self.sky[:3] * (1 - cover))
+        self.session['passes'].append({'id': 'g2', 'kind': 'guide', 'element': 'Moon', 'layer_id': 'guide-layer', 'group_id': 'guides',
+                                       'stage_id': 'move-1', 'guide_tiles': guide.stroke_tiles(
+                                           [{'start': [3001, 0], 'segments': [[3001, 0, 3001, 3071, 3001, 3071]], 'size': 4}], *SIZE),
+                                       'guide_bounds': [0, 0, *SIZE], 'guide_raws': {'#4fb3ff': 'ffb34f', '#ffb347': '47b3ff'}})
+        image, note = self.h._guide_unguided(doc, self.painting, None, self.session)
+        self.assertIsNone(note)
+        self.check_clean(image)
+        # The artist's own paint is still told apart from either guide colour.
+        group.array[100, 3001] = (0, 200, 0, 255)
+        image, note = self.h._guide_unguided(doc, self.painting, None, self.session)
+        self.assertIsNone(image)
+        self.assertIn('painted on', note)
+
+    def test_unrecorded_eight_bit_guides_know_both_colours(self):
+        np = __import__('numpy')
+        doc, group, _layer = self.make()
+        for entry in self.session['passes']:
+            entry.pop('guide_raw')
+        group.array[self.line, :3] = (0x47, 0xb3, 0xff)
+        cover = round(0.7 * 255) / 255                                              # the coverage the group's alpha byte holds
+        self.painting[self.line, :3] = np.rint(np.array([0x47, 0xb3, 0xff], np.float32) * cover + self.sky[:3] * (1 - cover))
+        image, note = self.h._guide_unguided(doc, self.painting, None, self.session)
+        self.assertIsNone(note)
+        self.check_clean(image)
+
+    def crossing(self, depth='U8', dtype='uint8', scale=255.0, linear=False):
+        """A blue horizon and a warm vertical light line that cross, in the given depth (and linear light), each line
+        recorded with its own colour's tiles and stored value. Returns (doc, group)."""
+        np = __import__('numpy')
+        w, h = SIZE
+        to_linear, to_srgb = guide._srgb_to_linear, guide._linear_to_srgb
+        doc = BigDocument('RGBA', depth, 'Rec2020-elle-V4-g10.icc' if linear else 'sRGB-elle-V2-srgbtrc.icc')
+        blue, warm = np.array(GUIDE_BGRA[:3], np.float32), np.array([0x47, 0xb3, 0xff], np.float32)   # 8-bit sRGB BGR
+        stored = (lambda bgr: to_linear(bgr)) if linear else (lambda bgr: bgr / 255.0)
+        order = (lambda bgr: bgr[::-1]) if dtype.startswith('float') else (lambda bgr: bgr)     # float RGBA is RGB in memory
+        horizon = np.zeros((h, w), bool); horizon[1499:1503, :] = True
+        light = np.zeros((h, w), bool); light[:, 2999:3003] = True
+        group_array = np.zeros((h, w, 4), dtype)
+        a = round(0.7 * scale) / scale if dtype == 'uint8' or dtype == 'uint16' else 0.7
+        for mask, value in ((horizon, stored(blue)), (light, stored(warm)), (horizon & light, (stored(blue) + stored(warm)) / 2)):
+            group_array[mask, :3] = (order(value) * scale).astype(dtype) if dtype.startswith('float') else np.rint(order(value) * scale).astype(dtype)
+            group_array[mask, 3] = np.array(a * scale, dtype) if dtype.startswith('float') else round(a * scale)
+        self.sky = np.array([40, 60, 90, 255], np.uint8)
+        painting = np.empty((h, w, 4), np.uint8); painting[:] = self.sky
+        covered = horizon | light
+        colour = group_array[..., :3].astype(np.float32) / scale
+        colour = colour[..., ::-1] if dtype.startswith('float') else colour                       # back to BGR
+        if linear:
+            mixed = to_srgb(colour[covered] * a + to_linear(self.sky[:3].astype(np.float32)) * (1 - a))
+        else:
+            mixed = colour[covered] * 255.0 * a + self.sky[:3] * (1 - a)
+        painting[covered, :3] = np.rint(mixed).clip(0, 255).astype(np.uint8)
+        self.painting, self.line_mask, self.cover = painting, covered, a
+        doc.root.add(BigNode('Background', 'paintlayer', 'bg', bounds=(0, 0, w, h)))
+        group = doc.root.add(BigNode('Guides · Creative Agent', 'grouplayer', 'guides', group_array, (0, 0, w, h)))
+        group.add(BigNode('Guide · Scene', 'paintlayer', 'guide-layer', bounds=(0, 0, w, h)))
+        raw = lambda bgr: (np.array(order(stored(bgr)) * scale, dtype) if dtype.startswith('float')
+                           else np.rint(order(stored(bgr)) * scale).astype(dtype)).tobytes().hex()
+        vertical = [{'start': [3001, 0], 'segments': [[3001, 0, 3001, 3071, 3001, 3071]], 'size': 4}]
+        self.session = {'passes': [
+            {'id': 'g1', 'kind': 'guide', 'element': 'Scene', 'layer_id': 'guide-layer', 'group_id': 'guides', 'stage_id': 'move-1',
+             'guide_tiles': guide.stroke_tiles(self.LINES[:1], w, h), 'guide_colour_tiles': {'#4fb3ff': guide.stroke_tiles(self.LINES[:1], w, h)},
+             'guide_bounds': [0, 0, w, h], 'guide_raws': {'#4fb3ff': raw(blue)}},
+            {'id': 'g2', 'kind': 'guide', 'element': 'Scene', 'layer_id': 'guide-layer', 'group_id': 'guides', 'stage_id': 'move-1',
+             'guide_tiles': guide.stroke_tiles(vertical, w, h), 'guide_colour_tiles': {'#ffb347': guide.stroke_tiles(vertical, w, h)},
+             'guide_bounds': [0, 0, w, h], 'guide_raws': {'#ffb347': raw(warm)}}]}
+        self.h._guide_painting_tile = lambda image, x, y, tw, th: image[y:y + th, x:x + tw].tobytes()
+        def patched(image, patches):
+            out = image.copy()
+            for x, y, tw, th, data in patches:
+                out[y:y + th, x:x + tw] = np.frombuffer(data, np.uint8).reshape(th, tw, 4)
+            return out
+        self.h._guide_patched = patched
+        return doc, group
+
+    def test_crossings_of_both_colours_are_rebuilt_in_every_depth(self):
+        for depth, dtype, scale, linear in (('U8', 'uint8', 255.0, False), ('U16', 'uint16', 65535.0, False),
+                                            ('F32', 'float32', 1.0, False), ('F32', 'float32', 1.0, True)):
+            with self.subTest(depth=depth, linear=linear):
+                doc, _group = self.crossing(depth, dtype, scale, linear)
+                image, note = self.h._guide_unguided(doc, self.painting, None, self.session)
+                self.assertIsNone(note)
+                tolerance = self.linear_tolerance(self.cover) if linear else 2
+                self.assertLessEqual(tolerance, 16, 'the bound itself stays small (13 levels for this dark sky under a bright line)')
+                self.check_clean(image, tolerance)
+
+    def test_artist_paint_in_a_blend_of_the_guide_colours_is_not_taken_for_a_guide(self):
+        """Tan #dbb36b lies on the blend of blue and warm: it is a guide only where both colours were drawn, next to
+        both of them (a crossing)."""
+        np = __import__('numpy')
+        tan = (0x6b, 0xb3, 0xdb)
+        for where, (y, x) in (('on the blue line, where no warm line was drawn', (1501, 500)),
+                              ('on the warm line, far from any blue', (300, 3001))):
+            with self.subTest(where=where):
+                doc, group = self.crossing()
+                group.array[y, x, :3] = tan
+                image, note = self.h._guide_unguided(doc, self.painting, None, self.session)
+                self.assertIsNone(image)
+                self.assertIn('painted on', note)
 
     def test_a_close_up_rebuilds_only_its_region(self):
         doc, group, _layer = self.make()

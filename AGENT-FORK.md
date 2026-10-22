@@ -1188,8 +1188,9 @@ Plugin only (`creative_docker.py`: `FeaturesSection`, `refresh_features`, `toggl
 - Test: `uv run -q --with pyqt5 python tests/ui_panel_features.py` and the same with `--with pyqt6` (both in ci.sh's panel UI group).
 
 ## Guide layers (project-folder, group A: guided trace)
-Plugin and companion only (`kritamcp/guide_craft.py`, `src/guide-tool.ts`, `skills/guided-trace`); no upstream file.
-- **What it is.** `draw_guide` paints thin construction lines (b) Basic-1, 2-4 px, `#4fb3ff`, layer opacity 70 %) as one
+Plugin and companion only (`kritamcp/guide_craft.py`, `src/guide-tool.ts`, `src/guide-trace.ts`, `skills/guided-trace`); no
+upstream file.
+- **What it is.** `draw_guide` paints construction lines (b) Basic-1, `#4fb3ff`, layer opacity 70 %) as one
   `Node.paintStrokes` job on "Guide · <element>" inside "Guides · Creative Agent" at the top of the painting, outside every
   stage group; each move draws on a layer of its own. Its pass (kind `guide`) belongs to the move, so Undo of the move
   hides only that move's lines. The group is known by its id (document annotation `creative-agent-guides`, and the guide
@@ -1198,6 +1199,48 @@ Plugin and companion only (`kritamcp/guide_craft.py`, `src/guide-tool.ts`, `skil
   clip_to). `finish_guide` hides an element's guides; `hide_guides` hides every guide in one undo step, and the companion
   runs it when a run finishes and before a chat ends. A guide layer the artist painted on is never hidden. The setting
   "Guides" (on by default, our Krita only) offers the two tools.
+- **Developing a guide** (after a live New Moscow chat whose guides were hairlines, without eye level or vanishing point,
+  with one box for every skyscraper and the moon never marked as light). Each line has a `weight`: `construction` (thin:
+  eye level, rays), `contour` (the default: silhouettes) or `light` (contour width in the warm `#ffb347`: light sources
+  and the brightest areas). `perspective {eye_level_y, vanishing_points, rays}` draws the eye level and rays fanned from
+  each vanishing point across the canvas, as construction. `from_reference {reference_id, source, target, detail,
+  lights}` traces the element's outline from the reference's own edges (`guide-trace.ts`) and draws only the lines,
+  mapped as the reference tools map. `replace: true` hides the element's showing guides in the same operation and draws
+  on a new layer once its job has painted every line; rejecting the move shows them again while the element is
+  unfinished (no `finish_guide` or `hide_guides` since) and their own pass was not rejected. The rebuild knows both guide
+  colours: each pass records them as the document stores them (`guide_raws`: the known bytes of 8-bit sRGB, else
+  Krita's `ManagedColor` conversion, else read back only where no later line of the other colour lies) and the tiles
+  each colour touched (`guide_colour_tiles`). A blend of the two is a guide only where both were drawn and both show
+  unblended within 10 px (a crossing); elsewhere a tan or grey-green on the blend is the artist's paint.
+  `from_reference` decodes through its own `trace_reference` (reduced while read to about 1440 px, or two pixels a
+  working cell for a small crop of a large image, at most 4 MP, from attachments up to 12 MB), cached per reference,
+  content and size; the reference tools' `decode_reference` and its limits are untouched.
+- **Ruling (line weights):** a width is a share of the canvas's long side, rounded, within bounds: construction 0.08 %
+  (2-8 px), contour and light 0.16 % (3-16 px). A 4800 px canvas gets 4 and 8 px, which still read at fit-to-screen
+  (about a third); an 800 px canvas keeps the old 2-3 px. The model gives a weight, never a width.
+- **Ruling (where the tracing runs):** in the companion, as `paint_reference_edges` does (the plugin decodes the
+  reference), so `draw_guide` in the plugin stays a painter of lines, and no reference pixel ever reaches it.
+- **Ruling (the tracing):** on the crop shrunk to about 360 cells, a silhouette is Otsu's split of the lightly blurred
+  luminance, used only when it is clearly two-toned (separability at least 0.72; blurred texture noise is about 0.64),
+  without specks or holes under 0.5 % (simple) or 0.15 % (medium) of the crop, traced by marching squares; inner
+  structure is thinned edges that run straight or gently curved for at least 12 % (simple) or 6 % (medium) of the
+  crop's long side, away from the silhouette; lights are the top 5 % of luminance and at least halfway from the median
+  to the brightest, when the brightest is 0.25 above the median. Douglas-Peucker at 1.2 or 0.7 cells; at most 8
+  (simple) or 24 (medium) lines and 8 light lines, the longest kept, silhouettes weighted 1.5.
+- **Ruling (no size on a guide line):** the plugin no longer accepts `size` on a guide stroke: plugin and companion ship
+  together, and a width the model cannot set is not a field it should send.
+- **Ruling (a crossing):** `BLEND_REACH` 10 px, half the widest contour (16 px) and a margin: the middle of a crossing of
+  two of the widest lines is 8 px from either colour.
+- **Ruling (lights):** measured over opaque cells only, against the darker class (Otsu's low mean), at least halfway to
+  the brightest; also the top 5 % unless the light fills most of its crop (then a quarter of the range below the top).
+- **Ruling (linear paintings):** the rebuild reads the 8-bit sRGB view, rounded to half a level; unblending in linear
+  light divides that by 1 − coverage, and a dark ground is steep in linear light, so under a bright line on a dark sky
+  it comes back only within a bound the test computes (13 levels there), not 2.
+- **Ruling (vanishing points):** rays go all round only for a point more than 5 % of the canvas's short side inside it;
+  on, near or off the edge they fan across the angle the canvas fills.
+- **Ruling (test fixtures):** a fixture that blends a guide at 70 % must blend at the coverage the group's alpha byte
+  holds (178/255): the rebuild divides by 1 − coverage, which turned the 0.7 shortcut into 3 levels on the warm
+  colour's red channel. The tolerance stays 2 levels.
 - **Never judged.** Luna, the review, colour samples and seams see the painting without guides. On the fork
   `Node.setVisible` is an undo step, so the plugin never hides the group to read: it rebuilds the 8-bit sRGB view under
   the lines, only inside the 64 px tiles each guide stroke touched (recorded on its pass; the layer's bounds when the
@@ -1212,6 +1255,12 @@ Plugin and companion only (`kritamcp/guide_craft.py`, `src/guide-tool.ts`, `skil
   Undo of the move hides it; `finish_guide` and `hide_guides` hide guides as one step each; a finished Autopilot run
   and an ended chat leave none showing; `tidy_painting` keeps hidden guides. Compare `observe {guides: false}` with the
   canvas with the group hidden by hand, on an 8-bit, a 16-bit and a linear float painting: they should match to a level
-  or two (the rebuild assumes the group's projection carries its layers' 70 % opacity and that the guide colour shows as
+  or two, a linear painting within the linear Ruling's bound (the rebuild assumes the group's projection carries its layers' 70 % opacity and that the guide colour shows as
   `#4fb3ff`). Time a look with a horizon and a vertical guide on New Moscow. Paint on a guide layer by hand: the next
-  Luna look should carry `guides_note` and `finish_guide` should leave it showing.
+  Luna look should carry `guides_note` and `finish_guide` should leave it showing. Time `from_reference` on a full-size goal image (the reduced decode and the
+  tracing), and compare a light outline over a blue one on a 16-bit painting (its recorded values come from Krita's
+  conversion). On a copy of New Moscow: a perspective guide, then `from_reference` guides for the tower, the skyscrapers and the bridge from the goal image, and
+  `lights` for the moon. The lines read at fit-to-screen, the railing runs to the vanishing point, the bridge sits at
+  mid-height and the car fills the bottom half, the tower shows its tiers and spire, the moon is outlined warm. Compare
+  the unguided view with the group hidden by hand where a blue and a warm line cross. A `replace` guide is one undo
+  step with the hide, and rejecting its move shows the rough guide again.

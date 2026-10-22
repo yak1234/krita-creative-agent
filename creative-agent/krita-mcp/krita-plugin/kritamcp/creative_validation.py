@@ -109,11 +109,12 @@ def validate_pass(params, width, height, presets):
     return params
 
 
-GUIDE_FIELDS = ('element', 'strokes', 'stage_id', 'expected_revision')
-GUIDE_STROKE_FIELDS = ('start', 'segments', 'size', 'opacity', 'flow', 'color')
+GUIDE_FIELDS = ('element', 'strokes', 'stage_id', 'expected_revision', 'replace')
+GUIDE_STROKE_FIELDS = ('start', 'segments', 'opacity', 'flow', 'color', 'weight')   # no size: the weight sets the width
+GUIDE_WEIGHTS = ('construction', 'contour', 'light')   # guide_craft.py: thin construction, stronger contour, warm light
 MAX_GUIDE_STROKES = 256
 GUIDE_ELEMENT_LIMIT = 60
-GUIDE_MARGIN = 4                       # the widest guide line, past the canvas edge, as a pass allows one brush size
+GUIDE_MARGIN = 16                      # the widest guide line, past the canvas edge, as a pass allows one brush size
 
 
 # Characters an element's name never holds: controls and DEL, line and paragraph separators, and the bidirectional
@@ -139,18 +140,20 @@ def validate_guide(params, width, height):
     for key in ('stage_id', 'expected_revision'):
         if key in params:
             text(params[key], key, 100)
+    if 'replace' in params and not isinstance(params['replace'], bool):
+        raise ValueError('replace must be true or false')
     strokes = params['strokes']
     if not isinstance(strokes, list) or not 1 <= len(strokes) <= MAX_GUIDE_STROKES:
         raise ValueError('A guide needs 1–%d lines' % MAX_GUIDE_STROKES)
     for stroke in strokes:
         fields(stroke, GUIDE_STROKE_FIELDS, ('start', 'segments'))
-        if 'size' in stroke:
-            numeric(stroke['size'], 'size', 1, 10000)
         for key in ('opacity', 'flow'):
             if key in stroke:
                 numeric(stroke[key], key, 0.01, 1)
         if 'color' in stroke:
             color(stroke['color'])
+        if 'weight' in stroke and stroke['weight'] not in GUIDE_WEIGHTS:
+            raise ValueError('weight must be one of: ' + ', '.join(GUIDE_WEIGHTS))
         start, segments = stroke['start'], stroke['segments']
         if not isinstance(start, list) or len(start) != 2:
             raise ValueError('start needs two coordinates')

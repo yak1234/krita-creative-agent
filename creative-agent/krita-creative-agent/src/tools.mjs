@@ -4,7 +4,7 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 import { createHash } from 'node:crypto';
 import { imageContent } from './files.mjs';
-import {referenceTools} from './reference-tool.mjs';
+import {referenceTools,traceReferencePixels} from './reference-tool.mjs';
 import { mapReferencePoint } from './reference-generator.mjs';
 import { guideTools } from './guide-tool.ts';
 import { recipeTool } from './recipe-tool.mjs';
@@ -321,7 +321,8 @@ export function paintingTools(runtime) {
   const fill = tools.find(t=>t.name==='fill_region'), fillRegion = fill.execute;
   fill.execute = async (...args) => { await runtime.fillNudge?.(); return fillRegion(...args); };
   // Guided trace: construction lines on the element's own guide layer (guide-tool.ts), mapped from reference pixels as above.
-  tools.push(...guideTools(runtime, { execute: operation => nativeExecute(runtime, operation), mapPoint: mapReferencePoint }));
+  tools.push(...guideTools(runtime, { execute: operation => nativeExecute(runtime, operation), mapPoint: mapReferencePoint,
+    referencePixels: (id, side) => traceReferencePixels(runtime, id, side) }));
   // A flat fill anywhere in a batch is nudged before anything paints (studio.mjs fillNudge), so the batch is refused whole.
   tools.push(batchTool(tools, name => runtime.toolOffered?.(name) ?? true,
     async actions => { if (actions.some(a => a.tool === 'fill_region')) await runtime.fillNudge?.({batch:true}); }));

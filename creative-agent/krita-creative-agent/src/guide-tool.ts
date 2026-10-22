@@ -7,6 +7,7 @@
 // The studio's native call and the mapping come in as dependencies, so this module imports no .mjs.
 import { Type, type Static } from 'typebox';
 import type { AgentToolResult, ToolDefinition } from '@earendil-works/pi-coding-agent';
+import { traceOutlines, traceLights, type Pixels } from './guide-trace.ts';
 
 const object = <T extends Parameters<typeof Type.Object>[0]>(properties: T) => Type.Object(properties, { additionalProperties: false });
 const rect = (description: string) => Type.Array(Type.Integer({ minimum: 0, maximum: 100000 }), { minItems: 4, maxItems: 4, description });
@@ -14,15 +15,34 @@ const point = Type.Array(Type.Number({ minimum: -100000, maximum: 100000 }), { m
 
 export const GUIDE_LINES = 128;
 export const GUIDE_POINTS = 64;
+export const GUIDE_WEIGHTS = ['construction', 'contour', 'light'] as const;
+export type GuideWeight = typeof GUIDE_WEIGHTS[number];
+const weight = Type.Union(GUIDE_WEIGHTS.map(name => Type.Literal(name)), { description:
+  'construction: thin (eye level, rays, centre lines); contour: stronger (silhouettes, the default); light: warm, the outline of a light source or the brightest areas. Widths follow the canvas size.' });
+export const DEFAULT_RAYS = 8;
+const perspectiveSchema = object({
+  eye_level_y: Type.Optional(Type.Number({ minimum: -100000, maximum: 100000, description: 'The eye level (horizon) in canvas pixels: drawn across the canvas.' })),
+  vanishing_points: Type.Optional(Type.Array(point, { maxItems: 3, description: 'Vanishing points [x,y] in canvas pixels, on or off the canvas (usually on the eye level).' })),
+  rays: Type.Optional(Type.Integer({ minimum: 2, maximum: 24, description: `Rays fanned from each vanishing point across the canvas (default ${DEFAULT_RAYS}).` })),
+});
 const drawSchema = object({
   element: Type.String({ minLength: 1, maxLength: 60, description: 'The element this guide is for, as its layer will be named ("Kremlin towers").' }),
   reference_id: Type.Optional(Type.String({ minLength: 1, description: 'Points are pixels of this attached reference, mapped from source onto target.' })),
   source: Type.Optional(rect('[x,y,w,h] of the reference the lines come from (default: the whole reference).')),
   target: Type.Optional(rect('[x,y,w,h] of the canvas the source maps onto, same aspect ratio. Needed with reference_id.')),
-  lines: Type.Array(object({
+  lines: Type.Optional(Type.Array(object({
     points: Type.Array(point, { minItems: 2, maxItems: GUIDE_POINTS, description: 'A polyline: straight segments from point to point.' }),
-    width: Type.Optional(Type.Integer({ minimum: 2, maximum: 4, description: 'Line width in pixels (default 3).' })),
-  }), { minItems: 1, maxItems: GUIDE_LINES }),
+    weight: Type.Optional(weight),
+  }), { minItems: 1, maxItems: GUIDE_LINES })),
+  perspective: Type.Optional(perspectiveSchema),
+  from_reference: Type.Optional(Type.Object({
+    reference_id: Type.String({ minLength: 1 }),
+    source: Type.Optional(rect('[x,y,w,h] of the reference holding the element (default: the whole reference).')),
+    target: rect('[x,y,w,h] of the canvas where the element goes, same aspect ratio as source.'),
+    detail: Type.Optional(Type.Union([Type.Literal('simple'), Type.Literal('medium')], { description: 'simple: the silhouette and main lines (up to 8); medium: more inner structure (up to 24). Default simple.' })),
+    lights: Type.Optional(Type.Boolean({ description: 'Also outline the brightest shapes (light sources, lit faces) in the warm light colour.' })),
+  }, { additionalProperties: false, description: 'Outline the element from the reference\u2019s own edges inside source, mapped onto target as contour lines: only the lines are drawn.' })),
+  replace: Type.Optional(Type.Boolean({ description: 'Tighten: hide this element\u2019s earlier guide and draw on a new layer (undoing the move shows it again).' })),
 });
 const finishSchema = object({ element: Type.String({ minLength: 1, maxLength: 60 }) });
 
@@ -53,7 +73,7 @@ export function clipPolyline(points: Point[], width: number, height: number): Po
   for (let index = 1; index < points.length; index++) {
     const from = points[index - 1], to = points[index];
     const clipped = from && to ? clipSegment(from, to, width, height) : null;
-    if (!clipped) { current = null; continue; }
+    if (!clipped || (clipped[0][0] === clipped[1][0] && clipped[0][1] === clipped[1][1])) { current = null; continue; }   // a touch is no line
     const last = current?.at(-1);
     if (current && last && last[0] === clipped[0][0] && last[1] === clipped[0][1]) current.push(clipped[1]);
     else { current = [clipped[0], clipped[1]]; pieces.push(current); }
@@ -65,11 +85,78 @@ export type GuideDependencies = {
   execute(operation: 'draw_guide' | 'finish_guide'): (id: string, params: Record<string, unknown>, signal?: AbortSignal) => Promise<Result>;
   /** reference-generator.mjs mapReferencePoint: throws for a source and target of different aspect ratios. */
   mapPoint(source: number[], target: number[]): (x: number, y: number) => [number, number];
+  /** An attached reference's RGBA pixels decoded at most maxSide on the long side (reference-tool.mjs), for from_reference. */
+  referencePixels?(id: string, maxSide: number): Promise<Pixels>;
 };
-export type GuideStroke = { start: [number, number]; segments: number[][]; size?: number };
+
+const TRACE_SIDE = 1440;                     // about four times guide-trace.ts's working grid (360 cells)
+const TRACE_PIXELS = 4_000_000;
+/** The long side to decode a width x height reference at for tracing `source`: about TRACE_SIDE, more when the crop is a
+ * small part of a large image (two pixels a working cell), never more than the reference nor four million pixels. */
+export function traceSide(width: number, height: number, source: number[]): number {
+  const long = Math.max(width, height), crop = Math.max(source[2] ?? 0, source[3] ?? 0, 1);
+  const cap = Math.floor(long * Math.sqrt(TRACE_PIXELS / (width * height)));
+  return Math.max(1, Math.min(long, cap, Math.max(TRACE_SIDE, Math.ceil(720 * long / crop))));
+}
+
+/** from_reference: the element's outline (and its lights) traced from the reference, mapped onto the target. */
+export async function tracedLines(runtime: GuideRuntime, from: NonNullable<Static<typeof drawSchema>['from_reference']>,
+  dependencies: GuideDependencies): Promise<Line[]> {
+  const reference = runtime.study?.references?.find(item => item.id === from.reference_id);
+  if (!reference) throw new Error('Unknown reference ID. Use the attachment list in the study context.');
+  const width = reference.width ?? 0, height = reference.height ?? 0;
+  const source: Rect = (from.source as Rect | undefined) ?? [0, 0, width, height];
+  if (!(source[2] > 0 && source[3] > 0 && source[0] + source[2] <= width && source[1] + source[3] <= height))
+    throw new Error('Source crop must fit the reference.');
+  const map = dependencies.mapPoint(source, from.target);
+  const canvas = runtime.decisionObservation;
+  if (!(Number(canvas?.width) > 0 && Number(canvas?.height) > 0))
+    throw new Error('A guide from a reference is placed on the canvas: look at the canvas first (observe), then draw it.');
+  if (!dependencies.referencePixels) throw new Error('from_reference needs the reference pixels, which this companion cannot read.');
+  const pixels = await dependencies.referencePixels(from.reference_id, traceSide(width, height, source));
+  // The decode may be smaller than the listed reference: trace its share of the source, then scale the lines back.
+  const kx = pixels.width / width, ky = pixels.height / height;
+  const left = Math.min(pixels.width - 1, Math.floor(source[0] * kx)), top = Math.min(pixels.height - 1, Math.floor(source[1] * ky));
+  const scaled = [left, top, Math.max(1, Math.min(pixels.width, Math.ceil((source[0] + source[2]) * kx)) - left),
+    Math.max(1, Math.min(pixels.height, Math.ceil((source[1] + source[3]) * ky)) - top)];
+  const clamp = (value: number, low: number, size: number) => Math.min(low + size, Math.max(low, value));
+  const detail = from.detail ?? 'simple';
+  const mapped = (lines: Point[][], weight: GuideWeight): Line[] => lines.map(points => ({ weight,
+    points: points.map(([x, y]) => map(clamp(x / kx, source[0], source[2]), clamp(y / ky, source[1], source[3]))) }));
+  return [...mapped(traceOutlines(pixels, scaled, detail), 'contour'), ...(from.lights ? mapped(traceLights(pixels, scaled, detail), 'light') : [])];
+}
+export type GuideStroke = { start: [number, number]; segments: number[][]; weight: GuideWeight };
+type Line = { points: Point[]; weight: GuideWeight };
+
+/** Eye level and rays (construction lines, canvas pixels): each vanishing point fans `rays` rays evenly across the
+ * angle under which it sees the canvas (all round when it lies on the canvas), each long enough to cross it. */
+export function perspectiveLines(perspective: Static<typeof perspectiveSchema>, width: number, height: number): Line[] {
+  const lines: Line[] = [];
+  if (perspective.eye_level_y !== undefined) lines.push({ points: [[0, perspective.eye_level_y], [width, perspective.eye_level_y]], weight: 'construction' });
+  const corners: Point[] = [[0, 0], [width, 0], [width, height], [0, height]];
+  const count = perspective.rays ?? DEFAULT_RAYS;
+  for (const vp of perspective.vanishing_points ?? []) {
+    const [vx, vy] = [vp[0] ?? 0, vp[1] ?? 0];
+    const reach = Math.max(...corners.map(([x, y]) => Math.hypot(x - vx, y - vy))) + 1;
+    // Well inside the canvas the rays go all round; on or near its edge (or off it) they fan across the canvas only.
+    const margin = 0.05 * Math.min(width, height);
+    const inside = vx > margin && vx < width - margin && vy > margin && vy < height - margin;
+    let low = 0, span = 2 * Math.PI;
+    if (!inside) {
+      const centre = Math.atan2(height / 2 - vy, width / 2 - vx);
+      const offsets = corners.filter(([x, y]) => Math.hypot(x - vx, y - vy) > 1e-6).map(([x, y]) => { let a = Math.atan2(y - vy, x - vx) - centre; while (a > Math.PI) a -= 2 * Math.PI; while (a < -Math.PI) a += 2 * Math.PI; return a; });
+      low = centre + Math.min(...offsets); span = Math.max(...offsets) - Math.min(...offsets);
+    }
+    for (let index = 0; index < count; index++) {
+      const angle = low + (index + 0.5) * span / count;
+      lines.push({ points: [[vx, vy], [vx + Math.cos(angle) * reach, vy + Math.sin(angle) * reach]], weight: 'construction' });
+    }
+  }
+  return lines;
+}
 
 /** The plugin's strokes for a draw_guide call: one per polyline, its points mapped to canvas pixels. */
-export function guideStrokes(runtime: GuideRuntime, args: Static<typeof drawSchema>, mapPoint: GuideDependencies['mapPoint']): GuideStroke[] {
+export function guideStrokes(runtime: GuideRuntime, args: Static<typeof drawSchema>, mapPoint: GuideDependencies['mapPoint'], traced: Line[] = []): GuideStroke[] {
   let map = (x: number, y: number): [number, number] => [x, y];
   if (args.reference_id !== undefined) {
     const reference = runtime.study?.references?.find(item => item.id === args.reference_id);
@@ -87,15 +174,26 @@ export function guideStrokes(runtime: GuideRuntime, args: Static<typeof drawSche
   // plugin checks the points.
   const canvas = runtime.decisionObservation, width = Number(canvas?.width), height = Number(canvas?.height);
   const known = Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0;
+  if (!args.lines?.length && !args.perspective && !traced.length)
+    throw new Error('A guide needs lines, perspective or from_reference.');
+  if (args.perspective && args.perspective.eye_level_y === undefined && !args.perspective.vanishing_points?.length)
+    throw new Error('perspective needs eye_level_y or vanishing_points (canvas pixels).');
+  if (args.perspective && !known) throw new Error('Perspective rays cross the whole canvas: look at the canvas first (observe), then draw them.');
+  // Construction first, then the traced outlines, then the painter's own lines: later lines draw over earlier ones.
+  const lines: Line[] = [
+    ...(args.perspective ? perspectiveLines(args.perspective, width, height) : []),
+    ...traced,
+    ...(args.lines ?? []).map(line => ({ points: line.points.map(([x, y]): Point => map(x ?? 0, y ?? 0)), weight: line.weight ?? 'contour' as GuideWeight })),
+  ];
+  if (lines.length > GUIDE_LINES) throw new Error(`At most ${GUIDE_LINES} guide lines in one call; draw again for the same element to add more.`);
   const strokes: GuideStroke[] = [];
-  for (const line of args.lines) {
-    const points = line.points.map(([x, y]): Point => map(x ?? 0, y ?? 0));
+  for (const { points, weight } of lines) {
     for (const piece of known ? clipPolyline(points, width, height) : [points]) {
       const segments = piece.slice(1).map((end, index) => {
         const from = piece[index] ?? end;
         return [from[0], from[1], end[0], end[1], end[0], end[1]];
       });
-      strokes.push({ start: piece[0] ?? [0, 0], segments, ...(line.width !== undefined ? { size: line.width } : {}) });
+      strokes.push({ start: piece[0] ?? [0, 0], segments, weight });
     }
   }
   if (!strokes.length) throw new Error('Every guide line lies outside the canvas: give points inside it (canvas pixels, or a target on the canvas).');
@@ -107,15 +205,21 @@ export function guideTools(runtime: GuideRuntime, dependencies: GuideDependencie
   return [
     {
       name: 'draw_guide', label: 'Drawing a guide', executionMode: 'sequential', parameters: drawSchema,
-      description: 'Sketch construction lines for one element before painting it: horizon, vanishing lines, the silhouette '
-        + 'block-in, key proportions, a few dozen lines at most. They go on the element’s own guide layer, thin and light '
-        + 'blue, never merged and never judged as the painting; draw again for the same element to add lines. Points are '
-        + 'canvas pixels, or with reference_id pixels of that reference mapped from source onto target (same aspect). '
-        + 'Read the guided-trace skill first. Paint the element over the guide in your own strokes, then finish_guide.',
+      description: 'Sketch construction lines for one element before painting it, a few dozen at most, on the element’s '
+        + 'own guide layer (light blue, warm for light; never merged, never judged as the painting). perspective draws the '
+        + 'eye level and rays from vanishing points; each line has a weight (construction, contour, light). Points are '
+        + 'canvas pixels, or with reference_id pixels of that reference mapped from source onto target (same aspect); '
+        + 'from_reference outlines the element from the reference\u2019s own edges (lights: its brightest shapes). '
+        + 'Draw again to add lines; replace: true tightens (the earlier guide is hidden). Read the guided-trace skill '
+        + 'first. Paint the element over the guide in your own strokes, then finish_guide.',
       execute: async (id: string, args: Static<typeof drawSchema>, signal?: AbortSignal): Promise<Result> => {
         signal?.throwIfAborted();
-        const strokes = guideStrokes(runtime, args, dependencies.mapPoint);
-        const result = await draw(id, { element: args.element, strokes }, signal);
+        const traced = args.from_reference ? await tracedLines(runtime, args.from_reference, dependencies) : [];
+        signal?.throwIfAborted();
+        if (args.from_reference && !traced.length && !args.lines?.length && !args.perspective)
+          throw new Error('No clear outline in that part of the reference: choose a source around the element, try detail medium, or draw its lines yourself.');
+        const strokes = guideStrokes(runtime, args, dependencies.mapPoint, traced);
+        const result = await draw(id, { element: args.element, strokes, ...(args.replace ? { replace: true } : {}) }, signal);
         runtime.emit({ type: 'action', seconds: 0, message: `Drew a guide for ${args.element} (hidden when the element is finished).` });
         return result;
       },

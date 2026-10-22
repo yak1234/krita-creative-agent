@@ -10,6 +10,7 @@ import { StudioRuntime } from '../src/studio.mjs';
 import { executionSettings } from '../src/execution-settings.mjs';
 import { PaintingRuntime } from '../src/runtime.mjs';
 import { SETTINGS } from '../src/settings-schema.mjs';
+import { clipPolyline } from '../src/guide-tool.ts';
 
 const REFERENCE = { id: 'reference-1', role: 'reference', name: 'final_goal.png', path: '/nonexistent/goal.png', width: 400, height: 300 };
 function fakeRuntime(answer = () => ({ status: 'ok', layer_id: 'L1' })) {
@@ -25,15 +26,16 @@ test('draw_guide in canvas pixels reaches the plugin as strokes', async () => {
   const draw = byName(tools, 'draw_guide');
   assert.ok(draw && byName(tools, 'finish_guide'), 'both tools exist');
   assert.ok(!BATCH_TOOLS.includes('draw_guide'), 'a guide is its own call, not part of a painting batch');
-  await draw.execute('g1', { element: 'Kremlin towers', lines: [{ points: [[0, 500], [768, 480]] }, { points: [[100, 400], [120, 200], [140, 400]], width: 4 }] });
+  await draw.execute('g1', { element: 'Kremlin towers', lines: [{ points: [[0, 500], [768, 480]] }, { points: [[100, 400], [120, 200], [140, 400]], weight: 'construction' }] });
   assert.equal(calls.length, 1);
   const [{ operation, params, id }] = calls;
   assert.equal(operation, 'draw_guide'); assert.equal(id, 'g1');
   assert.equal(params.element, 'Kremlin towers');
   assert.deepEqual(params.strokes, [
-    { start: [0, 500], segments: [[0, 500, 768, 480, 768, 480]] },
-    { start: [100, 400], segments: [[100, 400, 120, 200, 120, 200], [120, 200, 140, 400, 140, 400]], size: 4 },
-  ], 'each polyline is one stroke of straight segments; the plugin forces the guide brush');
+    { start: [0, 500], segments: [[0, 500, 768, 480, 768, 480]], weight: 'contour' },
+    { start: [100, 400], segments: [[100, 400, 120, 200, 120, 200], [120, 200, 140, 400, 140, 400]], weight: 'construction' },
+  ], 'each polyline is one stroke of straight segments in its weight (contour by default); the plugin forces the guide brush');
+  assert.equal('replace' in params, false, 'replace only when asked');
   assert.ok(events.some(e => e.type === 'action' && /guide/i.test(e.message) && /Kremlin towers/.test(e.message)), 'the panel says a guide was drawn');
 });
 
@@ -107,4 +109,61 @@ test('lines are clipped to the canvas, so one point off it does not refuse the g
   delete runtime.decisionObservation;
   await draw.execute('c4', { element: 'Road', lines: [{ points: [[-200, 300], [400, 300]] }] });
   assert.deepEqual(calls[2].params.strokes[0].start, [-200, 300]);
+});
+
+test('weights, light lines and replace reach the plugin', async () => {
+  const { tools, calls } = fakeRuntime();
+  const draw = byName(tools, 'draw_guide');
+  await draw.execute('w1', { element: 'Moon', replace: true, lines: [{ points: [[10, 10], [20, 10]], weight: 'light' }] });
+  assert.equal(calls[0].params.replace, true);
+  assert.equal(calls[0].params.strokes[0].weight, 'light');
+  assert.equal(draw.parameters.properties.lines.items.properties.width, undefined, 'widths come from the canvas, not the model');
+  await assert.rejects(draw.execute('w2', { element: 'Moon' }), /lines, perspective or from_reference/);
+});
+
+/** Distance from point p to the infinite line through a and b. */
+const offLine = (p, a, b) => Math.abs((b[0] - a[0]) * (a[1] - p[1]) - (a[0] - p[0]) * (b[1] - a[1])) / Math.hypot(b[0] - a[0], b[1] - a[1]);
+
+test('perspective draws the eye level and rays from each vanishing point as construction lines', async () => {
+  const { runtime, tools, calls } = fakeRuntime();
+  const draw = byName(tools, 'draw_guide');
+  await assert.rejects(draw.execute('p0', { element: 'Street', perspective: { eye_level_y: 250, vanishing_points: [[400, 250]] } }), /look at the canvas/i,
+    'rays are drawn across the canvas, so its size must be known');
+  runtime.decisionObservation = { width: 800, height: 600 };
+  await draw.execute('p1', { element: 'Street', perspective: { eye_level_y: 250, vanishing_points: [[400, 250], [-2000, 260]], rays: 6 } });
+  const strokes = calls[0].params.strokes;
+  assert.ok(strokes.every(s => s.weight === 'construction'), 'all construction weight');
+  const [eye, ...rays] = strokes;
+  assert.deepEqual(eye, { start: [0, 250], segments: [[0, 250, 800, 250, 800, 250]], weight: 'construction' }, 'the eye level spans the canvas');
+  assert.equal(rays.length, 12, 'six rays from each vanishing point');
+  for (const [index, ray] of rays.entries()) {
+    const vp = index < 6 ? [400, 250] : [-2000, 260], end = ray.segments.at(-1).slice(4);
+    assert.ok(offLine(vp, ray.start, end) < 1e-6, 'every ray runs through its vanishing point');
+    for (const [x, y] of [ray.start, end]) assert.ok(x >= -1e-6 && x <= 800 + 1e-6 && y >= -1e-6 && y <= 600 + 1e-6, 'and stays on the canvas');
+    assert.ok(Math.hypot(end[0] - ray.start[0], end[1] - ray.start[1]) > 50, 'a ray crosses the canvas, not a stub');
+  }
+  assert.deepEqual(rays[0].start, [400, 250], 'a vanishing point on the canvas is where its rays start');
+  const angles = rays.slice(6).map(r => Math.atan2(r.segments.at(-1)[5] - 260, r.segments.at(-1)[4] + 2000));
+  assert.equal(new Set(angles.map(a => a.toFixed(4))).size, 6, 'the rays fan out, none repeated');
+  // Lines of the model's own come after the construction.
+  await draw.execute('p2', { element: 'Street', perspective: { eye_level_y: 250 }, lines: [{ points: [[0, 0], [10, 10]] }] });
+  assert.deepEqual(calls[1].params.strokes.map(s => s.weight), ['construction', 'contour']);
+});
+
+test('a vanishing point on the canvas edge fans its rays into the canvas, and no line is a dot', async () => {
+  const { runtime, tools, calls } = fakeRuntime();
+  runtime.decisionObservation = { width: 800, height: 600 };
+  const draw = byName(tools, 'draw_guide');
+  for (const vp of [[400, 0], [400, 3], [0, 300], [800, 600]]) {
+    calls.length = 0;
+    await draw.execute('edge', { element: 'Street', perspective: { vanishing_points: [vp], rays: 8 } });
+    const rays = calls[0].params.strokes;
+    assert.equal(rays.length, 8, `${vp}: eight rays`);
+    for (const ray of rays) {
+      const end = ray.segments.at(-1).slice(4);
+      assert.ok(Math.hypot(end[0] - ray.start[0], end[1] - ray.start[1]) > 50, `${vp}: every ray crosses the canvas`);
+    }
+  }
+  assert.deepEqual(clipPolyline([[-10, -10], [0, 0], [-10, 10]], 800, 600), [], 'touching a corner is not a line');
+  await assert.rejects(draw.execute('empty', { element: 'Street', perspective: {} }), /eye_level_y or vanishing_points/);
 });

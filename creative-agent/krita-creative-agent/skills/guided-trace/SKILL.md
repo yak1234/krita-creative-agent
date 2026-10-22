@@ -5,20 +5,21 @@ description: Sketch an element's construction lines from a reference with draw_g
 
 # Guided trace: an underdrawing from a reference
 
-A guide is a painter's underdrawing: a few construction lines on the element's own guide layer, thin and light blue.
-It is never the painting. It is never merged, Luna and the review never see it, and it is hidden when the element is
-finished. The guide gives **placement and shape**; the reference tools give **colour and light**; your own strokes
+A guide is a painter's underdrawing on the element's own guide layer, never the painting: never merged, never judged,
+hidden when the element is finished. The guide gives **placement and shape**; the reference tools give **colour and light**; your own strokes
 give **edges, detail and finish**.
 
 ## Reference first, then guides, then your strokes
 
-With a goal reference, guides pair with a reference colour pass:
+With a goal reference, work in three kinds of move:
 
-1. **Reference first:** on a fresh canvas, lay the reference's colours and light with `paint_from_reference` (the
+1. **Construction (a guides move, nothing painted):** the whole scene's eye level, vanishing points, big silhouettes
+   and light shapes, then `finish_move`.
+2. **Reference first:** on a fresh canvas, lay the reference's colours and light with `paint_from_reference` (the
    whole picture). On an established painting, bring them in with `paint_reference_surface` and
    `paint_reference_edges` over the paint already there.
-2. **Guides** for placement and shape, over that colour.
-3. **Your own strokes** for edges, detail and finish, following the guides.
+3. **Guides, then your own strokes, one element per move:** tighten that element's guide (`replace: true`), paint it
+   in your own strokes following the guide, then `finish_guide` and `finish_move`.
 
 With no goal reference (an element reference only, or none), guides give placement and your own strokes give the
 colour, from the element reference or the artist's description.
@@ -27,42 +28,43 @@ Never fill a guide shape flat (a grey block per outline): a guide marks where a 
 light sources bright: a moon or a lamp is the lightest value in the picture, and the brightest element stays the
 brightest; never paint it dark or mid-grey.
 
-## When to guide
-
-- Before painting an element whose placement or shape comes from a reference: a building, a figure, a vehicle, a
-  skyline, the horizon of a scene.
-- Not for texture, a sky gradient or a correction to paint that is already right.
-
 ## Which reference decides what
 
-- The **goal image** (the composition reference) decides **placement**: where the element sits, how big it is, where
-  the horizon and the vanishing points are.
-- An **element reference** (a photo of the one thing) decides the element's **shape and proportions**.
-- When an element reference's angle disagrees with the goal image, the goal image wins: take the element's
-  proportions, but fit them to the placement the goal image gives.
+The **goal image** decides **placement** (where and how big, the eye level, the vanishing points); an **element
+reference** decides **shape and proportions**. When they disagree, fit the element's proportions to the goal's placement.
 
-## What to draw
+## Measure, then draw
 
-A few dozen lines at most, never outlines of every detail:
+Look at the goal image (`view_reference`). Write down where the eye level and each big mass sit as a **fraction of
+the canvas** (top, bottom, centre), and turn those into canvas boxes. Never guess positions by eye.
 
-1. **Horizon and perspective:** the horizon line, two or three vanishing lines along the main edges (roof lines,
-   kerbs, window rows).
-2. **Block-in:** the element's silhouette as a few straight segments: its outer extents, the main masses (a tower's
-   shaft, its tent roof, its spire), the ground line it stands on.
-3. **Key proportions:** a centre line, the height of a storey, where a figure's head, waist and feet fall.
+1. **Eye level and vanishing points first:** `draw_guide` with `perspective: {eye_level_y, vanishing_points, rays}`
+   draws a thin eye-level line and rays fanning from each vanishing point.
+2. **Silhouettes from the reference:** `from_reference: {reference_id, source, target, detail}` traces the
+   reference's own edges inside `source` into a few clean contour lines on `target` (same proportions: crop, never
+   stretch); `detail: 'simple'` for a mass, `'medium'` for inner structure. Add your own `lines` where it misses one
+   (a railing to the vanishing point): canvas pixels, or with `reference_id`, `source` and `target`, reference pixels.
+3. **Light shapes:** outline every light source and the brightest areas warm, with `lights: true` or lines with
+   `weight: 'light'`. A shape outlined warm is painted light.
+4. **Tighten before painting:** when an element's own photo shows it better, draw it again with `replace: true`. The
+   rough guide is hidden, and undoing the move brings it back.
 
-## How
+Weights follow the canvas size: `construction` thin, `contour` (the default) stronger, `light` warm.
 
-1. `view_reference` the goal image and the element reference; decide the element's target rectangle on the canvas
-   from the goal image (canvas pixels).
-2. `draw_guide` with `element` (the name its layer and the plan use) and `lines` (polylines of 2-64 points, 1-128
-   lines). Points are canvas pixels; or give `reference_id` with `target` (and `source`, a crop of the reference,
-   default the whole reference) and the points are that reference's pixels, mapped onto the target exactly as the
-   reference tools map them (same aspect ratio: crop, never stretch). Draw again for the same element to add lines.
-3. Look at the returned image: the guide shows over the painting. Paint the element **under** it in your own strokes
-   (`paint_contours`, `paint_pass`), over whatever colour is already there. The guide is for placement: follow it, do not trace its lines as the final linework.
-4. When the element is painted, `finish_guide` with the same `element`. Its guide is hidden; the artist can show it
-   again. Then move on to the next element.
+## Check after each stage
 
-In Agent mode one move paints one element: draw its guide, paint it, finish its guide. Undo of the move removes the
-guide with the paint.
+- **Perspective:** do the receding lines (railings, kerbs, roof lines, window rows) meet at the vanishing point?
+- **Placement:** does each big shape sit at the same fraction of the canvas as in the reference (its top, bottom and
+  centre)?
+- **Silhouettes:** does each silhouette say what it is (tiers and a spire, not a box; arches as curves)?
+- **Light:** is every light source outlined warm?
+
+If a check fails, redraw that element with `replace: true` before you paint it.
+
+## More
+
+- `example-harbour-dusk.md`: the three kinds of move as real calls; read it before a scene's first guide.
+- `subject-architecture.md`, `subject-vehicles.md`, `subject-figures.md`, `subject-landscape.md`: what to guide and
+  the common errors; read only the one you need.
+
+`finish_guide` hides an element's guide (the artist can show it again); undo of a move removes its guide with its paint.

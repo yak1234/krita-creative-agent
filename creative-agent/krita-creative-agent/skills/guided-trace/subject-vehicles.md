@@ -3,8 +3,8 @@
 **What to guide**
 - The ground line under the wheels and the eye level. A car seen from above the eye level shows its roof; seen from
   below, it does not.
-- The body's silhouette from the reference (`from_reference`, `detail: 'simple'`), then the wheel arches and the
-  windows (`'medium'`).
+- The body's silhouette from the reference (`from_reference` with `shape: {box}` around the car alone, `detail:
+  'simple'`), then the wheel arches and the windows (`'medium'`). Two cars are two shapes.
 - Wheels as ellipses whose short axis points along the axle. Both wheels of one side sit on one line to the vanishing
   point.
 - The body's long edges (sills, the waist line, the roof line) recede to the vanishing point.

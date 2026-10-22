@@ -1,6 +1,7 @@
 import { MODES as modes, isPaintingMode } from './modes.mjs';
 import {LunaRouter, routingState, contextIdentity, routingAdvice} from './routing.mjs';
 import { DecisionService } from './decisions/service.ts';
+import { chatShapes } from './shapes/chat.ts';
 import {passCheck, progressCheck, moveCheck, seamCheck} from './visual-checks.ts';
 import { executionSettings, thinkingLevel, AUTO_REASONING_NOTE } from './execution-settings.mjs';
 import { panelSchema } from './settings-schema.mjs';
@@ -221,6 +222,8 @@ export class StudioRuntime extends PaintingRuntime {
     this.langfuseEnvPath = projectRoot ? join(projectRoot, '.env') : null;
     this.connectTracing = options.connectTracing ?? (() => connectLangfuse({release:BUILD_INFO.build_id,secrets:()=>this.secrets,dotEnvPath:this.langfuseEnvPath}));
     this.store = options.store ?? new ProjectStore({projectRoot:this.paintingsDirectory,dataDirectory:options.config.data_dir,legacyRoots:[options.config.output,options.config.legacy_output].filter(Boolean)});
+    // Element shapes (src/shapes): the open chat's study/shape/close, and answer() for the panel's shapes_model command.
+    this.shapes = options.shapes ?? chatShapes(this);
   }
   async importJournals() {
     const chats = await this.store.chatsWithJsonJournal();
@@ -2260,6 +2263,7 @@ export class StudioRuntime extends PaintingRuntime {
   dispose() { this.store?.close?.(); }
   stop(clearQueued = true) {
     this.sleepGuard.stop();
+    this.shapes?.stop?.();                             // a pending shape-model question or download is cancelled
     if (this.transition) this.transition.cancelled=true;
     if (clearQueued) this.pendingText = [];
     this.routingAbort?.abort(); this.routingDecision=null; this.routingStageKey=null; this.visualAbort?.abort();
@@ -2392,6 +2396,8 @@ export class StudioRuntime extends PaintingRuntime {
     if (this.study?.directory) { const id=this.study.id, directory=this.study.directory;
       prunePreviews(directory,{extraText:this.store.recordText(id)}).then(async()=>removeRebuildable(directory,{files:await this.store.removableFiles(id)})).catch(()=>{}); }   // background; see previews.mjs
     this.untrace?.(); this.untrace = undefined;
+    await this.shapes?.close().catch(() => {});        // the shape worker and what it studied belong to the chat
+    this.shapeStudies = undefined; this.canvasPixels = null;   // use.ts's studies and canvas decode, with them
     await this.tracing?.endSession(this.study?.id,{metadata:{goal_status:this.goal?.status,goal_revision:this.goal?.revision}});
     this.session?.dispose(); this.session=undefined; this.study=undefined; this.goal=undefined; this.faulted=false;
     this.contextSerial++; this.mode='ask'; this.emit({type:'ended'});

@@ -8,6 +8,7 @@
 import { readFile, readdir, rm, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { readRows } from './db.mjs';
+import { pruneShapes } from './shapes/use.ts';
 
 const VIEW = /view-[0-9a-f]{32}\.(?:png|jpg)/g;
 const RECORDS = ['study.json', 'goal.json', 'record.json', 'resume.json'];
@@ -18,6 +19,7 @@ const names = value => new Set(value.match(VIEW) ?? []);
 
 /** Delete previews nothing still needs. Returns {kept, removed, bytes}; dryRun only counts. */
 export async function prunePreviews(directory, { keepPasses = 0, keepRecent = 2, dryRun = false, extraText = '' } = {}) {
+  if (!dryRun) await pruneShapes(directory, 0);       // element shapes on the canvas are scratch for the open chat only
   const folder = join(directory, '.previews');
   let files;
   try { files = (await readdir(folder)).filter(name => /^view-[0-9a-f]{32}\.(?:png|jpg)$/.test(name)); }

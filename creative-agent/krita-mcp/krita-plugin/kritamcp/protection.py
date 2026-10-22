@@ -210,9 +210,10 @@ class ProtectionCraft:
             for x, y in [stroke['start']] + [(seg[i], seg[i + 1]) for seg in stroke.get('segments', []) for i in (0, 2, 4)]:
                 xs += [x - pad, x + pad]; ys += [y - pad, y + pad]
         reach = [int(min(xs)), int(min(ys)), int(max(xs)) + 1, int(max(ys)) + 1]
-        region = params.get('region')
-        if region:
-            reach = [max(reach[0], region[0]), max(reach[1], region[1]), min(reach[2], region[0] + region[2]), min(reach[3], region[1] + region[3])]
+        # A pass's region, or the shape it paints inside (element-shapes 1.5, validated before this is used), cuts it.
+        limit = params.get('region') or (params.get('inside_shape') or {}).get('bounds')
+        if limit:
+            reach = [max(reach[0], limit[0]), max(reach[1], limit[1]), min(reach[2], limit[0] + limit[2]), min(reach[3], limit[1] + limit[3])]
         return reach
 
     def _protect_capture(self, doc, session, operation, params):

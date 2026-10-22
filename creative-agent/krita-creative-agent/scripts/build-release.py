@@ -75,7 +75,72 @@ def bundle_image_resizing(dependency_root, companion, esbuild, root, pi_ai):
     shutil.copy2(wasm, companion / 'src/photon_rs_bg.wasm')
 
 
-def bundle_companion(root, dependency_root, companion, lock):
+def copy_onnxruntime(dependency_root, companion, platform, arch):
+    """Element shapes run ONNX Runtime's Node package in their worker (src/shapes/onnx.ts). It ships every platform's
+    binaries (about 300 MB unpacked): copy it with this platform's only, without its install scripts, and its one
+    dependency at run time, onnxruntime-common. Returns the binaries' folder, <platform>/<arch>."""
+    source = Path(dependency_root) / 'onnxruntime-node'
+    keep = '%s/%s' % (platform, arch)
+    if not list(source.glob('bin/napi-*/%s/onnxruntime_binding.node' % keep)):
+        raise ValueError('onnxruntime-node has no binary for %s; run npm ci on that platform.' % keep)
+    target = Path(companion) / 'node_modules' / 'onnxruntime-node'
+    def ignore(folder, names):
+        parts = Path(folder).relative_to(source).parts
+        if not parts: return [name for name in names if name == 'script']                       # install scripts (CUDA download)
+        if len(parts) == 2 and parts[0] == 'bin': return [name for name in names if name != platform]   # bin/napi-v6
+        if len(parts) == 3 and parts[0] == 'bin': return [name for name in names if name != arch]       # bin/napi-v6/<platform>
+        return [name for name in names if name.endswith(('.map', '.d.ts'))]
+    shutil.copytree(source, target, ignore=ignore)
+    # npm ships the library twice (libonnxruntime.1.dylib and libonnxruntime.1.30.0.dylib, identical, ~40 MB each): the
+    # binding loads the short name, so a longer-named identical copy is left out.
+    binaries = sorted((path for path in target.glob('bin/napi-*/%s/*' % keep) if path.is_file()), key=lambda path: (len(path.name), path.name))
+    seen = {}
+    for path in binaries:
+        digest = hash_file(path)
+        if digest in seen: path.unlink()
+        else: seen[digest] = path
+    shutil.copytree(Path(dependency_root) / 'onnxruntime-common', Path(companion) / 'node_modules' / 'onnxruntime-common',
+                    ignore=shutil.ignore_patterns('*.map', '*.d.ts'))
+    return keep
+
+
+def bundle_shape_worker(root, companion, esbuild, dependency_root, arch):
+    """The element-shapes worker runs as its own process (src/shapes/worker.ts): bundled beside main.mjs as
+    src/shapes-worker.mjs, where src/shapes/index.ts looks for it in a release, with ONNX Runtime left outside the bundle."""
+    result = subprocess.run([str(esbuild), str(root / 'src/shapes/worker.ts'), '--bundle', '--platform=node', '--format=esm', '--target=node22',
+                             '--outfile=' + str(companion / 'src/shapes-worker.mjs'), '--external:onnxruntime-node', '--log-level=warning',
+                             '--legal-comments=none', '--banner:js=' + BANNER], cwd=root, text=True, capture_output=True)
+    if result.returncode or 'warning' in result.stderr.lower():
+        raise ValueError('Bundling the shape worker failed or warned: ' + (result.stderr or result.stdout)[-2000:])
+    copy_onnxruntime(dependency_root, companion, 'darwin', arch)
+
+
+WORKER_CHECK = r'''
+const { fork } = require('node:child_process');
+const child = fork(process.argv[1], ['--model', process.argv[2], '--idle-ms', '20000'], { serialization: 'advanced', execArgv: [], stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+let stderr = ''; child.stderr.on('data', d => { stderr += d; });
+const timer = setTimeout(() => { console.log(JSON.stringify({ error: 'no answer', stderr })); child.kill(); process.exit(1); }, 30000);
+child.on('message', reply => { clearTimeout(timer); console.log(JSON.stringify(reply)); child.kill(); process.exit(0); });
+child.on('exit', code => { clearTimeout(timer); console.log(JSON.stringify({ error: 'exited ' + code, stderr })); process.exit(1); });
+child.send({ id: 1, op: 'shape', image_id: 'none', prompt: { box: [0, 0, 1, 1] } });
+'''
+
+
+def validate_shape_worker(node, companion):
+    """The bundled shape worker starts with this Node from the release layout and loads onnxruntime-node (the worker imports
+    it on start): asked for a shape of nothing it has studied, it must answer not_studied, not fail to load."""
+    with tempfile.TemporaryDirectory(prefix='creative-validate-worker-') as home:
+        result = subprocess.run([str(node), '-e', WORKER_CHECK, str(Path(companion) / 'src/shapes-worker.mjs'), str(Path(home) / 'no-model')],
+                                cwd=str(Path(companion) / 'src'), text=True, capture_output=True, timeout=60,
+                                env={'HOME': home, 'PATH': str(Path(node).parent) + ':/usr/bin:/bin'})
+    try: reply = json.loads(result.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError): reply = {}
+    error = reply.get('error')
+    if not isinstance(error, dict) or error.get('code') != 'not_studied':
+        raise ValueError('The bundled shape worker did not start with onnxruntime-node: ' + (result.stdout + result.stderr)[-2000:])
+
+
+def bundle_companion(root, dependency_root, companion, lock, arch):
     esbuild = dependency_root / '.bin' / 'esbuild'
     if not esbuild.exists(): raise ValueError('esbuild is missing; run npm ci (it is a pinned devDependency).')
     # Pi's pi-ai sits where npm put it (nested under pi-coding-agent); the release entry imports it by name.
@@ -89,6 +154,7 @@ def bundle_companion(root, dependency_root, companion, lock):
     if result.returncode or 'warning' in result.stderr.lower():
         raise ValueError('Bundling the companion failed or warned: ' + (result.stderr or result.stdout)[-2000:])
     bundle_image_resizing(dependency_root, companion, esbuild, root, pi_ai)
+    bundle_shape_worker(root, companion, esbuild, dependency_root, arch)
     shutil.copy2(root / 'src/visual-check-questions.json', companion / 'src/visual-check-questions.json')
     shutil.copy2(root / 'src/brush-catalog.json', companion / 'src/brush-catalog.json')
     # Python for image assets: the sandbox runner beside main.mjs, Pyodide itself, the bundled skills
@@ -185,7 +251,7 @@ def build(destination, node=None, root=ROOT, plugin=None, node_spec=None, depend
             if installed['version'] != version: raise ValueError('Dependency version differs from package.json: ' + name)
             packages[name] = installed['version']
         # One bundled file instead of ~17,500 node_modules files (~180 MB → ~14 MB).
-        bundle_companion(root, dependency_root, companion, lock)
+        bundle_companion(root, dependency_root, companion, lock, details['architecture'])
         shutil.copytree(plugin / 'kritamcp', staging / 'plugin/kritamcp',
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc', 'creative-agent-config.json', 'build-info.json', '.DS_Store'))
         shutil.copy2(plugin / 'kritamcp.desktop', staging / 'plugin/kritamcp.desktop')
@@ -193,6 +259,7 @@ def build(destination, node=None, root=ROOT, plugin=None, node_spec=None, depend
         # Start the bundled companion in an isolated home, as the panel would. A module the
         # bundle missed, or an asset it cannot find, fails here instead of on an artist's Mac.
         validate_companion(node, companion)
+        validate_shape_worker(node, companion)
         # The digest covers physical payloads. Derived manifests are excluded
         # from their own digest and then separately covered by the file list.
         old_info = companion / 'build-info.json'
@@ -200,7 +267,7 @@ def build(destination, node=None, root=ROOT, plugin=None, node_spec=None, depend
         payload = inventory(staging)
         build_id = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         info = {'version': package['version'], 'protocol_version': 2, 'build_id': build_id,
-                'platform': 'darwin', 'architecture': 'any', 'node': 'v' + node_spec['version'], 'validation': 'staged-sdk-import-passed',
+                'platform': 'darwin', 'architecture': details['architecture'], 'node': 'v' + node_spec['version'], 'validation': 'staged-sdk-import-passed',
                 'live_krita_verified': False, 'clean_mac_verified': False,
                 'krita_support': 'Krita 5.2/5.3 candidate; exact-version live compatibility validation required'}
         for target in (companion / 'build-info.json', staging / 'plugin/kritamcp/build-info.json'):

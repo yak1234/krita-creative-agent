@@ -3,7 +3,7 @@
 // copy of a painting (opened in Krita, closed unsaved and deleted at the end) or on a new painting. Development
 // only: scripts/evaluate-tool-choice.ts and scripts/test-driver.ts (the MCP's creative_test_* tools) use it.
 import { spawn as spawnProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
@@ -16,8 +16,11 @@ export type Spawn = (command: string, args: string[], options: { cwd: string; en
 export type StartOptions = { prompt: string; painting?: string; width?: number; height?: number; name?: string;
   provider?: string; model?: string; loopGuards?: boolean; luna?: 'off' | 'evaluate' | 'guide' };
 export type Move = { number: number; status: string; title?: string; actions?: number; strokes?: number; request_done?: boolean; [key: string]: unknown };
+/** One element-shapes timing (src/shapes/chat.ts's shape_timing event): a study or a shape, its time, peak memory and provider. */
+export type ShapeTiming = { kind: string; ms: number; peak_mb: number; provider: string; [key: string]: unknown };
 export type TestState = { folder: string; chat_id: string | null; ready: boolean; busy: boolean; activity: string | null;
-  moves: Move[]; question: unknown; canvas: string | null; copy: string | null; errors: string[]; exited: boolean };
+  moves: Move[]; question: unknown; canvas: string | null; copy: string | null; errors: string[]; exited: boolean;
+  shape_timings: ShapeTiming[]; shapes_model_needed: string | null };
 
 const SETTINGS = ['execution-settings.json', 'model-connections.json', 'model-catalog.json', 'decision-endpoints.json', 'capabilities/model-capabilities.json'];
 
@@ -49,7 +52,8 @@ export class TestCompanion {
     { bridge: Bridge; spawn?: Spawn; quietMs?: number; startMs?: number; closeRetryMs?: number }) {
     this.base = base; this.folder = folder; this.bridge = bridge; this.spawn = spawn; this.quietMs = quietMs; this.startMs = startMs;
     this.closeRetryMs = closeRetryMs;
-    this.status = { folder, chat_id: null, ready: false, busy: false, activity: null, moves: [], question: null, canvas: null, copy: null, errors: [], exited: false };
+    this.status = { folder, chat_id: null, ready: false, busy: false, activity: null, moves: [], question: null, canvas: null, copy: null, errors: [], exited: false,
+      shape_timings: [], shapes_model_needed: null };
   }
 
   /** Start a test chat in Agent mode. With `painting` (relative to the project root) a copy is opened in Krita;
@@ -64,6 +68,9 @@ export class TestCompanion {
       await mkdir(dirname(join(data, file)), { recursive: true });
       await copyFile(join(this.base.data_dir, file), join(data, file)).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; });
     }
+    // The element-shapes model (~330 MB, src/shapes/model.ts) is the artist's: linked, never copied or downloaded per test chat.
+    const models = join(this.base.data_dir, 'models');
+    if (await access(models).then(() => true, () => false)) await symlink(models, join(data, 'models')).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'EEXIST') throw error; });
     if (options.luna) {                            // Luna's setting for this test chat only; the artist's copy is untouched
       const path = join(data, 'execution-settings.json');
       const settings = JSON.parse(await readFile(path, 'utf8').catch(() => '{}'));
@@ -222,6 +229,9 @@ export class TestCompanion {
         s.moves.sort((a, b) => a.number - b.number);
       }
       if (event.type === 'error') s.errors.push(String(event.message));
+      if (event.type === 'shape_timing') { const { type: _type, ...timing } = event; s.shape_timings.push(timing); }
+      if (event.type === 'shapes_model_needed') s.shapes_model_needed = String(event.message ?? 'The shape model needs a download.');
+      if (event.type === 'shapes_model_ready') s.shapes_model_needed = null;
       if (event.type === 'move' && event.move) {
         const at = s.moves.findIndex(m => m.number === event.move.number);
         if (at >= 0) s.moves[at] = event.move; else s.moves.push(event.move);

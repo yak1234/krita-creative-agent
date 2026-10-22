@@ -22,8 +22,10 @@ from .geometry_data import bounds as checked_bounds, polygon
 from . import canvas_projection
 
 STEP_FIELDS = ('feature', 'shape', 'bounds', 'points', 'layer_id', 'color', 'seed', 'tolerance', 'saved', 'mode',
-               'grow', 'shrink', 'border', 'feather', 'smooth', 'invert')
-SOURCES = ('shape', 'layer_id', 'color', 'seed', 'saved', 'feature')
+               'grow', 'shrink', 'border', 'feather', 'smooth', 'invert', 'element_shape')
+# element_shape {mask_path, bounds}: an element's shape the companion found and wrote to the chat folder (shape_mask.py);
+# the companion sends it, the painter names a shape by a box or points instead.
+SOURCES = ('shape', 'layer_id', 'color', 'seed', 'saved', 'feature', 'element_shape')
 RUN = re.compile(rb'[^\x00]+')
 MODES = ('replace', 'add', 'subtract', 'intersect')
 REFINEMENTS = ('grow', 'shrink', 'border', 'feather')     # applied in this order, then smooth, then invert
@@ -140,6 +142,8 @@ class RegionCraft:
             self._region_saved_path(session, step['saved'], must_exist=True)
         elif source == 'feature':
             self._feature_selection(doc, step['feature'])          # resolved and discarded: a typo is refused now
+        elif source == 'element_shape':
+            self._region_shape_selection(doc, session, step['element_shape'])
 
     def _region_polygon(self, doc, points):
         return polygon(points, doc.width(), doc.height())
@@ -225,7 +229,17 @@ class RegionCraft:
             return self._region_load(session, step['saved'])
         if source == 'feature':
             return self._feature_selection(doc, step['feature'])
+        if source == 'element_shape':
+            return self._region_shape_selection(doc, session, step['element_shape'])
         return self._region_colour(doc, step, source)
+
+    def _region_shape_selection(self, doc, session, spec):
+        """An element's shape {mask_path, bounds} (shape_mask.py) as a selection: the chat folder's file, read 1:1."""
+        from . import shape_mask
+        rect, data = shape_mask.read_shape(spec, session.get('output'), doc.width(), doc.height())
+        selection = Selection()
+        selection.setPixelData(data, *rect)
+        return selection
 
     def _region_colour(self, doc, step, source, native=True):
         """A colour range on the visible image (`color`), or the part of it joined to the seed (`seed`): through the

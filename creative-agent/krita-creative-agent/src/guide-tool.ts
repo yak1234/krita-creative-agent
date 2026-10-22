@@ -7,7 +7,9 @@
 // The studio's native call and the mapping come in as dependencies, so this module imports no .mjs.
 import { Type, type Static } from 'typebox';
 import type { AgentToolResult, ToolDefinition } from '@earendil-works/pi-coding-agent';
-import { traceOutlines, traceLights, type Pixels } from './guide-trace.ts';
+import { traceOutlines, traceLights, shapeSource, type Pixels } from './guide-trace.ts';
+import { checkPrompt, findShape, imageKey, promptBox, scalePrompt, shapeReport, shapeSchema, shapeTimings,
+  type Found, type ShapeHost } from './shapes/use.ts';
 
 const object = <T extends Parameters<typeof Type.Object>[0]>(properties: T) => Type.Object(properties, { additionalProperties: false });
 const rect = (description: string) => Type.Array(Type.Integer({ minimum: 0, maximum: 100000 }), { minItems: 4, maxItems: 4, description });
@@ -37,11 +39,12 @@ const drawSchema = object({
   perspective: Type.Optional(perspectiveSchema),
   from_reference: Type.Optional(Type.Object({
     reference_id: Type.String({ minLength: 1 }),
-    source: Type.Optional(rect('[x,y,w,h] of the reference holding the element (default: the whole reference).')),
-    target: rect('[x,y,w,h] of the canvas where the element goes, same aspect ratio as source.'),
+    source: Type.Optional(rect('[x,y,w,h] of the reference holding the element (default: the shape\u2019s box, else the whole reference).')),
+    target: rect('[x,y,w,h] of the canvas where the element goes, same aspect ratio as source (or the shape\u2019s box). With shape points and no source, the element is fitted into target, centred, its proportions kept.'),
+    shape: Type.Optional(shapeSchema('reference')),
     detail: Type.Optional(Type.Union([Type.Literal('simple'), Type.Literal('medium')], { description: 'simple: the silhouette and main lines (up to 8); medium: more inner structure (up to 24). Default simple.' })),
     lights: Type.Optional(Type.Boolean({ description: 'Also outline the brightest shapes (light sources, lit faces) in the warm light colour.' })),
-  }, { additionalProperties: false, description: 'Outline the element from the reference\u2019s own edges inside source, mapped onto target as contour lines: only the lines are drawn.' })),
+  }, { additionalProperties: false, description: 'Outline the element from the reference\u2019s own edges inside source, mapped onto target as contour lines: only the lines are drawn. With shape, only that one element is outlined (its outline and the structure inside it), nothing else in the box.' })),
   replace: Type.Optional(Type.Boolean({ description: 'Tighten: hide this element\u2019s earlier guide and draw on a new layer (undoing the move shows it again).' })),
 });
 const finishSchema = object({ element: Type.String({ minLength: 1, maxLength: 60 }) });
@@ -49,7 +52,7 @@ const finishSchema = object({ element: Type.String({ minLength: 1, maxLength: 60
 type Rect = [number, number, number, number];
 type Reference = { id: string; width?: number; height?: number };
 type Result = AgentToolResult<unknown>;
-export type GuideRuntime = { study?: { references?: Reference[] }; decisionObservation?: { width?: unknown; height?: unknown } | null;
+export type GuideRuntime = ShapeHost & { study?: { references?: Reference[] }; decisionObservation?: { width?: unknown; height?: unknown } | null;
   emit(event: Record<string, unknown>): void };
 type Point = [number, number];
 
@@ -99,31 +102,60 @@ export function traceSide(width: number, height: number, source: number[]): numb
   return Math.max(1, Math.min(long, cap, Math.max(TRACE_SIDE, Math.ceil(720 * long / crop))));
 }
 
-/** from_reference: the element's outline (and its lights) traced from the reference, mapped onto the target. */
+/** from_reference: the element's outline (and its lights) traced from the reference, mapped onto the target; with a
+ * shape, only that element's, and the shape found (for its score). */
 export async function tracedLines(runtime: GuideRuntime, from: NonNullable<Static<typeof drawSchema>['from_reference']>,
-  dependencies: GuideDependencies): Promise<Line[]> {
+  dependencies: GuideDependencies): Promise<{ lines: Line[]; shape: Found | null }> {
   const reference = runtime.study?.references?.find(item => item.id === from.reference_id);
   if (!reference) throw new Error('Unknown reference ID. Use the attachment list in the study context.');
   const width = reference.width ?? 0, height = reference.height ?? 0;
-  const source: Rect = (from.source as Rect | undefined) ?? [0, 0, width, height];
+  const prompt = from.shape ? checkPrompt(from.shape) : null;
+  // With a box and no source, the box is what maps onto the target (clamped to the reference, whole pixels).
+  const boxed = (box: number[]): Rect => {
+    const left = Math.max(0, Math.floor(box[0] ?? 0)), top = Math.max(0, Math.floor(box[1] ?? 0));
+    return [left, top, Math.min(width, Math.ceil((box[0] ?? 0) + (box[2] ?? 0))) - left, Math.min(height, Math.ceil((box[1] ?? 0) + (box[3] ?? 0))) - top];
+  };
+  // The source that maps onto the target: given; a box's own (whole pixels, clamped to the reference); with points and
+  // no source, the shape's bounds, fitted into the target (found below); else the whole reference.
+  const fitted = !from.source && prompt !== null && 'points' in prompt;
+  const source: Rect = (from.source as Rect | undefined) ?? (prompt && 'box' in prompt ? boxed(promptBox(prompt)) : [0, 0, width, height]);
   if (!(source[2] > 0 && source[3] > 0 && source[0] + source[2] <= width && source[1] + source[3] <= height))
     throw new Error('Source crop must fit the reference.');
-  const map = dependencies.mapPoint(source, from.target);
+  let map = fitted ? null : dependencies.mapPoint(source, from.target);
   const canvas = runtime.decisionObservation;
   if (!(Number(canvas?.width) > 0 && Number(canvas?.height) > 0))
     throw new Error('A guide from a reference is placed on the canvas: look at the canvas first (observe), then draw it.');
   if (!dependencies.referencePixels) throw new Error('from_reference needs the reference pixels, which this companion cannot read.');
-  const pixels = await dependencies.referencePixels(from.reference_id, traceSide(width, height, source));
-  // The decode may be smaller than the listed reference: trace its share of the source, then scale the lines back.
-  const kx = pixels.width / width, ky = pixels.height / height;
-  const left = Math.min(pixels.width - 1, Math.floor(source[0] * kx)), top = Math.min(pixels.height - 1, Math.floor(source[1] * ky));
-  const scaled = [left, top, Math.max(1, Math.min(pixels.width, Math.ceil((source[0] + source[2]) * kx)) - left),
-    Math.max(1, Math.min(pixels.height, Math.ceil((source[1] + source[3]) * ky)) - top)];
-  const clamp = (value: number, low: number, size: number) => Math.min(low + size, Math.max(low, value));
   const detail = from.detail ?? 'simple';
-  const mapped = (lines: Point[][], weight: GuideWeight): Line[] => lines.map(points => ({ weight,
-    points: points.map(([x, y]) => map(clamp(x / kx, source[0], source[2]), clamp(y / ky, source[1], source[3]))) }));
-  return [...mapped(traceOutlines(pixels, scaled, detail), 'contour'), ...(from.lights ? mapped(traceLights(pixels, scaled, detail), 'light') : [])];
+  if (!prompt) {
+    const pixels = await dependencies.referencePixels(from.reference_id, traceSide(width, height, source));
+    // The decode may be smaller than the listed reference: trace its share of the source, then scale the lines back.
+    const kx = pixels.width / width, ky = pixels.height / height;
+    const left = Math.min(pixels.width - 1, Math.floor(source[0] * kx)), top = Math.min(pixels.height - 1, Math.floor(source[1] * ky));
+    const scaled = [left, top, Math.max(1, Math.min(pixels.width, Math.ceil((source[0] + source[2]) * kx)) - left),
+      Math.max(1, Math.min(pixels.height, Math.ceil((source[1] + source[3]) * ky)) - top)];
+    const clamp = (value: number, low: number, size: number) => Math.min(low + size, Math.max(low, value));
+    const to = map!;
+    const mapped = (lines: Point[][], weight: GuideWeight): Line[] => lines.map(points => ({ weight,
+      points: points.map(([x, y]) => to(clamp(x / kx, source[0], source[2]), clamp(y / ky, source[1], source[3]))) }));
+    return { shape: null,
+      lines: [...mapped(traceOutlines(pixels, scaled, detail), 'contour'), ...(from.lights ? mapped(traceLights(pixels, scaled, detail), 'light') : [])] };
+  }
+  // A shape: the whole reference decoded at one size whatever the box, so one reference is one study; the shape is
+  // traced inside it only, and its lines are not cut to the source (the canvas cuts them, as for any guide line).
+  const pixels = await dependencies.referencePixels(from.reference_id, traceSide(width, height, [0, 0, width, height]));
+  const kx = pixels.width / width, ky = pixels.height / height;
+  const found = await findShape(runtime, imageKey('reference:' + from.reference_id, pixels), pixels, scalePrompt(prompt, kx, ky, pixels));
+  if (fitted) {
+    const [bx, by, bw, bh] = found.bounds, own: Rect = [bx / kx, by / ky, bw / kx, bh / ky];
+    const [tx, ty, tw, th] = from.target, scale = Math.min(tw / own[2], th / own[3]);
+    map = dependencies.mapPoint(own, [tx + (tw - own[2] * scale) / 2, ty + (th - own[3] * scale) / 2, own[2] * scale, own[3] * scale]);
+  }
+  const to = map!;
+  const mapped = (lines: Point[][], weight: GuideWeight): Line[] => lines.map(points => ({ weight, points: points.map(([x, y]) => to(x / kx, y / ky)) }));
+  const shape = { bounds: found.bounds, data: found.data }, crop = shapeSource(found.bounds, pixels.width, pixels.height);
+  return { shape: found, lines: [...mapped(traceOutlines(pixels, crop, detail, shape), 'contour'),
+    ...(from.lights ? mapped(traceLights(pixels, crop, detail, shape), 'light') : [])] };
 }
 export type GuideStroke = { start: [number, number]; segments: number[][]; weight: GuideWeight };
 type Line = { points: Point[]; weight: GuideWeight };
@@ -209,19 +241,27 @@ export function guideTools(runtime: GuideRuntime, dependencies: GuideDependencie
         + 'own guide layer (light blue, warm for light; never merged, never judged as the painting). perspective draws the '
         + 'eye level and rays from vanishing points; each line has a weight (construction, contour, light). Points are '
         + 'canvas pixels, or with reference_id pixels of that reference mapped from source onto target (same aspect); '
-        + 'from_reference outlines the element from the reference\u2019s own edges (lights: its brightest shapes). '
+        + 'from_reference outlines the element from the reference\u2019s own edges (lights: its brightest shapes); with shape '
+        + '(one box or a few points per element) only that element. '
         + 'Draw again to add lines; replace: true tightens (the earlier guide is hidden). Read the guided-trace skill '
         + 'first. Paint the element over the guide in your own strokes, then finish_guide.',
       execute: async (id: string, args: Static<typeof drawSchema>, signal?: AbortSignal): Promise<Result> => {
         signal?.throwIfAborted();
-        const traced = args.from_reference ? await tracedLines(runtime, args.from_reference, dependencies) : [];
+        const { lines: traced, shape } = args.from_reference ? await tracedLines(runtime, args.from_reference, dependencies) : { lines: [], shape: null };
         signal?.throwIfAborted();
         if (args.from_reference && !traced.length && !args.lines?.length && !args.perspective)
-          throw new Error('No clear outline in that part of the reference: choose a source around the element, try detail medium, or draw its lines yourself.');
+          throw new Error(shape ? `No clear outline in that shape (score ${shapeReport(shape).score}): give a tighter box or points on the element, or draw its lines yourself.`
+            : 'No clear outline in that part of the reference: choose a source around the element, try detail medium, or draw its lines yourself.');
         const strokes = guideStrokes(runtime, args, dependencies.mapPoint, traced);
         const result = await draw(id, { element: args.element, strokes, ...(args.replace ? { replace: true } : {}) }, signal);
-        runtime.emit({ type: 'action', seconds: 0, message: `Drew a guide for ${args.element} (hidden when the element is finished).` });
-        return result;
+        runtime.emit({ type: 'action', seconds: 0, message: shape
+          ? `Drew a guide for ${args.element} from its shape (hidden when the element is finished).`
+          : `Drew a guide for ${args.element} (hidden when the element is finished).` });
+        if (!shape) return result;
+        // The painter reads the shape's score (and a note when it is uncertain); diagnostics get its timings.
+        const report = shapeReport(shape);
+        return { ...result, content: [...result.content, { type: 'text', text: JSON.stringify({ shape: report }) }],
+          details: { ...(result.details as object ?? {}), shape: { ...report, ...shapeTimings(shape) } } };
       },
     },
     {

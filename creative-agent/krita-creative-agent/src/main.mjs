@@ -68,6 +68,7 @@ async function handle(command) {
       case 'configure_provider': await runtime.configureProvider(command); break;
       case 'decisions': await runtime.configureDecisions(command); break;
       case 'move': await runtime.moveAction(command); break;
+      case 'shapes_model': runtime.shapes.answer(['accept', 'enable'].includes(command.action) ? command.action : 'decline'); break;   // shapes_model_needed's answer, or Ask again
       case 'shutdown': await shutdown(); break;
       default: throw new Error('Unknown panel command.');
     }
@@ -81,6 +82,7 @@ async function shutdown() {
   await Promise.allSettled([...pending]);
   runtime.busy = false;
   await runtime.end().catch(() => {});
+  await runtime.shapes?.close().catch(() => {});
   runtime.dispose?.();
   await runtime.bridge.close().catch(() => {});
   await runtime.diagnostics.close().catch(() => {});

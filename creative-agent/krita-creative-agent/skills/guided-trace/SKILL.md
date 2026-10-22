@@ -19,7 +19,7 @@ With a goal reference, work in three kinds of move:
    whole picture). On an established painting, bring them in with `paint_reference_surface` and
    `paint_reference_edges` over the paint already there.
 3. **Guides, then your own strokes, one element per move:** tighten that element's guide (`replace: true`), paint it
-   in your own strokes following the guide, then `finish_guide` and `finish_move`.
+   in your own strokes following the guide (`inside_shape` keeps a pass inside it), then `finish_guide` and `finish_move`.
 
 With no goal reference (an element reference only, or none), guides give placement and your own strokes give the
 colour, from the element reference or the artist's description.
@@ -36,18 +36,19 @@ reference** decides **shape and proportions**. When they disagree, fit the eleme
 ## Measure, then draw
 
 Look at the goal image (`view_reference`). Write down where the eye level and each big mass sit as a **fraction of
-the canvas** (top, bottom, centre), and turn those into canvas boxes. Never guess positions by eye.
+the canvas** (top, bottom, centre), and turn those into canvas boxes.
 
 1. **Eye level and vanishing points first:** `draw_guide` with `perspective: {eye_level_y, vanishing_points, rays}`
    draws a thin eye-level line and rays fanning from each vanishing point.
-2. **Silhouettes from the reference:** `from_reference: {reference_id, source, target, detail}` traces the
-   reference's own edges inside `source` into a few clean contour lines on `target` (same proportions: crop, never
-   stretch); `detail: 'simple'` for a mass, `'medium'` for inner structure. Add your own `lines` where it misses one
-   (a railing to the vanishing point): canvas pixels, or with `reference_id`, `source` and `target`, reference pixels.
+2. **Silhouettes from the reference:** `from_reference: {reference_id, shape: {box: [x,y,w,h]}, target, detail}`
+   outlines one element's exact shape on `target` (the box's proportions: crop, never stretch), never the clutter
+   around it. Give one box or a few points per element (`points: [[x,y,1]]` on it, `0` beside it; points are fitted into `target`);
+   a group is one box per member: each tower of a skyline, not the cluster. A score under 0.6 is uncertain: a tighter
+   box or points.
+   `'medium'` adds inner structure. Add your own `lines` where it misses one (a railing to the vanishing point).
 3. **Light shapes:** outline every light source and the brightest areas warm, with `lights: true` or lines with
    `weight: 'light'`. A shape outlined warm is painted light.
-4. **Tighten before painting:** when an element's own photo shows it better, draw it again with `replace: true`. The
-   rough guide is hidden, and undoing the move brings it back.
+4. **Tighten before painting:** when an element's own photo shows it better, draw it again with `replace: true`.
 
 Weights follow the canvas size: `construction` thin, `contour` (the default) stronger, `light` warm.
 
@@ -65,6 +66,6 @@ If a check fails, redraw that element with `replace: true` before you paint it.
 
 - `example-harbour-dusk.md`: the three kinds of move as real calls; read it before a scene's first guide.
 - `subject-architecture.md`, `subject-vehicles.md`, `subject-figures.md`, `subject-landscape.md`: what to guide and
-  the common errors; read only the one you need.
+  the common errors; read only one.
 
 `finish_guide` hides an element's guide (the artist can show it again); undo of a move removes its guide with its paint.

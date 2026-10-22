@@ -197,13 +197,41 @@ class SigningTests(unittest.TestCase):
         package_app.adhoc_sign(self.fake.main)                                       # signing again makes it runnable
         self.assertEqual(package_app.invalid_signatures(self.fake.app), [])
 
+    def test_the_companions_native_files_stay_as_the_release_made_them_and_the_app_still_verifies(self):
+        # onnxruntime-node's binaries (element shapes) are files of the companion, checked against the release manifest when
+        # the plugin installs the companion: re-signing or editing them would make the companion refuse itself.
+        native = self.fake.contents / 'Resources/creative-agent-bundle/companion/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64'
+        native.mkdir(parents=True)
+        lib = compile_c(self.fake.build, 'libonnx.dylib', 'int onnx(void) { return 2; }\n', '-dynamiclib', '-install_name', '@rpath/libonnx.1.dylib')
+        shutil.copy2(lib, native / 'libonnx.1.dylib')
+        before = (native / 'libonnx.1.dylib').read_bytes()
+        self.assertNotIn(str(native / 'libonnx.1.dylib'), package_app.app_macho_files(self.fake.app))
+        self.fake.sign()
+        self.assertEqual((native / 'libonnx.1.dylib').read_bytes(), before, 'not re-signed')
+        ok, message = package_app.verify_signature(self.fake.app)
+        self.assertTrue(ok, message)
+        self.assertEqual(package_app.invalid_signatures(self.fake.app), [])
+
     def test_a_named_identity_that_is_not_in_the_keychain_fails_instead_of_signing_ad_hoc(self):
         with self.assertRaises(RuntimeError):
             package_app.sign_bundle(self.fake.app, 'Krita Agent Test Identity That Does Not Exist', log=lambda *_: None)
 
 
+ONNX_BINARIES = ('onnxruntime_binding.node', 'libonnxruntime.1.dylib')
+
+
+def onnx_files(platforms):
+    """A release's onnxruntime-node (element shapes' runtime) with binaries for the given <platform>/<arch> folders."""
+    files = {'companion/node_modules/onnxruntime-node/package.json': '{"name": "onnxruntime-node"}',
+             'companion/node_modules/onnxruntime-node/dist/index.js': 'x', 'companion/node_modules/onnxruntime-common/package.json': '{}'}
+    for platform in platforms:
+        for name in ONNX_BINARIES:
+            files['companion/node_modules/onnxruntime-node/bin/napi-v6/%s/%s' % (platform, name)] = 'binary ' + name
+    return files
+
+
 class LayoutTests(unittest.TestCase):
-    def make_complete(self, root):
+    def make_complete(self, root, onnx=('darwin/arm64',)):
         contents = pathlib.Path(root) / 'Toska.app' / 'Contents'
         for path in ('MacOS/krita', 'MacOS/krita-app', 'MacOS/kritarunner', 'Resources/kritaplugins/a.xmlgui',
                      'Resources/krita/pykrita/kritamcp/__init__.py', 'Resources/krita/pykrita/kritamcp.desktop',
@@ -215,7 +243,7 @@ class LayoutTests(unittest.TestCase):
             (contents / path).parent.mkdir(parents=True, exist_ok=True)
             (contents / path).write_text('x')
         release = pathlib.Path(root) / 'rel'
-        bundled, manifest = make_release(release)                                       # a valid companion in Resources/creative-agent
+        bundled, manifest = make_release(release, extra_files=onnx_files(onnx))          # a valid companion in Resources/creative-agent
         shutil.copytree(bundled, contents / 'Resources' / 'creative-agent-bundle')
         (contents / 'Resources/krita/pykrita/kritamcp/build-info.json').write_text(
             json.dumps({'build_id': manifest['build_id'], 'protocol_version': manifest.get('protocol_version', 2)}))
@@ -254,6 +282,84 @@ class LayoutTests(unittest.TestCase):
             self.assertIn('plugin build id', ' | '.join(package_app.layout_problems(bundle)))
             info.unlink()
             self.assertIn('plugin build id', ' | '.join(package_app.layout_problems(bundle)))
+
+
+    def test_the_companion_carries_onnx_runtime_for_this_platform_only(self):
+        # onnxruntime-node ships every platform's binaries (~300 MB unpacked); the app keeps its own (darwin/arm64) only.
+        with tempfile.TemporaryDirectory(prefix='krita-agent-test-') as root:
+            bundle = self.make_complete(root, onnx=('darwin/arm64', 'linux/x64', 'win32/arm64'))
+            problems = ' | '.join(package_app.layout_problems(bundle))
+            self.assertIn('onnxruntime-node binaries for other platforms', problems)
+            self.assertIn('linux/x64', problems); self.assertIn('win32/arm64', problems)
+            self.assertNotIn('bundled companion', problems, 'only the platform problem: the release matches its manifest')
+        with tempfile.TemporaryDirectory(prefix='krita-agent-test-') as root:
+            bundle = self.make_complete(root, onnx=())
+            self.assertIn('no onnxruntime-node binary for darwin/arm64', ' | '.join(package_app.layout_problems(bundle)))
+        with tempfile.TemporaryDirectory(prefix='krita-agent-test-') as root:
+            bundle = self.make_complete(root, onnx=('darwin/arm64',))
+            problems = ' | '.join(package_app.layout_problems(bundle, arch='x86_64'))   # the packager's own architecture decides
+            self.assertIn('no onnxruntime-node binary for darwin/x64', problems)
+            self.assertIn('darwin/arm64', problems)
+
+
+def load_build_release():
+    spec = importlib.util.spec_from_file_location('build_release_for_tests', REPO / 'creative-agent' / 'krita-creative-agent' / 'scripts' / 'build-release.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class OnnxRuntimeReleaseTests(unittest.TestCase):
+    """build-release.py (which package-app.sh runs) copies onnxruntime-node with this platform's binaries only."""
+    def test_only_this_platforms_binaries_are_copied(self):
+        build_release = load_build_release()
+        with tempfile.TemporaryDirectory(prefix='krita-agent-test-') as root:
+            modules = pathlib.Path(root) / 'node_modules'
+            for name, text in onnx_files(('darwin/arm64', 'darwin/x64', 'linux/x64', 'linux/arm64', 'win32/x64')).items():
+                path = modules / name.removeprefix('companion/node_modules/')
+                path.parent.mkdir(parents=True, exist_ok=True); path.write_text(text)
+            (modules / 'onnxruntime-node/script').mkdir(); (modules / 'onnxruntime-node/script/install.js').write_text('downloads CUDA')
+            arm = modules / 'onnxruntime-node/bin/napi-v6/darwin/arm64'
+            (arm / 'libonnxruntime.1.30.0.dylib').write_text('binary libonnxruntime.1.dylib')           # npm ships the library twice, as two identical files
+            companion = pathlib.Path(root) / 'companion'; companion.mkdir()
+            kept = build_release.copy_onnxruntime(modules, companion, 'darwin', 'arm64')
+            folders = sorted(str(p.relative_to(companion / 'node_modules/onnxruntime-node/bin/napi-v6')) for p in
+                             (companion / 'node_modules/onnxruntime-node/bin/napi-v6').glob('*/*'))
+            self.assertEqual(folders, ['darwin/arm64'])
+            kept_files = sorted(p.name for p in (companion / 'node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64').iterdir())
+            self.assertEqual(kept_files, ['libonnxruntime.1.dylib', 'onnxruntime_binding.node'], 'the identical copy under the longer name is left out')
+            self.assertEqual(kept, 'darwin/arm64')
+            self.assertTrue((companion / 'node_modules/onnxruntime-node/dist/index.js').is_file())
+            self.assertTrue((companion / 'node_modules/onnxruntime-common/package.json').is_file())
+            self.assertFalse((companion / 'node_modules/onnxruntime-node/script').exists(), 'no install scripts in the app')
+            with self.assertRaises(ValueError):
+                build_release.copy_onnxruntime(modules, pathlib.Path(root) / 'other', 'win32', 'ia32')
+
+    @unittest.skipUnless(shutil.which('node') and (REPO / 'creative-agent/krita-creative-agent/node_modules/.bin/esbuild').exists(),
+                         'needs node and npm ci in krita-creative-agent')
+    def test_the_bundled_worker_and_onnx_runtime_load_from_the_release_layout(self):
+        build_release = load_build_release()
+        root = REPO / 'creative-agent' / 'krita-creative-agent'
+        with tempfile.TemporaryDirectory(prefix='krita-agent-test-') as temp:
+            companion = pathlib.Path(temp) / 'companion'; (companion / 'src').mkdir(parents=True)
+            arch = 'arm64' if os.uname().machine == 'arm64' else 'x64'
+            build_release.bundle_shape_worker(root, companion, root / 'node_modules/.bin/esbuild', root / 'node_modules', arch)
+            build_release.validate_shape_worker(pathlib.Path(shutil.which('node')), companion)        # passes
+            next(companion.glob('node_modules/onnxruntime-node/bin/napi-*/darwin/*/onnxruntime_binding.node')).unlink()
+            with self.assertRaisesRegex(ValueError, 'shape worker'):
+                build_release.validate_shape_worker(pathlib.Path(shutil.which('node')), companion)
+
+    def test_the_release_names_the_architecture_its_node_reported(self):
+        text = (REPO / 'creative-agent' / 'krita-creative-agent' / 'scripts' / 'build-release.py').read_text()
+        self.assertNotIn("'architecture': 'any'", text)
+        self.assertIn("'architecture': details['architecture']", text)
+        self.assertNotIn('platform.machine()', text, 'the architecture comes from the pinned Node, not the machine (Rosetta)')
+
+    def test_the_release_bundles_the_shape_worker_beside_the_companion(self):
+        text = (REPO / 'creative-agent' / 'krita-creative-agent' / 'scripts' / 'build-release.py').read_text()
+        self.assertIn("src/shapes/worker.ts", text)
+        self.assertIn("src/shapes-worker.mjs", text)
+        self.assertIn('--external:onnxruntime-node', text)
 
 
 def build_launcher(directory, hook=True, folder='KritaAgent'):
@@ -1350,6 +1456,7 @@ class CompanionInTheAppTests(unittest.TestCase):
     class Stub(package_app.Packager):
         def __init__(self, release, resources):
             self.release, self.resources, self.log, self.trees, self.release_info = pathlib.Path(release), pathlib.Path(resources), (lambda *_: None), [], None
+            self.arch = 'arm64'
             plugin = self.resources / 'krita' / 'pykrita' / 'kritamcp'                    # the app's plugin, copied before the release
             plugin.mkdir(parents=True, exist_ok=True)
             (plugin / '__init__.py').write_text('')
@@ -1358,7 +1465,7 @@ class CompanionInTheAppTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='krita-agent-test-')
         self.addCleanup(self.temp.cleanup)
         self.root = pathlib.Path(self.temp.name)
-        self.bundled, self.manifest = make_release(self.root / 'src')
+        self.bundled, self.manifest = make_release(self.root / 'src', extra_files=onnx_files(('darwin/arm64',)))
         self.release = self.bundled                                                       # the same layout: companion/ + manifest
         (self.release / 'plugin').mkdir()                                                 # the plugin half of a release is not copied
         (self.release / 'plugin' / 'x.py').write_text('x')
@@ -1374,6 +1481,12 @@ class CompanionInTheAppTests(unittest.TestCase):
         self.assertEqual(stub.release_info['build_id'], self.manifest['build_id'])
         self.assertEqual(stub.release_info['node'], '22.23.2')
         self.assertIn('built_at', json.loads((target / 'bundle-info.json').read_text()))
+
+    def test_a_release_with_other_platforms_onnx_runtime_is_refused(self):
+        bundled, _ = make_release(self.root / 'other', extra_files=onnx_files(('darwin/arm64', 'linux/x64')))
+        stub = self.Stub(bundled, self.root / 'Resources-other')
+        with self.assertRaisesRegex(package_app.Refused, 'linux/x64'):
+            stub.copy_release()
 
     def test_the_plugin_in_the_app_carries_the_companions_build_id(self):
         # The companion refuses a bridge whose build_id differs (runtime.mjs acceptBridgeHealth). The plugin reads its own

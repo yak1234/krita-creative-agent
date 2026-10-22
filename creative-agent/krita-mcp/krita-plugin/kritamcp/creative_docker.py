@@ -1492,6 +1492,7 @@ class CreativeAgentDocker(DockWidget):
         self.ai_images_used = QLabel(''); self.ai_images_used.setAccessibleName('AI images used'); buttons.addWidget(self.ai_images_used)
         # Protected areas: what the agent must never change. The panel changes them here, in Krita's own process.
         self.protection = ProtectionCraft(); self.features = FeatureCraft(); self.protection_controls = []; self.protection_editing = None; self.protection_shown = None
+        self.shapes_model_controls = []    # Download / Not now for the element-shapes model (shapes_model_needed)
         self.protect_button = QPushButton('🛡'); self.protect_button.setObjectName('contextAction')
         self.protect_button.setAccessibleName('Protected areas'); self.protect_button.setToolTip('Protected areas: what the agent must never change')
         self.protect_button.clicked.connect(lambda: self.open_protection()); buttons.addWidget(self.protect_button)
@@ -2685,6 +2686,20 @@ class CreativeAgentDocker(DockWidget):
                 button.clicked.connect(lambda _checked=False, entry=area, value=choice: self.answer_protection(entry, value))
                 item['layout'].addWidget(button); self.protection_controls.append(button)
             self.show_protection(area, True)
+        elif kind == 'shapes_model_needed':
+            # Element shapes (src/shapes/chat.ts): the one-time model download waits for the artist's answer.
+            self.flush_stream(); self.reply_open = False; self.empty_state.hide()
+            size = int(event.get('size_mb') or 0)
+            item = self.transcript.add_message('Element shapes', event.get('message') or 'Finding shapes needs a one-time download (%d MB).' % size, True)
+            self.shapes_model_controls = []
+            for text, choice in (('Download (%d MB)' % size, 'accept'), ('Not now', 'decline')):
+                button = QPushButton(text); button.setObjectName('questionChoice')
+                button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+                button.clicked.connect(lambda _checked=False, value=choice, where=item: self.answer_shapes_model(value, where))
+                item['layout'].addWidget(button); self.shapes_model_controls.append(button)
+        elif kind == 'shapes_model_ready':
+            for button in self.shapes_model_controls: button.setEnabled(False)
+            self.status.setText('The shape model is ready.')
         elif kind == 'protection_hit':
             self.flush_stream(); self.reply_open = False; self.empty_state.hide()
             self.transcript.add_message('Protected area', event['message'], True)
@@ -2915,6 +2930,17 @@ class CreativeAgentDocker(DockWidget):
         if modal: dialog.exec()
         else: dialog.show()
         return dialog
+
+    def answer_shapes_model(self, choice, item=None):
+        for button in self.shapes_model_controls: button.setEnabled(False)
+        self.send({'type': 'shapes_model', 'action': choice})
+        if choice == 'decline' and item is not None:
+            # A decline lasts for the chat (the companion refuses shapes at once); this lets the artist allow them again.
+            button = QPushButton('Ask again'); button.setObjectName('questionChoice')
+            button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            button.setToolTip('Allow the shape model download to be offered again in this chat.')
+            button.clicked.connect(lambda _checked=False: (button.setEnabled(False), self.send({'type': 'shapes_model', 'action': 'enable'})))
+            item['layout'].addWidget(button); self.shapes_allow_button = button
 
     def answer_protection(self, area, choice):
         for button in self.protection_controls: button.setEnabled(False)

@@ -1264,3 +1264,156 @@ upstream file.
   mid-height and the car fills the bottom half, the tower shows its tiers and spire, the moon is outlined warm. Compare
   the unguided view with the group hidden by hand where a blue and a warm line cross. A `replace` guide is one undo
   step with the hide, and rejecting its move shows the rough guide again.
+
+## Element shapes (element-shapes phase 1, part A: the worker)
+Companion only (`src/shapes/`), plus a small panel prompt (`creative_docker.py`) and packaging (`scripts/build-release.py`,
+`agent/package_app.py`); no upstream file. Spec: `creative-agent/openspec/changes/element-shapes`.
+- **What it is.** An element's *shape* is the exact pixels of one named element of a reference (the tower, the moon) from a
+  rough box or a few points, found by SAM 2.1 base-plus on ONNX Runtime's Node package (`onnxruntime-node`). The guides,
+  selections and protection that use shapes come with part B; this part is the worker, the model, the cache and the timings.
+- **Interface** (`src/shapes/index.ts`; the studio's `runtime.shapes` is the chat's instance, `src/shapes/chat.ts`):
+  - `ShapePrompt` = `{box: [x, y, w, h]}` or `{points: [[x, y, label], ...]}` (label 1 = part of the element, 0 = not), in the
+    reference's pixels;
+  - `ShapeService.study(imageId, rgba, width, height)` runs the image encoder once per reference while the worker lives;
+    `imageId` is the reference's content hash (the cache key);
+  - `ShapeService.shape(imageId, prompt)` → `ShapeResult` `{bounds, score, mask_path, model, revision, ms, peak_mb, provider,
+    cached}`; `mask_path` is an 8-bit grey PNG, 255 inside, cropped to `bounds`;
+  - `ShapeService.forget(imageId)` drops a reference here and in the worker (op `forget`; never starts a worker);
+  - `ShapeService.close()` stops the worker and cancels what waits or runs without waiting for it (`cancelled`); the service
+    can be used again. `shapeService({modelDir, cacheDir, model?, spawn?, idleMs?, onTiming?, onLoadFailed?})` makes one;
+  - failures are `ShapeError` with a `code` (`out_of_memory`, `failed`, `invalid`, `not_studied`, `empty`, `declined`,
+    `model`, `cancelled`) and a message the panel can show as it is.
+- **The worker** (`worker.ts`, bundled as `src/shapes-worker.mjs` in a release) is a child process (IPC, structured clone), so
+  the ~1.6 GB it takes is freed when it goes after 60 s idle: the service retires it a little before (idle minus at most
+  5 s), and the worker exits by itself as a backstop; an exit with code 0 that races a request restarts it without counting
+  as a failure. The service keeps, per reference, the 1024 square of RGB the encoder needs (3 MB, not the full-size
+  pixels), for four references; the worker keeps four studies (a repeat study only refreshes one), as use.ts keeps four
+  (`SHAPE_STUDIES`). A worker that answers `not_studied` is given the study again in place, not counted as a failure. The encoder input is the RGB image resized to 1024×1024 with
+  Pillow's bilinear (`image.ts` is Pillow's resampler, fixed-point coefficients and all), /255, ImageNet mean and std; the
+  decoder gets the box (no points) or the points (no box: `input_boxes` [1,0,4]); the best of three masks by IoU is
+  thresholded at 0, resized to the image (only where it can reach) and thresholded at 127. Providers in order: CUDA on Linux,
+  DirectML on Windows, the CPU everywhere (the Mac's default); the one that ran is recorded. A study ends with one throwaway
+  decode, so the first shape is as quick as the rest.
+- **The model** (`model.ts`): `onnx-community/sam2.1-hiera-base-plus-ONNX` at `bab18593f44e652f04cf18b60b3690f60e8996b0`, four
+  files with pinned sizes and SHA-256 (328 MB), downloaded on first use into `<data folder>/models/<name>/<revision>` over
+  HTTPS, resumable (`.part` and HTTP Range; a 206 whose `Content-Range` does not start where the file stopped restarts the
+  file from 0), a checksum mismatch refused and removed, `verified.json` once all four check. The free disk space is checked
+  first ("needs about N MB free on this disk; M MB are free"). A model the worker cannot load (`load_failed`) loses its
+  `verified.json`, so the next worker's preparation hashes the files again and fetches only what is damaged, without asking
+  again: the model folder exists only after an OK.
+  Before the download the panel shows "Finding the exact shape of an element needs a one-time download of its model, SAM 2.1
+  base-plus (328 MB). Download it now?" with **Download (328 MB)** and **Not now** (event `shapes_model_needed`, command
+  `shapes_model {action: accept|decline}`); progress goes to the status line. A decline lasts for the chat
+  (`shapes_declined` on its record): every call waiting on the question gets it, later ones fail at once with `declined`,
+  until the artist presses **Ask again** under the question (`shapes_model {action: enable}`). The panel's Stop
+  (`studio.stop`) and the chat's end cancel a pending question or download (an AbortController; `downloadModel` takes the
+  signal and keeps its `.part`), and `close()` never waits for a download. The chat records `shapes_model {model,
+  revision}` once it used it; a chat that recorded another revision is refused ("Start a new chat"), never switched.
+- **Cache.** `<chat>/shapes/<key>.json` and `.png`, key = sha256 of (image id, model, revision, prompt). A repeat prompt is
+  answered from it without a worker, and without the model folder. What a worker studied is never written to disk.
+- **Failure.** Out of memory (a worker killed outright, SIGKILL, or an allocation failure) is "Finding shapes ran out of
+  memory. Close some apps and try again." at once; any other failure gets one retry with a fresh worker (which studies the
+  reference again from the kept square), then "Finding shapes failed: <reason>. Try again; ...". A worker reply whose mask
+  does not fit its bounds is a failure too.
+- **Timings.** Every study and shape (cached ones too, provider `cache`) is a `shape_timing` record in the diagnostics
+  timeline and report, and a `shape_timing` event, which the test driver's state collects as `shape_timings` (and shows
+  `shapes_model_needed` while a download question waits). A test chat links the artist's `models` folder instead of
+  downloading its own.
+- **Packaging.** `build-release.py` bundles the worker with `onnxruntime-node` left outside and copies the package with this
+  platform's binaries only, without its install scripts and without the second, identical copy of the library (about 43 MB
+  instead of about 287 MB), plus `onnxruntime-common`, for the architecture the pinned Node reports (`verify_node`; the
+  manifest's `architecture` names it, no longer "any"). The release is validated by starting the bundled worker with that
+  Node: asked for a shape it never studied, it must answer `not_studied` (so onnxruntime-node loaded). The packager leaves the companion's Mach-O files as the release made
+  them (`app_macho_files`: not relocated, not re-signed), since the plugin checks them against the release manifest when it
+  installs the companion; the app's seal covers them as resources and `codesign --verify --deep --strict` passes. `--check`
+  reports a companion with another platform's binaries, or without this one's.
+- **Ruling (Pillow's resampler):** a faithful port of the proven Python reference; with it the Node results are the
+  reference's to the pixel on the New Moscow goal copy (tower 0.9559, bounds [283,30,226,356], 34 595 pixels; bridge
+  0.8755, [504,526,729,72], 24 287 pixels).
+- **Ruling (cached shapes):** a cached answer reports `ms` (reading the cache), `peak_mb` 0 and provider `cache`, with
+  `cached: true`, so the timings show that the model did not run.
+- **Ruling (an empty mask):** "No shape was found there. Try a tighter box, or a point on the element itself."
+  (`ShapeError` `empty`), not cached.
+- **Ruling (no retry after out of memory):** a departure from the spec's "one retry": loading another 1.6 GB while macOS is
+  short of memory can get Krita itself killed, so the artist is told at once and decides when to try again.
+- **Ruling (a full disk):** the free space is checked before downloading; a disk that fills up anyway removes the file
+  being written (its space goes back to the artist; files already complete stay), with "The disk is full: ... Free some
+  space and try again." An abort or a dropped connection keeps the `.part` to resume.
+- **Ruling (notarization, follow-up):** the packager cannot re-sign the companion's ONNX Runtime binaries without breaking
+  the release manifest the plugin checks, so today they stay ad hoc, linker-signed as npm ships them (`-` signing stays).
+  When a Developer ID is used, `build-release.py` must sign them itself (hardened runtime, secure timestamp) before
+  `inventory()`, so the manifest records the signed bytes; notarization needs every Mach-O so signed.
+- **Ruling (Intel Macs):** onnxruntime-node ships no darwin/x64 binary in this version; Toska is arm64-only, so nothing is lost.
+- **Live checks** (not verifiable in the tests): the panel's download prompt and progress in the docked panel; the real
+  download from Hugging Face (redirects to its CDN, resuming after a dropped Wi-Fi); first use in the packaged app (the
+  bundled worker loading `onnxruntime-node` from the user's companion folder under the downloaded Node); peak memory and
+  the idle exit seen in Activity Monitor; a busy Mac (several apps open) for the out-of-memory message; timings in a live
+  test chat's `shape_timings`.
+- Tests: `tests/shapes-image.test.mjs`, `shapes-service.test.mjs`, `shapes-model.test.mjs`, `shapes-chat.test.mjs` (a fake
+  runtime, a local fake server), the panel's `ShapesModelPrompt` in `tests/ui_panel_features.py`, packaging in
+  `tests/test_package_app.py`. Opt-in benchmark with the real model:
+  `TOSKA_SHAPES_MODEL_DIR=<folder with the .onnx files> node --test tests/shapes-benchmark.test.mjs` (image: `final_goal.png`
+  two folders above, or `TOSKA_SHAPES_BENCHMARK_IMAGE`); budgets study ≤ 3 s, shape ≤ 50 ms, tower score ≥ 0.9.
+
+## Element shapes (use)
+Plugin and companion only (`src/shapes/use.ts`, `src/shapes/png.ts`, `src/guide-tool.ts`, `src/guide-trace.ts`,
+`src/tools.mjs`, `kritamcp/shape_mask.py`, `region_craft.py`, `creative_tools.py`); no upstream file. Phase 1 tasks 1.4,
+1.5, 1.6 and 1.8 of `openspec/changes/element-shapes`. The shape service is the chat's (`src/shapes/chat.ts`, above),
+`runtime.shapes`; `use.ts` takes its types from `src/shapes/index.ts`.
+- **What it is.** The painter names one element by a box `[x,y,w,h]` or a few points `[x,y,label]` (1 on it, 0 beside
+  it); the service studies the image once (keyed by reference id or "canvas" and the decoded pixels' hash; the last 4
+  kept per chat in `runtime.shapeStudies`, as the service and its worker keep 4, the oldest passed to `service.forget`;
+  cleared when the chat ends) and returns its shape: bounds, a score and an 8-bit mask file. A `shape()` that answers
+  `not_studied` (the service no longer holds the study) drops the key, studies again and retries once; any other failure
+  (out of memory, a cancelled call) propagates as it is. A prompt scaled to a decode is clamped to it, so an epsilon past
+  the edge is not refused; an empty shape has one wording everywhere (`EMPTY_SHAPE`). A mask file is
+  never read larger than the image it was found on, and never inflated past its header's rows. A shape is never a
+  layer and never a Krita mask; the painter, the panel and the skill say "shape".
+- **Guides (1.4).** `draw_guide` `from_reference.shape` (reference pixels). For a shape the whole reference is decoded
+  at one size (about 1440 px, whatever the box), so one reference is one study; the prompt is scaled to the decode; the
+  shape is traced on its bounds plus a 3 % margin, everything outside it counting as transparent, so the outline is the
+  shape's boundary and inner structure and lights are found only inside it (clutter in the same box gives no line).
+  Lines map through `source` onto `target`: `source` given, else the box (whole pixels, clamped); with points and no
+  source, the shape's bounds are fitted into `target`, centred, proportions kept. Shape lines are not cut to the
+  source; the canvas cuts them. The result carries `{shape: {score}}`, with a note below 0.6; details add the timings.
+- **Painting inside a shape (1.5).** `paint_pass` `inside_shape` (canvas pixels), alone or as a `paint_batch` action. The
+  companion decodes the canvas view the painter last saw (`unguided_path`, else `image_path`) through `trace_reference`
+  (its size must be the observation's `image_width` x `image_height`); a region look maps as view = (canvas − region
+  origin) × image width / region width, and a prompt outside that region is refused. It finds the shape there,
+  resamples it bilinearly to canvas pixels and writes it to `<chat>/.shapes/canvas-<hash>.png` (grey, filter-0 rows;
+  the newest 8 kept, none once the chat ends, through `prunePreviews`); the plugin gets `inside_shape: {mask_path,
+  bounds}`. `shape_mask.py` reads it without Qt: only a plain path directly in the chat folder's `.shapes` (no `..`),
+  opened with `O_NOFOLLOW`, a regular file with one link, at most 64 MB, its header exactly its bounds' size (refused
+  before inflating), the inflate bounded, inside the canvas, not empty. Validation decodes it once and the stroke job
+  gets that selection; protection's reach for the pass is cut to the shape's bounds. `paint_batch` checks and finds
+  every action's shape first, on the view seen before the batch, so a refusal anywhere paints nothing.
+- **Protection from a shape (1.6).** `propose_protection` takes `area` or `shape`. A shape goes to the plugin as one
+  selection step `{element_shape: {mask_path, bounds}}`, so it is stored as every protected area is (a selection mask in
+  the protection group, pending until the artist keeps it with one click).
+- **Ruling (inside_shape on paint_pass, not a new tool):** a shape limits a pass as `selection` and `region` already do,
+  so it is an option on the pass, and `paint_batch` gets it for free; one limit per pass (region, selection or shape),
+  as region and selection are already exclusive. Fork only, like `selection`.
+- **Ruling (the selection is the job's own):** on the fork the shape is the `Node.paintStrokes` job's selection, as the
+  stage mask is: the document's (the artist's) selection is never set, so there is nothing to restore, and the shape
+  adds no undo step: the pass's layer and its job are the same steps as without a shape.
+- **Ruling (an uncertain shape):** below 0.6 a guide is still drawn (lines are cheap to replace) and a protection still
+  proposed (the artist decides), each with the note; a pass inside it is refused before anything paints.
+- **Ruling (a mask file, not pixels in the call):** the plugin reads a file the companion wrote in the chat folder
+  (`.shapes`), at canvas resolution and cropped to its bounds, so the plugin does no scaling and no prompt or reference
+  pixel reaches it. The files are scratch, named by canvas view, region and prompt, so a replayed operation finds the
+  same path while it is among the newest 8.
+- **Ruling (an element_shape step):** the companion's selection step for a shape, companion-only at the schema level:
+  no painter schema (`select`, `fill_region`, `propose_protection`'s `area`, the tools' `area`) offers it, because each
+  has additionalProperties false; the plugin accepts it from the companion with the file checks above. The painter
+  names a shape by a box or points.
+- **Ruling (an uncertain score):** the raw score is compared with 0.6, not the rounded one (0.596 is uncertain).
+- **Ruling (one decode a reference):** a shape's reference decode does not follow the box, so ten boxes on one
+  reference are one study; a small element of a very large image is found on that decode (about 1440 px).
+- **Live checks** (only fakes so far): time the first `from_reference` shape on a full-size New Moscow goal (study
+  about 1.3 s, each shape about 12 ms) and a repeat (no study); each tower of the skyline as its own box gives its own
+  outline without the clouds; `paint_pass inside_shape` around the moon on a copy painting paints nowhere outside it,
+  is one undo step with its layer, and leaves a selection the artist made before untouched; `propose_protection` with a
+  shape shows the element in red and Keep makes it the artist's; a shape named after a region look lands where the
+  element is on the full canvas; with the real worker, a restart mid-chat costs one more study, not a failure. Check
+  the shape on the canvas view against the
+  painting at full size: the view is about 1024 px, so on a large canvas the shape's edge is a few canvas pixels soft.

@@ -7,6 +7,7 @@ import { imageContent } from './files.mjs';
 import {referenceTools,traceReferencePixels} from './reference-tool.mjs';
 import { mapReferencePoint } from './reference-generator.mjs';
 import { guideTools } from './guide-tool.ts';
+import { canvasShape, checkPassLimits, passShape, shapeReport, shapeSchema, shapeTimings } from './shapes/use.ts';
 import { recipeTool } from './recipe-tool.mjs';
 import { contourTool } from './contour-tool.mjs';
 import { brushCards } from './brush-catalog.mjs';
@@ -178,7 +179,8 @@ export function paintingTools(runtime) {
         selection: Type.Optional(Type.String({ maxLength: 2000, description: 'Limit the pass to a saved selection or (our Krita) feature names and expressions such as "Sky - Moon" instead of a region; protected features are kept out either way.' })),
         layer_opacity: Type.Optional(Type.Number({ minimum: 0, maximum: 1 })), panel,
         blend_mode: Type.Optional(Type.String({ maxLength: 40, description: 'Paint on a new layer in this blend mode: overlay or soft_light for texture, multiply for shadow, add or screen for light.' })),
-        clip_to: Type.Optional(Type.String({ description: 'Clip the new stroke layer to this layer (usually the area\u2019s flat), so no mark leaves its shape.' })) }), 'paint_pass'),
+        clip_to: Type.Optional(Type.String({ description: 'Clip the new stroke layer to this layer (usually the area\u2019s flat), so no mark leaves its shape.' })),
+        inside_shape: Type.Optional(shapeSchema('canvas', 'Paint only inside one element of the painting (\u201cinside the moon\u201d): one box around it or a few points on it, canvas pixels. Its shape is found on the canvas you last saw; not with region or selection.')) }), 'paint_pass'),
     tool('painting_toolbox', 'Working with painting tools',
       'Execute native painting commands as one reversible contribution. Omit source_layer_id to create a layer; supply an observed layer ID to edit a copy of existing paint; or supply projection_region [x,y,width,height] to retouch a masked copy of the visible composite on a new top layer. projection_feather softens its boundary. These source modes are exclusive. Commands run in order on that layer. Call painting_tool_help first. Returns the actual resulting image. Projection retouch supports selection-aware brush, eraser, gradient and Smart Patch work; filled shapes and whole-layer transforms are excluded there.',
       object({name:Type.String({minLength:1,maxLength:120}),source_layer_id:Type.Optional(Type.String()),
@@ -206,8 +208,8 @@ export function paintingTools(runtime) {
       'Build a selection from steps and save it under a name for fill_region and later turns. Example: the figure\u2019s alpha, grown 4 px and feathered 2. The artist\u2019s selection is never changed; not a canvas change. Returns bounds and selected_pixels, and open_edges: straight lines where it cuts through open paint; extend or feather it before painting through it, or the line prints as a hard edge.',
       object({ name: Type.String({ minLength: 1, maxLength: 40 }), steps: selectionSteps }), 'select'),
     tool('propose_protection', 'Marking an area to protect',
-      'Mark an area of the painting the artist asked to protect ("protect the woman and the car"), from selection steps like select: polygons around what you see, a layer\u2019s alpha, a colour range, a seed (magic wand). It is shown in red and your passes keep out of it at once; the artist keeps or discards it. Propose before you paint near it. You cannot remove or change protection. Not a canvas change.',
-      object({ name: Type.String({ minLength: 1, maxLength: 60 }), area: selectionSteps }), 'propose_protection'),
+      'Mark an area of the painting the artist asked to protect ("protect the woman and the car"), from selection steps like select: polygons around what you see, a layer\u2019s alpha, a colour range, a seed (magic wand); or shape: one finished element\u2019s exact shape from one box around it or a few points on it. It is shown in red and your passes keep out of it at once; the artist keeps or discards it. Propose before you paint near it. You cannot remove or change protection. Not a canvas change.',
+      object({ name: Type.String({ minLength: 1, maxLength: 60 }), area: Type.Optional(selectionSteps), shape: Type.Optional(shapeSchema('canvas')) }), 'propose_protection'),
     tool('fill_region', 'Filling a region',
       'Fill an area in one call, without strokes: flats, sky, a shadow shape, a gradient. Area: selection (a saved name) or area (selection steps). Paint: color, gradient {type linear|radial, start, end, stops [{offset 0-1, color}]} or pattern (a krita_capabilities name). Fills a NEW layer named name (with blend_mode, opacity, clip_base, clip_to as in create_layer), or layer_id: an agent paint layer, honouring its alpha lock (fill_region onto a clip_base layer extends the flats and keeps its clipped layers). One reversible pass; returns the canvas image.',
       object({ name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })), layer_id: Type.Optional(Type.String()),
@@ -313,6 +315,7 @@ export function paintingTools(runtime) {
       },
     },
   ];
+  shapeLimits(runtime, tools);
   tools.push(recipeTool(runtime, tools.find(t=>t.name==='paint_pass').execute));
   tools.push(contourTool(runtime, tools.find(t=>t.name==='painting_toolbox').execute));
   tools.push(...referenceTools(runtime,tools.find(t=>t.name==='paint_pass').execute,tools.find(t=>t.name==='fill_region').execute));
@@ -325,9 +328,57 @@ export function paintingTools(runtime) {
     referencePixels: (id, side) => traceReferencePixels(runtime, id, side) }));
   // A flat fill anywhere in a batch is nudged before anything paints (studio.mjs fillNudge), so the batch is refused whole.
   tools.push(batchTool(tools, name => runtime.toolOffered?.(name) ?? true,
-    async actions => { if (actions.some(a => a.tool === 'fill_region')) await runtime.fillNudge?.({batch:true}); }));
+    async actions => { if (actions.some(a => a.tool === 'fill_region')) await runtime.fillNudge?.({batch:true}); return prepareBatchShapes(runtime, actions); }));
   tools.push(...assetTools(runtime), skillReadTool());
   return tools;
+}
+
+/** Element shapes on the painting (element-shapes 1.5, 1.6): paint_pass inside_shape and propose_protection shape find
+ * the element's shape on the canvas the painter last saw and send the plugin a mask file in the chat folder with its
+ * bounds; the prompt never reaches it. A pass's limits are checked before the canvas is read or the worker asked, and an
+ * uncertain shape (raw score under LOW_SCORE) paints nothing. paint_batch finds every action's shape first, on the same
+ * view, before any action paints (prepareBatchShapes); a proposed shape is still the artist's to keep or discard. */
+const readyShapes = new WeakMap();           // a batch action's found shape object -> the shape it came from
+function withShapeReport(result, found) {
+  const report = shapeReport(found);
+  return { ...result, content: [...(result.content ?? []), { type: 'text', text: JSON.stringify({ shape: report }) }],
+    details: { ...result.details, shape: { ...report, ...shapeTimings(found) } } };
+}
+function shapeLimits(runtime, tools) {
+  const pass = tools.find(t => t.name === 'paint_pass'), paintPass = pass.execute;
+  pass.execute = async (id, args, signal) => {
+    if (!args.inside_shape) return paintPass(id, args, signal);
+    let shape = readyShapes.get(args.inside_shape);
+    if (!shape) { shape = await passShape(runtime, args); signal?.throwIfAborted(); }
+    const { inside_shape: _prompt, ...rest } = args;
+    runtime.emit({ type: 'action', seconds: 0, message: `Painting ${args.name} inside the shape you named (score ${shapeReport(shape.found).score}).` });
+    return withShapeReport(await paintPass(id, { ...rest, inside_shape: { mask_path: shape.mask_path, bounds: shape.bounds } }, signal), shape.found);
+  };
+  const protect = tools.find(t => t.name === 'propose_protection'), proposeArea = protect.execute;
+  protect.execute = async (id, args, signal) => {
+    if (!args.area === !args.shape) throw new Error('Give propose_protection an area or shape (one of them).');
+    if (!args.shape) return proposeArea(id, args, signal);
+    const shape = await canvasShape(runtime, args.shape);
+    signal?.throwIfAborted();
+    return withShapeReport(await proposeArea(id, { name: args.name, area: [{ element_shape: { mask_path: shape.mask_path, bounds: shape.bounds } }] }, signal), shape.found);
+  };
+}
+/** Every paint_pass inside_shape of a batch: limits checked for all, then each found on the view seen before the batch;
+ * one refusal refuses the batch before anything paints. Returns the actions with each prompt replaced by its shape. */
+export async function prepareBatchShapes(runtime, actions) {
+  const shaped = actions.map((action, index) => ({ action, label: `Action ${index + 1}: ` }))
+    .filter(({ action }) => action.tool === 'paint_pass' && action.arguments?.inside_shape);
+  if (!shaped.length) return actions;
+  for (const { action, label } of shaped) checkPassLimits(runtime, action.arguments, label);
+  const found = new Map();
+  for (const { action, label } of shaped) found.set(action, await passShape(runtime, action.arguments, label));
+  return actions.map(action => {
+    const shape = found.get(action);
+    if (!shape) return action;
+    const ready = { mask_path: shape.mask_path, bounds: shape.bounds };
+    readyShapes.set(ready, shape);
+    return { ...action, arguments: { ...action.arguments, inside_shape: ready } };
+  });
 }
 
 // Several painting actions in one model call. Model round trips, not brushwork, were
@@ -349,8 +400,9 @@ export function batchReferences(args, ran, index) {
   return resolved;
 }
 
-/** beforePaint: a check of the whole batch after validation, before anything paints (it throws to refuse the batch). */
-export function batchTool(tools, offered = /** @type {(name: string) => boolean} */ (() => true), beforePaint = /** @type {(actions: any[]) => Promise<void>} */ (async () => {})) {
+/** beforePaint: a check of the whole batch after validation, before anything paints (it throws to refuse the batch);
+ * it may return the actions prepared for painting (paint_pass shapes found), which then run instead. */
+export function batchTool(tools, offered = /** @type {(name: string) => boolean} */ (() => true), beforePaint = /** @type {(actions: any[]) => Promise<any[] | void>} */ (async () => {})) {
   const byName = Object.fromEntries(tools.filter(t => BATCH_TOOLS.includes(t.name)).map(t => [t.name, t]));
   // The original executes, captured now: wrappers added later (pacing) apply once per batch, not per action.
   const run = Object.fromEntries(Object.entries(byName).map(([name, t]) => [name, t.execute]));
@@ -375,11 +427,11 @@ export function batchTool(tools, offered = /** @type {(name: string) => boolean}
           throw new Error(`Action ${index + 1} (${tool}) does not match its schema${issue ? ` at ${issue.instancePath || '/'}: ${issue.message}` : ''}. Nothing was painted.`);
         }
       });
-      await beforePaint(actions);
+      const prepared = /** @type {any[]} */ ((await beforePaint(actions)) ?? actions);
       const prefix = batchPrefix(id);
       const ran = [];
       let last;
-      for (const [index, { tool, arguments: given }] of actions.entries()) {
+      for (const [index, { tool, arguments: given }] of prepared.entries()) {
         signal?.throwIfAborted();
         try {
           const args = batchReferences(given, ran, index);

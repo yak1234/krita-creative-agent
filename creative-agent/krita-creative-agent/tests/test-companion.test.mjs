@@ -206,3 +206,29 @@ test('end closes every document saved inside the run folder: an image copy the s
     assert.match(ended.krita, /Test chat\.kra/);
   } finally { await s.cleanup(); }
 });
+
+test('element shapes in a test chat: the artist’s downloaded model is shared, and every shape timing reaches the report', async () => {
+  const s = await setup();
+  try {
+    await mkdir(join(s.data, 'models', 'sam2.1-hiera-base-plus'), { recursive: true });
+    await s.companion.start({ prompt: 'Trace the tower.', width: 800, height: 600 });
+    const { lstat, readlink } = await import('node:fs/promises');
+    const shared = join(s.companion.folder, 'data', 'models');
+    assert.ok((await lstat(shared)).isSymbolicLink(), 'the 330 MB model is linked, never copied or downloaded again per test chat');
+    assert.equal(await readlink(shared), join(s.data, 'models'));
+    const child = s.companion.child;
+    const emit = event => child.stdout.write(JSON.stringify(event) + '\n');
+    emit({ type: 'shapes_model_needed', model: 'sam2.1-hiera-base-plus', size_mb: 328, message: 'Download it now?' });
+    emit({ type: 'shape_timing', kind: 'study', ms: 2200, peak_mb: 1630, provider: 'cpu', image_id: 'abc' });
+    emit({ type: 'shapes_model_ready' });
+    emit({ type: 'shape_timing', kind: 'shape', ms: 19, peak_mb: 1660, provider: 'cpu', image_id: 'abc', score: 0.95 });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const state = s.companion.state();
+    assert.deepEqual(state.shape_timings.map(t => [t.kind, t.ms, t.peak_mb, t.provider]), [['study', 2200, 1630, 'cpu'], ['shape', 19, 1660, 'cpu']]);
+    assert.equal(state.shapes_model_needed, null, 'the download question is shown while it waits, and cleared once answered');
+    emit({ type: 'shapes_model_needed', model: 'sam2.1-hiera-base-plus', size_mb: 328, message: 'Download it now?' });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.match(s.companion.state().shapes_model_needed, /Download it now/);
+    await s.companion.end();
+  } finally { await s.cleanup(); }
+});

@@ -70,3 +70,21 @@ test('the worked example is real calls in three kinds of move, on a general subj
   assert.ok(element.some(c => c.tool === 'finish_guide') && element.some(c => c.tool === 'paint_pass'), 'painted in own strokes, then its guide finished');
   assert.match(text, /fraction of the canvas/i, 'positions come from measuring the reference');
 });
+
+test('element shapes: one box or a few points per element, one box per member of a group, and "shape", never "mask"', () => {
+  const skill = read('SKILL.md');
+  assert.match(skill, /shape: \{box/, 'the skill shows from_reference shape');
+  assert.match(skill, /one box or a few points per element/i);
+  assert.match(skill, /one box per member/i);
+  assert.match(skill, /each tower/i, 'a skyline is one box per tower, not the cluster');
+  assert.match(skill, /score/i, 'a low score means prompt again');
+  assert.match(skill, /inside_shape/);
+  assert.match(skill, /points[^.]*fitted into `target`/, 'with points, target is the box the element is fitted into');
+  assert.ok(words(skill) <= 700, `${words(skill)} words`);
+  for (const name of ['SKILL.md', 'example-harbour-dusk.md', ...SUBJECTS]) assert.doesNotMatch(read(name), /\bmasks?\b/i, `${name} says shape, never mask`);
+  for (const name of SUBJECTS) {
+    assert.match(read(name), /shape/, `${name} names the shape prompt`);
+    assert.ok(words(read(name)) <= 350, name);
+  }
+  assert.match(read('subject-architecture.md'), /one box per (building|tower)/i);
+});

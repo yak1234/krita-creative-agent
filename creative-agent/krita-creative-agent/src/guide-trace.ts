@@ -15,9 +15,15 @@
 //   their direction; only long ones that run straight or gently curved are kept, and none along the silhouette;
 // - lights: the brightest share of the crop, well above its median, traced like the silhouette.
 // Every line is simplified (Douglas-Peucker), at most GUIDE_POINTS points, and only the longest are kept.
+//
+// With an element's shape (element-shapes 1.4: one element's pixels, found by the shape service from a box or points),
+// the shape stands in for the silhouette: everything outside it counts as transparent, so the outline is the shape's
+// boundary and inner structure and lights are found only inside it. Clutter in the same box gives no line.
 
 export type Pixels = { width: number; height: number; data: Uint8Array | Buffer };
 export type Detail = 'simple' | 'medium';
+/** One element's shape on the image: one byte a pixel of bounds [x,y,w,h], above 127 inside. */
+export type Shape = { bounds: number[]; data: Uint8Array };
 type Point = [number, number];
 
 export const TRACE_LIMITS = { simple: 8, medium: 24 } as const;
@@ -36,16 +42,23 @@ const STRAIGHT_RUN = 10;                             // cells per straight piece
 
 type Grid = { w: number; h: number; f: number; sx: number; sy: number; L: Float32Array; A: Float32Array };
 
-/** The crop as block means: luminance 0-1 (transparent counts as dark, as in the edge tools) and alpha 0-1. */
-function grid(image: Pixels, source: number[]): Grid {
+/** The crop as block means: luminance 0-1 (transparent counts as dark, as in the edge tools) and alpha 0-1; outside
+ * the shape, when one is given, counts as transparent. */
+function grid(image: Pixels, source: number[], shape?: Shape): Grid {
   const [sx = 0, sy = 0, sw = 0, sh = 0] = source;
   if (!(sw > 0 && sh > 0 && sx >= 0 && sy >= 0 && sx + sw <= image.width && sy + sh <= image.height)) throw new Error('Source crop must fit the reference.');
   if (image.data.length !== image.width * image.height * 4) throw new Error('Invalid decoded reference.');
+  const [bx = 0, by = 0, bw = 0, bh = 0] = shape?.bounds ?? [];
+  if (shape && shape.data.length !== bw * bh) throw new Error('Invalid shape.');
   const f = Math.max(1, Math.ceil(Math.max(sw, sh) / WORK)), w = Math.ceil(sw / f), h = Math.ceil(sh / f);
   const L = new Float32Array(w * h), A = new Float32Array(w * h), n = new Float32Array(w * h);
   for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) {
     const i = ((sy + y) * image.width + sx + x) * 4, k = Math.floor(y / f) * w + Math.floor(x / f), d = image.data;
-    const alpha = (d[i + 3] ?? 0) / 255;
+    let alpha = (d[i + 3] ?? 0) / 255;
+    if (shape) {
+      const px = sx + x - bx, py = sy + y - by;
+      alpha *= px >= 0 && py >= 0 && px < bw && py < bh ? (shape.data[py * bw + px] ?? 0) / 255 : 0;
+    }
     L[k] = (L[k] ?? 0) + ((d[i] ?? 0) * 0.2126 + (d[i + 1] ?? 0) * 0.7152 + (d[i + 2] ?? 0) * 0.0722) / 255 * alpha;
     A[k] = (A[k] ?? 0) + alpha; n[k] = (n[k] ?? 0) + 1;
   }
@@ -157,7 +170,7 @@ function boundaries(mask: Uint8Array, w: number, h: number): Point[][] {
 }
 
 /** Long, coherent edges of the blurred luminance away from the silhouette, as chains in grid coordinates. */
-function structure(L: Float32Array, w: number, h: number, mask: Uint8Array | null, threshold: number, shortest: number, epsilon: number): Point[][] {
+function structure(L: Float32Array, w: number, h: number, mask: Uint8Array | null, threshold: number, shortest: number, epsilon: number, inside = false): Point[][] {
   const at = (x: number, y: number) => L[Math.max(0, Math.min(h - 1, y)) * w + Math.max(0, Math.min(w - 1, x))] ?? 0;
   const GX = new Float32Array(w * h), GY = new Float32Array(w * h), M = new Float32Array(w * h);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
@@ -180,6 +193,7 @@ function structure(L: Float32Array, w: number, h: number, mask: Uint8Array | nul
     if ((x + 1 < w && mask[k] !== mask[k + 1]) || (y + 1 < h && mask[k] !== mask[k + w]))
       for (let yy = Math.max(0, y - 2); yy <= Math.min(h - 1, y + 3); yy++) for (let xx = Math.max(0, x - 2); xx <= Math.min(w - 1, x + 3); xx++) taken[yy * w + xx] = 1;
   }
+  if (mask && inside) for (let k = 0; k < w * h; k++) if (!mask[k]) taken[k] = 1;     // a shape's structure lies inside it
   const seeds: number[] = [];
   for (let k = 0; k < w * h; k++) if (edge[k] && M[k]! >= threshold) seeds.push(k);
   seeds.sort((a, b) => M[b]! - M[a]! || a - b);
@@ -251,15 +265,23 @@ function finish(chains: { points: Point[]; weight: number }[], g: Grid, epsilon:
     .map(line => line.points);
 }
 
-/** The element's outline and inner structural lines inside `source` [x,y,w,h], in reference pixels. */
-export function traceOutlines(image: Pixels, source: number[], detail: Detail = 'simple'): Point[][] {
-  const g = grid(image, source), { w, h } = g, settings = SETTINGS[detail], cells = w * h;
+/** The crop to trace a shape on: its bounds and a margin (so its outline never lies on the crop's edge), on the image. */
+export function shapeSource(bounds: number[], width: number, height: number): number[] {
+  const [x = 0, y = 0, w = 0, h = 0] = bounds, margin = Math.ceil(0.03 * Math.max(w, h)) + 2;
+  const left = Math.max(0, x - margin), top = Math.max(0, y - margin);
+  return [left, top, Math.min(width, x + w + margin) - left, Math.min(height, y + h + margin) - top];
+}
+
+/** The element's outline and inner structural lines inside `source` [x,y,w,h], in reference pixels; with a shape,
+ * its boundary and the structure inside it only. */
+export function traceOutlines(image: Pixels, source: number[], detail: Detail = 'simple', shape?: Shape): Point[][] {
+  const g = grid(image, source, shape), { w, h } = g, settings = SETTINGS[detail], cells = w * h;
   const smooth = blur(g.L, w, h, 1);
   let mask: Uint8Array | null = null;
   // A part (see-through outside the area the artist chose) is outlined by its alpha.
   let clear = 0;
   for (const a of g.A) if (a < 0.5) clear++;
-  if (clear > cells * 0.02 && clear < cells * 0.98) {
+  if (shape || (clear > cells * 0.02 && clear < cells * 0.98)) {
     mask = new Uint8Array(cells);
     for (let k = 0; k < cells; k++) mask[k] = g.A[k]! >= 0.5 ? 1 : 0;
   } else {
@@ -276,15 +298,15 @@ export function traceOutlines(image: Pixels, source: number[], detail: Detail = 
     dropSmall(mask, w, h, area, 1); dropSmall(mask, w, h, area, 0);
     for (const points of boundaries(mask, w, h)) if (length(points) >= shortest / 2) chains.push({ points, weight: 1.5 });
   }
-  for (const points of structure(blur(g.L, w, h, 2), w, h, mask, settings.edge, shortest, settings.epsilon)) chains.push({ points, weight: 1 });
+  for (const points of structure(blur(g.L, w, h, 2), w, h, mask, settings.edge, shortest, settings.epsilon, !!shape)) chains.push({ points, weight: 1 });
   return finish(chains, g, settings.epsilon, TRACE_LIMITS[detail]);
 }
 
 /** The outlines of the brightest shapes inside `source`, measured over its opaque cells only (a part's transparent
  * surround is no dark ground): cells well above the darker class (Otsu's low mean), and in the top few percent unless
  * the light fills most of the crop (a moon cropped to its box). */
-export function traceLights(image: Pixels, source: number[], detail: Detail = 'simple'): Point[][] {
-  const g = grid(image, source), { w, h } = g, settings = SETTINGS[detail], cells = w * h;
+export function traceLights(image: Pixels, source: number[], detail: Detail = 'simple', shape?: Shape): Point[][] {
+  const g = grid(image, source, shape), { w, h } = g, settings = SETTINGS[detail], cells = w * h;
   const smooth = blur(g.L, w, h, 1);
   const opaque = Float32Array.from(Array.from(smooth).filter((_, k) => g.A[k]! >= 0.5)).sort();
   if (opaque.length < 4) return [];

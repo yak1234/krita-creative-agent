@@ -6,7 +6,7 @@
 - The big planes: foreground, middle ground and background, each as one outline. Measure where each one starts and
   ends.
 - The silhouettes of hills, tree masses and shorelines from the reference (`from_reference`, `detail: 'simple'`). These
-  are masses, not single trees or leaves.
+  are masses, not single trees or leaves. The moon or a lone tree is one element: one `shape: {box}` around it.
 - Rivers, roads and embankments as lines that recede to a vanishing point on the eye level, narrowing with distance.
 - The sun or moon and their reflection on water as light shapes (`lights: true`).
 

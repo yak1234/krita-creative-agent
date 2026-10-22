@@ -384,6 +384,57 @@ class ArtistOnly(unittest.TestCase):
 
 
 
+class ShapesModelPrompt(unittest.TestCase):
+    """Element shapes (src/shapes/chat.ts): before the one-time model download the panel shows its size and waits for the
+    artist's answer, which it sends as the shapes_model command; the companion downloads nothing without it."""
+    def setUp(self):
+        state.document = None
+        self.commands = []
+        self.panel = module.CreativeAgentDocker(); self.panel.resize(440, 820); self.panel.show()
+        self.panel.process = types.SimpleNamespace(state=lambda: QProcess.ProcessState.Running,
+                                                   write=lambda data: self.commands.append(json.loads(data)))
+        self.event = {'type': 'shapes_model_needed', 'model': 'sam2.1-hiera-base-plus', 'revision': 'bab1', 'size_mb': 328, 'licence': 'Apache-2.0',
+                      'message': 'Finding the exact shape of an element needs a one-time download of its model, SAM 2.1 base-plus (328 MB). Download it now?'}
+
+    def tearDown(self):
+        self.panel.process = None; self.panel.close(); KEEP.append(self.panel)
+        for _ in range(4): app.processEvents()
+
+    def buttons(self): return [button.text() for button in self.panel.shapes_model_controls]
+
+    def test_the_question_shows_the_size_and_accept_sends_the_answer_once(self):
+        self.panel.handle_event(self.event)
+        self.assertIn('328 MB', self.panel.transcript.messages[-1]['text'])
+        self.assertEqual(self.buttons(), ['Download (328 MB)', 'Not now'])
+        self.panel.shapes_model_controls[0].click()
+        self.assertEqual(self.commands, [{'type': 'shapes_model', 'action': 'accept'}])
+        self.assertTrue(all(not button.isEnabled() for button in self.panel.shapes_model_controls), 'answered once')
+
+    def test_not_now_declines_for_the_chat_and_ask_again_allows_it(self):
+        self.panel.handle_event(self.event)
+        self.panel.shapes_model_controls[1].click()
+        self.assertEqual(self.commands, [{'type': 'shapes_model', 'action': 'decline'}])
+        again = self.panel.shapes_allow_button
+        self.assertEqual(again.text(), 'Ask again')
+        self.assertTrue(again.isEnabled())
+        again.click()
+        self.assertEqual(self.commands[-1], {'type': 'shapes_model', 'action': 'enable'})
+        self.assertFalse(again.isEnabled(), 'sent once')
+
+    def test_ready_and_progress_are_shown_and_nothing_is_sent_by_itself(self):
+        self.panel.handle_event({'type': 'status', 'phase': 'downloading', 'message': 'Downloading the shape model: 40% of 328 MB…'})
+        self.assertIn('40%', self.panel.status.text())
+        self.panel.handle_event({'type': 'shapes_model_ready', 'model': 'sam2.1-hiera-base-plus', 'revision': 'bab1'})
+        self.assertIn('shape model', self.panel.status.text())
+        self.panel.handle_event({'type': 'shape_timing', 'kind': 'shape', 'ms': 19, 'peak_mb': 1600, 'provider': 'cpu'})
+        self.assertEqual(self.commands, [])
+
+    def test_the_artist_reads_shape_not_mask(self):
+        source = (PLUGIN / 'creative_docker.py').read_text()
+        block = source[source.index("kind == 'shapes_model_needed'"):source.index("kind == 'shapes_model_ready'")]
+        self.assertNotIn('mask', block.lower())
+
+
 # The "/" menu (skill-commands.ts): the companion sends the commands in its skills event, so the panel names no skill.
 import subprocess
 SKILLS_EVENT = json.loads(subprocess.run(['node', '-e', "import('./src/skills.mjs').then(m=>process.stdout.write(JSON.stringify(m.skillsEvent())))"],

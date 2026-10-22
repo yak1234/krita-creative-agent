@@ -177,6 +177,18 @@ def macho_files(bundle):
     return sorted(found)
 
 
+COMPANION_FOLDER = os.path.join('Contents', 'Resources', 'creative-agent-bundle')
+
+
+def app_macho_files(bundle):
+    """The Mach-O files the packager relocates and signs: all but the companion's own (onnxruntime-node's binaries, for element
+    shapes). Those are files of the release, checked against its manifest when the plugin installs the companion, and run
+    by the downloaded Node from the user's folder, not from the app: they stay byte for byte as the release made them
+    (self-contained: @rpath with @loader_path, and system libraries). The app's seal still covers them as resources."""
+    skip = os.path.join(str(bundle), COMPANION_FOLDER) + os.sep
+    return [path for path in macho_files(bundle) if not path.startswith(skip)]
+
+
 def expand_rpath(rpath, file, bundle):
     """Where dyld looks for `rpath` as written in `file`, as an absolute path (an @executable_path entry is read relative to
     the bundle's MacOS folder when `file` is not itself an executable there)."""
@@ -266,8 +278,32 @@ def rel(path, root):
     return os.path.relpath(str(path), str(root))
 
 
-def layout_problems(bundle):
-    """What Krita needs at the places it looks (KoResourcePaths::getInstallationPrefix and friends)."""
+def onnxruntime_problems(companion, keep='darwin/arm64'):
+    """Element shapes run ONNX Runtime's Node package in the companion. The package ships every platform's binaries (about
+    300 MB unpacked); the app carries its own platform's only (build-release.py copies just those)."""
+    root = Path(companion) / 'node_modules' / 'onnxruntime-node' / 'bin'
+    found = sorted({'%s/%s' % (path.parent.name, path.name) for path in root.glob('napi-*/*/*') if path.is_dir()})
+    problems = []
+    if not list(root.glob('napi-*/%s/onnxruntime_binding.node' % keep)):
+        problems.append('no onnxruntime-node binary for %s in the companion (element shapes need it)' % keep)
+    others = [folder for folder in found if folder != keep]
+    if others:
+        problems.append('onnxruntime-node binaries for other platforms in the companion: %s (only %s belongs in the app)' % (', '.join(others), keep))
+    return problems
+
+
+NODE_ARCH = {'x86_64': 'x64'}                        # Mach-O names to Node's (process.arch)
+
+
+def bundle_architecture(bundle):
+    """The one architecture of the bundle's main executable; arm64 (Toska's only) when it cannot be told."""
+    archs = macho_archs(Path(bundle) / 'Contents' / 'MacOS' / 'krita') if is_macho(str(Path(bundle) / 'Contents' / 'MacOS' / 'krita')) else []
+    return archs[0] if len(archs) == 1 else 'arm64'
+
+
+def layout_problems(bundle, arch='arm64'):
+    """What Krita needs at the places it looks (KoResourcePaths::getInstallationPrefix and friends). `arch` is the app's
+    architecture (the packager's own), for the companion's native files."""
     bundle = Path(bundle)
     contents = bundle / 'Contents'
     required = [
@@ -289,6 +325,7 @@ def layout_problems(bundle):
             module.verify_companion(contents / 'Resources/creative-agent-bundle')
         except module.BundledReleaseError as error:
             problems.append('the bundled companion: %s' % error)
+        problems += onnxruntime_problems(contents / 'Resources/creative-agent-bundle/companion', 'darwin/' + NODE_ARCH.get(arch, arch))
         # The companion refuses a bridge whose build id differs from its own (runtime.mjs): the plugin in the app must carry
         # the release's, or the panel says "Reload the matching Creative Agent build" on every first run.
         try:
@@ -775,7 +812,7 @@ class Packager:
         done = set()
         total = 0
         while True:
-            pending = [f for f in macho_files(self.bundle) if f not in done]
+            pending = [f for f in app_macho_files(self.bundle) if f not in done]
             if not pending:
                 break
             for path in pending:
@@ -950,6 +987,9 @@ class Packager:
                 manifest = bundled_release.verify_companion(target)
             except bundled_release.BundledReleaseError as error:
                 raise Refused('the release does not match its manifest: %s' % error)
+            onnx = onnxruntime_problems(target / 'companion', 'darwin/' + NODE_ARCH.get(self.arch, self.arch))
+            if onnx:
+                raise Refused('the release is not for this app: %s' % '; '.join(onnx))
             # The plugin reports its build from build-info.json beside its code, and the companion refuses a bridge whose build_id
             # differs: the app's plugin (installed from the build, not from the release) must carry the release's build identity.
             plugin = self.resources / 'krita' / 'pykrita' / 'kritamcp'
@@ -1148,7 +1188,7 @@ def sign_bundle(bundle, identity=None, entitlements=None, log=print):
     if identity:
         base += ['--options', 'runtime']
     with_entitlements = base + ['--entitlements', str(entitlements)]
-    files = macho_files(bundle)
+    files = app_macho_files(bundle)
     macos = bundle / 'Contents' / 'MacOS'
     main_executable = str(macos / 'krita')
 
@@ -1449,8 +1489,9 @@ def smoke_test(bundle, log=print, deny=(), settings=None):
 
 # --------------------------------------------------------------------------------------------------------------- main
 
-def check_everything(bundle, extra_marks=()):
-    return check_bundle(bundle) + layout_problems(bundle) + symlink_problems(bundle) + reference_problems(bundle, reference_marks(extra_marks))
+def check_everything(bundle, extra_marks=(), arch=None):
+    arch = arch or bundle_architecture(bundle)
+    return check_bundle(bundle) + layout_problems(bundle, arch) + symlink_problems(bundle) + reference_problems(bundle, reference_marks(extra_marks))
 
 
 def main(argv=None):
@@ -1529,7 +1570,7 @@ def main(argv=None):
         ok, message = verify_signature(packager.bundle)
         print('codesign --verify --deep --strict:', 'ok' if ok else 'FAILED ' + message[-300:])
         found = [] if ok else ['signature does not verify']
-        found += check_everything(packager.bundle, [install, source])
+        found += check_everything(packager.bundle, [install, source], packager.arch)
         if ok:
             found += smoke_test(packager.bundle, deny=[install, source, ROOT.parent], settings=settings_folder(source))
         for problem in found:

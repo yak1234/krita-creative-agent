@@ -583,8 +583,16 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             for part, ms in session.pop('observe_ms', {}).items():
                 timings[step + '.' + part] = ms
         # Validate the whole pass before any layer or brush changes.
+        shape_limit = None                               # inside_shape's selection, decoded once: validated here, painted with below
         if operation == 'paint_pass':
             validate_pass(params, doc.width(), doc.height(), Krita.instance().resources('preset'))
+            if 'inside_shape' in params:
+                # An element's shape limits this one pass as the job's own selection (element-shapes 1.5).
+                if not on_fork():
+                    raise ValueError('A pass inside a shape needs our Krita (the fork).')
+                if params.get('region') or 'selection' in params:
+                    raise ValueError('Give a pass one limit: a region, a selection or a shape.')
+                shape_limit = self._region_shape_selection(doc, session, params['inside_shape'])
             if 'selection' in params:
                 if not on_fork():
                     raise ValueError('A pass limited to a selection or feature needs our Krita (the fork).')
@@ -721,6 +729,10 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 # presetProperties (set on the job's own copy). Stock Krita paints with the view's brush, as before.
                 stroke_job = on_fork()
                 limit = self._region_load(session, params['selection'], doc) if params.get('selection') else None   # before any layer exists
+                if shape_limit is not None:
+                    # The job clips to the shape alone; the document's (the artist's) selection is never set, so there is
+                    # nothing to restore and no undo step of its own: it lands with the pass.
+                    limit = shape_limit
                 if not stroke_job:
                     brush = self.cmd_set_brush({'preset': params['preset']})
                     if brush.get('error'):

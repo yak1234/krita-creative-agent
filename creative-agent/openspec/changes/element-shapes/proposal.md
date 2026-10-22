@@ -25,7 +25,11 @@ never a layer and never a Krita mask (transparency, filter or selection mask); t
 ## Decided by the artist
 
 - **SAM 2.1 base-plus finds every shape used for guides and tracing.** No smaller model is used for that.
-- EdgeTAM may later act as Toska's quick spatial sense on the canvas (phase 2), never for guides.
+- **One model for everything** (artist, 2026-10-21): reference shapes, guides, selections, protection and the later
+  canvas checks all use base-plus, so a check compares like with like. EdgeTAM stays only an option if a check ever has
+  to run many times inside one move.
+- **Time is measured, in small tests and especially live**: every shape and every check records how long it took and
+  its peak memory; the numbers reach the diagnostics and the live test reports.
 - The model is chosen once and kept for the chat; shapes are computed once and cached. Nothing switches model because
   the Mac is busy: a busy Mac makes it slower, never different.
 - No silent fallback: if finding shapes fails twice, the panel says so and what to do.
@@ -44,7 +48,7 @@ never a layer and never a Krita mask (transparency, filter or selection mask); t
 3. Proposing protection for a finished element uses its shape; the artist still confirms with one click.
 4. Guided-trace instructions: one box (or points) per element; a group (a skyline) is one box per member.
 
-**Phase 2 (after phase 1 is used live): EdgeTAM on the canvas.**
+**Phase 2 (after phase 1 is used live): checks on the canvas, with base-plus.**
 5. Placement check after a move on a named element: its shape on the canvas against its shape in the reference
    (offset, size, overlap), given to the painter as numbers. Skipped and noted when the canvas is too loose (low score).
 6. Painted-over check: a kept element's shape shrinking sharply is evidence for Luna's existing automatic Undo.

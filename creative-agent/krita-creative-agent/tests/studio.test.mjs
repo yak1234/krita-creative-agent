@@ -2,10 +2,11 @@ import { recordingTracing } from './fake-langfuse.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, mkdir, rm, writeFile, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile, readdir, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Value } from 'typebox/value';
 import { scanFolder } from '../src/project-folder.ts';
@@ -3485,4 +3486,123 @@ test('the mass map runs once per chat: a run left from a closed chat does not ho
  runtime.study=b; runtime.startMassMaps();
  assert.equal(runtime.massMapsRunning?.study,b,'the next chat starts its own');
  await first.done; await runtime.massMapsRunning?.done;
+});
+
+// Protect the underpainting (crisp-accents goals 7 and 8): a replay of chat 34deca0e's shape. Move 1 is the whole-picture
+// underpainting: its transfer completes and the host closes the move there, so the typed strokes the painter sent in the
+// same message never paint. Move 2's hand strokes pull the canvas away from the goal: the goal-likeness check undoes the
+// batch and the painter is told what and where. Move 3's artist asked for a change from the reference: measured, kept.
+test('34deca0e replay: the underpainting move closes when its transfer completes; a batch that leaves the goal is undone unless asked for',{timeout:30000},async()=>{
+ const tc=(i,name,args)=>({index:i,id:'call-'+Math.random().toString(36).slice(2),type:'function',function:{name,arguments:JSON.stringify(args)}});
+ const hand=(name)=>({summary:name,actions:[{tool:'paint_pass',arguments:{...pass,name}}]});
+ const goalBytes=sizedPng(30,40), underBytes=sizedPng(3,4), damagedBytes=sizedPng(6,8);
+ const G=[48,64], sha=b=>createHash('sha256').update(b).digest('hex');
+ const lab=(f)=>{const out=new Float32Array(G[0]*G[1]*3);for(let y=0;y<G[1];y++)for(let x=0;x<G[0];x++)out.set(f(x,y),(y*G[0]+x)*3);return Buffer.from(out.buffer).toString('base64');};
+ const goalLab=(x,y)=>y<32?[30,5,-25]:[55,15,35];
+ const grids={[sha(goalBytes)]:lab(goalLab),[sha(underBytes)]:lab((x,y)=>goalLab(x,y).map((v,k)=>k ? v : v+((x+y)%3)-1)),
+  [sha(damagedBytes)]:lab((x,y)=>y>=40 && x<30 ? [35,4,8] : goalLab(x,y).map((v,k)=>k ? v : v+((x+y)%3)-1)),[sha(png)]:lab(()=>[100,0,0])};
+ let h, revision='revision-0', painted=0; const painter={1:0,2:0,3:0,4:0,5:0}, gridsAsked=[];
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(!names.includes('paint_batch')) return {content:'Hello.'};
+  const move=h.runtime.currentMove?.number, n=++painter[move];
+  if(move===1) return n===1 ? {tool_calls:[tc(0,'paint_from_reference',{name:'Underpainting — whole Moscow night from goal',reference_id:h.runtime.study.references[0].id,preset:'Test brush',source:[0,0,30,40],target:[0,0,768,1024],steps:[64,32,16]}),
+   tc(1,'paint_batch',hand('Typed strokes'))]} : call('paint_batch',hand('Typed strokes'));
+  return n===1 ? call('paint_batch',hand('Foreground masses '+move)) : call('finish_move',{summary:'Foreground masses'});
+ },async(op,params,_study,id)=>{
+  const dir=h.runtime.study.directory, file=name=>join(dir,name);
+  const view=extra=>({status:'ok',document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,layers:[],content_id:'c-'+revision,...extra});
+  if(op==='decode_reference') return {width:30,height:40,sha256:params.sha256,rgba_base64:Buffer.alloc(30*40*4,128).toString('base64')};
+  if(op==='likeness_grid'){gridsAsked.push(params);assert.deepEqual(params.grid,G);return {status:'ok',grid:G,ms:3,lab_base64:grids[params.sha256]};}
+  if(op==='observe') return view({revision,image_path:file(painted ? 'under.png' : 'view.png')});
+  if(op==='fill_region'){revision='ground';return view({revision,layer_id:'ground',image_path:file('view.png')});}
+  if(op==='review_pass'){await writeFile(file('under.png'),underBytes);revision='undo-'+id;return view({revision,image_path:file('under.png'),affected_pass_ids:[params.pass_id],passes:[]});}
+  if(op!=='paint_pass') return undefined;
+  const transfer=/Underpainting/.test(params.name), after=transfer ? 'under.png' : 'damaged.png', beforePath=file(transfer ? 'view.png' : 'under.png');
+  await writeFile(file(after),transfer ? underBytes : damagedBytes); painted++; revision='paint-'+painted;
+  return view({revision,layer_id:params.continue_layer_id ?? 'layer-'+painted,image_path:file(after),
+   passes:[{id,kind:'paint',title:params.name,layer_id:'layer-'+painted,before_path:beforePath,after_path:file(after)}]});
+ });
+ try {
+  const goalPath=join(h.output,'final_goal.png'); await writeFile(goalPath,goalBytes);
+  await h.start('ask','Hello',{references:[{path:goalPath,purpose:'composition'}]});
+  // Luna classifies the artist's messages the phrases do not decide (a plain "soften" is no departure).
+  const luna=fakeLuna(({purpose})=>purpose==='classify-departure' ? {answers:{departure:{type:'noul',noul:.05}}} : {fallback:'service_or_response_error'});
+  h.runtime.lunaClient=luna; await h.runtime.setExecutionSettings({routing:'evaluate'}); await h.runtime.setMode('agent');
+  const classified=()=>luna.requests.filter(r=>r.purpose==='classify-departure').map(r=>r.parts.at(-1));
+  await h.runtime.prompt('Underpainting from the goal image.');
+  const [first]=h.runtime.goal.moves;
+  assert.equal(painter[1],1,'move 1 ended with its transfer: the painter was not asked again');
+  assert.equal(first.finished,true); assert.equal(first.underpainting?.closed,true);
+  assert.equal(first.title,'Underpainting \u2014 whole Moscow night from goal','the card names the transfer');
+  assert.equal(first.likeness?.batches,1,'the transfer itself is measured (and exempt from undo)');
+  assert.ok(first.likeness.after < first.likeness.before - 20,`the underpainting brought the canvas to the goal: ${first.likeness_line}`);
+  assert.ok(!h.calls.some(c=>c.operation==='paint_pass' && c.params.name==='Typed strokes'),'the typed strokes in the same message never painted');
+  assert.ok(h.events.some(e=>e.type==='status' && /Move 1 underpainted the whole picture/.test(e.message ?? '')),'the artist is told why the move ended');
+  await h.runtime.prompt('Soften the foreground into readable masses.');
+  const second=h.runtime.goal.moves[1];
+  assert.ok(JSON.stringify(h.requests).includes('Move 1 ended when the whole-picture underpainting completed'),'the typed batch was refused with the reason');
+  assert.ok(JSON.stringify(h.requests).includes('the host closed this move here'),'the transfer result says the move is closed');
+  const rejects=h.calls.filter(c=>c.operation==='review_pass');
+  assert.equal(rejects.length,1,'the batch that left the goal was undone'); assert.equal(rejects[0].params.action,'reject');
+  assert.ok(JSON.stringify(h.requests).includes('The host undid this batch: it made the canvas clearly less like the goal image, lower left'),'the painter is told what and where');
+  assert.equal(second.likeness.undone,1); assert.match(second.likeness_line,/^Goal likeness: ΔE \d\.\d → \d\.\d over 1 batch; undid 1 \(darker and greyer than the goal, lower left\)/);
+  assert.ok(h.events.some(e=>e.type==='status' && /Goal likeness: .*undid 1/.test(e.message ?? '')),'the artist sees it on the move');
+  assert.equal(gridsAsked.filter(p=>p.sha256===sha(goalBytes)).length,1,'the goal grid is made once a chat');
+  await h.runtime.prompt('Make the foreground darker than the reference.');
+  const third=h.runtime.goal.moves[2];
+  assert.equal(h.calls.filter(c=>c.operation==='review_pass').length,1,'an asked-for departure is not undone');
+  assert.equal(third.likeness.kept_worse,1); assert.equal(third.departure,'than the reference');
+  // The departure holds for later messages until one points back to the reference.
+  await h.runtime.prompt('Soften the railing.');
+  assert.equal(h.calls.filter(c=>c.operation==='review_pass').length,1,'still a departure: kept');
+  assert.equal(h.runtime.goal.moves[3].departure,'than the reference');
+  await h.runtime.prompt('Now bring the foreground closer to the reference again.');
+  assert.equal(h.runtime.goal.moves[4].departure,undefined);
+  assert.equal(h.calls.filter(c=>c.operation==='review_pass').length,2,'back to the reference: a batch that leaves it is undone again');
+  assert.deepEqual(classified(),['Underpainting from the goal image.','Soften the foreground into readable masses.'],'Luna only for messages the phrases do not decide, never while a departure holds');
+ } finally {await h.close();}
+});
+
+test('goal likeness policy: Luna off leaves a typed move measure only; a folder element step is measured only; the most recent kept, completed whole transfer of the goal is protected',{timeout:30000},async()=>{
+ const asked=[];
+ const h=await harness(()=>({content:'Hello.'}),async(op,params)=>{
+  if(op!=='likeness_grid') return undefined;
+  asked.push(params); return {status:'ok',grid:params.grid,ms:1,lab_base64:Buffer.alloc(params.grid[0]*params.grid[1]*12).toString('base64')};
+ });
+ try {
+  const goalPath=join(h.output,'goal.png'); await writeFile(goalPath,sizedPng(30,40));
+  await h.start('ask','Hello',{references:[{path:goalPath,purpose:'composition'}]}); await h.runtime.setMode('agent');
+  const goal=h.runtime.study.references[0];
+  // Luna off: a message the phrases do not decide cannot be classified, so its move is measured only.
+  assert.deepEqual(await h.runtime.noteDeparture({},'Soften the railing.'),{departure:null,unclassified:true});
+  const host=h.runtime.likenessHost();
+  h.runtime.currentMove={number:1,departure_unclassified:true}; h.runtime.executionPhase='agent';
+  assert.equal(host.active(),'measure'); assert.match(host.why(),/could not be classified/);
+  assert.deepEqual(await h.runtime.noteDeparture({},'Add a cat on the bonnet.'),{departure:'Add',unclassified:false});
+  assert.deepEqual(await h.runtime.noteDeparture({move_kind:'continue'},'Kept. Continue my request with the next move.'),{departure:'Add',unclassified:false},'Keep inherits it');
+  assert.deepEqual(await h.runtime.noteDeparture({},'Closer to the goal again'),{departure:null,unclassified:false});
+  h.runtime.currentMove={number:2,element:'reference-sky'};
+  assert.equal(host.active(),'measure'); assert.match(host.why(),/folder element/);
+  h.runtime.currentMove={number:3};
+  assert.equal(host.active(),'protect');
+  // No whole transfer and a goal that is not the folder's: measured only. Then the newest completed transfer decides.
+  h.runtime.decisionObservation={width:768,height:1024,revision:'r'};
+  let frame=await h.runtime.likenessFrame();
+  assert.equal(frame.protect,false); assert.deepEqual(frame.target,[0,0,768,1024]);
+  const jobs=join(h.runtime.study.directory,'reference-paintings'); await mkdir(jobs,{recursive:true});
+  const job=async(id,target,status,seconds)=>{const file=join(jobs,id.repeat(32)+'.json');
+   await writeFile(file,JSON.stringify({id:id.repeat(32),status,completed:100,recipe:{name:id,reference_id:goal.id,source:[0,0,30,40],target},scope:JSON.stringify([h.runtime.goal.revision])}));
+   await utimes(file,seconds,seconds);};
+  await job('a',[0,0,768,1024],'complete',1000); await job('b',[0,24,750,1000],'complete',2000); await job('c',[0,0,700,1000],'paused',3000);
+  frame=await h.runtime.likenessFrame();
+  assert.equal(frame.protect,true); assert.deepEqual(frame.target,[0,24,750,1000],'the most recent completed one, not readdir order or a stopped one');
+  goal.source='folder'; await rm(jobs,{recursive:true});
+  frame=await h.runtime.likenessFrame();
+  assert.equal(frame.protect,true,'the folder goal is protected without a transfer');
+  // Sources are clamped inside the image after rounding.
+  await h.runtime.likenessGrid(goalPath.replace(h.output,h.output),{source:[-0.4,0.6,30.7,40.2],size:[30,40],grid:[8,8]}).catch(()=>{});
+  const last=asked.at(-1);
+  assert.ok(last.source[0]>=0 && last.source[1]>=0 && last.source[0]+last.source[2]<=30 && last.source[1]+last.source[3]<=40,JSON.stringify(last.source));
+ } finally {await h.close();}
 });

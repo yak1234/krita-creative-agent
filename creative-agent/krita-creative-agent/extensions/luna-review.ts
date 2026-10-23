@@ -26,6 +26,8 @@ export interface ReviewHost {
   undo(passes: BatchPass[]): Promise<Undone | null>;
   record(verdict: Verdict): void;
   stop(message: string): void;         // end the move after this turn
+  undos?: { count(move: number): number; add(move: number): void };   // the move's undo counter, shared with the goal-likeness check
+  release?(toolCallId: string): void;   // a batch another check already undid: forget its pass baseline
 }
 /** Automatic undos per move: past this a finding is reported and the move stops, so Luna never undoes a move empty. */
 export const UNDO_CAP = 2;
@@ -34,7 +36,8 @@ const lost = (findings: MoveFinding[]): string => findings.map(f => f.location ?
 const line = (review: Record<string, unknown>) => ({ type: 'text' as const, text: JSON.stringify({ luna_review: review }) });
 
 export default function lunaReview(host: ReviewHost): (pi: ExtensionAPI) => void {
-  const undos = new Map<number, number>();
+  const own = new Map<number, number>();
+  const undos = () => host.undos ?? { count: (move: number) => own.get(move) ?? 0, add: (move: number) => { own.set(move, (own.get(move) ?? 0) + 1); } };
 
   const check = async (move: number, callId: string, passes: BatchPass[], after: string, scope: unknown, guidesNote?: string): Promise<Verdict> => {
     const base = { move, call_id: callId, ...(scope === undefined ? {} : { scope }), ...(guidesNote ? { guides_note: guidesNote } : {}) };
@@ -52,7 +55,8 @@ export default function lunaReview(host: ReviewHost): (pi: ExtensionAPI) => void
       const toolName = (event as { toolName: string }).toolName;
       const mode = host.mode(), move = host.move();
       if (event.isError || mode === 'off' || move === null || !host.painting(toolName)) return undefined;
-      const details = ((event as { details?: unknown }).details ?? {}) as { image_path?: string; unguided_path?: string; guides_note?: string };
+      const details = ((event as { details?: unknown }).details ?? {}) as { image_path?: string; unguided_path?: string; guides_note?: string; host_undone?: string };
+      if (details.host_undone) { host.release?.(event.toolCallId); return undefined; }   // the goal-likeness check undid or capped it
       const passes = host.batch(event.toolCallId, toolName, event.input, details);
       // The painting without the agent's guide lines, when guides show (the painter's own image keeps them).
       const after = details.unguided_path ?? details.image_path ?? host.canvas?.();
@@ -66,7 +70,7 @@ export default function lunaReview(host: ReviewHost): (pi: ExtensionAPI) => void
       const verdict = await check(move, event.toolCallId, passes, after, scope, guidesNote);
       if (verdict.status !== 'warned') { host.record(verdict); return undefined; }
       const what = lost(verdict.findings);
-      if ((undos.get(move) ?? 0) >= UNDO_CAP) {
+      if (undos().count(move) >= UNDO_CAP) {
         host.record(verdict);
         host.stop(`Luna undid ${UNDO_CAP} batches in this move; this one also has ${what}.`);
         return { content: [...event.content, line({ note: `Luna found ${what}, but it already undid ${UNDO_CAP} batches in this move, so this one stays. Stop here: the artist decides.`, findings: verdict.findings })] };
@@ -76,7 +80,7 @@ export default function lunaReview(host: ReviewHost): (pi: ExtensionAPI) => void
         host.record(verdict);
         return { content: [...event.content, line({ note: `Luna found ${what} in this batch; it could not be undone. Repair it in the next batch.`, findings: verdict.findings })] };
       }
-      undos.set(move, (undos.get(move) ?? 0) + 1);       // a partial undo counts too: Luna acted on this batch
+      undos().add(move);                                  // a partial undo counts too: Luna acted on this batch
       const left = passes.map(p => p.id).filter(id => !undone.pass_ids.includes(id));
       host.record({ ...verdict, status: 'undone', undone_pass_ids: undone.pass_ids, ...(left.length ? { partial: true } : {}) });
       const feature = verdict.findings.find(f => f.feature)?.feature;

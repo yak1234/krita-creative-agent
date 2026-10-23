@@ -840,6 +840,8 @@ panel.handle_event({'type': 'move', 'move': {'number': 4, 'status': 'ready', 'ti
 assert 'Luna' not in panel.move_summary.text(), 'no review, no line'
 panel.handle_event({'type': 'move', 'move': {'number': 4, 'status': 'ready', 'title': 'Cypress', 'actions': 1, 'review_line': 'Luna undid 1 of 2 batches (Moon covered <b>)'}})
 assert 'Luna undid 1 of 2 batches (Moon covered &lt;b&gt;)' in panel.move_summary.text(), panel.move_summary.text()
+panel.handle_event({'type': 'move', 'move': {'number': 4, 'status': 'ready', 'title': 'Cypress', 'actions': 1, 'review_line': 'Luna: no regressions in 1 batch', 'likeness_line': 'Goal likeness: ΔE 5.9 → 6.1 over 2 batches; undid 1 (darker than the goal, lower left)'}})
+assert 'Goal likeness: ΔE 5.9 → 6.1 over 2 batches; undid 1' in panel.move_summary.text() and 'Luna: no regressions' in panel.move_summary.text(), panel.move_summary.text()
 panel.move_undo.click()
 assert commands[-1] == {'type': 'move', 'action': 'undo', 'move': 4}
 panel.handle_event({'type': 'move', 'move': {'number': 5, 'status': 'empty', 'actions': 0}})

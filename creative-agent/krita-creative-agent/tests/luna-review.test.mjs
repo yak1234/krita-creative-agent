@@ -183,3 +183,27 @@ test('the batch is judged without guide lines, or the verdict says the image had
   assert.equal(calls.review[1].after, 'after.png');
   assert.equal(calls.record[1].guides_note, 'The guide lines are still in this view.', 'Luna’s verdict knows the image had guides');
 });
+
+test('a batch the goal-likeness check already undid is not reviewed or undone again', async () => {
+  const { calls, result } = setup({ reviews: [{ findings: [moon] }] });
+  assert.equal(await result('paint_batch', { details: { image_path: 'undone.png', host_undone: 'goal_likeness' } }), undefined);
+  assert.deepEqual([calls.review.length, calls.undo.length, calls.record.length], [0, 0, 0]);
+});
+
+test('the undo cap is shared with the goal-likeness check: two undos in the move already, Luna only reports', async () => {
+  const shared = new Map([[1, 1]]);
+  const { host, calls, result } = setup({ reviews: [{ findings: [moon] }, { findings: [moon] }] });
+  host.undos = { count: move => shared.get(move) ?? 0, add: move => shared.set(move, (shared.get(move) ?? 0) + 1) };
+  await result();
+  assert.equal(shared.get(1), 2, 'Luna’s undo counts in the shared counter');
+  await result();
+  assert.equal(calls.undo.length, 1); assert.equal(calls.stop.length, 1);
+});
+
+test('a batch the goal-likeness check undid releases its pass baseline', async () => {
+  const released = [];
+  const { host, result } = setup();
+  host.release = id => released.push(id);
+  await result('paint_batch', { details: { image_path: 'undone.png', host_undone: 'goal_likeness' } });
+  assert.deepEqual(released, ['call1']);
+});

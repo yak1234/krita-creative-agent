@@ -159,6 +159,10 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             # Where a close-up sits in the goal image (closeup_align.py): only the placement goes back.
             from .closeup_align import align_closeup
             return align_closeup(params)
+        if operation == 'likeness_grid':
+            # The goal-likeness check's blurred Lab grid of an image crop (goal_likeness.py): only numbers go back.
+            from .goal_likeness import likeness_grid
+            return likeness_grid(params)
         if operation == 'model_image':
             from .creative_reference import model_image
             return model_image(params)

@@ -2071,6 +2071,8 @@ class CreativeAgentDocker(DockWidget):
         detail = '%d action%s' % (move.get('actions', 0), '' if move.get('actions') == 1 else 's')
         if move.get('strokes'): detail += ' · %d strokes' % move['strokes']
         review = '<br><span>%s</span>' % html.escape(move['review_line']) if move.get('review_line') else ''   # Luna's verdict
+        # How close the move left the canvas to the goal reference, and what the host undid (goal-likeness.ts)
+        review += '<br><span>%s</span>' % html.escape(move['likeness_line']) if move.get('likeness_line') else ''
         self.move_summary.setText('<b>Move %d</b> · %s<br><span>%s. Keep it, undo it, or type a correction below.</span>%s'
                                   % (move['number'], html.escape(move.get('title') or 'Painting move'), detail, review))
         self.move_bar.show()

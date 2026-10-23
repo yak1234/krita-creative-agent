@@ -7,7 +7,9 @@ import {passCheck, progressCheck, moveCheck, seamCheck} from './visual-checks.ts
 import { executionSettings, thinkingLevel, AUTO_REASONING_NOTE } from './execution-settings.mjs';
 import { panelSchema } from './settings-schema.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS } from './craft.mjs';
-import { GUARDS_CHANNEL, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension } from './extensions.mjs';
+import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension } from './extensions.mjs';
+import { transferJobId, underpaintingState, underpaintingRefusal, closedNote, UNDERPAINTING_MOVE_NOTE } from './underpainting-move.ts';
+import { classifyDeparture, decodeGrid, departureRequested, goalMapping, gridSize, likenessLine, returnToReference } from './goal-likeness.ts';
 import { layerNeedCheck, paintedRole } from './layer-need.mjs';
 import { mayBeDone, askWhenDoneNote } from './ask-when-done.ts';
 import { unifyActions, unifyRefusal, WHOLE_CANVAS_SHARE } from './unify-pass.ts';
@@ -210,6 +212,8 @@ function moveReviewLine({verdict,findings,undone_batches,batches}) {
   const what=[...new Set(findings.map(f=>f.label))].slice(0,3).join(', ');
   return verdict==='undone' ? `Luna undid ${undone_batches} of ${plural(batches)} (${what})` : verdict==='warned' ? `Luna warned: ${what}` : `Luna: no regressions in ${plural(batches)}`;
 }
+// Likeness grids kept per chat (goal-likeness.ts): the goal, and the latest canvas views (one batch's after is the next's before).
+const LIKENESS_CACHE=8;
 const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer','painting_toolbox','stamp_material',...CRAFT_OPERATIONS,'letter','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface'];
 /** Agent mode's request for "Paint this plan": the plan's current step, one move at a time. */
 // Project folder (B3): with a folder, Agent mode plans first. Nothing paints before the artist approves with Start painting.
@@ -561,7 +565,7 @@ export class StudioRuntime extends PaintingRuntime {
   }
   // The Pi extensions the painter's session runs besides the loop guards (runtime.mjs).
   // Save timing comes after Luna review, so it saves each batch's final state, after any undo.
-  extensionFactories() { return [lunaReviewExtension(this.reviewHost()), materialStampExtension(this.materialHost()), saveTimingExtension(this.saveHost()), seamCheckExtension(this.seamHost())]; }
+  extensionFactories() { return [goalLikenessExtension(this.likenessHost()), lunaReviewExtension(this.reviewHost()), materialStampExtension(this.materialHost()), saveTimingExtension(this.saveHost()), seamCheckExtension(this.seamHost())]; }
   /** The studio side of save timing (extensions/save-timing.ts): the same checkpoint as at review and run end. */
   saveHost() { return { painting: name => PACED_TOOLS.includes(name), checkpoint: () => this.flushCheckpoint() }; }
   /** The studio side of make_material and stamp_material (extensions/material-stamp.ts). A stamp is a paced painting call. */
@@ -582,12 +586,34 @@ export class StudioRuntime extends PaintingRuntime {
   }
   /** One painting call the painter makes (a batch counts once): Luna review's pass baseline, then one pacing decision. */
   async paced(call, run) {
+    // The underpainting move ends when its transfer completes (underpainting-move.ts): nothing else paints in it.
+    const refused = this.mode === 'agent' ? underpaintingRefusal(this.currentMove?.underpainting, call.tool, call.args, this.currentMove?.number) : null;
+    if (refused) throw new Error(refused);
     (this.batchStarts ??= new Map()).set(call.id, this.seenPasses?.study === this.study ? new Set(this.seenPasses.ids) : null);   // Luna review: what this call adds
+    // A transfer's result carries no passes: the goal-likeness check measures it from the canvas view before it ran.
+    const seen = this.decisionObservation ?? this.lastObservation;
+    if (this.mode === 'agent' && this.currentMove && transferJobId(call.tool, call.id, call.args) && seen?.image_path && !seen.region) (this.transferBefore ??= new Map()).set(call.id, seen.unguided_path ?? seen.image_path);
     this.refuseExhaustedMethod(call);
     const unify = await this.unifyPass(call);
     const response = await run();
     if (unify && actionSucceeded(response, unify.index, call)) { this.goal.unify_pass = unify; await this.persist(); }
-    return this.afterPainting(response, call);
+    return this.afterPainting(await this.underpaintingOutcome(call, response), call);
+  }
+  /** A whole-picture transfer that completed in an Agent move closes the move there, as finish_move does; a stopped one
+   * leaves it open for continue_reference_painting of that job only (underpainting-move.ts). */
+  async underpaintingOutcome(call, response) {
+    const move = this.currentMove, job = transferJobId(call.tool, call.id, call.args);
+    const canvas = this.decisionObservation ?? this.lastObservation;
+    if (this.mode !== 'agent' || !move || !job || !canvas?.width || !canvas?.height) return response;
+    const whole = (await this.wholeTransfers(canvas)).some(transfer => transfer.id === job);
+    const state = underpaintingState({job, whole, status:response?.details?.status});
+    if (!state) return response;
+    move.underpainting = state;
+    if (!state.closed) return response;
+    move.finished = true;
+    move.title = String(response?.details?.name ?? call.args?.name ?? move.title ?? 'Underpainting').slice(0,120);
+    this.diagnostics?.record({type:'underpainting_move_closed', move:move.number, job});
+    return {...response, content:[...(response.content ?? []), {type:'text', text:JSON.stringify({host_move:closedNote()})}]};
   }
   /** One unify pass (unify-pass.ts): after a whole-picture underpainting, the chat's first whole-canvas softening call is
    * returned to be remembered; a later one (or a second in the same call) is refused. A pass whose move was undone is spent no more. */
@@ -636,12 +662,7 @@ export class StudioRuntime extends PaintingRuntime {
       painting: name => PACED_TOOLS.includes(name),
       // The passes this call added (pass ids seen before it ran, buildTools): a batch that stopped on a failed action
       // carries only its last action's details, and recipe chunks have ids of their own.
-      batch: (id,tool,args,details) => {
-        const start=this.batchStarts?.get(id); this.batchStarts?.delete(id);
-        const latest=details?.passes ?? this.lastObservation?.passes ?? [];
-        const made=start ? latest.filter(entry=>!start.has(entry.id)) : this.callPasses({id,tool,args},{details});
-        return made.filter(entry=>entry.kind!=='stage' && entry.kind!=='guide' && !LAYER_SETTINGS.includes(entry.kind) && entry.before_path);
-      },
+      batch: (id,tool,args,details) => this.batchPasses(id,tool,args,details,{consume:true}),
       canvas: () => judgedImage(this.lastObservation),
       features: async () => {
         try {
@@ -662,7 +683,145 @@ export class StudioRuntime extends PaintingRuntime {
       },
       record: verdict => this.recordMoveReview(verdict),
       stop: message => { if (this.currentMove) this.currentMove.luna_stopped=message; this.yieldRequested=true; },
+      undos: this.moveUndos(),
+      release: id => this.batchStarts?.delete(id),
     };
+  }
+  /** The automatic undos of an Agent move, Luna review's and the goal-likeness check's together (UNDO_CAP in all). */
+  moveUndos() {
+    const of=number=>(this.goal?.moves ?? []).find(m=>m.number===number);
+    return {count:number=>of(number)?.host_undos ?? 0, add:number=>{const move=of(number); if (move) move.host_undos=(move.host_undos ?? 0)+1;}};
+  }
+  /** The painted passes a painting call added (not layer settings, stages or guides): the pass ids seen before it ran
+   * (paced), else its own ids. Luna review runs last and consumes the baseline. */
+  batchPasses(id,tool,args,details,{consume=false}={}) {
+    const start=this.batchStarts?.get(id); if (consume) this.batchStarts?.delete(id);
+    const latest=details?.passes ?? this.lastObservation?.passes ?? [];
+    const made=start ? latest.filter(entry=>!start.has(entry.id)) : this.callPasses({id,tool,args},{details});
+    return made.filter(entry=>entry.kind!=='stage' && entry.kind!=='guide' && !LAYER_SETTINGS.includes(entry.kind) && entry.before_path);
+  }
+  /** The studio side of the goal-likeness check (extensions/goal-likeness.ts, goal-likeness.ts): each batch of an Agent
+   * move, against the goal reference where the whole transfer put it. Measure only while Reference colours is off. */
+  likenessHost() {
+    return {
+      active: () => this.likenessMeasureOnly() ? 'measure' : 'protect',
+      why: () => this.likenessMeasureOnly(),
+      undos: this.moveUndos(),
+      move: () => this.mode==='agent' && this.executionPhase==='agent' ? this.currentMove?.number ?? null : null,
+      painting: name => PACED_TOOLS.includes(name),
+      frame: () => this.likenessFrame(),
+      grid: async (path,target) => (await this.likenessGrid(path,{source:target,size:[this.likenessCanvas.width,this.likenessCanvas.height]})).grid,
+      batch: (id,tool,args,details) => {
+        // A transfer is measured from the view before it ran (paced) and never undone (goal-likeness.ts exemption).
+        const job=transferJobId(tool,id,args), before=this.transferBefore?.get(id);
+        if (!job) return this.batchPasses(id,tool,args,details);
+        this.transferBefore?.delete(id);
+        return before ? [{id:'reference-'+job, before_path:before, title:'Reference transfer'}] : [];
+      },
+      departure: () => this.currentMove?.departure ?? null,
+      undo: async passes => {
+        const undone=await this.rejectDamage(passes);
+        if (!undone) return null;
+        if (this.currentMove && undone.result.image_path) this.currentMove.canvas=undone.result.image_path;
+        return {pass_ids:undone.ids,...(undone.image ? {image:undone.image} : {}),image_path:undone.result.image_path,revision:undone.result.revision};
+      },
+      record: entry => this.recordLikeness(entry),
+      stop: message => { if (this.currentMove) this.currentMove.luna_stopped=message; this.yieldRequested=true; },
+    };
+  }
+  /** Why the goal-likeness check only measures this move (never undoes), or null. The artist's Reference colours off; a
+   * folder element step (it paints from its own element image); a typed message Luna could not classify (it might ask for
+   * a change from the reference: never undo on an unclassified message). */
+  likenessMeasureOnly() {
+    const move=this.currentMove;
+    if (this.executionSettings?.reference_first === false) return 'the artist\u2019s Reference colours setting is off';
+    if (move?.element) return 'this move paints a folder element from its own element image';
+    if (move?.departure_unclassified && !move.departure) return 'the artist\u2019s message could not be classified (Luna is off or did not answer), so it may ask for a change from the reference';
+    return null;
+  }
+  /** The artist's typed message decides whether a change from the reference is allowed (goal-likeness.ts). A departure holds
+   * until a later message points back to the reference; the phrases decide first, then Luna (any language); with Luna off
+   * or unanswered the move is measured only. Keep, retry and plan steps inherit the last typed message's answer. */
+  async noteDeparture(command, text) {
+    const goal=this.goal;
+    if (!command.start_plan && !['continue','retry'].includes(command.move_kind)) {
+      const said=String(command.display_text ?? text ?? '');
+      goal.departure_unclassified=false;
+      if (returnToReference(said)) goal.departure=null;
+      else {
+        const phrase=departureRequested(said);
+        if (phrase) goal.departure=phrase;
+        else if (!goal.departure) {
+          let asked=null;
+          if (this.lunaMode()!=='off') asked=await classifyDeparture({client:await this.luna().catch(()=>({decide:async()=>({fallback:'not_connected'})})),text:said,signal:this.lunaSignal()});
+          if (asked===true) goal.departure='a change from the reference (Luna)';
+          else if (asked===null) goal.departure_unclassified=true;
+        }
+      }
+    }
+    return {departure:goal.departure ?? null, unclassified:!!goal.departure_unclassified};
+  }
+  /** Where a folder step's element image is, or null for a whole-composition step. */
+  folderElement(index) {
+    const step=Number.isInteger(index) ? this.goal?.brief?.steps?.[index] : null, file=step && stepFile(step);
+    return (file && this.study.references.find(r => r.folder_name === file)) || null;
+  }
+  /** The goal's grid and where it sits on the canvas (goalMapping), made once a chat per goal, crop and canvas size.
+   * It sits where the most recent kept, completed whole transfer of a goal reference put it; the check undoes only then
+   * (or for a project folder's goal image), never on a chat that has no such transfer (existing artwork, say). */
+  async likenessFrame() {
+    const canvas=this.decisionObservation ?? this.lastObservation;
+    if (!canvas?.width || !canvas?.height || !this.study) return null;
+    const folder=join(this.study.directory,'reference-paintings');
+    const completed=await Promise.all((await this.wholeTransfers(canvas)).filter(job=>job.status==='complete')
+      .map(async job=>({job, at:(await stat(join(folder,job.id+'.json')).catch(()=>null))?.mtimeMs ?? 0})));
+    const transfers=completed.sort((a,b)=>b.at-a.at).map(entry=>entry.job);
+    const mapping=goalMapping({references:this.study.references, transfers, canvas});
+    const reference=mapping && this.study.references.find(r => r.id === mapping.reference_id);
+    if (!reference) return null;
+    this.likenessCanvas={width:canvas.width, height:canvas.height};
+    // An attached reference never changes (the chat keeps its own copy), so the goal is read once for its crop.
+    const key=[reference.id,mapping.source,mapping.target].join(':');
+    if (this.likenessGoal?.study !== this.study || this.likenessGoal.key !== key) {
+      const cells=gridSize(mapping.target);
+      const {grid}=await this.likenessGrid(reference.path,{source:mapping.source,size:[reference.width,reference.height],grid:cells});
+      this.likenessGoal={study:this.study,key,grid,cells};
+    }
+    this.likenessCells=this.likenessGoal.cells;
+    return {goal:this.likenessGoal.grid, target:mapping.target, protect:mapping.from==='transfer' || reference.source==='folder'};
+  }
+  /** One image's likeness grid from the plugin (goal_likeness.py), cached by content: the view after one batch is
+   * usually the view before the next. The grid's size follows the goal's target on the canvas. */
+  async likenessGrid(path,{source,size,grid=this.likenessCells}) {
+    const data=await readFile(await containedFile(this.study.directory,path));
+    const sha256=createHash('sha256').update(data).digest('hex'), key=[sha256,source,size,grid].join(':');
+    const cache=this.likenessCache?.study === this.study ? this.likenessCache.grids : (this.likenessCache={study:this.study,grids:new Map()}).grids;
+    if (!cache.has(key)) {
+      // Rounded, then clamped inside the image: the plugin refuses a crop past its edge.
+      const [width,height]=size.map(v=>Math.max(1,Math.round(v)));
+      const x=Math.min(width-1,Math.max(0,Math.round(source[0]))), y=Math.min(height-1,Math.max(0,Math.round(source[1])));
+      const crop=[x,y,Math.max(1,Math.min(width-x,Math.round(source[2]))),Math.max(1,Math.min(height-y,Math.round(source[3])))];
+      const answer=await super.callNative('likeness_grid',{image_base64:data.toString('base64'),sha256,source:crop,size:[width,height],grid});
+      cache.set(key,decodeGrid(answer)); while (cache.size>LIKENESS_CACHE) cache.delete(cache.keys().next().value);
+    }
+    return {grid:cache.get(key)};
+  }
+  /** One batch's goal likeness into the move: {batches, before, after, undone, kept_worse} and the card's line. */
+  recordLikeness(entry) {
+    this.diagnostics?.record({type:'goal_likeness',...entry});
+    const move=(this.goal?.moves ?? []).find(m=>m.number===entry.move);
+    if (!move || entry.status==='fallback') return;
+    const likeness=move.likeness ?? {batches:0,before:entry.whole.before,after:entry.whole.before,undone:0,kept_worse:0};
+    likeness.batches++;
+    if (entry.status==='undone') {
+      likeness.undone++;
+      if (entry.worse) likeness.last_undone=`${entry.worse.what.join(' and ')} than the goal, ${entry.worse.where}`;
+      this.emit({type:'action',seconds:0,message:'Undid a batch that made the canvas less like the goal: '+entry.summary+'.'});
+    } else likeness.after=entry.whole.after;
+    if (entry.status==='worse_kept') likeness.kept_worse++;
+    move.likeness=likeness;
+    move.likeness_line=likenessLine(likeness);
+    this.persist().then(()=>this.publish()).catch(()=>{});
   }
   /** One batch's verdict into the move: review {verdict, findings, undone_batches, batches} and the card's line. */
   recordMoveReview(verdict) {
@@ -1375,7 +1534,7 @@ export class StudioRuntime extends PaintingRuntime {
     const guides = GUIDES_STEP.test(`${step.title} ${step.done_when ?? ''}`);
     if (!element) return guides
       ? `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: the guides the step names (draw_guide, element "${name}") placed from ${goalText}. Paint only this step, then finish_move.\n`
-      : `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: the underpainting of the whole picture from ${goalText} (paint_from_reference, all of it onto the whole canvas). Paint only this step, then finish_move.\n`;
+      : `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: the underpainting of the whole picture from ${goalText} (paint_from_reference, all of it onto the whole canvas). Paint only this step. ${UNDERPAINTING_MOVE_NOTE}\n`;
     return `\nPROJECT FOLDER MOVE: paint only step ${move.step + 1} of the approved plan, "${name}", on a layer named "${name}". Its look comes from the element reference ${element.id} (${file}); ${goalText} decides where it sits. Paint it in your own strokes over the underpainting${guides ? `, over its guide (draw_guide with element "${name}") first` : '; draw a guide only when the artist asks for one'}, then finish_move. When it reads as finished you may propose protecting it (propose_protection).\n`;
   }
   /** Ask when it may be done: the elements the painter offers the artist. The project folder's elements, else the plan's
@@ -1977,7 +2136,7 @@ export class StudioRuntime extends PaintingRuntime {
       if (!isPaintingMode(this.mode) || this.executionPhase !== 'agent' || this.goal?.status !== 'active' || this.cancelRequested || this.goal.question)
         throw new Error('Painting is disabled in Ask, Plan, or a paused run.');
       if (this.mode === 'autopilot' && this.goal.approved_revision !== this.goal.revision) throw new Error('The revised plan must be started in Autopilot.');
-      if (this.mode === 'agent' && this.currentMove?.luna_stopped) throw new Error(`Luna stopped this move for the artist: ${this.currentMove.luna_stopped} Do not paint until they answer.`);
+      if (this.mode === 'agent' && this.currentMove?.luna_stopped) throw new Error(`This move was stopped for the artist: ${this.currentMove.luna_stopped} Do not paint until they answer.`);
       if (this.allowanceExceeded()) { this.goal.status = 'limited'; this.yieldRequested = true; throw new Error('Painting allowance reached.'); }
       if (!this.decisionObservation?.revision) throw new Error('A fresh canvas revision is required before painting. Inspect the canvas first.');
     }
@@ -2223,9 +2382,15 @@ export class StudioRuntime extends PaintingRuntime {
       ...(command.move_kind ? {kind:command.move_kind} : {}),
       ...(this.folderPlanning() && this.folderPlanApproved() ? this.folderStepOf(Math.min(this.goal.current_step ?? 0, this.goal.brief.steps.length - 1)) : {})};
     this.goal.moves = [...(this.goal.moves ?? []), move]; this.currentMove = move;
+    const element = this.folderElement(move.step);
+    if (element) move.element = element.id;                  // a folder element step: the goal-likeness check measures only
     this.goal.status = 'active'; this.runError = undefined; this.goalStartedAt = Date.now(); this.passesThisCycle = 0; this.yieldRequested = false;
     this.setActivity('painting', 'Planning move '+move.number+'…');
     try {
+      // A change from the reference the artist asked for (goal-likeness.ts): measured and reported, never undone.
+      const departure = await this.noteDeparture(command, text);
+      if (departure.departure) move.departure = departure.departure;
+      if (departure.unclassified) move.departure_unclassified = true;
       await this.bindCanvas();
       this.clearUncertainNotice('Painting.');
       this.selectTools('agent');
@@ -2248,7 +2413,9 @@ export class StudioRuntime extends PaintingRuntime {
       const full = !this.goal.reference_skills_shown;
       const referenceFirst = state ? referenceFirstContext(text, name => expandSkillCommand('/skill:' + name), {transfer:state.transfer, full}) : '';
       if (state && full) this.goal.reference_skills_shown = true;
-      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + this.folderMoveInstructions(move) + (move.ask_next ? askWhenDoneNote(move.ask_next.reason, this.layerNeed.area, move.ask_next.elements) : '') + '\nArtist:\n' + text, images);
+      const folderMove = this.folderMoveInstructions(move);
+      const underpaintingNote = state?.transfer && !folderMove ? '\n' + UNDERPAINTING_MOVE_NOTE + '\n' : '';
+      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + underpaintingNote + folderMove + (move.ask_next ? askWhenDoneNote(move.ask_next.reason, this.layerNeed.area, move.ask_next.elements) : '') + '\nArtist:\n' + text, images);
     } finally {
       this.goal.used_ms += Date.now() - this.goalStartedAt; this.goalStartedAt = undefined;
       const guidesOnly = !move.actions && move.guides > 0;
@@ -2265,8 +2432,9 @@ export class StudioRuntime extends PaintingRuntime {
         this.setActivity('idle', (guidesOnly ? `Move ${move.number} drew guides: keep them, undo them, or type a correction.`
           : !move.actions ? 'No painting this turn. Describe the move you want.'
           : move.luna_stopped ? `Move ${move.number} stopped: ${move.luna_stopped} Keep it, undo it, or type a correction.`
-          : (move.limited ? `Move ${move.number} reached its size limit: keep it, undo it, or say continue to finish it.`
-          : `Move ${move.number} painted: keep it, undo it, or type a correction.`)+(move.review_line ? ' '+move.review_line+'.' : ''))+askNext);
+          : (move.underpainting?.closed ? `Move ${move.number} underpainted the whole picture and ended with the transfer: keep it, undo it, or type a correction.`
+          : move.limited ? `Move ${move.number} reached its size limit: keep it, undo it, or say continue to finish it.`
+          : `Move ${move.number} painted: keep it, undo it, or type a correction.`)+(move.review_line ? ' '+move.review_line+'.' : '')+(move.likeness_line ? ' '+move.likeness_line+'.' : ''))+askNext);
     }
   }
   /** Reference first (reference-first.ts): an Agent move, the setting on, a goal reference, and no reference colour pass in

@@ -1,6 +1,6 @@
 # Stroke generators: one decision, many good strokes, painted by Krita's own engines
 
-Status: PROPOSED (2026-10-23, written up at the artist's request); waiting for the artist's go.
+Status: APPROVED by the artist (2026-10-23: "1, maybe make sure not literal tracing as models suck for traces"). Starts with a throwaway render spike on a copy of New Moscow; the tool is built only after the artist judges the spike.
 
 ## Why
 
@@ -35,7 +35,7 @@ So the generators are our own code (extending the surface pass), with simplex-no
 ## Goals
 
 1. **`paint_generated_strokes`**, one tool: an `area` (selection, element shape, mass from the mass map, or box), a
-   `field` (`reference` flow, `angle` N degrees, `around` the area's centre, `along` its outline, `noise`), a preset,
+   `field` (`reference` flow, `angle` N degrees, `around` the area's centre, `noise`), a preset,
    size, length, density, colour (`sample canvas`, `sample reference`, or a hex, with a small variation), and a pressure
    shape (`taper`, `swell`, `even`). The host generates the strokes (seeds inside the area, streamlines, stopping rules:
    area boundary, strong edges, sharp turns, spacing from earlier strokes), shuffles them and paints them with the
@@ -47,6 +47,13 @@ So the generators are our own code (extending the surface pass), with simplex-no
    sensors respond; documented per preset in the brush cards.
 5. **Guidance**: the painter uses generators for brushwork after the underpainting instead of long `paint_batch` runs;
    `paint_batch` stays for a few deliberate marks.
+
+## Not tracing (the artist's rule)
+
+Generated strokes fill and model **areas** along the form's flow; they never follow edges or outlines. Strokes start
+inside an area and stop before strong edges (as the surface pass does); no stroke runs along a contour, silhouette or
+mass boundary, and there is no "along the outline" field (removed from goal 1). Edges and silhouettes come from the
+paint itself (the underpainting) and crispness from accents.
 
 ## Non-goals
 

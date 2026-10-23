@@ -1,6 +1,6 @@
 # Sharper guides: real perspective assistants, full-resolution tracing, outlines by shape
 
-Status: PROPOSED (2026-10-23). The artist picked all three ("1,2,3"); waiting for approval of this write-up.
+Status: APPROVED by the artist (2026-10-23: "1,2,3", then goal 4 with VTracer: "yes start building").
 
 ## Why
 
@@ -36,6 +36,16 @@ artist already knows, and Toska already ships OpenCV (`seams.py`) and the SAM 2.
    once and each gets its outline; edges inside a shape become structure lines. Brightness splitting stays only as
    the fallback when the artist has not allowed the shapes model.
 
+4. **Mass map (block-in masses) with VTracer.** The reference is smoothed in the plugin (OpenCV: bilateral filter, then
+   mean shift, on a copy at most about 720 px on its long side), then VTracer (`@visioncortex/vtracer`, MIT OR
+   Apache-2.0, pure WebAssembly, no native dependency, pinned to the exact version `1.0.0-alpha.4`) traces it in the
+   companion with `convertPixels(rgba, w, h, { hierarchical: 'cutout', mode: 'polygon', maxColors: 6,
+   filterSpeckle: 24 })`. The masses' boundaries become guide lines (light shapes keep the warm light-shape colour);
+   no fill, no reference pixels. Where the shapes model knows an object, the object's outline wins and the masses
+   are found inside it. Measured on a copy of New Moscow's goal (1448x1086): about 0.5 s, about 130 paths, 170-360 MB
+   RSS; without the smoothing the masses are blotchy (314 paths of specks), with it the head, car, windscreen,
+   buildings, moon and towers read as masses. Sky-coloured towers still merge with the sky without shapes.
+
 ## Non-goals
 
 - No reference pixels on the canvas: no edge-filter layer, no low-opacity reference layer. Guides stay lines.
@@ -53,4 +63,4 @@ artist already knows, and Toska already ships OpenCV (`seams.py`) and the SAM 2.
 ## Left to the builder
 
 Canny thresholds and smoothing, the caps' growth with element size, the exact libkis signatures, and how the eye
-level is shown. Order: 3 and 2 together (they share the tracer), then 1 (needs a fork rebuild).
+level is shown. Order: 2+3 and 4 in parallel (separate modules), then 1 (C++, in the main checkout after both merge, one rebuild).

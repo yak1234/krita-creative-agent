@@ -156,7 +156,7 @@ class NativeCraft:
             rect = (x + bx, y + by, bw, bh)
             selection = Selection()
             selection.setPixelData(area, *rect)
-            self._region_save(doc, session, name, selection, rect)
+            self._region_save(doc, session, name, selection, rect, colour_based=True)      # a colour region
             selections.append({'name': name, 'color': '#' + hexa, 'share': round(pixels / canvas, 4), 'bounds': list(rect)})
             layers.append((name, index, bounds, rect))
         result = {'status': 'ok', 'selections': selections}
@@ -446,7 +446,11 @@ class NativeCraft:
         if extent is None:
             raise ValueError('%s selected nothing. Nothing was saved.' % entry['id'])
         rect, pixels = extent
-        self._region_save(doc, session, params['save_as'], selection, rect)
+        # Its provenance: the input selection's, and an agent layer's opaque pixels count as colour (it may be a split
+        # region or a fill over a seeded selection); the artist's layer alpha is an object.
+        colour = ((bool(params.get('selection')) and self._region_colour_based(session, [{'saved': params['selection']}]))
+                  or (entry['id'].startswith('selectopaque') and self._craft_owned(session, params['target'])))
+        self._region_save(doc, session, params['save_as'], selection, rect, colour_based=colour)
         return {'status': 'ok', 'action': entry['id'], 'name': params['save_as'].strip(), 'bounds': list(rect), 'selected_pixels': pixels}
 
     # ----- audit ------------------------------------------------------------------

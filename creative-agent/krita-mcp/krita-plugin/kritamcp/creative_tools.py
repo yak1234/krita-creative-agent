@@ -41,6 +41,7 @@ import threading
 # command_queue is not hot-reloaded: after a plugin-only reload into a Krita started with an older
 # copy, the flag is missing until Krita restarts, and Stop works as before (between actions).
 stop_requested = getattr(importlib.import_module('.command_queue', __package__), 'stop_requested', None) or threading.Event()
+artist_editing = getattr(importlib.import_module('.command_queue', __package__), 'artist_editing', None) or threading.Event()
 
 # During a stroke pass, Krita handles clicks this often (Stop, the window) instead of freezing for the whole pass.
 RESPONSIVE_SECONDS = 0.2
@@ -565,6 +566,10 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         if stop_requested.is_set() and operation != 'review_pass':
             return {'status': 'stopped', 'error': 'Stopped by the artist before this action ran; nothing was painted.',
                     'error_code': 'stopped_by_artist'}
+        # The artist is adjusting a protected area in the panel: nothing new starts until Done or Cancel.
+        if artist_editing.is_set() and operation != 'review_pass':
+            return {'status': 'held', 'error_code': 'artist_editing',
+                    'error': 'The artist is adjusting a protected area; nothing was painted. Wait, then observe and try again.'}
         unresolved = self._creative_unresolved(session)
         if unresolved:
             return {'error': 'An earlier operation has an uncertain result. Inspect the painting and acknowledge recovery before continuing.',

@@ -15,12 +15,14 @@ PLUGIN = Path(__file__).resolve().parents[2] / 'krita-mcp/krita-plugin/kritamcp'
 package = types.ModuleType('panel_features_test'); package.__path__ = [str(PLUGIN)]; sys.modules['panel_features_test'] = package
 from panel_features_test.qt_compat import QApplication, QDockWidget
 
-state = types.SimpleNamespace(document=None)
+state = types.SimpleNamespace(document=None, open=None)    # open: the documents Krita has, when not only the active one
 
 
 class Instance:
+    tools = []                                             # tool actions triggered, by name
     activeDocument = staticmethod(lambda: state.document)
-    documents = staticmethod(lambda: [state.document] if state.document else [])
+    action = staticmethod(lambda name: types.SimpleNamespace(trigger=lambda: Instance.tools.append(name)))
+    documents = staticmethod(lambda: list(state.open) if state.open is not None else [state.document] if state.document else [])
     addDockWidgetFactory = staticmethod(lambda factory: None)
 
 
@@ -82,6 +84,10 @@ class FakeProtection:
     """The legacy annotation-based areas (protection.py): none here."""
     def __init__(self): self.areas = []
     def _protect_list(self, doc): return list(self.areas)
+    def _protect_set_state(self, doc, area_id, value):
+        for area in self.areas:
+            if area['id'] == area_id: area['state'] = value
+    def _protect_remove(self, doc, area_id): self.areas = [a for a in self.areas if a['id'] != area_id]
 
 
 def names(panel): return [row['name'] for row in panel.features_section.rows]
@@ -124,6 +130,39 @@ class ProtectedSection(unittest.TestCase):
         self.assertEqual(self.section.rows, [])
         self.assertTrue(self.section.empty.isVisible())
         self.assertEqual(self.section.empty.text(), 'No features yet: select an area and use the shield to protect it')
+
+    def test_areas_the_agent_proposed_are_listed_while_they_wait(self):
+        # element-scoped-painting 3: "No features yet" must not show while the artist has proposals to answer.
+        doc = self.open()
+        moon = {'id': 'm', 'name': 'Moon', 'state': 'pending', 'by': 'agent', 'bounds': [0, 0, 10, 10]}
+        self.panel.protection.areas.append(moon)
+        self.panel.handle_event({'type': 'protection_proposed', 'area': moon}); app.processEvents()   # listed at once, not at the next poll
+        self.assertFalse(self.section.empty.isVisible())
+        self.assertEqual([(r['name'], r['kind'].text()) for r in self.section.pending_rows], [('Moon', 'proposed, waiting for you')])
+        self.assertTrue(self.section.pending_rows[0]['widget'].isVisible())
+        self.assertEqual(self.section.rows, [], 'a proposal is not a feature box')
+        # Locked layers and kept areas are not proposals.
+        self.panel.protection.areas.append({'id': 'locked-layers', 'name': 'Locked layers', 'state': 'active', 'by': 'automatic', 'count': 1})
+        self.panel.answer_protection(moon, 'discard'); app.processEvents()
+        self.assertEqual(self.section.pending_rows, [])
+        self.assertTrue(self.section.empty.isVisible())
+        # Features and proposals together: both listed.
+        doc.list.append(Feature('Sky'))
+        self.panel.protection.areas.append(dict(moon, id='m2'))
+        self.panel.poll_canvas_metadata(); app.processEvents()
+        self.assertEqual(names(self.panel), ['Sky'])
+        self.assertEqual([r['name'] for r in self.section.pending_rows], ['Moon'])
+        self.assertFalse(self.section.empty.isVisible())
+
+    def test_kept_agent_areas_are_listed_as_protected(self):
+        # Review: a proposal that vanished from the list on Keep would read as lost protection.
+        self.open()
+        moon = {'id': 'm', 'name': 'Moon', 'state': 'pending', 'by': 'agent', 'bounds': [0, 0, 10, 10]}
+        self.panel.protection.areas += [moon, {'id': 'locked-layers', 'name': 'Locked layers', 'state': 'active', 'by': 'automatic', 'count': 1}]
+        self.panel.handle_event({'type': 'protection_proposed', 'area': moon}); app.processEvents()
+        self.panel.answer_protection(moon, 'keep'); app.processEvents()
+        self.assertEqual([(r['name'], r['kind'].text()) for r in self.section.pending_rows], [('Moon', 'protected')])
+        self.assertFalse(self.section.empty.isVisible())
 
     def test_no_painting_hides_the_section(self):
         self.panel.poll_canvas_metadata()
@@ -334,6 +373,188 @@ class ProtectedSection(unittest.TestCase):
         self.assertFalse(self.section.body.isVisible())
         self.section.toggle.click()
         self.assertTrue(self.section.body.isVisible())
+
+
+class Sel:
+    """A Krita Selection: bounds, and duplicate() a copy carrying the same label."""
+    def __init__(self, label, bounds=(0, 0, 0, 0)): self.label, self.bounds = label, tuple(bounds)
+    def x(self): return self.bounds[0]
+    def y(self): return self.bounds[1]
+    def width(self): return self.bounds[2]
+    def height(self): return self.bounds[3]
+    def duplicate(self): return Sel(self.label, self.bounds)
+
+
+class AdjustDocument(ForkDocument):
+    def __init__(self):
+        super().__init__(); self.active_node = 'painting-layer'; self.set_selections = []
+    def activeNode(self): return self.active_node
+    def setActiveNode(self, node): self.active_node = node
+    def setSelection(self, value): self.set_selections.append(value); self.selected = value
+
+
+class AdjustProtection(FakeProtection):
+    """protection.py's panel calls for one proposed area whose mask holds the selection 'proposal'."""
+    def __init__(self):
+        super().__init__(); self.calls = []
+        self.mask = types.SimpleNamespace(selection=lambda: Sel('proposal', (10, 10, 50, 40)), setSelection=lambda value: self.calls.append(('mask', value.label)))
+        self.areas = [{'id': 'm', 'name': 'Buildings', 'state': 'pending', 'by': 'agent', 'bounds': [10, 10, 50, 40]}]
+    def _protect_mask_node(self, doc, area_id): return self.mask if area_id == 'm' else None
+    def _protect_set_bounds(self, doc, area_id, bounds): self.calls.append(('bounds', area_id, list(bounds)))
+    def _protect_set_state(self, doc, area_id, value): self.calls.append(('state', area_id, value)); super()._protect_set_state(doc, area_id, value)
+    def _protect_editing(self, doc, on): self.calls.append(('editing', on))
+    def _protect_remove(self, doc, area_id): self.calls.append(('remove', area_id)); super()._protect_remove(doc, area_id)
+
+
+class AdjustWithSelectionTools(unittest.TestCase):
+    """element-scoped-painting 2: Adjust on a proposed area loads it as the document selection and hands the artist the
+    Freehand Selection Tool (the Magnetic one a click away), never the brush. Done writes the selection back into the
+    area; Cancel leaves it; the artist's own selection comes back either way."""
+    def setUp(self):
+        Instance.tools.clear()
+        self.panel = module.CreativeAgentDocker(); self.panel.resize(440, 820); self.panel.show()
+        self.panel.protection = self.protection = AdjustProtection()
+        self.doc = state.document = AdjustDocument()
+        self.panel.handle_event({'type': 'protection_proposed', 'area': dict(self.protection.areas[0])})
+
+    def tearDown(self):
+        self.panel.close(); KEEP.append(self.panel)
+        for _ in range(4): app.processEvents()
+        state.document = None; Instance.tools.clear()
+
+    def adjust(self):
+        buttons = {b.text(): b for b in self.panel.protection_controls}
+        buttons['Adjust'].click(); app.processEvents()
+
+    def test_adjust_loads_the_area_and_hands_over_the_freehand_selection_tool(self):
+        self.doc.selected = Sel('artist', (0, 0, 5, 5))
+        self.adjust()
+        self.assertEqual(Instance.tools, ['KisToolSelectOutline'], 'the Freehand Selection Tool, never the brush')
+        self.assertEqual(self.doc.selected.label, 'proposal', 'the proposal is the document selection')
+        self.assertTrue(self.panel.protection_bar.isVisible())
+        self.assertIn('Buildings', self.panel.protection_bar_label.text())
+        self.assertNotIn('mask', self.panel.protection_bar_label.text().lower())
+        self.assertTrue(self.panel.protection_tool_button.isVisible())
+        self.assertNotIn(('editing', True), self.protection.calls, 'a selection is changed, not the mask painted')
+
+    def test_done_writes_the_selection_back_and_restores_the_artists_selection(self):
+        self.doc.selected = Sel('artist', (0, 0, 5, 5))
+        self.adjust()
+        self.doc.selected = Sel('changed', (20, 5, 30, 60))          # the artist reshaped it with a selection tool
+        self.panel.finish_protection(True)
+        self.assertIn(('mask', 'changed'), self.protection.calls)
+        self.assertIn(('bounds', 'm', [20, 5, 30, 60]), self.protection.calls)
+        self.assertIn(('state', 'm', 'active'), self.protection.calls)
+        self.assertEqual(self.doc.selected.label, 'artist', 'the artist\'s earlier selection is back')
+        self.assertFalse(self.panel.protection_bar.isVisible())
+        self.assertIsNone(self.panel.protection_editing)
+        self.assertEqual([r['kind'].text() for r in self.panel.features_section.pending_rows], ['protected'], 'kept: no longer waiting')
+
+    def test_cancel_leaves_the_area_and_clears_a_selection_the_artist_did_not_have(self):
+        self.adjust()
+        self.doc.selected = Sel('changed', (20, 5, 30, 60))
+        self.panel.finish_protection(False)
+        self.assertFalse([c for c in self.protection.calls if c[0] in ('mask', 'bounds', 'state')], 'the area is unchanged')
+        self.assertIsNone(self.doc.selected, 'no earlier selection: cleared')
+        self.assertFalse(self.panel.protection_bar.isVisible())
+
+    def test_done_with_nothing_selected_keeps_the_bar_open(self):
+        self.adjust()
+        self.doc.selected = None
+        self.panel.finish_protection(True)
+        self.assertEqual(self.panel.status.text(), 'Select an area first.')
+        self.assertTrue(self.panel.protection_bar.isVisible())
+        self.assertIsNotNone(self.panel.protection_editing)
+        self.assertFalse([c for c in self.protection.calls if c[0] in ('mask', 'bounds', 'state')])
+        self.doc.selected = Sel('changed', (1, 1, 4, 4)); self.panel.finish_protection(True)
+        self.assertIn(('mask', 'changed'), self.protection.calls)
+
+    def test_the_bar_switches_to_the_magnetic_selection_tool_and_back(self):
+        self.adjust()
+        button = self.panel.protection_tool_button
+        button.click()
+        self.assertEqual(Instance.tools, ['KisToolSelectOutline', 'KisToolSelectMagnetic'])
+        button.click()
+        self.assertEqual(Instance.tools[-1], 'KisToolSelectOutline')
+        self.panel.finish_protection(False)
+        self.assertFalse(self.panel.protection_bar.isVisible())
+
+    def test_adjust_waits_while_the_agent_paints(self):
+        self.doc.selected = Sel('artist', (0, 0, 5, 5))
+        self.panel.handle_event({'type': 'busy', 'busy': True})
+        self.adjust()
+        self.assertEqual(Instance.tools, [])
+        self.assertEqual(self.doc.selected.label, 'artist', 'the artist\'s selection is untouched')
+        self.assertFalse(self.panel.protection_bar.isVisible())
+        self.assertIn('Pause', self.panel.status.text())
+        self.assertTrue(all(b.isEnabled() for b in self.panel.protection_controls), 'the artist can answer again later')
+
+    def test_done_and_cancel_act_on_the_painting_adjusted_not_the_active_one(self):
+        # Review I2: the artist switched to another document while adjusting.
+        self.doc.selected = Sel('artist', (0, 0, 5, 5))
+        self.adjust()
+        other = AdjustDocument(); other.selected = Sel('other', (1, 1, 2, 2))
+        state.open = [self.doc, other]; state.document = other
+        self.doc.selected = Sel('changed', (20, 5, 30, 60))
+        self.panel.finish_protection(True)
+        self.assertIn(('mask', 'changed'), self.protection.calls)
+        self.assertEqual(self.doc.selected.label, 'artist')
+        self.assertEqual((other.selected.label, other.set_selections), ('other', []), 'the other document is never touched')
+        state.open = None
+
+    def test_a_closed_painting_just_closes_the_bar(self):
+        self.adjust()
+        other = AdjustDocument(); state.open = [other]; state.document = other
+        self.panel.finish_protection(True)
+        self.assertFalse(self.panel.protection_bar.isVisible())
+        self.assertIsNone(self.panel.protection_editing)
+        self.assertFalse([c for c in self.protection.calls if c[0] in ('mask', 'bounds', 'state')])
+        self.assertEqual(other.set_selections, [])
+        state.open = None
+
+    def test_agent_commands_are_held_while_adjusting(self):
+        # Review I3: the bridge refuses agent writes while this is set (creative_tools.cmd_creative).
+        held = sys.modules['panel_features_test.command_queue'].artist_editing
+        self.adjust()
+        self.assertTrue(held.is_set())
+        self.panel.finish_protection(False)
+        self.assertFalse(held.is_set())
+
+    def test_done_and_cancel_wait_for_an_open_agent_move(self):
+        self.doc.selected = Sel('artist', (0, 0, 5, 5))
+        self.adjust()
+        self.doc.selected = Sel('changed', (20, 5, 30, 60))
+        self.doc.move_open = True
+        for keep in (True, False):
+            self.panel.finish_protection(keep)
+            self.assertIn('Pause', self.panel.status.text())
+            self.assertTrue(self.panel.protection_bar.isVisible())
+            self.assertEqual(self.doc.selected.label, 'changed', 'nothing written inside the agent move')
+        self.assertFalse([c for c in self.protection.calls if c[0] in ('mask', 'bounds', 'state')])
+        self.doc.move_open = False
+        self.panel.finish_protection(True)
+        self.assertIn(('mask', 'changed'), self.protection.calls)
+
+    def test_discard_waits_for_an_open_agent_move_and_keep_does_not(self):
+        self.doc.move_open = True
+        buttons = {b.text(): b for b in self.panel.protection_controls}
+        buttons['Discard'].click(); app.processEvents()
+        self.assertNotIn(('remove', 'm'), self.protection.calls)
+        self.assertIn('Pause', self.panel.status.text())
+        self.assertTrue(all(b.isEnabled() for b in self.panel.protection_controls))
+        buttons['Keep'].click(); app.processEvents()
+        self.assertIn(('state', 'm', 'active'), self.protection.calls)
+
+    def test_a_refused_adjust_shows_the_area_in_red_again(self):
+        self.panel.handle_event({'type': 'busy', 'busy': True})
+        self.adjust()
+        self.assertIs(self.doc.active_node, self.protection.mask)
+
+    def test_paint_over_it_still_hands_over_the_brush(self):
+        self.panel.paint_protection({'id': 'm', 'name': 'Buildings'})
+        self.assertEqual(Instance.tools, ['KritaShape/KisToolBrush'])
+        self.assertFalse(self.panel.protection_tool_button.isVisible(), 'no selection tools while painting a shape')
+        self.panel.finish_protection(False)
 
 
 class ArtistOnly(unittest.TestCase):

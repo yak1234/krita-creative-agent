@@ -19,9 +19,8 @@ Tool details for the AI image route (prompts, checking assets, scripts) are in t
    that selection, so the subjects stay untouched.
 3. **Cloud masses:** First propose_protection for any focal feature inside the area (the moon, a figure), named, unless the observation's features already lists it,
    and for everything the artist said to leave alone (the buildings, the skyline); Luna checks it after the batch.
-   Protect a skyline as everything but the sky: `select` the sky with a seed step, then `propose_protection`
-   with `[{"saved": "<that selection>"}, {"invert": true}]`. It follows every roof and spire; a hand-drawn polygon
-   leaves bands of old sky along its outline.
+   Protect buildings with `propose_protection` `shape`, one box around each building or block, never the sky's
+   inverse: sky-coloured glass counts as sky in a colour selection, and the host refuses one.
    Never `fill_region` an opaque colour over a seeded sky selection: it leaks into spires and dark towers of the
    sky's value and blacks them out. Clouds go on as soft stamps or low-opacity strokes.
    - **The painting already has clouds** (finishing, adding volume): `select` the sky alone (a seed step in it,

@@ -208,7 +208,7 @@ export function paintingTools(runtime) {
       'Build a selection from steps and save it under a name for fill_region and later turns. Example: the figure\u2019s alpha, grown 4 px and feathered 2. The artist\u2019s selection is never changed; not a canvas change. Returns bounds and selected_pixels, and open_edges: straight lines where it cuts through open paint; extend or feather it before painting through it, or the line prints as a hard edge.',
       object({ name: Type.String({ minLength: 1, maxLength: 40 }), steps: selectionSteps }), 'select'),
     tool('propose_protection', 'Marking an area to protect',
-      'Mark an area of the painting the artist asked to protect ("protect the woman and the car"), from selection steps like select: polygons around what you see, a layer\u2019s alpha, a colour range, a seed (magic wand); or shape: one finished element\u2019s exact shape from one box around it or a few points on it. It is shown in red and your passes keep out of it at once; the artist keeps or discards it. Propose before you paint near it. You cannot remove or change protection. Not a canvas change.',
+      'Propose an area of the painting the artist asked to protect ("protect the woman and the car"), made from the objects themselves: shape, one element\u2019s exact shape from one box around it or a few points on it (one call per object), or area steps like select: polygons, ellipses or rectangles around what you see, a layer\u2019s alpha, or a saved selection built only from those. Never a colour selection (it follows colours, not objects). Proposed and shown in red; the artist keeps or discards it. Until then you keep out of it. Propose before you paint near it. You cannot remove or change protection. Not a canvas change.',
       object({ name: Type.String({ minLength: 1, maxLength: 60 }), area: Type.Optional(selectionSteps), shape: Type.Optional(shapeSchema('canvas')) }), 'propose_protection'),
     tool('fill_region', 'Filling a region',
       'Fill an area in one call, without strokes: flats, sky, a shadow shape, a gradient. Area: selection (a saved name) or area (selection steps). Paint: color, gradient {type linear|radial, start, end, stops [{offset 0-1, color}]} or pattern (a krita_capabilities name). Fills a NEW layer named name (with blend_mode, opacity, clip_base, clip_to as in create_layer), or layer_id: an agent paint layer, honouring its alpha lock (fill_region onto a clip_base layer extends the flats and keeps its clipped layers). One reversible pass; returns the canvas image.',
@@ -338,6 +338,8 @@ export function paintingTools(runtime) {
  * bounds; the prompt never reaches it. A pass's limits are checked before the canvas is read or the worker asked, and an
  * uncertain shape (raw score under LOW_SCORE) paints nothing. paint_batch finds every action's shape first, on the same
  * view, before any action paints (prepareBatchShapes); a proposed shape is still the artist's to keep or discard. */
+// Mirrors the plugin's refusal (protection.py, authoritative: it also refuses saved selections built from colours).
+export const COLOUR_PROTECTION = 'Protection is made from the objects themselves: use shape (one box around each object) or polygons around them, not a colour selection.';
 const readyShapes = new WeakMap();           // a batch action's found shape object -> the shape it came from
 function withShapeReport(result, found) {
   const report = shapeReport(found);
@@ -357,7 +359,10 @@ function shapeLimits(runtime, tools) {
   const protect = tools.find(t => t.name === 'propose_protection'), proposeArea = protect.execute;
   protect.execute = async (id, args, signal) => {
     if (!args.area === !args.shape) throw new Error('Give propose_protection an area or shape (one of them).');
-    if (!args.shape) return proposeArea(id, args, signal);
+    if (!args.shape) {
+      if (args.area.some(step => 'seed' in step || 'color' in step)) throw new Error(COLOUR_PROTECTION);
+      return proposeArea(id, args, signal);
+    }
     const shape = await canvasShape(runtime, args.shape);
     signal?.throwIfAborted();
     return withShapeReport(await proposeArea(id, { name: args.name, area: [{ element_shape: { mask_path: shape.mask_path, bounds: shape.bounds } }] }, signal), shape.found);

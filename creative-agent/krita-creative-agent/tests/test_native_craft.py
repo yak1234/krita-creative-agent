@@ -27,7 +27,7 @@ class FakeKrita:
     def version(self): return self.release
     def activeDocument(self): return self.viewed
     def action(self, identifier):
-        known = {'mirrorNodeX': self._mirror, 'selectopaque': self._opaque, 'clear': self._clear}
+        known = {'mirrorNodeX': self._mirror, 'selectopaque': self._opaque, 'clear': self._clear, 'invert_selection': self._invert}
         if identifier not in known:
             return None
         return types.SimpleNamespace(trigger=lambda: self.triggered.append((identifier, self.doc.activeNode().id)) or known[identifier]())
@@ -39,6 +39,8 @@ class FakeKrita:
         node, mask = self.doc.activeNode(), region_tests.Mask()
         mask.m = bytearray(255 if node.pixels[i * 4 + 3] else 0 for i in range(SIZE * SIZE))
         self.doc.setSelection(mask)
+    def _invert(self):
+        mask = region_tests.Mask(); mask.m = bytearray(255 - v for v in self.doc.selection().m); self.doc.setSelection(mask)
     def _clear(self):
         node, area = self.doc.activeNode(), self.doc.selection()
         for i in range(SIZE * SIZE):
@@ -125,6 +127,33 @@ class NativeActionTests(region_tests.RegionSetup, unittest.TestCase):
         self.assertEqual(figure.pixels[3], 255, "the artist's layer is only read")
         with self.assertRaisesRegex(ValueError, 'save_as'):
             run(self.h, 'krita_action', {'action': 'selectopaque', 'target': figure.id}, 'unnamed')
+
+    REFUSED = 'Protection is made from the objects themselves'
+
+    def with_invert(self):
+        entries = ACTIONS['5.3.3'] + [{'id': 'invert_selection', 'label': 'Invert selection', 'kind': 'selection', 'needs': ['target', 'selection']}]
+        self.h._native_actions = lambda version: entries
+
+    def test_a_seeded_selection_inverted_by_a_krita_action_cannot_become_protection(self):
+        # element-scoped-painting review C1: the seed's provenance survives krita_action invert_selection save_as.
+        self.with_invert(); figure = self.artist_layer()
+        run(self.h, 'select', {'name': 'SkyAll', 'steps': [{'seed': [0, 0], 'tolerance': 40}]})
+        run(self.h, 'krita_action', {'action': 'invert_selection', 'target': figure.id, 'selection': 'SkyAll', 'save_as': 'Towers'}, 'inv')
+        self.assertTrue(self.h._region_colour_based(self.h._creative_session, [{'saved': 'Towers'}]))
+        with self.assertRaisesRegex(ValueError, self.REFUSED):
+            run(self.h, 'propose_protection', {'name': 'Towers', 'area': [{'saved': 'Towers'}]}, 'p1')
+        run(self.h, 'select', {'name': 'Box', 'steps': [{'shape': 'rectangle', 'bounds': [0, 0, 2, 2]}]})
+        run(self.h, 'krita_action', {'action': 'invert_selection', 'target': figure.id, 'selection': 'Box', 'save_as': 'Not box'}, 'inv2')
+        self.assertFalse(self.h._region_colour_based(self.h._creative_session, [{'saved': 'Not box'}]), 'a box inverted stays a shape')
+
+    def test_the_opaque_pixels_of_an_agent_layer_are_not_an_object(self):
+        # Review I1: an agent layer may be a split_by_color region or a fill over a seeded selection.
+        figure = self.artist_layer(); figure.pixels = bytearray(b''.join(bytes([9, 9, 9, 255 if i < 8 else 0]) for i in range(SIZE * SIZE)))
+        car = self.agent_layer()
+        run(self.h, 'krita_action', {'action': 'selectopaque', 'target': figure.id, 'save_as': 'Figure'}, 'o1')
+        run(self.h, 'krita_action', {'action': 'selectopaque', 'target': car.id, 'save_as': 'Car'}, 'o2')
+        self.assertFalse(self.h._region_colour_based(self.h._creative_session, [{'saved': 'Figure'}]), "the artist's layer alpha")
+        self.assertTrue(self.h._region_colour_based(self.h._creative_session, [{'saved': 'Car'}]))
 
     def test_a_replayed_action_runs_once(self):
         layer = self.agent_layer()
@@ -352,6 +381,22 @@ class SplitTests(region_tests.RegionSetup, unittest.TestCase):
         self.assertLessEqual(sum(s['share'] for s in result['selections']), 1)
         self.assertEqual(self.h._creative_session['passes'], [], 'selections are not a pass')
         self.assertEqual(self.h.doc.selection_changes, [], "the artist's selection is never touched")
+
+    def test_split_regions_are_colour_selections_and_never_protection(self):
+        # Review C1: split_by_color regions are colour picks; inverting one does not make it an object.
+        run(self.h, 'split_by_color', {'source': 'visible', 'colors': 8, 'min_area': 2})
+        steps = [{'saved': 'Split 1 1464c8'}, {'invert': True}]
+        self.assertTrue(self.h._region_colour_based(self.h._creative_session, steps))
+        with self.assertRaisesRegex(ValueError, 'Protection is made from the objects themselves'):
+            run(self.h, 'propose_protection', {'name': 'Buildings', 'area': steps}, 'p')
+
+    def test_split_layers_are_not_an_object_either(self):
+        result = run(self.h, 'split_by_color', {'source': 'visible', 'as_layers': True, 'min_area': 2}, 'layers')
+        owned = [n for n in self.h.doc.root.childNodes() if n.type() == 'grouplayer']
+        layer = next(c for g in owned for c in g.childNodes())
+        self.assertEqual(result['status'], 'ok')
+        with self.assertRaisesRegex(ValueError, 'Protection is made from the objects themselves'):
+            run(self.h, 'propose_protection', {'name': 'Sky', 'area': [{'layer_id': layer.id}]}, 'p2')
 
     def test_split_of_a_region_and_a_prefix(self):
         result = run(self.h, 'split_by_color', {'source': self.painting.id, 'region': [0, 1, 4, 2], 'min_area': 1, 'name_prefix': 'Street'})

@@ -243,6 +243,22 @@ test('propose_protection may carry a shape; the artist still keeps or discards i
   assert.deepEqual(calls.at(-1).params, { name: 'Car', area: [{ shape: 'rectangle', bounds: [0, 0, 2, 2] }] });
 });
 
+test('propose_protection refuses magic-wand seeds and colour ranges before the plugin; the reply says proposed', async t => {
+  // Protection is made from the objects (the artist, 2026-10-23): the painter seeded a sky and protected the inverse,
+  // and the sky-coloured towers counted as sky. The plugin refuses too (saved selections built from seeds included).
+  const { calls, tools } = await canvasSetup(t);
+  const propose = tools.find(x => x.name === 'propose_protection');
+  const before = calls.length;
+  for (const area of [[{ seed: [10, 10], tolerance: 40 }, { invert: true }], [{ color: '#203040' }],
+    [{ shape: 'rectangle', bounds: [0, 0, 20, 20] }, { color: '#203040', mode: 'subtract' }]])
+    await assert.rejects(propose.execute('pc', { name: 'Buildings', area }),
+      /Protection is made from the objects themselves: use shape \(one box around each object\) or polygons around them, not a colour selection\./);
+  assert.equal(calls.length, before, 'nothing reached the plugin');
+  assert.doesNotMatch(propose.description, /colour range|seed|magic wand/i);
+  assert.match(propose.description, /Proposed and shown in red; the artist keeps or discards it\. Until then you keep out of it\./);
+  assert.match(propose.description, /shape/);
+});
+
 test('mask files: filtered rows and colour masks decode; written masks round-trip', async () => {
   const { deflateSync, crc32 } = await import('node:zlib');
   const chunk = (kind, body) => { const head = Buffer.alloc(8); head.writeUInt32BE(body.length); head.write(kind, 4, 'latin1');

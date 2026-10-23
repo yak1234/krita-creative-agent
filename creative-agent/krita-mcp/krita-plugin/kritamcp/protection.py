@@ -25,6 +25,9 @@ PANEL_ONLY = ('protection_keep', 'protection_remove', 'protection_discard', 'pro
 # Layers whose look is not their own pixels: protection masks them instead of erasing.
 # States the agent keeps out of: what the artist kept, and what the agent itself proposed.
 ENFORCED = ('active', 'pending')
+# A magic wand or a colour range follows colours, not objects: sky-coloured glass towers count as sky (2026-10-23).
+COLOUR_REFUSAL = ('Protection is made from the objects themselves: use shape (one box around each object) or polygons '
+                  'around them, not a colour selection.')
 MASKED_TYPES = ('filllayer', 'filterlayer', 'generatorlayer', 'clonelayer', 'filelayer', 'vectorlayer')
 
 
@@ -161,13 +164,17 @@ class ProtectionCraft:
         fields(params, ('name', 'area'), ('name', 'area'))
         name = text(params['name'], 'name', 60).strip()
         self._region_validate_steps(doc, session, params['area'])
+        origin = self._region_colour_origin(session, params['area'])
+        if origin is not None:
+            raise ValueError(COLOUR_REFUSAL + {'colour': '', 'own_layer': ' Not the alpha of one of your own layers either.',
+                                               'unrecorded': ' That saved selection was saved before this was recorded: run select again.'}[origin])
         selection = self._region_build(doc, session, params['area'])
         extent = self._region_bounds(doc, selection)
         if extent is None:
             raise ValueError('The area is empty inside the canvas. Nothing was proposed.')
         area = self._protect_add(doc, selection, name, 'agent', 'pending', extent[0])
         return {'status': 'ok', 'area': area,
-                'message': 'Shown in red. You keep out of it from now on; the artist keeps or discards it.'}
+                'message': 'Proposed and shown in red; the artist keeps or discards it. Until then you keep out of it.'}
 
     # ----- enforcement -----------------------------------------------------------
     def _protect_area_masks(self, doc, rect):

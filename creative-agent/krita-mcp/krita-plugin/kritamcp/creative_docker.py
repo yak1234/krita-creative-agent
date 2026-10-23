@@ -15,6 +15,10 @@ from . import node_runtime
 from . import bundled_release
 from .bridge_config import bridge_port
 from .command_queue import stop_requested, command_executing
+try:
+    from .command_queue import artist_editing
+except ImportError:                                       # command_queue is not hot-reloaded: an older copy has no flag
+    artist_editing = threading.Event()
 from .protection import ProtectionCraft
 from .feature_guard import FeatureCraft
 from .reference_parts import part_image, crop_image, opaque_bounds
@@ -460,7 +464,7 @@ class FeaturesSection(QFrame):
     def __init__(self, on_toggle):
         super().__init__(); self.setObjectName('featuresSection')
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)            # its own height; the chat takes the rest
-        self.on_toggle = on_toggle; self.rows = []; self.builds = 0; self.locked = False; self.structure = None
+        self.on_toggle = on_toggle; self.rows = []; self.pending_rows = []; self.builds = 0; self.locked = False; self.structure = None
         layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(2)
         header = QHBoxLayout(); header.setSpacing(6)
         self.toggle = QToolButton(); self.toggle.setObjectName('featuresToggle'); self.toggle.setText('Protected')
@@ -481,13 +485,16 @@ class FeaturesSection(QFrame):
         self.toggle.setArrowType(Qt.ArrowType.DownArrow if on else Qt.ArrowType.RightArrow); self.body.setVisible(on)
 
     @staticmethod
-    def structure_of(rows):
-        return tuple(sorted((str(r['name']), str(r.get('kind') or '')) for r in rows))
+    def structure_of(rows, pending=()):
+        return (tuple(sorted((str(r['name']), str(r.get('kind') or '')) for r in rows)),
+                tuple(sorted((str(a['id']), str(a['name']), str(a.get('state'))) for a in pending)))
 
-    def present(self, rows):
+    def present(self, rows, pending=()):
         """Show the rows: rebuilt and sorted when names or kinds changed, else only the boxes change, in place, so a row
-        never jumps under the pointer and the clicked box keeps the focus."""
-        if self.structure_of(rows) != self.structure: self.show_rows(rows)
+        never jumps under the pointer and the clicked box keeps the focus. `pending`: areas the agent proposed that the
+        artist has not kept yet (protection.py), listed below the features without a box: the artist answers them in
+        the chat (Keep, Adjust, Discard)."""
+        if self.structure_of(rows, pending) != self.structure: self.show_rows(rows, pending)
         else: self.set_flags(rows)
         self.show()
 
@@ -500,12 +507,13 @@ class FeaturesSection(QFrame):
         self.summary.setText('%d of %d' % (sum(flags.values()), len(flags)) if flags else '')
         self.set_locked(self.locked)
 
-    def show_rows(self, rows):
-        """Rebuild the list from feature rows ({'name', 'kind', 'protected'}); the order is the section's own."""
-        self.builds += 1; self.structure = self.structure_of(rows)
-        for row in self.rows:
+    def show_rows(self, rows, pending=()):
+        """Rebuild the list from feature rows ({'name', 'kind', 'protected'}) and pending areas ({'id', 'name'}); the
+        order is the section's own."""
+        self.builds += 1; self.structure = self.structure_of(rows, pending)
+        for row in self.rows + self.pending_rows:
             row['widget'].hide(); row['widget'].deleteLater()          # deleteLater: a box may be mid-click
-        self.rows = []
+        self.rows = []; self.pending_rows = []
         ordered = sorted(rows, key=lambda r: (not r['protected'], r['name'].casefold(), r['name']))
         for entry in ordered:
             widget = QWidget(); line = QHBoxLayout(widget); line.setContentsMargins(0, 1, 0, 1); line.setSpacing(6)
@@ -515,7 +523,18 @@ class FeaturesSection(QFrame):
             kind = QLabel(entry.get('kind') or ''); kind.setTextFormat(Qt.TextFormat.PlainText); kind.setObjectName('muted'); line.addWidget(kind)
             self.list_layout.addWidget(widget)
             self.rows.append({'name': entry['name'], 'check': check, 'kind': kind, 'widget': widget})
-        self.empty.setVisible(not self.rows); self.scroll.setVisible(bool(self.rows))
+        for area in sorted(pending, key=lambda a: (a['name'].casefold(), a['name'])):
+            widget = QWidget(); line = QHBoxLayout(widget); line.setContentsMargins(0, 1, 0, 1); line.setSpacing(6)
+            label = QLabel(area['name']); label.setTextFormat(Qt.TextFormat.PlainText); label.setMinimumWidth(0)
+            label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            label.setToolTip('The agent proposed this area, shown in red; keep, adjust or discard it in the chat.' if area.get('state') == 'pending'
+                             else 'A protected area: the agent never changes it. Remove it with the shield.')
+            line.addWidget(label, 1)
+            kind = QLabel('proposed, waiting for you' if area.get('state') == 'pending' else 'protected'); kind.setObjectName('muted'); line.addWidget(kind)
+            self.list_layout.addWidget(widget)
+            self.pending_rows.append({'name': area['name'], 'id': area['id'], 'label': label, 'kind': kind, 'widget': widget})
+        listed = bool(self.rows or self.pending_rows)
+        self.empty.setVisible(not listed); self.scroll.setVisible(listed)
         protected = sum(1 for r in ordered if r['protected'])
         self.summary.setText('%d of %d' % (protected, len(ordered)) if ordered else '')
         self.set_locked(self.locked)
@@ -1462,6 +1481,9 @@ class CreativeAgentDocker(DockWidget):
         compose.addWidget(self.attachments); self.attachments.hide()
         self.protection_bar = QWidget(); bar = QHBoxLayout(self.protection_bar); bar.setContentsMargins(0, 0, 0, 0)
         self.protection_bar_label = QLabel('Painting protection'); bar.addWidget(self.protection_bar_label, 1)
+        # Adjust (element-scoped-painting 2): Freehand Selection, with the Magnetic one (snaps to edges) a click away.
+        self.protection_tool_button = QPushButton(''); self.protection_tool_button.clicked.connect(self.switch_protection_tool)
+        bar.addWidget(self.protection_tool_button); self.protection_tool_button.hide()
         done = QPushButton('Done'); done.clicked.connect(lambda: self.finish_protection(True)); bar.addWidget(done)
         cancel = QPushButton('Cancel'); cancel.clicked.connect(lambda: self.finish_protection(False)); bar.addWidget(cancel)
         compose.addWidget(self.protection_bar); self.protection_bar.hide()
@@ -2758,7 +2780,7 @@ class CreativeAgentDocker(DockWidget):
                 button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
                 button.clicked.connect(lambda _checked=False, entry=area, value=choice: self.answer_protection(entry, value))
                 item['layout'].addWidget(button); self.protection_controls.append(button)
-            self.show_protection(area, True)
+            self.show_protection(area, True); self.refresh_features()
         elif kind == 'shapes_model_needed':
             # Element shapes (src/shapes/chat.ts): the one-time model download waits for the artist's answer.
             self.flush_stream(); self.reply_open = False; self.empty_state.hide()
@@ -3022,10 +3044,13 @@ class CreativeAgentDocker(DockWidget):
         doc = self.protection_document()
         if choice == 'keep':
             self.protection._protect_set_state(doc, area['id'], 'active'); self.status.setText("'%s' is protected." % area['name'])
-        elif choice == 'discard':
+        elif choice == 'discard' and self.agent_writing_reason(doc) is None:
             self.protection._protect_remove(doc, area['id'])
-        else:
-            self.paint_protection(area)
+        elif choice == 'discard' or not self.adjust_protection(area):
+            if choice == 'discard': self.status.setText(self.PAUSE_REASON)
+            for button in self.protection_controls: button.setEnabled(True)       # refused for now: the artist can answer again
+            self.show_protection(area, True)
+        self.refresh_features()
 
     def feature_rows(self):
         """The painting's features for the Protected section (name, kind, protected); empty without our Krita, without a
@@ -3036,17 +3061,33 @@ class CreativeAgentDocker(DockWidget):
         except (AttributeError, RuntimeError, ReferenceError):
             return []
 
+    def pending_areas(self, doc):
+        """The protected areas (protection.py) for the Protected section, besides the features: those the agent proposed
+        and the artist has not answered yet, and those kept. Locked layers are not listed there."""
+        try:
+            return [a for a in self.protection._protect_list(doc) if a.get('by') != 'automatic' and a.get('state') in ('pending', 'active')]
+        except (AttributeError, RuntimeError, ReferenceError, ValueError):
+            return []
+
     def feature_wait_reason(self, doc=None):
         """Why the artist's protection controls must wait now, or None. Krita's own state decides, not only the panel's
         busy flag: Keep and Undo of a move, and any bridge command, write inside an agent move without a busy event, and
         a change made then would join the agent's undo step."""
-        reason = 'Pause to change protection: the agent is working on the painting.'
-        if self.busy or self.feature_changing or self.protection_editing is not None or command_executing.is_set():
-            return reason
+        if self.busy or self.feature_changing or self.protection_editing is not None:
+            return self.PAUSE_REASON
+        return self.agent_writing_reason(doc)
+
+    PAUSE_REASON = 'Pause to change protection: the agent is working on the painting.'
+
+    def agent_writing_reason(self, doc=None):
+        """The pause reason while the agent is writing right now (a bridge command, an open agent move), else None: a
+        node removed or a selection set then would join the agent's undo step."""
+        if command_executing.is_set():
+            return self.PAUSE_REASON
         try:
             doc = doc if doc is not None else self.protection_document()
             if doc is not None and any(bool(getattr(doc, check)()) for check in ('agentMoveOpen', 'agentActive') if hasattr(doc, check)):
-                return reason
+                return self.PAUSE_REASON
         except (AttributeError, RuntimeError, ReferenceError):
             pass
         return None
@@ -3064,7 +3105,7 @@ class CreativeAgentDocker(DockWidget):
             rows = None                                   # a closed or deleted document
         if rows is None:
             self.features_section.structure = None; self.features_section.hide(); return
-        self.features_section.present(rows)
+        self.features_section.present(rows, self.pending_areas(doc))
         self.features_section.set_locked(self.feature_wait_reason(doc) is not None)
 
     def toggle_feature(self, name, value):
@@ -3170,10 +3211,51 @@ class CreativeAgentDocker(DockWidget):
         doc.setActiveNode(self.protection._protect_mask_node(doc, area['id']))
         brush = Krita.instance().action('KritaShape/KisToolBrush')
         if brush is not None: brush.trigger()
+        self.protection_tool_button.hide()
         self.protection_bar_label.setText("Painting protection: '%s'" % area['name']); self.protection_bar.show(); self.update_controls()
 
+    FREEHAND, MAGNETIC = 'KisToolSelectOutline', 'KisToolSelectMagnetic'
+
+    def adjust_protection(self, area):
+        """Adjust a proposed area with a selection tool, not the brush: the artist's own selection is set aside, the area
+        becomes the document selection and the Freehand Selection Tool is chosen. Done writes the selection back into the
+        area; Cancel leaves it. Never while the agent paints. Returns whether the adjustment started."""
+        doc = self.protection_document()
+        if doc is None:
+            self.status.setText('Open your painting to protect parts of it.'); return False
+        reason = self.feature_wait_reason(doc)
+        if reason is not None:
+            self.status.setText(reason); return False
+        mask = self.protection._protect_mask_node(doc, area['id'])
+        if not mask:
+            self.status.setText('That protected area is no longer in this painting.'); return False
+        earlier = doc.selection()
+        self.protection_editing = {'area': area, 'mode': 'select', 'earlier': earlier.duplicate() if earlier is not None else None,
+                                   'node': None, 'doc': doc}
+        artist_editing.set()                                     # the bridge holds agent writes until Done or Cancel
+        doc.setSelection(mask.selection().duplicate())
+        self.protection_bar_label.setText("Adjusting '%s': change the selection, then Done" % area['name'])
+        self.protection_tool_button.show(); self.choose_protection_tool(self.FREEHAND)
+        self.protection_bar.show(); self.update_controls()
+        return True
+
+    def choose_protection_tool(self, name):
+        self.protection_tool = name
+        tool = Krita.instance().action(name)
+        if tool is not None: tool.trigger()
+        magnetic = name == self.MAGNETIC
+        self.protection_tool_button.setText('Freehand' if magnetic else 'Magnetic')
+        self.protection_tool_button.setToolTip('Back to the Freehand Selection Tool' if magnetic else
+                                               'Magnetic Selection Tool: it snaps to edges, good for skylines')
+
+    def switch_protection_tool(self):
+        self.choose_protection_tool(self.FREEHAND if getattr(self, 'protection_tool', None) == self.MAGNETIC else self.MAGNETIC)
+
     def finish_protection(self, keep):
-        editing, self.protection_editing = self.protection_editing, None
+        editing = self.protection_editing
+        if editing is not None and editing.get('mode') == 'select':
+            return self.finish_adjusting(keep)
+        self.protection_editing = None
         self.protection_bar.hide()
         if editing is None: return
         doc, area = self.protection_document(), editing['area']
@@ -3189,6 +3271,43 @@ class CreativeAgentDocker(DockWidget):
             mask.setSelection(editing['saved'])
         if editing['node'] is not None: doc.setActiveNode(editing['node'])
         self.update_controls()
+
+    def finish_adjusting(self, keep):
+        """Done or Cancel of Adjust. Done with nothing selected keeps the bar open."""
+        editing = self.protection_editing
+        area, doc = editing['area'], self.adjusted_document(editing['doc'])
+        if doc is None:                                          # the painting was closed: nothing to write back or restore
+            self.end_adjusting(); return
+        reason = self.agent_writing_reason(doc)
+        if reason is not None:
+            self.status.setText(reason); return
+        if keep:
+            selection = doc.selection()
+            bounds = self.selection_bounds(selection, doc)
+            if bounds is None:
+                self.status.setText('Select an area first.'); return
+            mask = self.protection._protect_mask_node(doc, area['id'])
+            if mask:
+                mask.setSelection(selection.duplicate())
+                self.protection._protect_set_bounds(doc, area['id'], bounds)
+                self.protection._protect_set_state(doc, area['id'], 'active'); self.status.setText("'%s' is protected." % area['name'])
+            else:
+                self.status.setText('That protected area is no longer in this painting.')
+        doc.setSelection(editing['earlier'])                     # the artist's own selection back, or none
+        self.end_adjusting()
+
+    def end_adjusting(self):
+        self.protection_editing = None; artist_editing.clear()
+        self.protection_bar.hide(); self.protection_tool_button.hide()
+        self.refresh_features(); self.update_controls()
+
+    @staticmethod
+    def adjusted_document(doc):
+        """The painting the adjustment began on, if Krita still has it open (never whichever is active now)."""
+        try:
+            return next((open_doc for open_doc in Krita.instance().documents() if open_doc is doc or open_doc == doc), None)
+        except (AttributeError, RuntimeError, ReferenceError):
+            return None
 
     def update_controls(self):
         running = bool(self.process and self.process.state() == QProcess.ProcessState.Running)

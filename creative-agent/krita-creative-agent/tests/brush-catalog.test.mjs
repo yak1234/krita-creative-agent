@@ -38,6 +38,15 @@ test('the painter finds an existing area with a seed instead of measuring it', (
   assert.match(PAINTING_INSTRUCTIONS, /seed step/);
 });
 
+test('protection comes from shapes and polygons, never a colour selection, and stays proposed until kept', () => {
+  const protection = section('protection');
+  assert.match(protection, /propose_protection[^.]*shape[^.]*polygons[^.]*never a seed or colour range/);
+  assert.match(protection, /proposed until the artist keeps it/);
+  const sky = readFileSync(new URL('../skills/paint-sky/SKILL.md', import.meta.url), 'utf8');
+  assert.doesNotMatch(sky, /Protect a skyline as everything but the sky/);
+  assert.match(sky, /propose_protection[^.]*shape/);
+});
+
 // The painter prompt in sections, with a job → Krita feature guide; worked examples live in skills.
 const PROMPT_BASELINE = 13330;          // PAINTING_INSTRUCTIONS.length before the sections (krita-native-tools Task 5)
 const section = name => {

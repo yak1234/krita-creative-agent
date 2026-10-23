@@ -16,6 +16,10 @@ stop_requested = threading.Event()
 # the panel's protection controls wait until it is clear, so an artist's change never lands inside the agent's work.
 command_executing = threading.Event()
 
+# Set on Krita's main thread while the artist adjusts a protected area in the panel (a selection tool on the document
+# selection): agent writes are held until Done or Cancel, so none lands in the selection or the area being edited.
+artist_editing = threading.Event()
+
 
 class CommandQueue:
     """Thread-safe command queue for passing commands from HTTP thread to main thread."""

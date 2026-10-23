@@ -207,6 +207,89 @@ class ProtectedAreaTests(ProtectionSetup, unittest.TestCase):
             self.propose('Nothing', [{'shape': 'rectangle', 'bounds': [0, 0, 1, 1]}, {'shape': 'rectangle', 'bounds': [0, 0, 1, 1], 'mode': 'subtract'}])
 
 
+class ColourProtectionTests(ProtectionSetup, unittest.TestCase):
+    """Protection is made from the objects themselves, never a colour selection (the artist, 2026-10-23: the painter
+    magic-wanded a sky, protected the inverse, and lost the sky-coloured skyscrapers)."""
+    REFUSED = 'Protection is made from the objects themselves'
+
+    def select(self, name, steps):
+        result = region_tests.run(self.h, 'select', {'name': name, 'steps': steps})
+        self.assertEqual(result['status'], 'ok', result.get('error'))
+
+    def test_seed_and_colour_steps_are_refused_with_or_without_invert(self):
+        for area in ([{'seed': [0, 0], 'tolerance': 10}],
+                     [{'color': '#000000', 'tolerance': 0}],
+                     [{'seed': [0, 0], 'tolerance': 40}, {'seed': [3, 0], 'mode': 'add'}, {'invert': True}],
+                     [{'shape': 'rectangle', 'bounds': [0, 0, 2, 2]}, {'color': '#000000', 'mode': 'subtract'}]):
+            with self.assertRaisesRegex(ValueError, self.REFUSED):
+                self.propose('Buildings', area)
+        self.assertIsNone(self.group(), 'nothing was proposed')
+
+    def test_a_saved_selection_built_from_seeds_is_refused_even_through_another_saved_one(self):
+        # The live failure: [{saved: "SkyAll"}, {invert: true}] with SkyAll made of seven seeds.
+        self.select('SkyAll', [{'seed': [0, 0], 'tolerance': 40}])
+        with self.assertRaisesRegex(ValueError, self.REFUSED):
+            self.propose('Buildings', [{'saved': 'SkyAll'}, {'invert': True}])
+        self.select('Sky and box', [{'saved': 'SkyAll'}, {'shape': 'rectangle', 'bounds': [2, 2, 2, 2], 'mode': 'add'}])
+        with self.assertRaisesRegex(ValueError, self.REFUSED):
+            self.propose('Buildings', [{'saved': 'Sky and box'}])
+        self.assertIsNone(self.group())
+
+    def test_shapes_a_layer_alpha_and_saved_shapes_are_allowed(self):
+        figure = self.artist_layer('Figure'); figure.pixels = bytearray(b'\x00\x00\x00\xff' * (SIZE * SIZE))
+        self.select('Towers', [{'shape': 'polygon', 'points': [[0, 0], [1, 0], [1, 1]]}, {'shape': 'ellipse', 'bounds': [0, 0, 2, 2], 'mode': 'add'}])
+        for name, area in (('Box', AREA), ('Figure', [{'layer_id': figure.id}]), ('Towers', [{'saved': 'Towers'}]),
+                           ('Sky', [{'saved': 'Towers'}, {'invert': True}])):
+            result = self.propose(name, area)
+            self.assertEqual(result['status'], 'ok', result.get('error'))
+
+    def test_an_agent_layer_alpha_is_refused_and_the_artists_allowed(self):
+        # Review I1: the agent's own layer may be a fill over a seeded selection.
+        made = self.paint()
+        self.assertEqual(made['status'], 'ok', made.get('error'))
+        with self.assertRaisesRegex(ValueError, 'one of your own layers'):
+            self.propose('Street', [{'layer_id': made['layer_id']}])
+        self.select('Street', [{'layer_id': made['layer_id']}])
+        with self.assertRaisesRegex(ValueError, self.REFUSED):
+            self.propose('Street', [{'saved': 'Street'}])
+
+    def test_an_unreadable_saved_selection_is_refused_cleanly(self):
+        self.select('Broken', [{'shape': 'rectangle', 'bounds': [0, 0, 2, 2]}])
+        with open(self.h._region_saved_path(self.h._creative_session, 'Broken'), 'wb') as stream:
+            stream.write(b'not json\n')
+        with self.assertRaisesRegex(ValueError, self.REFUSED):
+            self.propose('Broken', [{'saved': 'Broken'}])
+
+    def test_a_saved_selection_without_provenance_counts_as_a_colour_selection(self):
+        # Saved before provenance was recorded: what it was made from is unknown, so it cannot become protection.
+        self.select('Old', [{'shape': 'rectangle', 'bounds': [0, 0, 2, 2]}])
+        path = self.h._region_saved_path(self.h._creative_session, 'Old')
+        header, data = self.h._region_read(path)
+        header.pop('colour_based')
+        self.h._region_write(path, header, data)
+        with self.assertRaisesRegex(ValueError, self.REFUSED + '.*saved before this was recorded: run select again'):
+            self.propose('Old', [{'saved': 'Old'}])
+
+    def test_the_reply_says_the_area_is_only_proposed(self):
+        message = self.propose()['message']
+        self.assertIn('Proposed and shown in red', message)
+        self.assertIn('the artist keeps or discards it', message)
+        self.assertIn('Until then you keep out of it', message)
+
+
+class ArtistEditingTests(ProtectionSetup, unittest.TestCase):
+    """While the artist adjusts a protected area in the panel, agent writes are held (review I3): one would land in the
+    document selection the artist is editing, or inside the area before it is written back."""
+    def test_writes_are_held_while_the_artist_adjusts_an_area(self):
+        held = sys.modules['creative_test_package.command_queue'].artist_editing
+        held.set(); self.addCleanup(held.clear)
+        result = self.paint('held')
+        self.assertEqual((result['status'], result['error_code']), ('held', 'artist_editing'))
+        self.assertEqual(self.h._creative_session['passes'], [], 'nothing was painted')
+        held.clear()
+        self.assertEqual(self.paint('after')['status'], 'ok')
+
+
 class RevisionTests(ProtectionSetup, unittest.TestCase):
     """Protected areas are masks that never render: proposing, keeping or removing one is not a canvas change, so the
     painter's next pass (carrying the revision it saw) is not refused as "the painting changed" (a live clouds test)."""

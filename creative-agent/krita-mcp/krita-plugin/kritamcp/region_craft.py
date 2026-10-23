@@ -26,6 +26,9 @@ STEP_FIELDS = ('feature', 'shape', 'bounds', 'points', 'layer_id', 'color', 'see
 # element_shape {mask_path, bounds}: an element's shape the companion found and wrote to the chat folder (shape_mask.py);
 # the companion sends it, the painter names a shape by a box or points instead.
 SOURCES = ('shape', 'layer_id', 'color', 'seed', 'saved', 'feature', 'element_shape')
+# Sources that pick pixels by their colour (a magic wand or a colour range), not by the object: a saved selection records
+# whether any of its steps, or any saved selection it used, was one (protection is never made from them).
+COLOUR_SOURCES = ('color', 'seed')
 RUN = re.compile(rb'[^\x00]+')
 MODES = ('replace', 'add', 'subtract', 'intersect')
 REFINEMENTS = ('grow', 'shrink', 'border', 'feather')     # applied in this order, then smooth, then invert
@@ -367,10 +370,37 @@ class RegionCraft:
             header = json.loads(stream.readline())
             return header, zlib.decompress(stream.read())
 
-    def _region_save(self, doc, session, name, selection, rect):
+    def _region_save(self, doc, session, name, selection, rect, colour_based=True):
         self._region_write(self._region_saved_path(session, name),
-                           {'name': name.strip(), 'rect': list(rect), 'canvas': [doc.width(), doc.height()]},
+                           {'name': name.strip(), 'rect': list(rect), 'canvas': [doc.width(), doc.height()],
+                            'colour_based': bool(colour_based)},
                            selection.pixelData(*rect))
+
+    def _region_colour_based(self, session, steps):
+        """True when validated steps pick pixels by colour (see _region_colour_origin)."""
+        return self._region_colour_origin(session, steps) is not None
+
+    def _region_colour_origin(self, session, steps):
+        """Why validated steps are not made from objects, or None: 'colour' for a colour or seed step, or a saved selection
+        that recorded one (whatever saved it: select, split_by_color, krita_action); 'own_layer' for the alpha of an agent
+        layer (a split_by_color layer or a fill over a seeded selection); 'unrecorded' for a saved selection from before
+        provenance was recorded, or one that cannot be read. A name that is no saved selection is a feature (our Krita)."""
+        for step in steps:
+            if any(key in step for key in COLOUR_SOURCES):
+                return 'colour'
+            if 'layer_id' in step and self._craft_owned(session, step['layer_id']):
+                return 'own_layer'
+            if 'saved' in step and self._region_has_saved(session, step['saved']):
+                try:
+                    with open(self._region_saved_path(session, step['saved']), 'rb') as stream:
+                        header = json.loads(stream.readline())          # the header line only, never the mask
+                except (OSError, ValueError):
+                    return 'unrecorded'
+                if not isinstance(header, dict) or 'colour_based' not in header:
+                    return 'unrecorded'
+                if header['colour_based']:
+                    return 'colour'
+        return None
 
     def _region_has_saved(self, session, name):
         return (isinstance(name, str) and bool(NAME.match(name)) and bool(session.get('output'))
@@ -414,7 +444,8 @@ class RegionCraft:
         if extent is None:
             raise ValueError('The selection is empty inside the canvas. Nothing was saved.')
         rect, pixels = extent
-        self._region_save(doc, session, params['name'], selection, rect); lap('save')
+        self._region_save(doc, session, params['name'], selection, rect,
+                          self._region_colour_based(session, params['steps'])); lap('save')
         result = self._region_warn_edges(doc, selection, rect, {'status': 'ok', 'name': params['name'].strip(), 'bounds': list(rect), 'selected_pixels': pixels})
         lap('edges')
         result['timings_ms'] = ms                        # where a select's time goes (host-only, like a pass's timings)

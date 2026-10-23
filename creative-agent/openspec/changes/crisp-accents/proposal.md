@@ -1,6 +1,6 @@
 # Crisp accents: stage two after the underpainting; visible tracing removed
 
-Status: DESIGN (2026-10-23), from a brainstorm with the artist; waiting for the artist's approval of this document.
+Status: APPROVED by the artist (2026-10-23: "renove traces, call it accents", "accents go on their own layer", "yes please 1 and 2, exempt accents from 2x limit").
 
 ## Why
 
@@ -49,6 +49,19 @@ tracing; accents go on their own layer.
    strongest first, capped per call; the move's layer is named for its accents.
 5. **Painter guidance**: after the underpainting, crispness comes from `paint_accents`; long `paint_batch` runs and
    scratchy edge passes are not the way to finish.
+
+6. **Accents are exempt from the 2x stretch limit** (the artist, 2026-10-23): an accent is a position, a colour and a
+   size, painted crisp at canvas resolution, so enlargement does not blur it; the limit stays for texture transfers.
+7. **The underpainting move ends when the transfer finishes** (the artist's fix 1): in a move whose step is the
+   whole-picture underpainting, the host closes the move as soon as the whole transfer completes; no hand strokes or
+   other painting follow inside that move. Live chat 34deca0e (2026-10-23): after a clean 39,918-stroke transfer the
+   painter added about 177 typed strokes in the same move until the size limit stopped it.
+8. **A goal-likeness check** (the artist's fix 2): with a goal reference, the host measures how close the canvas is to
+   the goal before and after every painting batch (the whole canvas and the batch's area, at a scale where brushwork
+   texture does not count). A batch that makes the canvas clearly less like the goal is undone by the host and the
+   painter is told what got worse and where; accents (small by design) and deliberate artist-requested departures
+   ("make the sky warmer than the reference") are measured but not undone. In 34deca0e Luna reported "no regressions"
+   for every damaging batch: it judges how strokes look, not whether the painting moved away from the goal.
 
 ## Non-goals
 

@@ -2619,11 +2619,12 @@ async function referenceFirstMove({settings={}, references=[{purpose:'general'}]
 }
 const skillCount=(text,name)=>text.split('<skill name=\\"'+name+'\\"').length-1;
 
-test('reference first: with a goal reference and no colour pass yet, the move\'s context carries the reference-transfer and guided-trace skills once each',{timeout:30000},async()=>{
+test('reference first: with a goal reference and no colour pass yet, the move\'s context carries the reference-transfer skill once, and no guides by default',{timeout:30000},async()=>{
  const {h,moveText}=await referenceFirstMove();
  try {
   assert.equal(skillCount(moveText,'reference-transfer'),1);
-  assert.equal(skillCount(moveText,'guided-trace'),1);
+  assert.equal(skillCount(moveText,'guided-trace'),0,'guides only when the artist asks (the artist, 2026-10-23: traces are distracting next to the underpainting)');
+  assert.match(moveText,/guides only when the artist asks/i);
   assert.match(moveText,/Trace the outline\./,'the artist\'s request is still there');
   const system=JSON.stringify(h.requests.at(-1).messages[0]);
   assert.equal(skillCount(system,'reference-transfer'),0,'the skills are per-move context, not system prompt');
@@ -2888,7 +2889,7 @@ test('reference first: the skills go in once a chat, later moves get a one-line 
   assert.equal(skillCount(moveText(moves[0]),'reference-transfer'),1);
   await h.runtime.prompt('Now the moon.');                      // move 2: a reminder line, not the skills again
   const second=moveText(moves[1]);
-  assert.equal(skillCount(second,'reference-transfer'),0); assert.match(second,/REFERENCE FIRST/); assert.match(second,/skills given earlier/);
+  assert.equal(skillCount(second,'reference-transfer'),0); assert.match(second,/REFERENCE FIRST/); assert.match(second,/skill given earlier/);
   await h.runtime.prompt('Lay the reference colours.');         // move 3: the transfer
   await h.runtime.prompt('Refine the towers.');                 // move 4: a colour pass exists, nothing added
   assert.doesNotMatch(moveText(moves[3]),/REFERENCE FIRST/);
@@ -2986,7 +2987,7 @@ test('a corrected guess reaches the painter\'s context; a folder chosen before t
 // Project folder B3: the element plan approved first, PLAN.md and NOTES.md, resume.
 const PAINT_TOOLS=['paint_batch','paint_pass','paint_recipe','fill_region','draw_guide','paint_from_reference','paint_reference_surface','create_layer'];
 const folderBrief={title:'New Moscow',objective:'A snowy night, one element per move.',requirements:['Keep the warm windows.'],freedom:[],completion:['Every element is painted.'],
- steps:[{title:'Block-in: the whole composition',done_when:'Everything placed.',scope:'whole composition'},
+ steps:[{title:'Underpainting from the goal image',done_when:'Everything placed.',scope:'whole composition'},
   {title:'Moonlit sky',done_when:'The sky is painted.',scope:'assets/01-moonlit-sky.png'},
   {title:'Historic buildings',done_when:'The buildings are painted.',scope:'assets/02-historic-buildings.png'},
   {title:'Kremlin towers',done_when:'The towers are painted.',scope:'assets/04-kremlin-towers.png'}]};
@@ -3008,7 +3009,9 @@ test('with a folder, Agent mode proposes the element plan and paints nothing bef
   assert.ok(planning.names.includes('propose_plan'),'the first turn proposes the plan');
   for (const name of PAINT_TOOLS) assert.ok(!planning.names.includes(name),name+' is not offered before approval');
   const draft=JSON.parse(planning.text.match(/folder_plan_draft: (\{.*\})/)[1]);
-  assert.deepEqual(draft.steps.map(s=>s.title),['Block-in: the whole composition','Moonlit sky','Historic buildings','Kremlin towers'],'block-in first, then the elements back to front by number');
+  assert.deepEqual(draft.steps.map(s=>s.title),['Underpainting from the goal image','Moonlit sky','Historic buildings','Kremlin towers'],'the whole-picture underpainting first, then the elements back to front by number');
+  assert.doesNotMatch(JSON.stringify(draft.steps[0]),/guide/i,'no guides step unless the artist asks');
+  assert.doesNotMatch(planning.text,/construction guides/i);
   assert.equal(draft.steps[2].scope,'assets/02-historic-buildings.png');
   assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.title),folderBrief.steps.map(s=>s.title));
   assert.equal(h.runtime.goal.approved_revision,null);
@@ -3028,7 +3031,7 @@ test('with a folder and a model that proposes nothing, the host proposes the ele
  try {
   await h.start('ask','Hello'); await h.runtime.openFolder({path:root}); await h.runtime.setMode('agent');
   await h.runtime.prompt('Paint it.');
-  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>[s.title,s.scope]),[['Block-in: the whole composition','whole composition'],
+  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>[s.title,s.scope]),[['Underpainting from the goal image','whole composition'],
    ['Moonlit sky','assets/01-moonlit-sky.png'],['Historic buildings','assets/02-historic-buildings.png'],['Kremlin towers','assets/04-kremlin-towers.png']]);
   assert.match(h.events.filter(e=>e.type==='status').at(-1).message,/Start painting/);
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
@@ -3059,7 +3062,10 @@ test('after Keep the step is ticked, PLAN.md updated, NOTES.md gains a line and 
   assert.equal(h.runtime.goal.approved_revision,h.runtime.goal.revision,'Start painting approves the plan');
   const [first]=h.runtime.goal.moves;
   assert.deepEqual([first.step,first.status],[0,'ready']);
-  assert.match(latestUserText(painters[0]),/Paint step 1 of the plan: Block-in/);
+  const firstText=latestUserText(painters[0]);
+  assert.match(firstText,/Paint step 1 of the plan: Underpainting from the goal image/);
+  assert.match(firstText,/PROJECT FOLDER MOVE[^\n]*paint_from_reference/,'the first step is the whole-picture underpainting');
+  assert.doesNotMatch(firstText,/PROJECT FOLDER MOVE[^\n]*draw_guide/,'no guides by default');
   await h.runtime.moveAction({action:'keep',move:1});
   assert.deepEqual(h.runtime.goal.done_steps,[0]);
   const second=h.runtime.goal.moves[1];
@@ -3068,14 +3074,15 @@ test('after Keep the step is ticked, PLAN.md updated, NOTES.md gains a line and 
   assert.match(skyText,/Paint step 2 of the plan: Moonlit sky/);
   const sky=h.runtime.study.references.find(r=>r.folder_name==='assets/01-moonlit-sky.png');
   assert.ok(skyText.includes(sky.id),'the move names the element\'s reference');
-  assert.match(skyText,/draw_guide[^.]*"Moonlit sky"/,'the guide is named for the element');
+  assert.doesNotMatch(skyText,/First draw_guide/,'an element move draws no guide unless asked');
+  assert.match(skyText,/guide[^.]*only when the artist asks/i);
   assert.equal(imagesInLatestMessage(painters[1]).length,3,'the goal, this element and the canvas: not every element of the folder');
   await h.runtime.moveAction({action:'keep',move:2});
   assert.deepEqual(h.runtime.goal.done_steps,[0,1]);
   const finished=h.calls.filter(c=>c.operation==='finish_guide').map(c=>c.params.element);
   assert.ok(finished.includes('Moonlit sky'),'the ticked element\'s guide is hidden');
   const plan=await readFile(join(root,'PLAN.md'),'utf8');
-  assert.match(plan,/^- \[x\] 1\. Block-in/m); assert.match(plan,/^- \[x\] 2\. Moonlit sky/m); assert.match(plan,/^- \[ \] 3\. Historic buildings/m);
+  assert.match(plan,/^- \[x\] 1\. Underpainting/m); assert.match(plan,/^- \[x\] 2\. Moonlit sky/m); assert.match(plan,/^- \[ \] 3\. Historic buildings/m);
   const notes=(await readFile(join(root,'NOTES.md'),'utf8')).split('\n').filter(l=>l.startsWith('- '));
   assert.equal(notes.length,2); assert.match(notes[1],/Moonlit sky/);
   assert.equal(h.runtime.goal.current_step,2);
@@ -3104,7 +3111,7 @@ test('resume with a hand-edited PLAN.md shows the difference and waits; a new ch
   assert.equal(h.runtime.goal.brief.steps.length,4,'nothing is followed before the answer');
   await h.runtime.prompt('Follow the edited plan');
   assert.equal(h.requests.length,requests,'answering makes no model request and paints nothing');
-  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.title),['Block-in: the whole composition','Kremlin towers','Moonlit sky']);
+  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.title),['Underpainting from the goal image','Kremlin towers','Moonlit sky']);
   assert.equal(h.runtime.goal.brief.steps[1].done_when,'The towers are painted.');
   assert.equal(h.runtime.goal.approved_revision,null,'the edited plan is approved with Start painting');
   const backups=(await readdir(root)).filter(n=>n.includes('.backup-'));
@@ -3113,8 +3120,8 @@ test('resume with a hand-edited PLAN.md shows the difference and waits; a new ch
   await h.runtime.end();
   await h.start('ask','Hello');
   await h.runtime.openFolder({path:root});
-  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.title),['Block-in: the whole composition','Kremlin towers','Moonlit sky'],'a new chat reads PLAN.md');
-  assert.match(h.events.filter(e=>e.type==='action').map(e=>e.message).join('\n'),/0 of 3 done, next: Block-in/);
+  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.title),['Underpainting from the goal image','Kremlin towers','Moonlit sky'],'a new chat reads PLAN.md');
+  assert.match(h.events.filter(e=>e.type==='action').map(e=>e.message).join('\n'),/0 of 3 done, next: Underpainting/);
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
 });
 
@@ -3280,4 +3287,30 @@ test('propose_plan in a folder chat: bare file names resolve to the folder, unkn
   assert.ok(results.some(r=>/more than one step/.test(r)),results.join('\n'));
   assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.scope),['whole composition','assets/01-moonlit-sky.png','assets/02-historic-buildings.png']);
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('a folder plan step the artist approved that names guides is a guides step',async()=>{
+ const runtime=Object.create(StudioRuntime.prototype);
+ runtime.goal={brief:{steps:[{title:'Guides: block in the whole composition',done_when:'d',scope:'whole composition'},{title:'Underpainting from the goal image',done_when:'d',scope:'whole composition'}]}};
+ runtime.study={references:[{id:'goal-1',source:'folder',role:'reference',folder_name:'final_goal.png'}]};
+ const guides=runtime.folderMoveInstructions({step:0}), under=runtime.folderMoveInstructions({step:1});
+ assert.match(guides,/draw_guide/); assert.doesNotMatch(guides,/paint_from_reference/);
+ assert.match(under,/paint_from_reference/); assert.doesNotMatch(under,/draw_guide/);
+});
+
+test('a guides-only move draws what the artist named; the masses are an option, never the default',()=>{
+ const text=agentMoveInstructions('subject',{guidesOnly:true});
+ assert.doesNotMatch(text,/masses first|unless the artist said otherwise/);
+ assert.match(text,/masses: true/,'masses stay an option');
+});
+
+test('the mass map runs once per chat: a run left from a closed chat does not hold up the next chat\'s',async()=>{
+ const runtime=Object.create(StudioRuntime.prototype);
+ const a={directory:'/nonexistent/a',references:[]}, b={directory:'/nonexistent/b',references:[]};
+ runtime.study=a; runtime.startMassMaps(); const first=runtime.massMapsRunning;
+ assert.equal(first?.study,a);
+ runtime.startMassMaps(); assert.equal(runtime.massMapsRunning,first,'not twice for one chat');
+ runtime.study=b; runtime.startMassMaps();
+ assert.equal(runtime.massMapsRunning?.study,b,'the next chat starts its own');
+ await first.done; await runtime.massMapsRunning?.done;
 });

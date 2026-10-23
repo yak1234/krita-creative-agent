@@ -1152,6 +1152,22 @@ class DerivedNoticeTests(unittest.TestCase):
             self.assertIn('GCC-exception', notices.wheel_library_licence('libgfortran.5.dylib'))
             self.assertIn('BSD-3-Clause', notices.wheel_library_licence('libscipy_openblas64_.dylib'))
 
+    def test_companion_packages_outside_the_bundle_are_listed_from_their_own_package_json(self):
+        with tempfile.TemporaryDirectory(prefix='krita-agent-test-') as root:
+            modules = pathlib.Path(root) / 'node_modules'
+            (modules / '@visioncortex' / 'vtracer' / 'pkg').mkdir(parents=True)
+            (modules / '@visioncortex' / 'vtracer' / 'package.json').write_text(json.dumps({
+                'name': '@visioncortex/vtracer', 'version': '1.0.0-alpha.4', 'license': 'MIT OR Apache-2.0',
+                'repository': {'type': 'git', 'url': 'https://github.com/visioncortex/vtracer.git', 'directory': 'nodejs'}}))
+            (modules / 'pyodide').mkdir()
+            (modules / 'pyodide' / 'package.json').write_text(json.dumps({'name': 'pyodide', 'version': '1.2.3', 'license': 'MPL-2.0',
+                                                                          'repository': 'github:pyodide/pyodide'}))
+            (modules / 'stray').mkdir()                                     # no package.json: not a package
+            found = notices.companion_package_notices(pathlib.Path(root))
+            self.assertEqual(found, [('@visioncortex/vtracer', '1.0.0-alpha.4', 'MIT OR Apache-2.0', 'https://github.com/visioncortex/vtracer'),
+                                     ('pyodide', '1.2.3', 'MPL-2.0', 'github:pyodide/pyodide')])
+        self.assertEqual(notices.companion_package_notices(pathlib.Path('/nonexistent')), [])
+
     def test_the_qt_notice_states_the_right_to_replace_and_the_recipe(self):
         with tempfile.TemporaryDirectory(prefix='krita-agent-test-') as root:
             record = {'commit': 'c' * 40, 'public_commit': 'p' * 40, 'source': 'https://example.org/r', 'branch': 'main', 'notes': []}

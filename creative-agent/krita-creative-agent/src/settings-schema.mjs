@@ -17,16 +17,16 @@ export const SETTINGS = Object.freeze([
   { key: 'merge_kept', type: 'boolean', default: true, panel: 'generic', label: 'Layers after accepting', accessible: 'Layers after accepting',
     error: 'merge_kept must be true or false.', options: [[true, 'Merge kept passes'], [false, 'Keep every pass']],
     tooltip: 'When you keep an Agent move or a review passes, adjacent stroke layers merge into one. Fills, clipped and blended layers stay separate.' },
-  // Guided trace (guide-tool.ts): the painter may sketch construction lines on a guide layer before painting an element.
+  // Guided trace (guide-tool.ts): the painter may sketch construction lines on a guide layer when the artist asks for them.
   // A combo, as merge_kept: the panel's checkbox starts unchecked until the settings arrive, which suits only a default-off setting.
   { key: 'guides', type: 'boolean', default: true, panel: 'generic', label: 'Guides', accessible: 'Draw guides from references',
     error: 'guides must be true or false.', options: [[true, 'Draw guides from references'], [false, 'No guides']],
-    tooltip: 'Before painting an element from a reference, sketch construction lines on a guide layer. It shows until the element is finished, then hides.' },
-  // Reference first (reference-first.ts): with a goal reference, an Agent move gets the reference-transfer and guided-trace
-  // skills and a nudge before a flat fill, until a reference colour pass exists. A combo, as guides (default on).
+    tooltip: 'Lets the painter draw guides (construction lines on a guide layer) when you ask for them: a block-in, guides, a trace or /trace. They show until the element is finished, then hide.' },
+  // Reference first (reference-first.ts): with a goal reference, an Agent move gets the reference-transfer skill and a nudge
+  // before a flat fill, until a reference colour pass exists. A combo, as guides (default on).
   { key: 'reference_first', type: 'boolean', default: true, panel: 'generic', label: 'Reference colours', accessible: 'Start from the reference\'s colours',
     error: 'reference_first must be true or false.', options: [[true, 'Start from the reference\'s colours'], [false, 'Choose colours freely']],
-    tooltip: 'Applies when a goal reference is attached: Agent mode lays the reference\'s colours first, then refines with guides and its own strokes. Turn it off for stylised work, or for a base you paint yourself.' },
+    tooltip: 'Applies when a goal reference is attached: Agent mode lays the reference\'s colours first, then refines with its own strokes (guides only when you ask). Turn it off for stylised work, or for a base you paint yourself.' },
   { key: 'assets', type: 'choice', default: 'codex', panel: 'generic', label: 'Image assets', accessible: 'Image assets',
     error: 'Choose image assets from codex or openrouter.', options: [['codex', 'ChatGPT (Codex sign-in)'], ['openrouter', 'OpenRouter image models']],
     tooltip: 'Where the painter makes image assets (a tree, a sky) that it then repaints with brush strokes. ChatGPT uses your Codex sign-in and is included in your ChatGPT plan; OpenRouter costs about 1-2 cents an image.' },

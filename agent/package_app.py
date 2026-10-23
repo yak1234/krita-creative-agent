@@ -1125,6 +1125,10 @@ WHAT IS INSIDE (THIRD-PARTY-NOTICES.txt has every component and its licence)
                   '  Pyodide (MPL-2.0) and the wheels it loads (numpy BSD-3-Clause, Pillow HPND) are inside; Node.js %s (MIT, https://nodejs.org) is not shipped:'
                   % (packager.release_info['node'] or ''),
                   '  the panel downloads the official archive once and verifies its SHA-256 before using it.']
+        shipped = notices.companion_package_notices(packager.resources / 'creative-agent-bundle' / 'companion')
+        if shipped:
+            lines.append('  npm packages shipped beside the bundle (companion/node_modules), from their package.json:')
+            lines += ['    %s %s: %s%s' % (name, version, licence, ', ' + source if source else '') for name, version, licence, source in shipped]
     lines += ['', 'Libraries Krita ships (upstream\'s list, krita/data/aboutdata/libraries.txt: name, project address, licence):']
     libraries_txt = ROOT / 'krita' / 'data' / 'aboutdata' / 'libraries.txt'
     lines += ['  ' + line for line in (libraries_txt.read_text().splitlines() if libraries_txt.exists() else [])]

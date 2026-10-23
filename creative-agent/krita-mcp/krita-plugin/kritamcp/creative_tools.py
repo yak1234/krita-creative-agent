@@ -147,6 +147,10 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             # Guided trace's own reduced decode (from_reference); decode_reference keeps the reference tools' limits.
             from .creative_reference import trace_reference
             return trace_reference(params)
+        if operation == 'mass_reference':
+            # The mass map's smoothed copy of a reference crop (draw_guide from_reference masses); never a document.
+            from .creative_masses import mass_reference
+            return mass_reference(params)
         if operation == 'trace_edges':
             # Guided trace's lines from a reference at full resolution (edge_trace.py): only lines go back.
             from .creative_reference import trace_edges

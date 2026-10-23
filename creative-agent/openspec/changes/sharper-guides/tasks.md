@@ -8,10 +8,15 @@
 - [x] 1.5 Tests (plugin + companion), time and memory measured; three references (New Moscow copy, a portrait, a landscape)
 
 ## 2. Mass map with VTracer (goal 4) — branch agent/mass-map
-- [ ] 2.1 Plugin: smoothed copy (bilateral + mean shift, at most ~720 px long side)
-- [ ] 2.2 Companion: @visioncortex/vtracer pinned 1.0.0-alpha.4, convertPixels, SVG path parsing to guide polylines
-- [ ] 2.3 draw_guide option for masses; shapes' outlines win; light masses in the light-shape colour; never fill
-- [ ] 2.4 Tests, time and memory; three references
+- [x] 2.1 Plugin: smoothed copy (bilateral + mean shift, at most ~720 px long side): mass_reference (creative_masses.py),
+  on guided trace's decode and listed-size mapping; three bilateral passes (9, 40, 7), mean shift (10, 20)
+- [x] 2.2 Companion: @visioncortex/vtracer pinned 1.0.0-alpha.4, convertPixels, SVG path parsing to guide polylines
+  (guide-masses.ts; filterSpeckle 12 at 720 px, the lead's 24 at 1440); shipped outside the bundle, listed in the notices
+- [x] 2.3 draw_guide option for masses (from_reference masses: true); shapes' outlines win; light masses in the
+  light-shape colour; never fill
+- [x] 2.4 Tests, time and memory; three references (New Moscow copy, a painted portrait, Starry Night)
+- [x] 2.5 (added by the artist) On attach: the whole-picture reference's mass map once per content (mass-map.ts), its
+  summary in the study context, a thumbnail in the panel; the block-in move draws the masses by default
 
 ## 3. Perspective as Krita assistants (goal 1) — after 1 and 2 merge, main checkout
 - [ ] 3.1 libkis: Document assistant API on KisPaintingAssistantsDecoration; C++ tests

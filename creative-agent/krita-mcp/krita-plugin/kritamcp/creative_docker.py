@@ -1392,6 +1392,9 @@ class CreativeAgentDocker(DockWidget):
         folder_layout.addWidget(self.folder_title)
         self.folder_goal = QLabel(''); self.folder_goal.setObjectName('muted'); self.folder_goal.setWordWrap(True)
         self.folder_goal.setTextFormat(Qt.TextFormat.PlainText); folder_layout.addWidget(self.folder_goal)   # file names are text
+        # The goal image's mass map (the companion's mass-map.ts), once it is found.
+        self.folder_masses = QLabel(); self.folder_masses.setObjectName('massMap'); self.folder_masses.hide()
+        folder_layout.addWidget(self.folder_masses)
         self.folder_elements = QListWidget(); self.folder_elements.setObjectName('folderElements'); self.folder_elements.setMaximumHeight(150)
         self.folder_elements.setAccessibleName('Elements of the project folder')
         self.folder_elements.setToolTip('The elements, painted in this order. Double-click a name to correct it.')
@@ -2177,6 +2180,7 @@ class CreativeAgentDocker(DockWidget):
         self.folder_title.setText('<b>Project folder</b> · %s' % html.escape(index.get('name') or os.path.basename(self.folder_root)))
         goal = index.get('goal')
         self.folder_goal.setText('Goal image: %s' % goal['name'] if goal else 'No goal image found: name it final_goal.png to set the layout.')
+        self.clear_folder_masses(); self.show_folder_masses()          # never another folder's goal
         elements = index.get('elements') or []
         self.folder_guesses = {element['name']: element.get('guess') or element['name'] for element in elements}
         self.folder_elements.blockSignals(True); self.folder_elements.clear()
@@ -2236,6 +2240,8 @@ class CreativeAgentDocker(DockWidget):
             remove.setEnabled(not self.busy)
             remove.clicked.connect(lambda _checked=False, entry=ref: self.remove_reference(entry)); image_layout.addWidget(remove, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
             self.reference_remove_buttons.append(remove); column.addWidget(thumbnail)
+            masses = self.mass_map_label(ref, 72, 42)
+            if masses: column.addWidget(masses)
             purpose = QPushButton(REFERENCE_CAPTIONS.get(ref.get('purpose') or 'general', 'General'))
             purpose.setObjectName('referencePurpose'); purpose.setFixedWidth(72)
             purpose.setAccessibleName('Change reference purpose for ' + name)
@@ -2244,6 +2250,30 @@ class CreativeAgentDocker(DockWidget):
             self.attachment_row.addWidget(tile)
         self.attachment_row.addStretch()
         self.attachments.setVisible(bool(references))
+
+    def mass_map_label(self, reference, width, height, label=None):
+        """The reference's mass map (its big masses' boundaries, found by the companion) as a small picture with the
+        summary the painter reads as its tooltip, or None when it has none (yet)."""
+        found = reference.get('mass_map') or {}
+        picture = QPixmap(found.get('thumbnail') or '')
+        if picture.isNull():
+            return None
+        label = label or QLabel()
+        label.setObjectName('massMap'); label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setPixmap(picture.scaled(width, height, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        label.setToolTip(self.text_tip(['Mass map: the big masses the agent blocks in', found.get('summary') or '']))
+        label.setAccessibleName('Mass map of ' + (reference.get('name') or 'the reference'))
+        return label
+
+    def show_folder_masses(self):
+        goal = next((r for r in self.attached_references if r.get('source') == 'folder' and r.get('role') == 'reference'), None)
+        shown = goal is not None and self.mass_map_label(goal, 160, 90, self.folder_masses) is not None
+        if not shown:
+            self.clear_folder_masses()
+        self.folder_masses.setVisible(shown)
+
+    def clear_folder_masses(self):
+        self.folder_masses.clear(); self.folder_masses.setToolTip(''); self.folder_masses.hide()
 
     def edit_reference(self, reference):
         dialog = ReferencePreview(self, reference, readonly=self.busy)
@@ -2360,7 +2390,7 @@ class CreativeAgentDocker(DockWidget):
         self.flush_stream()
         self.transcript.clear()
         self.current_reply = None; self.reply_open = False
-        self.folder_card.hide(); self.folder_guesses = {}; self.folder_elements.clear()
+        self.folder_card.hide(); self.folder_guesses = {}; self.folder_elements.clear(); self.clear_folder_masses()
         self.goal = None; self.plan_bar.hide(); self.move_bar.hide(); self.current_move = None; self.question_id = None; self.question_controls = []
         self.pending_references = []; self.attached_references = []; self.show_references()
         self.empty_state.show()
@@ -2732,7 +2762,7 @@ class CreativeAgentDocker(DockWidget):
             references = event.get('references', [])
             copied = {r.get('source_path') for r in references}
             self.pending_references = [r for r in self.pending_references if r['path'] not in copied]
-            self.attached_references = references; self.show_references()
+            self.attached_references = references; self.show_references(); self.show_folder_masses()
             brief = self.goal.get('brief')
             self.render_ai_images()
             self.plan_bar.setVisible(bool(brief))

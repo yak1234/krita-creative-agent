@@ -47,8 +47,10 @@ test('the nudge and the guidance name paint_from_reference only while a whole tr
 
 test('each skill is added at most once: one the artist\'s message already expanded is not repeated', () => {
   const block = name => `<skill name="${name}">${name} body</skill>`;
-  const both = referenceFirstContext('Trace the outline.', block);
-  assert.match(both, /reference-transfer body[\s\S]*guided-trace body/);
+  const both = referenceFirstContext('Paint the sky.', block);
+  assert.match(both, /reference-transfer body/);
+  assert.doesNotMatch(both, /guided-trace body/, 'no guides by default: guided-trace comes with a request for guides');
+  assert.match(both, /guides only when the artist asks/i);
   const one = referenceFirstContext(block('guided-trace') + '\n\ntrace it', block);
   assert.equal(one.split('<skill name="guided-trace"').length - 1, 0);
   assert.match(one, /reference-transfer body/);
@@ -60,7 +62,7 @@ test('later moves get a one-line reminder, not the skills again; the lead names 
   const reminder = referenceFirstContext('Paint the sky.', block, { full: false });
   assert.doesNotMatch(reminder, /<skill/);
   assert.equal(reminder.trim().split('\n').length, 1, 'one line');
-  assert.match(reminder, /skills given earlier/);
+  assert.match(reminder, /skill given earlier/);
   assert.match(referenceFirstContext('x', block), /with paint_from_reference/);
   assert.doesNotMatch(referenceFirstContext('x', block, { transfer: false }), /paint_from_reference/);
   assert.match(referenceFirstContext('x', block, { transfer: false, full: false }), /paint_reference_surface and paint_reference_edges/);

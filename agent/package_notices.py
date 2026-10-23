@@ -298,6 +298,26 @@ def python_package_notices(packages_dir):
     return found
 
 
+def companion_package_notices(companion):
+    """[(name, version, licence expression, source address)] for the npm packages the companion ships outside its bundle
+    (companion/node_modules: Pyodide, ONNX Runtime, VTracer), read from each package's own package.json."""
+    import json
+    found = []
+    modules = Path(companion) / 'node_modules'
+    for manifest in sorted(list(modules.glob('*/package.json')) + list(modules.glob('@*/*/package.json'))):
+        try:
+            package = json.loads(manifest.read_text())
+        except (OSError, ValueError):
+            continue
+        repository = package.get('repository') or package.get('homepage') or ''
+        if isinstance(repository, dict):
+            repository = repository.get('url', '')
+        repository = re.sub(r'^git\+', '', repository)
+        repository = re.sub(r'\.git$', '', repository)
+        found.append((package.get('name', manifest.parent.name), package.get('version', ''), package.get('license', 'see the package'), repository))
+    return found
+
+
 # What the libraries inside the wheels are (by file-name prefix), for the notice. Anything else: see the wheel's own licence file.
 WHEEL_LIBRARY_LICENCES = (
     ('libscipy_openblas', 'OpenBLAS: BSD-3-Clause'), ('libopenblas', 'OpenBLAS: BSD-3-Clause'),

@@ -12,8 +12,9 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-/** The skills a move gets, in this order: lay the colours, then guides for placement. */
-export const REFERENCE_FIRST_SKILLS = ['reference-transfer', 'guided-trace'] as const;
+/** The skills a move gets: lay the colours. Guides are not a default (the artist, 2026-10-23: traced lines were
+ * distracting next to the solid underpainting); guided-trace comes only with a request for guides (/trace). */
+export const REFERENCE_FIRST_SKILLS = ['reference-transfer'] as const;
 
 const NUDGE_START = 'This painting has a reference.';
 const NUDGE_END = 'Call fill_region again if a flat fill is really intended.';
@@ -83,8 +84,8 @@ export async function referenceColourPassMade(directory: string, { revision, und
 export function referenceFirstContext(text: string, skillBlock: (name: string) => string, { transfer = true, full = true }: { transfer?: boolean; full?: boolean } = {}): string {
   const lead = '\nREFERENCE FIRST (the artist\'s setting): this chat has a goal reference and no reference colour pass yet. '
     + (transfer ? 'Lay the reference\'s colours first with paint_from_reference' : 'Bring the reference\'s colours in with paint_reference_surface and paint_reference_edges over the paint already there')
-    + ', then use guides for placement, then your own strokes.';
-  if (!full) return lead + ' Follow the reference-transfer and guided-trace skills given earlier in this chat.\n';
+    + ', then refine in your own strokes. Draw guides only when the artist asks for them.';
+  if (!full) return lead + ' Follow the reference-transfer skill given earlier in this chat.\n';
   const blocks = REFERENCE_FIRST_SKILLS.filter(name => !text.includes(`<skill name="${name}"`)).map(skillBlock);
   return lead + (blocks.length ? ' Follow these skills:\n' + blocks.join('\n') : '') + '\n';
 }

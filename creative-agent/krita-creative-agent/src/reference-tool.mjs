@@ -136,6 +136,23 @@ export async function traceReferencePixels(runtime,id,maxSide){
  cache.set(key,pixels);while(cache.size>TRACE_CACHE)cache.delete(cache.keys().next().value);
  return pixels;
 }
+// The mass map (guide-masses.ts) traces a smoothed copy of a reference crop: the plugin's mass_reference decodes the crop
+// at most 720 px on its long side and smooths it (creative_masses.py). Cached for the chat per reference, content and crop.
+export async function massReferencePixels(runtime,id,source){
+ const ref=runtime.study.references.find(r=>r.id===id);if(!ref)throw new Error('Use an attached reference ID.');
+ const file=await containedFile(runtime.study.directory,ref.path);
+ if((await stat(file)).size>TRACE_REFERENCE_MB*1024*1024)throw new Error(`This reference is too large to find its masses (over ${TRACE_REFERENCE_MB} MB). Attach a smaller copy.`);
+ const data=await readFile(file),sha256=hash(data),key=`${id}:${sha256}:${source?source.join(','):'all'}`;
+ const cache=runtime.massCache??=new Map();
+ const cached=cache.get(key);if(cached)return cached;
+ // source is in the listed pixels (the size the study lists the reference at), as for trace_edges.
+ const size=ref.width>0&&ref.height>0?{size:[ref.width,ref.height]}:{};
+ const decoded=await runtime.callNative('mass_reference',{image_base64:data.toString('base64'),sha256,...(source?{source}:{}),...size});
+ if(decoded.sha256!==sha256)throw new Error('Decoded reference identity differs.');
+ const pixels={width:decoded.width,height:decoded.height,data:Buffer.from(decoded.rgba_base64,'base64'),source:decoded.source,ms:decoded.ms,sha256};
+ cache.set(key,pixels);while(cache.size>TRACE_CACHE)cache.delete(cache.keys().next().value);
+ return pixels;
+}
 // The guide lines themselves are traced by the plugin at full resolution (trace_edges, edge_trace.py): the file goes as
 // it is, only lines come back, in its own pixels. Same size limit as the decode above.
 export async function traceReferenceEdges(runtime,{reference_id,...request}){

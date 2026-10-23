@@ -20,10 +20,12 @@ test('SKILL.md carries the move order, the checks and the pointers, in 700 words
   const skill = read('SKILL.md');
   for (const term of ['eye level', 'vanishing point', 'perspective', 'from_reference', 'lights: true', "weight: 'light'", 'replace: true',
     'never fill a guide shape flat', 'meet at the vanishing point', 'same fraction', 'say what it is', 'outlined warm',
-    'a guides move', 'finish_move', 'paint_from_reference', 'one element per move', 'example-harbour-dusk.md', ...SUBJECTS])
+    'a guides move', 'masses: true', 'finish_move', 'paint_from_reference', 'one element per move', 'example-harbour-dusk.md', ...SUBJECTS])
     assert.ok(skill.toLowerCase().includes(term.toLowerCase()), term);
-  assert.ok(skill.indexOf('a guides move') < skill.indexOf('paint_from_reference') && skill.indexOf('paint_from_reference') < skill.indexOf('one element per move'),
-    'construction, then the reference colour pass, then one element per move');
+  assert.ok(skill.indexOf('paint_from_reference') < skill.indexOf('a guides move') && skill.indexOf('a guides move') < skill.indexOf('one element per move'),
+    'the underpainting first; a guides move only when asked; then one element per move');
+  assert.match(skill, /only when the artist asks/i, 'guides are never the default (the artist, 2026-10-23)');
+  assert.doesNotMatch(skill, /unless the artist says otherwise/i, 'the masses are not a default');
   assert.ok(words(skill) <= 700, `${words(skill)} words`);
   for (const name of SUBJECTS) {
     const text = read(name);
@@ -58,14 +60,16 @@ test('the worked example is real calls in three kinds of move, on a general subj
       }
     }
   }
-  const [construction, colour, element] = example.moves;
+  const [colour, construction, element] = example.moves;
+  assert.equal(colour[0].tool, 'paint_from_reference', 'the whole-picture underpainting first');
+  assert.match(text, /asks for guides|asks for a block-in/i, 'the guides move is the artist\u2019s request, not a default');
   const guides = construction.filter(c => c.tool === 'draw_guide').map(c => c.args);
   assert.ok(construction.every(c => ['draw_guide', 'finish_move'].includes(c.tool)), 'the construction move paints nothing');
   assert.ok(guides[0].perspective?.eye_level_y !== undefined && guides[0].perspective.vanishing_points?.length, 'eye level and vanishing point first');
-  assert.ok(guides.filter(g => g.from_reference).length >= 4, 'from_reference per element');
-  assert.deepEqual(new Set(guides.filter(g => g.from_reference).map(g => g.from_reference.detail)), new Set(['simple', 'medium']), 'both detail levels');
+  const elements = guides.filter(g => g.from_reference && !g.from_reference.masses);
+  assert.ok(elements.length >= 4, 'from_reference per element');
+  assert.deepEqual(new Set(elements.map(g => g.from_reference.detail)), new Set(['simple', 'medium']), 'both detail levels');
   assert.ok(guides.some(g => g.from_reference?.lights) && guides.some(g => g.lines?.some(l => l.weight === 'light')), 'light shapes both ways');
-  assert.equal(colour[0].tool, 'paint_from_reference', 'then the reference colour pass');
   assert.equal(element[0].tool, 'draw_guide'); assert.equal(element[0].args.replace, true, 'then one element: tightened first');
   assert.ok(element.some(c => c.tool === 'finish_guide') && element.some(c => c.tool === 'paint_pass'), 'painted in own strokes, then its guide finished');
   assert.match(text, /fraction of the canvas/i, 'positions come from measuring the reference');
@@ -87,4 +91,12 @@ test('element shapes: one box or a few points per element, one box per member of
     assert.ok(words(read(name)) <= 350, name);
   }
   assert.match(read('subject-architecture.md'), /one box per (building|tower)/i);
+});
+
+test('a project folder plan starts with the underpainting from the goal image; guides only when the artist asks', () => {
+  const text = read('project-folder.md');
+  assert.match(text, /1\. \*\*Underpainting from the goal image/);
+  assert.match(text, /paint_from_reference/);
+  assert.match(text, /only when the artist ask/i);
+  assert.doesNotMatch(text, /Block-in \(step 1\)/);
 });

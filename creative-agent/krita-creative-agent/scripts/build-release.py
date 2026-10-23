@@ -75,6 +75,36 @@ def bundle_image_resizing(dependency_root, companion, esbuild, root, pi_ai):
     shutil.copy2(wasm, companion / 'src/photon_rs_bg.wasm')
 
 
+# Packages the bundle leaves outside and loads from node_modules beside it: VTracer (the mass map, guide-masses.ts) reads
+# its WebAssembly from its own folder. Pure JS and wasm, no install script, no dependencies.
+EXTERNAL_PACKAGES = ('@visioncortex/vtracer',)
+
+
+def copy_external_packages(dependency_root, companion, names=EXTERNAL_PACKAGES):
+    """Copies each external package whole (without source maps) into the companion's node_modules."""
+    for name in names:
+        source = Path(dependency_root) / name
+        if not (source / 'package.json').is_file():
+            raise ValueError('%s is missing; run npm ci.' % name)
+        shutil.copytree(source, Path(companion) / 'node_modules' / name, ignore=shutil.ignore_patterns('*.map'))
+
+
+EXTERNAL_CHECK = r'''
+const vt = require(process.argv[1]);
+const svg = vt.convertPixels(new Uint8Array(64).fill(255), 4, 4, { hierarchical: 'cutout', mode: 'polygon' });
+if (!svg.includes('<svg')) { console.error('no svg'); process.exit(1); }
+'''
+
+
+def validate_external_packages(node, companion):
+    """VTracer loads its WebAssembly with this Node from the release layout and traces a tiny image."""
+    package = (Path(companion) / 'node_modules' / '@visioncortex' / 'vtracer').resolve()
+    result = subprocess.run([str(node), '-e', EXTERNAL_CHECK, str(package)], text=True, capture_output=True, timeout=60,
+                            env={'PATH': str(Path(node).parent) + ':/usr/bin:/bin'})
+    if result.returncode:
+        raise ValueError('VTracer did not load from the release: ' + (result.stdout + result.stderr)[-2000:])
+
+
 def copy_onnxruntime(dependency_root, companion, platform, arch):
     """Element shapes run ONNX Runtime's Node package in their worker (src/shapes/onnx.ts). It ships every platform's
     binaries (about 300 MB unpacked): copy it with this platform's only, without its install scripts, and its one
@@ -149,11 +179,12 @@ def bundle_companion(root, dependency_root, companion, lock, arch):
                   if (folder / '@earendil-works/pi-ai/package.json').exists()), None)
     if pi_ai is None: raise ValueError('@earendil-works/pi-ai is missing; run npm ci.')
     result = subprocess.run([str(esbuild), str(root / 'src/release-entry.mjs'), '--bundle', '--platform=node', '--format=esm', '--target=node22',
-                             '--outfile=' + str(companion / 'src/main.mjs'), '--external:pyodide', '--log-level=warning', '--legal-comments=none', '--banner:js=' + BANNER],
+                             '--outfile=' + str(companion / 'src/main.mjs'), '--external:pyodide', *['--external:' + name for name in EXTERNAL_PACKAGES], '--log-level=warning', '--legal-comments=none', '--banner:js=' + BANNER],
                             cwd=root, text=True, capture_output=True, env={**os.environ, 'NODE_PATH': str(pi_ai)})
     if result.returncode or 'warning' in result.stderr.lower():
         raise ValueError('Bundling the companion failed or warned: ' + (result.stderr or result.stdout)[-2000:])
     bundle_image_resizing(dependency_root, companion, esbuild, root, pi_ai)
+    copy_external_packages(dependency_root, companion)
     bundle_shape_worker(root, companion, esbuild, dependency_root, arch)
     shutil.copy2(root / 'src/visual-check-questions.json', companion / 'src/visual-check-questions.json')
     shutil.copy2(root / 'src/brush-catalog.json', companion / 'src/brush-catalog.json')
@@ -260,6 +291,7 @@ def build(destination, node=None, root=ROOT, plugin=None, node_spec=None, depend
         # bundle missed, or an asset it cannot find, fails here instead of on an artist's Mac.
         validate_companion(node, companion)
         validate_shape_worker(node, companion)
+        validate_external_packages(node, companion)
         # The digest covers physical payloads. Derived manifests are excluded
         # from their own digest and then separately covered by the file list.
         old_info = companion / 'build-info.json'

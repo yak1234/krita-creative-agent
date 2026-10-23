@@ -1,28 +1,30 @@
 ---
 name: guided-trace
-description: Sketch an element's construction lines from a reference with draw_guide before painting it (an underdrawing on its own guide layer), then paint over it in your own strokes and finish_guide. Use when placing or shaping an element (a building, a figure, a car, the horizon) from a goal image or an element reference.
+description: Sketch construction lines from a reference with draw_guide on a guide layer, then paint over them and finish_guide. Use only when the artist asks for guides, a block-in or a trace (/trace), or an approved plan step names guides.
 ---
 
 # Guided trace: an underdrawing from a reference
 
-A guide is a painter's underdrawing on the element's own guide layer, never the painting: never merged, never judged,
-hidden when the element is finished. The guide gives **placement and shape**; the reference tools give **colour and light**; your own strokes
+A guide is a painter's underdrawing on its own guide layer, never the painting: never merged, never judged,
+hidden when finished. The guide gives **placement and shape**; the reference tools give **colour and light**; your own strokes
 give **edges, detail and finish**.
 
-## Reference first, then guides, then your strokes
+## Only when asked, after the underpainting
 
-With a goal reference, work in three kinds of move:
+Guides are drawn **only when the artist asks** (a block-in, guides, a trace, `/trace`) or an approved plan step names
+them. With a goal reference the work goes:
 
-1. **Construction (a guides move, nothing painted):** the whole scene's eye level, vanishing points, big silhouettes
-   and light shapes, then `finish_move`.
-2. **Reference first:** on a fresh canvas, lay the reference's colours and light with `paint_from_reference` (the
+1. **Reference first:** on a fresh canvas, lay the reference's colours and light with `paint_from_reference` (the
    whole picture). On an established painting, bring them in with `paint_reference_surface` and
    `paint_reference_edges` over the paint already there.
-3. **Guides, then your own strokes, one element per move:** tighten that element's guide (`replace: true`), paint it
-   in your own strokes following the guide (`inside_shape` keeps a pass inside it), then `finish_guide` and `finish_move`.
+2. **When asked, a guides move (nothing painted):** what the artist named: eye level, vanishing points, silhouettes,
+   light shapes; for a block-in of the whole picture, its masses (`from_reference`, `masses: true`, the whole canvas
+   as `target`; a reference's `masses` field summarises them). Then `finish_move`.
+3. **Your own strokes, one element per move:** with a guide, tighten it (`replace: true`), paint the element following
+   it (`inside_shape` keeps a pass inside it), then `finish_guide` and `finish_move`.
 
-With no goal reference (an element reference only, or none), guides give placement and your own strokes give the
-colour, from the element reference or the artist's description.
+With no goal reference, guides give placement and your own strokes the colour, from the element reference or
+the artist's description.
 
 Never fill a guide shape flat: a guide marks where a form goes, not its colour. Keep the
 light sources bright: a moon or a lamp is the lightest value in the picture, and the brightest element stays the
@@ -36,10 +38,10 @@ reference** decides **shape and proportions**. When they disagree, fit the eleme
 ## Measure, then draw
 
 View the goal image (`view_reference`). Note where the eye level and each big mass sit as a **fraction of
-the canvas**, and turn those into canvas boxes.
+the canvas**: canvas boxes.
 
 1. **Eye level and vanishing points first:** `draw_guide` with `perspective: {eye_level_y, vanishing_points, rays}`
-   draws a thin eye-level line and rays fanning from each vanishing point.
+   draws the eye level and rays from each vanishing point.
 2. **Silhouettes from the reference:** `from_reference: {reference_id, shape: {box: [x,y,w,h]}, target, detail}`
    outlines one element's exact shape on `target` (the box's proportions: crop, never stretch), never the clutter
    around it. Give one box or a few points per element (`points: [[x,y,1]]` on it, `0` beside it; points are fitted into `target`);
@@ -70,4 +72,4 @@ If a check fails, redraw that element with `replace: true` before you paint it.
   the common errors; read only one.
 - `project-folder.md`: a project folder's plan moves.
 
-`finish_guide` hides an element's guide (the artist can show it again); undo of a move removes its guide with its paint.
+`finish_guide` hides an element's guide; undo of a move removes its guide with its paint.

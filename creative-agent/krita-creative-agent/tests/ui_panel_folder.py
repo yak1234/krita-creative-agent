@@ -123,5 +123,59 @@ class PanelFolder(unittest.TestCase):
         self.assertIn('&lt;i&gt;', self.panel.folder_elements.item(0).toolTip())
         self.assertIn('the plan takes the first 15', self.panel.folder_footer.text())
 
+    def mass_thumbnail(self):
+        """A small PNG in a temporary folder, removed when the test ends."""
+        import tempfile
+        from panel_folder_test.qt_compat import QImage, QColor
+        folder = tempfile.TemporaryDirectory(prefix='panel-masses-'); self.addCleanup(folder.cleanup)
+        path = os.path.join(folder.name, 'masses.png')
+        image = QImage(160, 120, QImage.Format.Format_RGB32); image.fill(QColor('#203050')); image.save(path)
+        return path
+
+    def test_a_whole_picture_reference_shows_its_mass_map_beside_it(self):
+        thumbnail = self.mass_thumbnail()
+        summary = '5 masses, largest first: 40% dark cool blue top'
+        references = [{'id': 'r1', 'path': thumbnail, 'name': 'goal.png', 'role': 'reference', 'purpose': 'general',
+                       'mass_map': {'thumbnail': thumbnail, 'summary': summary, 'masses': 5}},
+                      {'id': 'r2', 'path': thumbnail, 'name': 'palette.png', 'role': 'reference', 'purpose': 'palette'}]
+        self.panel.handle_event({'type': 'goal', 'goal': {'status': 'draft', 'brief': None}, 'mode': 'ask', 'references': references})
+        maps = self.panel.attachments.findChildren(module.QLabel, 'massMap')
+        self.assertEqual(len(maps), 1, 'only the reference with a mass map')
+        self.assertFalse(maps[0].pixmap().isNull())
+        self.assertLessEqual(maps[0].pixmap().width(), 72)
+        self.assertIn('40% dark cool blue top', maps[0].toolTip())
+        self.assertIn('Mass map', maps[0].toolTip())
+
+    def test_the_folder_goal_shows_its_mass_map_on_the_folder_card(self):
+        self.panel.handle_event({'type': 'folder', 'index': INDEX, 'references': {'final_goal.png': 'reference-1'}})
+        self.assertFalse(self.panel.folder_masses.isVisible(), 'none yet')
+        thumbnail = self.mass_thumbnail()
+        goal = {'id': 'reference-1', 'path': thumbnail, 'name': 'final_goal.png', 'role': 'reference', 'source': 'folder',
+                'folder_name': 'final_goal.png', 'mass_map': {'thumbnail': thumbnail, 'summary': '<b>6</b> masses', 'masses': 6}}
+        self.panel.handle_event({'type': 'goal', 'goal': {'status': 'draft', 'brief': None}, 'mode': 'ask', 'references': [goal]})
+        self.assertTrue(self.panel.folder_masses.isVisible())
+        self.assertFalse(self.panel.folder_masses.pixmap().isNull())
+        self.assertIn('&lt;b&gt;6', self.panel.folder_masses.toolTip(), 'the summary is text')
+        self.panel.handle_event({'type': 'goal', 'goal': {'status': 'draft', 'brief': None}, 'mode': 'ask', 'references': []})
+        self.assertFalse(self.panel.folder_masses.isVisible())
+
+    def test_a_new_chat_and_a_new_folder_drop_the_old_mass_map(self):
+        self.panel.handle_event({'type': 'folder', 'index': INDEX, 'references': {'final_goal.png': 'reference-1'}})
+        thumbnail = self.mass_thumbnail()
+        goal = {'id': 'reference-1', 'path': thumbnail, 'name': 'final_goal.png', 'role': 'reference', 'source': 'folder',
+                'folder_name': 'final_goal.png', 'mass_map': {'thumbnail': thumbnail, 'summary': 'six masses', 'masses': 6}}
+        self.panel.handle_event({'type': 'goal', 'goal': {'status': 'draft', 'brief': None}, 'mode': 'ask', 'references': [goal]})
+        self.assertTrue(self.panel.folder_masses.isVisible())
+        self.panel.attached_references = []                     # another folder, before its references arrive
+        self.panel.handle_event({'type': 'folder', 'index': dict(INDEX, name='other'), 'references': {}})
+        self.assertFalse(self.panel.folder_masses.isVisible(), 'a new folder does not show the old goal\'s mass map')
+        self.assertTrue(self.panel.folder_masses.pixmap() is None or self.panel.folder_masses.pixmap().isNull())
+        self.panel.handle_event({'type': 'goal', 'goal': {'status': 'draft', 'brief': None}, 'mode': 'ask', 'references': [goal]})
+        self.assertTrue(self.panel.folder_masses.isVisible())
+        self.panel.new_chat()
+        self.assertFalse(self.panel.folder_masses.isVisible())
+        self.assertTrue(self.panel.folder_masses.pixmap() is None or self.panel.folder_masses.pixmap().isNull())
+        self.assertEqual(self.panel.folder_masses.toolTip(), '')
+
 if __name__ == '__main__':
     unittest.main()

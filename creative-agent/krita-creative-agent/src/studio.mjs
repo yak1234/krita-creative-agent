@@ -34,6 +34,7 @@ import { skillCommand } from './skill-commands.ts';
 import { fillNudge, massGuidance, hasGoalReference, paintedTransfers, referenceColourPassMade, referenceFirstContext } from './reference-first.ts';
 import { transferRefusal, existingPainting } from './reference-tool.mjs';
 import { scanFolder, readFolderText } from './project-folder.ts';
+import { ensureMassMaps } from './mass-map.ts';
 import { writePlan, appendNote, readPlan, parsePlan, planDifference, briefFromPlan, remapTicks, stepFile, stepKeys, layerName } from './folder-notes.ts';
 import { constants as fsConstants } from 'node:fs';
 import { open as openFile } from 'node:fs/promises';
@@ -164,7 +165,7 @@ export function aiImageGuidance(allowance, used = 0, backend = 'codex') {
 // A plain-words guides request ("trace the outline first") went on through 21 fills and passes in one move.
 const GUIDES_ONLY = 'When the artist asks only for guides, an outline or a tracing, draw the guides and call finish_move, painting nothing.';
 // A guide-only move (/trace): the subject-move text ("work the subject through", masses, batches) contradicted it.
-const GUIDES_MOVE = 'COLLABORATIVE AGENT MODE. GUIDE-ONLY MOVE: the artist asked for guides. Draw the guides for what they named with draw_guide (placement and shape from the references), look at the result, then call finish_move with a one-line summary. Paint nothing: the painting tools are off in this move.';
+const GUIDES_MOVE = 'COLLABORATIVE AGENT MODE. GUIDE-ONLY MOVE: the artist asked for guides. Draw the guides for what they named with draw_guide (placement and shape from the references; from_reference masses: true draws the big masses\u2019 boundaries when the artist asks for a block-in of the whole picture), look at the result, then call finish_move with a one-line summary. Paint nothing: the painting tools are off in this move.';
 /** referenceFirst ({transfer}, reference-first.ts): flat fills over guide shapes made grey blocks in two live chats with a goal
  * reference, so the masses are laid from the reference instead. guidesOnly: a /trace move. */
 export function agentMoveInstructions(size = 'subject', { referenceFirst = null, guidesOnly = false } = {}) {
@@ -202,9 +203,11 @@ function moveReviewLine({verdict,findings,undone_batches,batches}) {
 const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer','painting_toolbox','stamp_material',...CRAFT_OPERATIONS,'letter','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface'];
 /** Agent mode's request for "Paint this plan": the plan's current step, one move at a time. */
 // Project folder (B3): with a folder, Agent mode plans first. Nothing paints before the artist approves with Start painting.
-const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist approves the plan with Start painting. Call propose_plan now: step 1 is a block-in of the whole composition (construction guides, then a reference colour pass from the goal image), then one step per element, back to front in the folder\'s numbering, as in folder_plan_draft. Keep each element step\'s scope as its file name; improve titles, done_when and checks from the brief, the prompts and the images. Leave an element out only when the artist asks ("only the sky today"). Then stop.\n';
+const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist approves the plan with Start painting. Call propose_plan now: step 1 is the underpainting of the whole composition from the goal image (a whole-picture reference transfer), then one step per element, back to front in the folder\'s numbering, as in folder_plan_draft. Keep each element step\'s scope as its file name; improve titles, done_when and checks from the brief, the prompts and the images. Leave an element out only when the artist asks ("only the sky today"). Add a guides step only when the artist asks for guides. Then stop.\n';
+// A plan step that names guides: the artist asked for them when approving it.
+const GUIDES_STEP = /\b(guides?|trac(e|ing)|block-in|construction lines?)\b/i;
 const FOLDER_ANSWERS = ['Follow the edited plan','Keep the current plan'];
-const FOLDER_PLAN_ELEMENTS = 15;                       // a plan holds 16 steps: the block-in and 15 elements
+const FOLDER_PLAN_ELEMENTS = 15;                       // a plan holds 16 steps: the underpainting and 15 elements
 function planStepRequest(goal) {
   const steps = goal.brief.steps, index = Math.min(goal.current_step ?? 0, steps.length - 1);
   return 'Paint step ' + (index + 1) + ' of the plan: ' + String(steps[index].title).trim().replace(/[.\s]+$/, '') + '.';
@@ -1053,6 +1056,7 @@ export class StudioRuntime extends PaintingRuntime {
     return tools;
   }
   context(phase) {
+    this.startMassMaps();
     return `HOST MODE: ${this.mode.toUpperCase()}. CURRENT PHASE: ${phase.toUpperCase()}.\n` + this.aiImageContext(phase) + JSON.stringify({
       routing_advice:this.executionSettings?.routing==='guide' ? routingAdvice(this.routingDecision,{phase,offered:name=>this.toolOffered(name)}):null,
       brief: this.goal.brief, current_step_in_order:this.goal.brief?.steps[this.goal.current_step],
@@ -1071,7 +1075,7 @@ export class StudioRuntime extends PaintingRuntime {
         document_id: this.decisionObservation.document_id, width: this.decisionObservation.width, height: this.decisionObservation.height,
         layers: this.decisionObservation.layers, artist_focus: this.decisionObservation.artist_focus ?? null } : null,
       protected_areas: this.decisionObservation?.protected_areas?.length ? this.decisionObservation.protected_areas : undefined,
-      references: this.study.references.map(({id,role,name,width,height,purpose,notes,part_of,part_kind,bounds}) => ({id,role,name,width,height,purpose,notes,part_of,part_kind,bounds})),
+      references: this.study.references.map(({id,role,name,width,height,purpose,notes,part_of,part_kind,bounds,mass_map}) => ({id,role,name,width,height,purpose,notes,part_of,part_kind,bounds,masses:mass_map?.summary})),
       reference_images: this.study.references.length ? this.referenceImagesNote ?? null : undefined,
       comic: comicContext(this.goal.comic),
       folder: this.folderContext(),
@@ -1098,6 +1102,17 @@ export class StudioRuntime extends PaintingRuntime {
       this.study.references.push({ id, path, source_path: item.path, role: item.role ?? 'reference',purpose:['likeness','composition','palette','material','general'].includes(item.purpose)?item.purpose:'general',notes:String(item.notes ?? '').slice(0,2000),name:String(item.name || basename(item.path)).slice(0,200), ...info, ...part, ...folder });
     }
     await this.persist(); this.publish();
+    this.startMassMaps();
+  }
+  // The mass map (mass-map.ts): the whole-picture reference's masses, found once in the background and kept in the chat
+  // folder; the painter reads their summary in the study context, the panel shows the thumbnail beside the reference.
+  // One run per chat: a run left from a closed chat stops by itself (it checks the study) and does not hold up this one.
+  startMassMaps() {
+    const study = this.study;
+    if (!study || this.massMapsRunning?.study === study) return;
+    const run = { study, done: ensureMassMaps(this, () => { if (this.study === study) this.persist().then(() => this.publish()).catch(() => {}); }) };
+    this.massMapsRunning = run;
+    run.done.finally(() => { if (this.massMapsRunning === run) this.massMapsRunning = null; });
   }
   // Project folder (project-folder B2): the artist's folder of references. The scan is read-only (project-folder.ts); the
   // goal image is attached as a composition reference and each numbered element as an asset, copied into the chat like
@@ -1209,7 +1224,7 @@ export class StudioRuntime extends PaintingRuntime {
     const index = this.folderIndex, name = basename(index.root);
     return normalizeBrief({title:name.slice(0,200), objective:`Paint ${name} from its goal image, one element per move, back to front.`, requirements:[], freedom:[],
       completion:['Every element of the plan is painted where the goal image places it.'],
-      steps:[{title:'Block-in: the whole composition', done_when:'Construction guides and a loose colour block-in place every element where the goal image has it.', scope:'whole composition'},
+      steps:[{title:'Underpainting from the goal image', done_when:'The goal image\'s colours and light are laid over the whole canvas, every element where the goal image has it.', scope:'whole composition'},
         ...index.elements.slice(0, FOLDER_PLAN_ELEMENTS).map(e => { const guess = this.folderGuessOf(e);
           return {title:guess.slice(0,200), done_when:`${guess} is painted in its place as the goal image shows it, its look from ${basename(e.name)}.`, scope:e.name}; })]});
   }
@@ -1278,8 +1293,13 @@ export class StudioRuntime extends PaintingRuntime {
     const element = file && this.study.references.find(r => r.folder_name === file);
     const goal = this.study.references.find(r => r.source === 'folder' && r.role === 'reference');
     const goalText = goal ? `the goal image ${goal.id}` : 'the goal image';
-    if (!element) return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: construction guides (draw_guide, element "${name}") placed from ${goalText}, then a reference colour pass. Paint only this step, then finish_move.\n`;
-    return `\nPROJECT FOLDER MOVE: paint only step ${move.step + 1} of the approved plan, "${name}", on a layer named "${name}". Its look comes from the element reference ${element.id} (${file}); ${goalText} decides where it sits. First draw_guide with element "${name}", paint the element over it in your own strokes, then finish_move. When it reads as finished you may propose protecting it (propose_protection).\n`;
+    // Guides only when the artist asked: a step they approved that names guides (the artist, 2026-10-23: traced lines
+    // were distracting next to the solid underpainting, so no guides by default).
+    const guides = GUIDES_STEP.test(`${step.title} ${step.done_when ?? ''}`);
+    if (!element) return guides
+      ? `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: the guides the step names (draw_guide, element "${name}") placed from ${goalText}. Paint only this step, then finish_move.\n`
+      : `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: the underpainting of the whole picture from ${goalText} (paint_from_reference, all of it onto the whole canvas). Paint only this step, then finish_move.\n`;
+    return `\nPROJECT FOLDER MOVE: paint only step ${move.step + 1} of the approved plan, "${name}", on a layer named "${name}". Its look comes from the element reference ${element.id} (${file}); ${goalText} decides where it sits. Paint it in your own strokes over the underpainting${guides ? `, over its guide (draw_guide with element "${name}") first` : '; draw a guide only when the artist asks for one'}, then finish_move. When it reads as finished you may propose protecting it (propose_protection).\n`;
   }
   /** The references the painter is sent as images: a folder chat sends its goal and the current step's element only. */
   painterReferences() {

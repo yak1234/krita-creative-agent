@@ -11,6 +11,7 @@ import { SCALE_RANGE, findBigShapes, labelMap, shapeSource, traceCaps, type Labe
 import { checkPrompt, findShape, imageKey, promptBox, scalePrompt, shapeReport, shapeSchema, shapeTimings,
   type Found, type Rgba, type ShapeHost } from './shapes/use.ts';
 type Pixels = Rgba;
+import { massGuideLines, describeMasses, MASS_LINES, type MassPixels } from './guide-masses.ts';
 
 const object = <T extends Parameters<typeof Type.Object>[0]>(properties: T) => Type.Object(properties, { additionalProperties: false });
 const rect = (description: string) => Type.Array(Type.Integer({ minimum: 0, maximum: 100000 }), { minItems: 4, maxItems: 4, description });
@@ -45,6 +46,7 @@ const drawSchema = object({
     shape: Type.Optional(shapeSchema('reference')),
     detail: Type.Optional(Type.Union([Type.Literal('simple'), Type.Literal('medium')], { description: 'simple: the outlines and main lines; medium: more inner structure. More lines the larger the target. Default simple.' })),
     lights: Type.Optional(Type.Boolean({ description: 'Also outline the brightest shapes (light sources, lit faces) in the warm light colour.' })),
+    masses: Type.Optional(Type.Boolean({ description: 'The block-in masses instead of edges: the big areas of about one colour (sky, each building mass, a head, a car, the moon) as thin boundary lines, light masses warm, and a summary of them. With shape, the masses inside it and the shape\u2019s outline.' })),
   }, { additionalProperties: false, description: 'Outline the element from the reference\u2019s own edges inside source (traced at full resolution), mapped onto target: outlines as contour lines, inner structure as construction lines; only the lines are drawn. With shape, only that one element is outlined (its outline and the structure inside it), nothing else in the box; without it, the big shapes of source are found with the shapes model when it is allowed (the result says how the outlines were found).' })),
   replace: Type.Optional(Type.Boolean({ description: 'Tighten: hide this element\u2019s earlier guide and draw on a new layer (undoing the move shows it again).' })),
 });
@@ -95,6 +97,8 @@ export type GuideDependencies = {
   referencePixels?(id: string, maxSide: number): Promise<Pixels>;
   /** The plugin's trace_edges for an attached reference (reference-tool.mjs traceReferenceEdges): lines in its pixels. */
   traceEdges?(request: TraceRequest): Promise<TraceReply>;
+  /** The plugin's smoothed copy of a reference crop (reference-tool.mjs massReferencePixels), for from_reference masses. */
+  massPixels?(id: string, source: number[]): Promise<MassPixels>;
 };
 
 const TRACE_SIDE = 1440;                     // the shapes model studies a 1024 square: a little more is plenty
@@ -112,6 +116,12 @@ export type TraceReport = { silhouette: TraceReply['silhouette']; lines: number;
 const KEPT_BIG_SHAPES = 4;
 const LIGHT_LINES = 8;                       // the plugin's LIGHT_LIMIT: lights come on top of max_lines
 const WEIGHTS: Record<TraceKind, GuideWeight> = { outline: 'contour', structure: 'construction', light: 'light' };
+
+/** Whether a plain block-in may use the shapes model: only when nothing need be asked, so never the download question. */
+export async function shapesAllowed(runtime: GuideRuntime): Promise<'missing' | 'declined' | 'absent' | 'allowed'> {
+  const service = runtime.shapes;
+  return !service ? 'missing' : runtime.study?.shapes_declined ? 'declined' : service.ready && !(await service.ready()) ? 'absent' : 'allowed';
+}
 
 /** from_reference: the element's outlines, inner structure (and lights) traced by the plugin at full resolution, mapped
  * onto the target. With a shape prompt, that one element's shape gives the outline; without one, the big shapes of the
@@ -160,8 +170,7 @@ export async function tracedLines(runtime: GuideRuntime, from: NonNullable<Stati
     labels = labelMap([shape], shapeSource(shape.bounds, pixels.width, pixels.height), pixels.width, pixels.height, true);
   } else {
     // A plain block-in uses the shapes model only when nothing need be asked: never the download question from here.
-    const service = runtime.shapes;
-    const allowed = !service ? 'missing' : runtime.study?.shapes_declined ? 'declined' : service.ready && !(await service.ready()) ? 'absent' : 'allowed';
+    const allowed = await shapesAllowed(runtime);
     signal?.throwIfAborted();
     if (allowed === 'allowed') {
       try {
@@ -296,9 +305,22 @@ export function guideTools(runtime: GuideRuntime, dependencies: GuideDependencie
         + 'first. Paint the element over the guide in your own strokes, then finish_guide.',
       execute: async (id: string, args: Static<typeof drawSchema>, signal?: AbortSignal): Promise<Result> => {
         signal?.throwIfAborted();
-        const room = GUIDE_LINES - (args.lines?.length ?? 0) - perspectiveCount(args.perspective);
-        const { lines: traced, shape, trace } = args.from_reference ? await tracedLines(runtime, args.from_reference, dependencies, room, signal)
+        const room = GUIDE_LINES - (args.lines?.length ?? 0) - perspectiveCount(args.perspective), from = args.from_reference;
+        // Masses (guide-masses.ts) stand in for the edges. A shape pointed at keeps its outline and inner structure (traced
+        // as before, the masses inside it); for the whole picture, the big shapes' outlines win where the shapes model is
+        // ready without asking anything (the same rule as a plain block-in), and nothing else is traced.
+        const outlines = from && (!from.masses || !!from.shape || await shapesAllowed(runtime) === 'allowed');
+        const traceRoom = from?.masses ? Math.max(1, room - MASS_LINES) : room;
+        const edges = outlines ? await tracedLines(runtime, from.masses ? { ...from, lights: false } : from, dependencies, traceRoom, signal)
           : { lines: [], shape: null, trace: null };
+        const { shape } = edges;
+        // Big shapes' outlines only: brightness outlines would draw the masses' boundaries a second time. The report
+        // counts the lines drawn.
+        const kept = from?.masses && !from.shape ? (edges.trace?.silhouette === 'shapes' ? edges.lines.filter(line => line.weight === 'contour') : []) : edges.lines;
+        const trace = edges.trace && kept !== edges.lines ? { ...edges.trace, lines: kept.length } : edges.trace;
+        signal?.throwIfAborted();
+        const massed = from?.masses ? await massGuideLines(runtime, from, { ...dependencies, shapeSide: traceSide }, shape, room - kept.length) : null;
+        const traced = [...kept, ...(massed?.lines ?? [])];
         signal?.throwIfAborted();
         if (args.from_reference && !traced.length && !args.lines?.length && !args.perspective)
           throw new Error(shape ? `No clear outline in that shape (score ${shapeReport(shape).score}): give a tighter box or points on the element, or draw its lines yourself.`
@@ -309,12 +331,14 @@ export function guideTools(runtime: GuideRuntime, dependencies: GuideDependencie
         runtime.emit({ type: 'action', seconds: 0, message: shape
           ? `Drew a guide for ${args.element} from its shape (hidden when the element is finished).`
           : `Drew a guide for ${args.element} (hidden when the element is finished).` });
-        if (!shape && !trace) return result;
-        // The painter reads the shape's score (and a note when it is uncertain) and how the outlines were found;
-        // diagnostics get the timings.
+        // The painter reads the shape's score (and a note when it is uncertain), how the outlines were found and the
+        // masses' summary; diagnostics get the timings.
+        const masses = massed ? { masses: describeMasses(massed.masses) } : {};
+        const massDetails = massed ? { masses: { ms: massed.ms, paths: massed.paths, kept: massed.masses.length, lines: massed.lines.length } } : {};
+        if (!shape && !trace && !massed) return result;
         const report = shape ? shapeReport(shape) : null;
-        return { ...result, content: [...result.content, { type: 'text', text: JSON.stringify({ ...(report ? { shape: report } : {}), ...(trace ? { trace } : {}) }) }],
-          details: { ...(result.details as object ?? {}), ...(report && shape ? { shape: { ...report, ...shapeTimings(shape) } } : {}), ...(trace ? { trace } : {}) } };
+        return { ...result, content: [...result.content, { type: 'text', text: JSON.stringify({ ...(report ? { shape: report } : {}), ...(trace ? { trace } : {}), ...masses }) }],
+          details: { ...(result.details as object ?? {}), ...(report && shape ? { shape: { ...report, ...shapeTimings(shape) } } : {}), ...(trace ? { trace } : {}), ...massDetails } };
       },
     },
     {

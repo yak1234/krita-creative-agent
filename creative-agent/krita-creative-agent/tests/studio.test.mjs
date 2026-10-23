@@ -1179,6 +1179,131 @@ test('Luna layer need: Off asks nothing, Evaluate logs beside what the painter d
  } finally {await h.close();}
 });
 
+test('One unify pass: after a whole-picture underpainting a chat gets one whole-canvas softening pass; more must be scoped',{timeout:30000},async()=>{
+ // after-the-underpainting goal 3: a traced chat ran four whole-canvas smudge transfers and a filter over its underpainting.
+ const whole={name:'Fuse dabs',preset:'k) Blender Basic',strokes:[{start:[0,0],segments:[[300,400,500,700,768,1024]],size:60,opacity:1,flow:1,color:'#808080'}]};
+ const calls={'Fuse':['paint_pass',whole],'Again':['paint_pass',{...whole,name:'Soften every mass'}],'Blur':['apply_filter',{target:'under-1',filter:'blur',mode:'copy'}],
+  'Hair':['paint_pass',{...whole,name:'Soften the hair',region:[100,100,200,200]}],'Bloom':['apply_filter',{target:'lamp-copy',filter:'blur',mode:'copy'}],
+  'Broken':['paint_batch',{actions:[{tool:'paint_pass',arguments:{...whole,name:'Dot',strokes:[{...whole.strokes[0],segments:[[1,1,2,2,3,3]]}]}},{tool:'paint_pass',arguments:{...whole,name:'Broken smudge'}}]}]};
+ const results=[]; let h;
+ h=await harness(req=>{
+  if(!req.tools.some(t=>t.function.name==='paint_batch')) return {content:'Hello.'};
+  const text=latestUserText(req);
+  if(!(/HOST MODE/.test(text) && req.messages.at(-1).role==='user')){
+   const result=req.messages.filter(m=>m.role==='tool').at(-1);
+   results.push(typeof result?.content==='string' ? result.content : JSON.stringify(result?.content)); return {content:'Done.'};
+  }
+  const key=Object.keys(calls).find(k=>text.endsWith(k+'.'));
+  return call(...calls[key]);
+ },async(operation,params,_study,id)=>{
+  if(!['paint_pass','apply_filter'].includes(operation))return undefined;
+  if(params.name==='Broken smudge') throw Object.assign(new Error('Use an exact installed preset name from list_brushes'),{code:'invalid_params'});
+  const dir=h.runtime.study.directory, view=join(dir,'view-'+id+'.png'); await writeFile(view,png);
+  return {status:'ok',layer_id:'soft-'+id,document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,image_path:view,layers:[],revision:'r-'+id,content_id:'c-'+id,passes:[]};
+ });
+ try {
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  await h.runtime.prompt('Fuse.');
+  assert.equal(h.runtime.goal.unify_pass,undefined,'before any underpainting the rule does not apply');
+  // The whole-picture underpainting: a painted transfer job over the whole canvas, as reference-tool.mjs saves it.
+  const jobs=join(h.runtime.study.directory,'reference-paintings'); await mkdir(jobs,{recursive:true});
+  await writeFile(join(jobs,'a'.repeat(32)+'.json'),JSON.stringify({id:'a'.repeat(32),completed:5000,layer_id:'under-1',recipe:{name:'Underpainting',target:[0,0,768,1024]},scope:JSON.stringify([h.runtime.goal.revision])}));
+  await h.runtime.prompt('Broken.');
+  assert.match(results.at(-1),/"status":"failed"/,'the batch\u2019s smudge failed');
+  assert.equal(h.runtime.goal.unify_pass,undefined,'a smudge that failed does not spend the pass');
+  await h.runtime.prompt('Bloom.');
+  assert.equal(h.calls.filter(c=>c.operation==='apply_filter').length,1,'a bloom blur of a small layer runs');
+  assert.equal(h.runtime.goal.unify_pass,undefined,'and does not spend the pass');
+  await h.runtime.prompt('Again.');
+  assert.match(h.runtime.goal.unify_pass?.what ?? '',/smudge pass "Soften every mass"/,'the one unify pass is remembered for the chat');
+  const painted=h.calls.filter(c=>c.operation==='apply_filter').length;
+  await h.runtime.prompt('Blur.');
+  assert.match(results.at(-1),/One unify pass per chat: smudge pass "Soften every mass" already softened the whole canvas.*blur filter covers 100%.*one element or region/);
+  assert.equal(h.calls.filter(c=>c.operation==='apply_filter').length,painted,'nothing ran');
+  await h.runtime.prompt('Again.');
+  assert.match(results.at(-1),/One unify pass per chat/,'a second whole-canvas smudge too');
+  const passes=h.calls.filter(c=>c.operation==='paint_pass').length;
+  await h.runtime.prompt('Hair.');
+  assert.equal(h.calls.filter(c=>c.operation==='paint_pass').length,passes+1,'softening scoped to one element still runs');
+  assert.doesNotMatch(results.at(-1),/One unify pass/);
+ } finally {await h.close();}
+});
+
+test('Undone work does not count: the underpainting and the transfer rules read the moves the artist kept, across the chat’s plan revisions',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}));
+ try {
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  const canvas={width:768,height:1024,layers:[]}, jobs=join(h.runtime.study.directory,'reference-paintings'); await mkdir(jobs,{recursive:true});
+  const id='b'.repeat(32);
+  await writeFile(join(jobs,id+'.json'),JSON.stringify({id,completed:5000,recipe:{name:'Underpainting',target:[0,0,768,1024]},scope:JSON.stringify([h.runtime.goal.revision])}));
+  assert.equal(await h.runtime.underpainted(canvas),true);
+  h.runtime.goal.revision=(h.runtime.goal.revision ?? 0)+1;
+  assert.equal(await h.runtime.underpainted(canvas),true,'an underpainting from an earlier plan revision of the chat');
+  h.runtime.goal.revision-=1;
+  assert.equal(await h.runtime.wholeTransferAvailable(canvas),false,'a kept transfer: no second whole one');
+  h.runtime.goal.moves=[{number:1,status:'undone'}]; h.runtime.goal.reference_jobs={[id]:[1]};
+  assert.deepEqual([...h.runtime.undoneReferenceJobs()],[id]);
+  assert.equal(await h.runtime.underpainted(canvas),false,'its move was undone');
+  assert.equal(await h.runtime.wholeTransferAvailable(canvas),true,'the whole underpainting may be retried');
+ } finally {await h.close();}
+});
+
+test('Ask when it may be done offers the folder elements whose steps are still open',{timeout:20000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}));
+ try {
+  await h.start('ask','Hello');
+  h.runtime.study.folder={root:'/tmp/x',guesses:{}};
+  h.runtime.folderIndex={root:'/tmp/x',elements:[{name:'01-sky.png',guess:'Sky'},{name:'02-towers.png',guess:'Towers'},{name:'03-woman.png',guess:'Woman'}]};
+  h.runtime.goal.brief={steps:[{title:'Sky',scope:'01-sky.png'},{title:'Towers',scope:'02-towers.png'},{title:'Woman',scope:'03-woman.png'}]};
+  h.runtime.goal.done_steps=[0,2];
+  assert.deepEqual(h.runtime.elementsToOffer(),['Towers']);
+ } finally {await h.close();}
+});
+
+test('Ask when it may be done: an unsure or done-leaning next-layer decision ends the move after one call and asks the artist',{timeout:30000},async()=>{
+ // after-the-underpainting goal 4: two traced chats invented strokes for 20-30 minutes once the decision was spread thin.
+ const texture={name:'Coat fur',preset:'b) Basic-1',strokes:[{start:[50,100],segments:[[60,110,70,120,80,130]],size:8,opacity:1,flow:1,color:'#302018'}],clip_to:'base',blend_mode:'overlay'};
+ const prompts=[]; let paints=0, h;
+ h=await harness(req=>{
+  if(!req.tools.some(t=>t.function.name==='paint_batch')) return {content:'Hello.'};
+  const text=latestUserText(req), turn=/HOST MODE/.test(text) && req.messages.at(-1).role==='user';
+  if(turn) prompts.push(text);
+  return call('paint_pass',{...texture,name:'Fur '+(++paints)});      // a painter that would keep inventing strokes
+ },async(operation,params,_study,id)=>{
+  if(operation!=='paint_pass')return undefined;
+  const dir=h.runtime.study.directory, view=join(dir,'view-'+id+'.png'); await writeFile(view,png);
+  return {status:'ok',layer_id:'fur-'+id,document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,image_path:view,layers:[],revision:'r-'+id,content_id:'c-'+id,passes:[]};
+ });
+ let answer={type:'choice',choice:'texture',confidence:0.22,probabilities:{texture:0.22,accents:0.21,done:0.2,light:0.19,shadow:0.18}};
+ const luna=fakeLuna(r=>r.purpose==='choose-next-layer' ? {answers:{need:answer}} : {fallback:'service_or_response_error'});
+ try {
+  await h.start('ask','Hello'); h.runtime.lunaClient=luna; await h.runtime.setMode('agent');
+  await h.runtime.setExecutionSettings({routing:'guide'});
+  h.runtime.goal.brief={steps:[{title:'Sky'},{title:'Kremlin towers'},{title:'Woman'}]}; h.runtime.goal.done_steps=[0];
+  await h.runtime.prompt('Fur first.');
+  assert.doesNotMatch(prompts.at(-1),/ASK WHEN IT MAY BE DONE/,'before the underpainting a thin decision is no reason to stop');
+  assert.ok(paints>1,'the move goes on'); paints=0;
+  const jobs=join(h.runtime.study.directory,'reference-paintings'); await mkdir(jobs,{recursive:true});
+  await writeFile(join(jobs,'a'.repeat(32)+'.json'),JSON.stringify({id:'a'.repeat(32),completed:5000,recipe:{name:'Underpainting',target:[0,0,768,1024]},scope:JSON.stringify([h.runtime.goal.revision])}));
+  await h.runtime.prompt('More fur on the collar.');
+  assert.match(prompts.at(-1),/ASK WHEN IT MAY BE DONE: .*unsure what "More fur on the collar\." needs next/);
+  assert.match(prompts.at(-1),/ask the artist what to work on next, offering the elements still lacking detail \(Kremlin towers, Woman\)/,'the plan’s open steps are offered');
+  assert.equal(paints,1,'the move ended after one painting call');
+  const move=h.runtime.goal.moves.at(-1);
+  assert.deepEqual(move.ask_next,{reason:'unsure',elements:['Kremlin towers','Woman']});
+  assert.match(h.events.filter(e=>e.type==='status' && e.phase==='idle').at(-1).message,/What should come next\? Kremlin towers or Woman/);
+  answer={type:'choice',choice:'accents',confidence:0.4,probabilities:{accents:0.4,done:0.32,texture:0.28}};
+  await h.runtime.prompt('Polish her head.');
+  assert.match(prompts.at(-1),/ranks "done" among its top two choices/);
+  answer={type:'choice',choice:'texture',confidence:0.8,probabilities:{texture:0.8,done:0.1,accents:0.1}};
+  const before=paints;
+  await h.runtime.prompt('Fur on the hem.');
+  assert.doesNotMatch(prompts.at(-1),/ASK WHEN IT MAY BE DONE/,'a clear next layer: no nudge');
+  assert.ok(paints-before>1,'and the move goes on as usual');
+  assert.equal(h.runtime.goal.moves.at(-1).ask_next,undefined);
+ } finally {await h.close();}
+});
+
 test('Luna artifact check: Off makes no call, Evaluate records each pass, Guide asks it in the one pacing request and names the painted area',{timeout:20000},async()=>{
  for(const mode of ['off','evaluate','guide']) {
   let h;
@@ -2897,8 +3022,8 @@ test('reference first: the skills go in once a chat, later moves get a one-line 
   const after=moveText(moves.at(-1));
   assert.equal(skillCount(after,'reference-transfer'),1,'the situation changed: the skills again in full');
   assert.match(after,/REFERENCE FIRST/);
-  assert.doesNotMatch(after.split('Follow these skills')[0],/paint_from_reference/,'a second whole transfer would be refused: the lead points to surface and edges');
-  assert.match(after,/paint_reference_surface and paint_reference_edges over the paint already there/);
+  // An undone colour pass counts as not done (the artist's rule): the whole underpainting may be retried, so the lead names it again.
+  assert.match(after.split('Follow these skills')[0],/Lay the reference's colours first with paint_from_reference/,'the undone transfer no longer blocks a whole one');
  } finally {await h.close();}
 });
 

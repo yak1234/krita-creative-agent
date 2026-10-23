@@ -49,7 +49,8 @@ export function hasGoalReference(references: readonly Reference[] | undefined): 
     && ['general', 'composition'].includes(r.purpose ?? 'general'));
 }
 
-export type Job = { id?: string; completed?: number; recipe?: { mode?: string }; scope?: string | null };
+export type Job = { id?: string; completed?: number; recipe?: { mode?: string; name?: string; target?: number[] }; scope?: string | null;
+  layer_id?: string | null; ground?: { layer_id?: string | null } };
 
 // As reference-tool.mjs sameScope: a job belongs to a plan revision.
 function sameScope(job: Job, revision: unknown): boolean {
@@ -58,9 +59,9 @@ function sameScope(job: Job, revision: unknown): boolean {
   try { return known && JSON.parse(job.scope ?? 'null')[0] === revision; } catch { return false; }
 }
 
-/** The transfers (paint_from_reference jobs, no mode) of this plan revision that painted, as reference-tool.mjs counts
+/** The transfers (paint_from_reference jobs, no mode) of this plan revision (or, anyRevision, of the whole chat) that painted, as reference-tool.mjs counts
  * them for its refusals: an undone one included, since its job file stays. Jobs are saved in the chat's folder. */
-export async function paintedTransfers(directory: string, { revision }: { revision?: unknown } = {}): Promise<Job[]> {
+export async function paintedTransfers(directory: string, { revision, anyRevision = false }: { revision?: unknown; anyRevision?: boolean } = {}): Promise<Job[]> {
   let names: string[];
   try { names = await readdir(join(directory, 'reference-paintings')); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
@@ -68,7 +69,7 @@ export async function paintedTransfers(directory: string, { revision }: { revisi
   for (const name of names.filter(n => /^[a-f0-9]{32}\.json$/.test(n))) {
     try {
       const job = JSON.parse(await readFile(join(directory, 'reference-paintings', name), 'utf8')) as Job;
-      if ((job.completed ?? 0) > 0 && !job.recipe?.mode && sameScope(job, revision)) jobs.push({ ...job, id: job.id ?? name.slice(0, 32) });
+      if ((job.completed ?? 0) > 0 && !job.recipe?.mode && (anyRevision || sameScope(job, revision))) jobs.push({ ...job, id: job.id ?? name.slice(0, 32) });
     } catch { /* a job being written: the next check reads it */ }
   }
   return jobs;

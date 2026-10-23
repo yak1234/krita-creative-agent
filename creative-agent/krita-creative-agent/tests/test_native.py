@@ -554,9 +554,31 @@ class NativePolicyTests(unittest.TestCase):
                   'color': '#112233', 'pressure': [0.1, 1, 0.3]}
         params = {'name': 'Taper', 'preset': 'b) Basic-1', 'strokes': [stroke]}
         self.assertIs(validation.validate_pass(params, 600, 450, ['b) Basic-1']), params)
-        for pressure in ([0.1, 1], [0.1, 1, 0.3, 0.5], [0.1, 1.2, 0.3], [0.1, True, 0.3], 0.5):
+        for pressure in ([0.1], [0.1, 1, 0.3, 0.5], [0.1, 1.2, 0.3], [0.1, True, 0.3], 0.5):
             with self.assertRaisesRegex(ValueError, 'pressure'):
                 validation.validate_pass({**params, 'strokes': [{**stroke, 'pressure': pressure}]}, 600, 450, ['b) Basic-1'])
+
+    def test_pen_lists_take_one_value_per_segment_too_resampled_by_repeating_the_first(self):
+        # A traced painter sent one pressure per segment four times and each batch failed (after-the-underpainting goal 5).
+        validation = sys.modules['creative_test_package.creative_validation']
+        stroke = {'start': [10, 20], 'segments': [[20, 20, 30, 20, 40, 20], [50, 20, 60, 20, 70, 20], [80, 20, 90, 20, 99, 20]],
+                  'size': 20, 'opacity': 1, 'flow': 1, 'color': '#112233', 'pressure': [0.4, 1, 0.2], 'tilt': [[10, 0], [20, 0], [30, 0]],
+                  'rotation': [5, 6, 7], 'speed': [0.1, 0.2, 0.3], 'time_ms': [40, 80, 120]}
+        params = {'name': 'Per segment', 'preset': 'b) Basic-1', 'strokes': [stroke]}
+        validation.validate_pass(params, 600, 450, ['b) Basic-1'])
+        painted = params['strokes'][0]
+        self.assertEqual(painted['pressure'], [0.4, 0.4, 1, 0.2], 'the start takes the first segment\'s value')
+        self.assertEqual(painted['tilt'], [[10, 0], [10, 0], [20, 0], [30, 0]])
+        self.assertEqual((painted['rotation'], painted['speed'], painted['time_ms']), ([5, 5, 6, 7], [0.1, 0.1, 0.2, 0.3], [0, 40, 80, 120]),
+                         'time starts at 0: the stroke begins at its start')
+        one = {**stroke, 'segments': stroke['segments'][:1], 'pressure': [0.6]}
+        for name in ('tilt', 'rotation', 'speed', 'time_ms'):
+            one.pop(name)
+        validation.validate_pass({**params, 'strokes': [one]}, 600, 450, ['b) Basic-1'])
+        self.assertEqual(one['pressure'], [0.6, 0.6], 'one segment, one value')
+        for wrong in ([0.5, 0.5], [0.5] * 5):
+            with self.assertRaisesRegex(ValueError, r'pressure needs 4 values \(the start and each of the 3 segment ends\) or 3 \(one per segment\); this stroke has %d' % len(wrong)):
+                validation.validate_pass({**params, 'strokes': [{**stroke, 'pressure': wrong}]}, 600, 450, ['b) Basic-1'])
 
     def test_tilt_rotation_speed_and_time_have_one_value_per_point_in_krita_s_ranges(self):
         validation = sys.modules['creative_test_package.creative_validation']
@@ -565,10 +587,10 @@ class NativePolicyTests(unittest.TestCase):
                   'time_ms': [0, 120, 120]}
         params = {'name': 'Pen', 'preset': 'b) Basic-1', 'strokes': [stroke]}
         self.assertIs(validation.validate_pass(params, 600, 450, ['b) Basic-1']), params)
-        wrong = {'tilt': ([[0, 0], [30, 0]], [[0, 0], [61, 0], [0, 0]], [[0, 0], [0], [0, 0]], [0, 0, 0], [[0, 0], [True, 0], [0, 0]]),
-                 'rotation': ([0, 0], [0, 181, 0], [0, 'a', 0]),
-                 'speed': ([0, 1], [0, 1.5, 0], [-0.1, 0, 0]),
-                 'time_ms': ([0, 1], [0, -1, 2], [0, 200, 100], [0, 10, 3600001])}
+        wrong = {'tilt': ([[0, 0]], [[0, 0], [61, 0], [0, 0]], [[0, 0], [0], [0, 0]], [0, 0, 0], [[0, 0], [True, 0], [0, 0]]),
+                 'rotation': ([0], [0, 181, 0], [0, 'a', 0]),
+                 'speed': ([0, 1, 1, 1], [0, 1.5, 0], [-0.1, 0, 0]),
+                 'time_ms': ([0], [0, -1, 2], [0, 200, 100], [0, 10, 3600001])}
         for name, values in wrong.items():
             for value in values:
                 with self.assertRaisesRegex(ValueError, name, msg='%s %r' % (name, value)):

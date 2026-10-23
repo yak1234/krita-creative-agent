@@ -162,7 +162,7 @@ export const handPaintedBy = (work: StepWork | null | undefined) => (step: numbe
 // The same method again and again without the step's checks rising: a traced run made five
 // reference transfers and ten blur or noise-reducer masks to hide the dabs those transfers left.
 // Authored stroke work is never refused this way; only methods that work on the whole picture are.
-const SMOOTHING = /blur|noise ?reducer|smooth|denoise|median/i;
+export const SMOOTHING = /blur|noise ?reducer|smooth|denoise|median/i;
 // The reference tools are one method: each repaints the target from the same source crop, and a
 // traced painter told to change method switched from a transfer to a surface pass on the same rectangle.
 const REFERENCE_TOOLS = [...TRANSFER_TOOLS, 'paint_reference_edges', 'paint_reference_surface'];

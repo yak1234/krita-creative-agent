@@ -40,6 +40,11 @@ test('painting schemas reject misspelled fields and oversized batches', () => {
   assert.equal(Value.Check(schema, { ...pass, strokes: [{ ...stroke, pressure: 1 }] }), false, 'pressure is per point, not one number');
   assert.equal(Value.Check(schema, { ...pass, strokes: [{ ...stroke, pressure: [0.2, 0.9] }] }), true, 'pen pressure at the start and each segment end');
   assert.equal(Value.Check(schema, { ...pass, strokes: [{ ...stroke, pressure: [0.2, 1.5] }] }), false);
+  // One value per segment is the other form the plugin accepts (after-the-underpainting goal 5): one segment, one value.
+  assert.equal(Value.Check(schema, { ...pass, strokes: [{ ...stroke, pressure: [0.7] }] }), true, 'one pressure per segment');
+  for (const field of ['tilt', 'rotation', 'speed', 'time_ms']) assert.equal(Value.Check(schema, { ...pass, strokes: [{ ...stroke, [field]: [field === 'tilt' ? [10, 0] : 0.5] }] }), true, `${field} per segment`);
+  assert.match(schema.properties.strokes.items.properties.pressure.description, /one more value than segments.*or one per segment.*first value/i, 'the painter is told both forms');
+  for (const field of ['tilt', 'rotation', 'speed', 'time_ms']) assert.match(schema.properties.strokes.items.properties[field].description, /or one per segment/, `${field}: both forms`);
   const pen = { tilt: [[0, 0], [45, -20]], rotation: [-90, 180], speed: [0, 1], time_ms: [0, 250] };
   assert.equal(Value.Check(schema, { ...pass, strokes: [{ ...stroke, ...pen }] }), true, 'tilt, rotation, speed and time per point, as pressure');
   for (const [field, value] of [['tilt', [[0, 0], [61, 0]]], ['tilt', [0, 45]], ['tilt', [[0, 0], [0]]], ['rotation', [0, 181]],

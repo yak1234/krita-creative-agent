@@ -16,7 +16,7 @@ export const NEED_HINTS = {
   done:'This area reads as finished; move on to the next one.',
 };
 
-/** {need, hint, confidence} for `area`, or {fallback}. */
+/** {need, hint, confidence, probabilities?} for `area`, or {fallback}. */
 export async function layerNeedCheck({client, canvas, reference, area, signal}) {
   const {instructions, needs} = QUESTIONS.layer_need;
   const parts = [...(reference ? ['REFERENCE (what the painting aims for):', reference] : []), 'CANVAS (the painting now):', canvas];
@@ -25,7 +25,7 @@ export async function layerNeedCheck({client, canvas, reference, area, signal}) 
   if (result.fallback) return {fallback:result.fallback, elapsed_ms:result.elapsed_ms};
   const answer = result.answers?.need;
   if (answer?.type !== 'choice' || !Object.hasOwn(needs, answer.choice)) return {fallback:'service_or_response_error', elapsed_ms:result.elapsed_ms};
-  return {need:answer.choice, hint:NEED_HINTS[answer.choice], confidence:answer.confidence ?? null, usage:result.usage, elapsed_ms:result.elapsed_ms};
+  return {need:answer.choice, hint:NEED_HINTS[answer.choice], confidence:answer.confidence ?? null, ...(answer.probabilities ? {probabilities:answer.probabilities} : {}), usage:result.usage, elapsed_ms:result.elapsed_ms};
 }
 
 /** The layer job a painting call did, to compare with Luna's choice: the first action that says. */

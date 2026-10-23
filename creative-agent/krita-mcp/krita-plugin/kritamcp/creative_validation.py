@@ -98,10 +98,11 @@ def validate_pass(params, width, height, presets):
             if not isinstance(segment, list) or len(segment) != 6:
                 raise ValueError('Each segment needs c1x,c1y,c2x,c2y,endx,endy')
             coordinates.extend(segment)
-        # The pen at the start and at each segment's end; Krita eases it along each curve.
+        # The pen at the start and at each segment's end; Krita eases it along each curve. One value per segment is
+        # accepted too (painters send that form): the start takes the first segment's value.
         for name in PEN_INPUTS:
             if name in stroke:
-                pen_input(stroke[name], name, len(segments) + 1)
+                stroke[name] = pen_input(stroke[name], name, len(segments) + 1)
         # Up to one brush size past the edge, so a stroke can run edge to edge without tapering inside; Krita clips it.
         margin = stroke['size']
         for index, value in enumerate(coordinates):
@@ -170,9 +171,14 @@ def validate_guide(params, width, height):
 
 
 def pen_input(values, name, count):
-    """One pen input's list: `count` entries, each in Krita's range for it (tilt an [x, y] pair of degrees)."""
-    if not isinstance(values, list) or len(values) != count:
-        raise ValueError(name + ' needs one value per point: the start, then each segment end')
+    """One pen input's list as `count` points (the start, then each segment end), each in Krita's range for it (tilt an
+    [x, y] pair of degrees). A list of `count - 1` values (one per segment) is resampled by repeating its first value
+    at the start (time_ms starts at 0: the stroke begins there); the list returned is the one to paint."""
+    if not isinstance(values, list) or len(values) not in (count, count - 1):
+        raise ValueError('%s needs %d values (the start and each of the %d segment ends) or %d (one per segment); this stroke has %s'
+                         % (name, count, count - 1, count - 1, len(values) if isinstance(values, list) else 'no list'))
+    if len(values) == count - 1:
+        values = ([0] if name == 'time_ms' else values[:1]) + values
     for value in values:
         if name == 'tilt':
             if not isinstance(value, list) or len(value) != 2:
@@ -183,6 +189,7 @@ def pen_input(values, name, count):
             numeric(value, name, *{'pressure': (0, 1), 'rotation': (-180, 180), 'speed': (0, 1), 'time_ms': (0, MAX_STROKE_MS)}[name])
     if name == 'time_ms' and any(later < earlier for earlier, later in zip(values, values[1:])):
         raise ValueError('time_ms must not go back along the stroke')
+    return values
 
 
 def painted_share(pixels, tolerance=12, ignore=None):

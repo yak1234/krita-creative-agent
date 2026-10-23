@@ -53,17 +53,18 @@ const stroke = object({
   segments: Type.Array(Type.Array(strokeCoordinate, { minItems: 6, maxItems: 6 }), { minItems: 1, maxItems: 1000 }),
   size: Type.Number({ minimum: 1, maximum: 10000 }), opacity: unit, flow: unit,
   color: Type.String({ pattern: '^#[0-9a-fA-F]{6}$' }),
-  pressure: Type.Optional(Type.Array(Type.Number({ minimum: 0, maximum: 1 }), { minItems: 2, maxItems: 1001,
-    description: 'Pen pressure 0-1 at the start, then at each segment end (one more value than segments); Krita eases it along each curve. Pressure presets taper and thin with it, e.g. [0.2, 1, 0.3] for a stroke that swells and lifts off. Omit for full pressure.' })),
+  // Per point (one more value than segments) or one per segment: the plugin repeats the first value at the start.
+  pressure: Type.Optional(Type.Array(Type.Number({ minimum: 0, maximum: 1 }), { minItems: 1, maxItems: 1001,
+    description: 'Pen pressure 0-1 at the start, then at each segment end (one more value than segments), or one per segment (the start repeats the first value); Krita eases it along each curve. Pressure presets taper and thin with it, e.g. [0.2, 1, 0.3] for a stroke that swells and lifts off. Omit for full pressure.' })),
   // The rest of the pen, per point like pressure, in Krita's tablet units; presets whose dynamics read them respond.
-  tilt: Type.Optional(Type.Array(Type.Array(Type.Number({ minimum: -60, maximum: 60 }), { minItems: 2, maxItems: 2 }), { minItems: 2, maxItems: 1001,
-    description: 'Pen tilt [x, y] in degrees (-60 to 60, 0 upright) per point, like pressure. Tilt presets widen or turn with it. Omit for upright.' })),
-  rotation: Type.Optional(Type.Array(Type.Number({ minimum: -180, maximum: 180 }), { minItems: 2, maxItems: 1001,
-    description: 'Pen barrel rotation in degrees (-180 to 180) per point. Omit for none.' })),
-  speed: Type.Optional(Type.Array(Type.Number({ minimum: 0, maximum: 1 }), { minItems: 2, maxItems: 1001,
-    description: 'Pen speed 0-1 (1 = fast) per point. Speed presets thin or soften as it rises. Omit for still.' })),
-  time_ms: Type.Optional(Type.Array(Type.Number({ minimum: 0, maximum: 3600000 }), { minItems: 2, maxItems: 1001,
-    description: 'Milliseconds since the stroke began, per point, never decreasing. Drives time-based presets and airbrush rate. Omit for 0.' })),
+  tilt: Type.Optional(Type.Array(Type.Array(Type.Number({ minimum: -60, maximum: 60 }), { minItems: 2, maxItems: 2 }), { minItems: 1, maxItems: 1001,
+    description: 'Pen tilt [x, y] in degrees (-60 to 60, 0 upright) per point like pressure, or one per segment. Tilt presets widen or turn with it. Omit for upright.' })),
+  rotation: Type.Optional(Type.Array(Type.Number({ minimum: -180, maximum: 180 }), { minItems: 1, maxItems: 1001,
+    description: 'Pen barrel rotation in degrees (-180 to 180) per point, or one per segment. Omit for none.' })),
+  speed: Type.Optional(Type.Array(Type.Number({ minimum: 0, maximum: 1 }), { minItems: 1, maxItems: 1001,
+    description: 'Pen speed 0-1 (1 = fast) per point, or one per segment. Speed presets thin or soften as it rises. Omit for still.' })),
+  time_ms: Type.Optional(Type.Array(Type.Number({ minimum: 0, maximum: 3600000 }), { minItems: 1, maxItems: 1001,
+    description: 'Milliseconds since the stroke began, per point (or one per segment, from 0), never decreasing. Drives time-based presets and airbrush rate. Omit for 0.' })),
 });
 
 // Host bookkeeping the model never needs: files, ids, the whole pass history (the

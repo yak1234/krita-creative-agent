@@ -30,6 +30,7 @@ test('a colour pass is a transfer that painted, in this plan revision and not un
     assert.equal(await referenceColourPassMade(directory, { revision: 2 }), true);
     assert.equal(await referenceColourPassMade(directory, { revision: 2, undone: new Set(['e'.repeat(32)]) }), false, 'an undone transfer counts as not done');
     assert.equal((await paintedTransfers(directory, { revision: 2 })).length, 1, 'but it is still a painted transfer job, as the reference tools count them');
+    assert.deepEqual((await paintedTransfers(directory, { anyRevision: true })).map(j => j.id).sort(), ['d'.repeat(32), 'e'.repeat(32)], 'every revision of the chat');
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

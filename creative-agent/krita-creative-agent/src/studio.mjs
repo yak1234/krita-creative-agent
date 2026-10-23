@@ -8,6 +8,8 @@ import { panelSchema } from './settings-schema.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS } from './craft.mjs';
 import { GUARDS_CHANNEL, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension } from './extensions.mjs';
 import { layerNeedCheck, paintedRole } from './layer-need.mjs';
+import { mayBeDone, askWhenDoneNote } from './ask-when-done.ts';
+import { unifyActions, unifyRefusal, WHOLE_CANVAS_SHARE } from './unify-pass.ts';
 import { COMIC_GUIDANCE, COMIC_REVIEW, comicContext, comicPlanProblems, panelId, storySchema } from './comic.mjs';
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { mkdir, readFile, readdir, rename, writeFile, rm, access, realpath } from 'node:fs/promises';
@@ -191,6 +193,13 @@ function strokeArea(args) {
   const xs=points.map(p=>p[0]), ys=points.map(p=>p[1]), x=Math.floor(Math.min(...xs)), y=Math.floor(Math.min(...ys));
   return [x,y,Math.ceil(Math.max(...xs))-x,Math.ceil(Math.max(...ys))-y];
 }
+// Did the call's action `index` run and succeed? A batch reports each action (tools.mjs); a reference job its status.
+function actionSucceeded(response, index, call) {
+  const details = response?.details ?? {};
+  if (call?.tool === 'paint_batch') return details.batch?.find(entry => entry.action === index + 1)?.status === 'ok';
+  return !['failed','stopped','paused','interrupted','partial','awaiting_review'].includes(details.status);
+}
+const listOr = items => items.length > 1 ? items.slice(0, -1).join(', ') + ' or ' + items.at(-1) : items.join('');
 const countStrokes = ({tool, args = {}}) => tool === 'paint_batch' ? (args.actions ?? []).reduce((sum, a) => sum + countStrokes({tool:a.tool, args:a.arguments}), 0)
   : Array.isArray(args.strokes) ? args.strokes.length : Number(args.stroke_count) || (Array.isArray(args.contours) ? args.contours.length : 0);
 const methodRefusal=methods=>`${methods.join(' and ')} ran twice on this step without moving its checks, so ${methods.length>1 ? 'they are' : 'it is'} off until the step changes. Repeating ${methods.length>1 ? 'them' : 'it'} re-rolls the same result. Paint the forms instead: paint_contours for silhouettes, paint_pass with small brushes and long directed strokes for edges, glints and fine detail, clipped create_layer for light and shadow.`;
@@ -571,7 +580,37 @@ export class StudioRuntime extends PaintingRuntime {
   async paced(call, run) {
     (this.batchStarts ??= new Map()).set(call.id, this.seenPasses?.study === this.study ? new Set(this.seenPasses.ids) : null);   // Luna review: what this call adds
     this.refuseExhaustedMethod(call);
-    return this.afterPainting(await run(), call);
+    const unify = await this.unifyPass(call);
+    const response = await run();
+    if (unify && actionSucceeded(response, unify.index, call)) { this.goal.unify_pass = unify; await this.persist(); }
+    return this.afterPainting(response, call);
+  }
+  /** One unify pass (unify-pass.ts): after a whole-picture underpainting, the chat's first whole-canvas softening call is
+   * returned to be remembered; a later one (or a second in the same call) is refused. A pass whose move was undone is spent no more. */
+  async unifyPass(call) {
+    const canvas = this.decisionObservation ?? this.lastObservation;
+    if (!canvas?.width || !canvas?.height) return null;
+    const transfers = await this.wholeTransfers(canvas);
+    const wholeLayers = new Set(transfers.flatMap(job => [job.layer_id, job.ground?.layer_id,
+      ...(canvas.layers ?? []).filter(layer => job.recipe?.name && String(layer.name ?? '').startsWith(job.recipe.name + ' \u00b7 ')).map(layer => layer.id)]).filter(Boolean));
+    const found = unifyActions(call, canvas, {wholeLayers});
+    if (!found.length || !(await this.underpainted(canvas, transfers))) return null;
+    const used = this.goal.unify_pass, undone = used?.move && this.goal.moves?.find(m => m.number === used.move)?.status === 'undone';
+    const earlier = used && !undone ? used : found.length > 1 ? found[0] : null;
+    if (earlier) throw new Error(unifyRefusal(found[earlier === found[0] ? 1 : 0], earlier));
+    return {...found[0], at:stamp(), ...(this.currentMove ? {move:this.currentMove.number} : {})};
+  }
+  /** The chat's painted transfers over most of the canvas, in any plan revision, without those the artist undid. */
+  async wholeTransfers(canvas) {
+    const undone = this.undoneReferenceJobs();
+    const jobs = await paintedTransfers(this.study.directory, {anyRevision:true}).catch(() => []);
+    return jobs.filter(job => !undone.has(job.id) && Array.isArray(job.recipe?.target)
+      && job.recipe.target[2] * job.recipe.target[3] >= WHOLE_CANVAS_SHARE * canvas.width * canvas.height);
+  }
+  /** Has the whole picture been underpainted? A painting the chat started on, or a kept whole-canvas transfer. */
+  async underpainted(canvas, transfers) {
+    if (existingPainting(this, canvas)) return true;
+    return (transfers ?? await this.wholeTransfers(canvas)).length > 0;
   }
   /** The studio side of the seam check (extensions/seam-check.ts): Luna on each candidate's close-up. */
   seamHost() {
@@ -700,7 +739,8 @@ export class StudioRuntime extends PaintingRuntime {
     };
     if (mode==='evaluate') { run().catch(()=>{}); return; }
     const check=await run();
-    if (check?.need) this.layerNeed={area:label,need:check.need,hint:check.hint};
+    // Done in the top two, or unsure: the move ends after one call and the painter asks the artist (ask-when-done.ts).
+    if (check?.need) this.layerNeed={area:label,need:check.need,hint:check.hint,...(mayBeDone(check) ? {may_be_done:mayBeDone(check)} : {})};
   }
   // Did this pass introduce a recorded failure type? Evaluate records only and
   // never delays the painter; Guide returns findings with the pass result.
@@ -919,6 +959,7 @@ export class StudioRuntime extends PaintingRuntime {
     const move = this.currentMove;
     if (!move) return false;
     if (move.finished) return true;
+    if (move.ask_next && (move.calls ?? 0) >= 1) return true;           // ask when it may be done: one call, then the artist
     const limit = MOVE_LIMITS[this.executionSettings?.move_size ?? 'subject'] ?? MOVE_LIMITS.subject;
     const late = limit.minutes > 0 && Date.now() - Date.parse(move.started_at) >= limit.minutes * 60000;
     if (move.kind === 'guides') return (move.guides ?? 0) >= limit.calls || late;     // counted in guide calls: nothing else is offered
@@ -943,10 +984,11 @@ export class StudioRuntime extends PaintingRuntime {
     const tools = paintingTools(this);
     // Reference first: each transfer job's moves, so an Undo of its move makes the chat's colour pass not done (reference-first.ts).
     // The job id is the reference tools' own (reference-tool.mjs: the call id's sha256, or continue's job_id), recorded before it paints.
-    for (const tool of tools.filter(t=>['paint_from_reference','continue_reference_painting'].includes(t.name))) {
+    // Edges and surface jobs too: an undone one is no painted job for the stretch limit.
+    for (const tool of tools.filter(t=>['paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface'].includes(t.name))) {
       const execute = tool.execute;
       tool.execute = (id, args, ...rest) => {
-        const job = tool.name === 'paint_from_reference' ? createHash('sha256').update(id).digest('hex').slice(0,32) : args?.job_id;
+        const job = tool.name !== 'continue_reference_painting' ? createHash('sha256').update(id).digest('hex').slice(0,32) : args?.job_id;
         if (this.mode==='agent' && this.currentMove && job) {
           const jobs = this.goal.reference_jobs ??= {};
           jobs[job] = [...new Set([...(jobs[job] ?? []), this.currentMove.number])];
@@ -1300,6 +1342,18 @@ export class StudioRuntime extends PaintingRuntime {
       ? `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: the guides the step names (draw_guide, element "${name}") placed from ${goalText}. Paint only this step, then finish_move.\n`
       : `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: the underpainting of the whole picture from ${goalText} (paint_from_reference, all of it onto the whole canvas). Paint only this step, then finish_move.\n`;
     return `\nPROJECT FOLDER MOVE: paint only step ${move.step + 1} of the approved plan, "${name}", on a layer named "${name}". Its look comes from the element reference ${element.id} (${file}); ${goalText} decides where it sits. Paint it in your own strokes over the underpainting${guides ? `, over its guide (draw_guide with element "${name}") first` : '; draw a guide only when the artist asks for one'}, then finish_move. When it reads as finished you may propose protecting it (propose_protection).\n`;
+  }
+  /** Ask when it may be done: the elements the painter offers the artist. The project folder's elements, else the plan's
+   * steps not yet done; empty when there are neither (the painter names what it sees). Goal 1 (close-ups) may narrow this. */
+  elementsToOffer() {
+    const index = this.study?.folder ? this.folderIndex : null, done = new Set(this.goal?.done_steps ?? []), steps = this.goal?.brief?.steps ?? [];
+    if (index?.elements?.length) {
+      // With a plan, only the elements whose steps are still open.
+      const open = new Set(steps.filter((step, i) => !done.has(i)).map(step => stepFile(step)).filter(Boolean));
+      const planned = new Set(steps.map(step => stepFile(step)).filter(Boolean));
+      return index.elements.filter(e => !planned.size || open.has(e.name)).map(e => String(this.folderGuessOf(e) || e.name)).slice(0, 8);
+    }
+    return steps.map((step, i) => !done.has(i) && step?.title).filter(Boolean).map(String).slice(0, 8);
   }
   /** The references the painter is sent as images: a folder chat sends its goal and the current step's element only. */
   painterReferences() {
@@ -2144,6 +2198,8 @@ export class StudioRuntime extends PaintingRuntime {
       }
       canvas = await this.ensureComicPage() ?? canvas;
       await this.checkLayerNeed(text, canvas);
+      const maybeDone = !command.move_kind && this.layerNeed?.may_be_done && await this.underpainted(canvas) ? this.layerNeed.may_be_done : null;
+      if (maybeDone) move.ask_next = {reason:maybeDone, elements:this.elementsToOffer()};
       const images = contextImages?.length ? contextImages : [...(await this.painterReferenceImages()), (await imageContent(this.study.directory, canvas.image_path)).content];
       // Reference first: the skills in full once a chat (and after an Undo of its colour pass), then a one-line reminder.
       const guidesOnly = move.kind === 'guides';
@@ -2151,7 +2207,7 @@ export class StudioRuntime extends PaintingRuntime {
       const full = !this.goal.reference_skills_shown;
       const referenceFirst = state ? referenceFirstContext(text, name => expandSkillCommand('/skill:' + name), {transfer:state.transfer, full}) : '';
       if (state && full) this.goal.reference_skills_shown = true;
-      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + this.folderMoveInstructions(move) + '\nArtist:\n' + text, images);
+      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + this.folderMoveInstructions(move) + (move.ask_next ? askWhenDoneNote(move.ask_next.reason, this.layerNeed.area, move.ask_next.elements) : '') + '\nArtist:\n' + text, images);
     } finally {
       this.goal.used_ms += Date.now() - this.goalStartedAt; this.goalStartedAt = undefined;
       const guidesOnly = !move.actions && move.guides > 0;
@@ -2163,28 +2219,33 @@ export class StudioRuntime extends PaintingRuntime {
       if (this.goal.status === 'active') this.goal.status = move.status === 'ready' ? 'move_ready' : 'paused';
       await this.flushCheckpoint();
       this.emit({type:'move', move}); await this.persist(); this.publish();
+      const askNext = move.ask_next ? ` Luna sees little left to add here. What should come next?${move.ask_next.elements.length ? ' ' + listOr(move.ask_next.elements) : ''}` : '';
       if (!this.runError && !this.cancelRequested)
-        this.setActivity('idle', guidesOnly ? `Move ${move.number} drew guides: keep them, undo them, or type a correction.`
+        this.setActivity('idle', (guidesOnly ? `Move ${move.number} drew guides: keep them, undo them, or type a correction.`
           : !move.actions ? 'No painting this turn. Describe the move you want.'
           : move.luna_stopped ? `Move ${move.number} stopped: ${move.luna_stopped} Keep it, undo it, or type a correction.`
           : (move.limited ? `Move ${move.number} reached its size limit: keep it, undo it, or say continue to finish it.`
-          : `Move ${move.number} painted: keep it, undo it, or type a correction.`)+(move.review_line ? ' '+move.review_line+'.' : ''));
+          : `Move ${move.number} painted: keep it, undo it, or type a correction.`)+(move.review_line ? ' '+move.review_line+'.' : ''))+askNext);
     }
   }
   /** Reference first (reference-first.ts): an Agent move, the setting on, a goal reference, and no reference colour pass in
    * this chat yet (a transfer whose moves were all undone counts as not done). Null, or whether a whole transfer is available. */
   async referenceFirstState(observation = this.decisionObservation ?? this.lastObservation) {
     if (this.mode !== 'agent' || this.executionSettings?.reference_first === false || !hasGoalReference(this.study?.references)) return null;
-    const moves = new Map((this.goal?.moves ?? []).map(m => [m.number, m.status]));
-    const undone = new Set(Object.entries(this.goal?.reference_jobs ?? {}).filter(([, numbers]) => numbers.every(n => moves.get(n) === 'undone')).map(([job]) => job));
-    if (await referenceColourPassMade(this.study.directory, {revision:this.goal?.revision, undone})) return null;
+    if (await referenceColourPassMade(this.study.directory, {revision:this.goal?.revision, undone:this.undoneReferenceJobs()})) return null;
     return {transfer: await this.wholeTransferAvailable(observation)};
   }
-  /** Would a whole-canvas transfer be accepted now? The question transferRefusal (reference-tool.mjs, unchanged) asks, with the
-   * painted transfers it counts (undone ones included: their job files stay) and the canvas as it is. */
+  /** Reference jobs whose moves were all undone: the artist's rule is that an undone colour pass counts as not done. */
+  undoneReferenceJobs() {
+    const moves = new Map((this.goal?.moves ?? []).map(m => [m.number, m.status]));
+    return new Set(Object.entries(this.goal?.reference_jobs ?? {}).filter(([, numbers]) => numbers.every(n => moves.get(n) === 'undone')).map(([job]) => job));
+  }
+  /** Would a whole-canvas transfer be accepted now? The question transferRefusal (reference-tool.mjs) asks, with the
+   * painted transfers it counts (not those whose moves were all undone) and the canvas as it is. */
   async wholeTransferAvailable(observation) {
     if (!observation?.width || !observation?.height) return true;
-    const painted = (await paintedTransfers(this.study.directory, {revision:this.goal?.revision})).length;
+    const undone = this.undoneReferenceJobs();
+    const painted = (await paintedTransfers(this.study.directory, {revision:this.goal?.revision})).filter(job => !undone.has(job.id)).length;
     const whole = {source:[0,0,observation.width,observation.height], target:[0,0,observation.width,observation.height]};
     return !transferRefusal(this.goal, whole, observation, painted, {established:existingPainting(this, observation), protectedAreas:observation.protected_areas?.length ?? 0});
   }

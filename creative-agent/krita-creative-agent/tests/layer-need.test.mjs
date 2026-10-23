@@ -34,3 +34,9 @@ test('the painter’s call is read as the layer job it did', () => {
   assert.equal(paintedRole({ tool: 'paint_pass', args: { strokes: [] } }), 'strokes');
   assert.equal(paintedRole({ tool: 'observe_canvas', args: {} }), null);
 });
+
+test('the decision’s probabilities come back with the choice, for the ask-when-done nudge', async () => {
+  const probabilities = { texture: 0.3, done: 0.27, accents: 0.2 };
+  const luna = client(() => ({ answers: { need: { type: 'choice', choice: 'texture', confidence: 0.3, probabilities } } }));
+  assert.deepEqual((await layerNeedCheck({ client: luna, canvas: {}, area: 'sky' })).probabilities, probabilities);
+});

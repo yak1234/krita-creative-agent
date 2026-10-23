@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import {generateReferencePlan,generateEdgePlan,generateSurfacePlan,estimateReferenceStrokes,EDGE_LIMIT,SURFACE_LIMIT} from '../src/reference-generator.mjs';
-import {referenceTools,transferRefusal,partShare,existingPainting,PAINTED_SHARE,fitStepsToTime,fitStepsToBudget,AGENT_MOVE_STROKES,wholeReferenceRefusal,groundStops,STROKES_PER_SECOND,TRANSFER_TIME_SHARE} from '../src/reference-tool.mjs';
+import {referenceTools,transferRefusal,stretchRefusal,partShare,existingPainting,PAINTED_SHARE,fitStepsToTime,fitStepsToBudget,AGENT_MOVE_STROKES,wholeReferenceRefusal,groundStops,STROKES_PER_SECOND,TRANSFER_TIME_SHARE} from '../src/reference-tool.mjs';
 const recipe={name:'Portrait',reference_id:'ref',preset:'Basic',source:[0,0,24,24],target:[2,2,48,48],steps:[6,3,1.5],focal_regions:[[6,6,12,12]],seed:42};
 const canvas={width:64,height:64,revision:'r0'};
 const image={width:24,height:24,data:Buffer.alloc(24*24*4)};
@@ -205,7 +205,7 @@ test('a repair patch stretched past 2x is refused on an existing painting or aft
 });
 test('a focal patch (one face or hand) is allowed at any step, even on an existing painting after a transfer',()=>{
  const late={revision:1,current_step:5,brief:{steps:[{},{},{},{},{},{}]}},big={width:1000,height:1000};
- const hand={...recipe,target:[400,400,170,170]},head={...recipe,target:[400,400,180,180]};
+ const hand={...recipe,source:[0,0,100,100],target:[400,400,170,170]},head={...recipe,source:[0,0,100,100],target:[400,400,180,180]};
  assert.equal(transferRefusal(late,hand,big,1,{established:true}),null,'2.9% of the canvas');
  assert.match(transferRefusal(late,head,big,1,{established:true}),/off from step 4 of 6.*focal patch.*at most 3%/,'3.2% is not a focal patch');
 });
@@ -360,4 +360,71 @@ test('the painter protects what the artist says to leave alone, by name, before 
  const {PAINTING_INSTRUCTIONS}=await import('../src/prompt.mjs');
  assert.match(PAINTING_INSTRUCTIONS,/When the request names things to leave alone \("without touching the buildings or the car"\), propose_protection each of them by name before the first pass near them/);
  assert.match(PAINTING_INSTRUCTIONS,/Never paint a test fill to check a selection/);
+});
+
+// after-the-underpainting goal 2: a traced chat stretched the goal 4x for the hair (210x180 onto 870x746) and 4x for the figure.
+test('edges and surface transfers stretched past 2x are refused on a painted canvas, naming the area and the enlargement',()=>{
+ const hair={mode:'surface',name:'Hair',source:[210,100,210,180],target:[2400,800,870,746]};
+ const message=stretchRefusal(hair,{established:true});
+ assert.match(message,/"Hair".*\[2400,800,870,746\]/,'names the area');
+ assert.match(message,/4\.1x.*210 source px over 870 canvas px.*past 2x/,'names the enlargement');
+ assert.match(message,/sharper or closer reference of this area.*or stop/i,'asks for a closer reference or to stop there');
+ assert.match(stretchRefusal(hair,{paintedJobs:1}),/4\.1x/,'after any painted job too');
+ assert.equal(stretchRefusal(hair,{}),null,'a fresh canvas with no transfer yet');
+ assert.equal(stretchRefusal({...hair,source:[0,0,435,373]},{established:true}),null,'2x from a sharper crop');
+ // No focal exemption: a 2.4% hair area is where the stretch shows most (the patch rule keeps its own).
+ assert.match(stretchRefusal({...hair,mode:'edges'},{established:true}),/edges/);
+});
+test('the edges and surface tools apply the stretch limit after a painted transfer or on an existing painting, a part as any reference',async()=>{
+ const h=await harness();try{
+  const edgeTool=h.tools.find(t=>t.name==='paint_reference_edges'),surfaceTool=h.tools.find(t=>t.name==='paint_reference_surface');
+  const stretched={name:'Rim',reference_id:'ref',preset:'b) Basic-6 Details',source:[6,6,12,12],target:[0,0,48,48],min_contrast:.05};
+  const first=await edgeTool.execute('first edges',stretched);
+  assert.equal(first.details.status,'complete','the first transfer on a fresh canvas may stretch');
+  await assert.rejects(edgeTool.execute('second edges',{...stretched,name:'Rim again'}),/"Rim again".*stretches the reference 4x/,'after a painted job');
+  await assert.rejects(surfaceTool.execute('surface',{name:'Blend',reference_id:'ref',preset:'k) Blender Basic',source:[6,6,12,12],target:[0,0,48,48]}),/stretches the reference 4x/);
+  h.runtime.study.references[0]={...h.runtime.study.references[0],part_kind:'part',bounds:[6,6,12,12]};
+  await assert.rejects(edgeTool.execute('part edges',{...stretched,name:'Part rim'}),/stretches/,'a part is measured like any reference');
+ }finally{await h.close();}
+ const fresh=await harness();try{
+  fresh.runtime.study.canvas={mode:'current'};
+  const observe=fresh.runtime.callNative;fresh.runtime.callNative=async(op,p)=>op==='observe'?{...await observe(op,p),painted_share:.8}:observe(op,p);
+  await assert.rejects(fresh.tools.find(t=>t.name==='paint_reference_edges').execute('edges',{name:'Rim',reference_id:'ref',preset:'b) Basic-6 Details',source:[6,6,12,12],target:[0,0,48,48],min_contrast:.05}),/stretches/,'an existing painting');
+ }finally{await fresh.close();}
+});
+
+test('a focal patch is not exempt from the stretch limit on a painted canvas: every transfer gets the same refusal',()=>{
+ const late={revision:1,current_step:5,brief:{steps:[{},{},{},{},{},{}]}},big={width:1000,height:1000};
+ const hand={...recipe,name:'Hand',source:[0,0,40,40],target:[400,400,170,170]};               // 4.3x, 2.9% of the canvas
+ assert.equal(transferRefusal(late,hand,big,1,{established:true}),stretchRefusal(hand,{established:true}),'the same message as edges and surface');
+ assert.match(transferRefusal(late,hand,big,0,{established:true}),/A patch transfer of "Hand" at \[400,400,170,170\] stretches the reference 4.3x/);
+ assert.match(transferRefusal(late,hand,big,1),/stretches/,'after a painted transfer too');
+ assert.equal(transferRefusal(late,hand,big,0),null,'a fresh canvas: the first transfer may stretch');
+ assert.equal(transferRefusal(late,{...hand,source:[0,0,85,85]},big,1,{established:true}),null,'2x from a close-up: the focal exemption still lifts the size and late-plan rules');
+});
+
+// The artist's rule: an undone colour pass counts as not done. Its job file stays, so the tools ask the studio which jobs' moves were all undone.
+test('a transfer whose moves were all undone counts as not painted: the whole underpainting may be retried and nothing is stretched against it',async()=>{
+ const h=await harness();try{
+  const undone=new Set();h.runtime.undoneReferenceJobs=()=>undone;
+  h.runtime.goal={revision:1,current_step:0,brief:{steps:[{},{},{},{}]}};
+  const whole={...recipe,source:[0,0,24,24],target:[0,0,64,64],focal_regions:undefined};
+  assert.equal((await h.tools[0].execute('first',whole)).details.status,'complete');
+  await assert.rejects(h.tools[0].execute('again',{...whole,name:'Again'}),/already has a reference transfer/,'a kept transfer still counts');
+  const edges={name:'Rim',reference_id:'ref',preset:'b) Basic-6 Details',source:[6,6,12,12],target:[0,0,48,48],min_contrast:.05};
+  await assert.rejects(h.tools.find(t=>t.name==='paint_reference_edges').execute('edges',edges),/stretches/);
+  undone.add(createHash('sha256').update('first').digest('hex').slice(0,32));
+  assert.equal((await h.tools.find(t=>t.name==='paint_reference_edges').execute('edges after undo',edges)).details.status,'complete','the undone transfer is not a painted job');
+  undone.add(createHash('sha256').update('edges after undo').digest('hex').slice(0,32));
+  assert.equal((await h.tools[0].execute('retry',{...whole,name:'Retry'})).details.status,'complete','the whole underpainting again after an Undo');
+ }finally{await h.close();}
+});
+test('the stretch limit counts painted jobs of this plan revision, as the transfer rules do',async()=>{
+ const h=await harness();try{
+  h.runtime.goal={revision:1,current_step:0,brief:{steps:[{},{},{},{}]}};
+  const edges={name:'Rim',reference_id:'ref',preset:'b) Basic-6 Details',source:[6,6,12,12],target:[0,0,48,48],min_contrast:.05};
+  assert.equal((await h.tools.find(t=>t.name==='paint_reference_edges').execute('one',edges)).details.status,'complete');
+  h.runtime.goal={...h.runtime.goal,revision:2};
+  assert.equal((await h.tools.find(t=>t.name==='paint_reference_edges').execute('two',{...edges,name:'Rim 2'})).details.status,'complete','a job of an earlier plan revision');
+ }finally{await h.close();}
 });

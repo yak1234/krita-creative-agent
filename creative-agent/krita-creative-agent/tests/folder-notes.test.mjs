@@ -163,3 +163,41 @@ test('a large PLAN.md the agent did not write is backed up without being read wh
     assert.equal(await readFile(join(outside, 'shared.md'), 'utf8'), 'outside\n');
   } finally { await rm(outside, { recursive: true, force: true }); }
 }));
+
+// Plan step controls (plan-step-controls goal 3): PLAN.md records skipped, met (by the artist or "good enough") and redone
+// steps after the layer, keyed by step identity, and reads them back (a resumed or new chat restores them).
+test('PLAN.md records skipped, met and redone steps and reads them back', () => folder(async root => {
+  const keys = stepKeys(brief.steps);
+  const marks = { [keys[1]]: { met: 'artist', redone: 1 }, [keys[2]]: { skipped: true }, [keys[3]]: { met: 'good_enough', redone: 2 } };
+  const { text } = await writePlan(root, brief, [1, 3], { marks });
+  assert.match(text, /^- \[x\] 2\. Moonlit sky \(01-moonlit-sky\.png\) · layer "Moonlit sky" · met by the artist · redone 1 time$/m);
+  assert.match(text, /^- \[ \] 3\. Historic buildings \(02-historic-buildings\.png\) · layer "Historic buildings" · skipped$/m);
+  assert.match(text, /^- \[x\] 4\. Kremlin towers \(04-kremlin-towers\.png\) · layer "Kremlin towers" · good enough · redone 2 times$/m);
+  assert.match(text, /^- \[ \] 1\. Block-in: the whole composition · layer "Block-in: the whole composition"$/m, 'an unmarked step is written as before');
+  const plan = await readPlan(root);
+  assert.deepEqual(plan.steps.map(s => [s.title, s.layer, s.done]), [['Block-in: the whole composition', 'Block-in: the whole composition', false],
+    ['Moonlit sky', 'Moonlit sky', true], ['Historic buildings', 'Historic buildings', false], ['Kremlin towers', 'Kremlin towers', true]]);
+  assert.deepEqual(plan.marks, marks, 'the marks come back keyed by step identity');
+  assert.deepEqual(planDifference(brief, text.split('\n'), [1, 3], marks), [], 'the plan as written has no difference');
+}));
+
+test('a step skipped or restored by hand in PLAN.md is a difference the artist is asked about', () => {
+  const keys = stepKeys(brief.steps);
+  const lines = planText(brief, [], { marks: { [keys[3]]: { skipped: true } } }).split('\n');
+  const edited = lines.map(l => l.includes('Historic buildings') ? l + ' · skipped' : l.includes('Kremlin towers') ? l.replace(' · skipped', '') : l);
+  const differences = planDifference(brief, edited, [], { [keys[3]]: { skipped: true } });
+  assert.deepEqual(differences, ['Skipped: Historic buildings', 'Restored: Kremlin towers']);
+  assert.deepEqual(parsePlan(edited.join('\n')).marks, { [keys[2]]: { skipped: true } });
+  assert.deepEqual(parsePlan('## Moves\n\n- [ ] 1. Sky · SKIPPED\n').marks, { 'title:sky#0': { skipped: true } }, 'by hand, in any case, without a layer');
+});
+
+test('marks written by hand anywhere in a step line are read, and met or unmet by hand is a difference', () => {
+  const keys = stepKeys(brief.steps);
+  const plan = parsePlan('## Moves\n\n- [ ] 2. Moonlit sky · skipped (01-moonlit-sky.png) · layer "Moonlit sky"\n'
+    + '- [x] 3. Historic buildings · good enough · layer "Historic buildings" (02-historic-buildings.png)\n');
+  assert.deepEqual(plan.steps.map(s => [s.title, s.file ?? null, s.mark ?? null]), [['Moonlit sky', '01-moonlit-sky.png', { skipped: true }],
+    ['Historic buildings', '02-historic-buildings.png', { met: 'good_enough' }]]);
+  const lines = planText(brief, [1], { marks: { [keys[1]]: { met: 'artist' } } }).split('\n');
+  const edited = lines.map(l => l.includes('Moonlit sky') ? l.replace(' · met by the artist', '') : l.includes('Kremlin towers') ? l + ' · met by the artist' : l);
+  assert.deepEqual(planDifference(brief, edited, [1], { [keys[1]]: { met: 'artist' } }), ['Unmarked met: Moonlit sky', 'Marked met: Kremlin towers']);
+});

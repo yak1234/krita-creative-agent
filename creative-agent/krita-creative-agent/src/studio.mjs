@@ -41,6 +41,7 @@ import { transferRefusal, existingPainting } from './reference-tool.mjs';
 import { scanFolder, readFolderText } from './project-folder.ts';
 import { ensureMassMaps } from './mass-map.ts';
 import { writePlan, appendNote, readPlan, parsePlan, planDifference, briefFromPlan, remapTicks, stepFile, stepKeys, layerName } from './folder-notes.ts';
+import { planStepControls, stepMarksContext, withStepIds, STEP_ID } from './plan-steps.ts';
 import { constants as fsConstants } from 'node:fs';
 import { open as openFile } from 'node:fs/promises';
 
@@ -52,6 +53,7 @@ const lines = Type.Array(line, { maxItems: 30 });
 export const briefSchema = object({ title: line, objective: line, requirements: lines, freedom: lines,
   characters:Type.Optional(Type.Array(object({name:line,requirements:lines}),{maxItems:30})),
   steps: Type.Array(object({ title: line, done_when: line, scope:Type.Optional(line),
+    id:Type.Optional(Type.String({pattern:STEP_ID.source,description:'The step\'s id: keep it when revising that step; leave it out for a new step.'})),
     checks:Type.Optional(Type.Array(Type.String({minLength:1,maxLength:300}),{minItems:1,maxItems:5,description:'What the finished area visibly looks like, judged on the canvas. Describe the painted result, not the absence of a seam around the rectangle being repaired.'})),
     panels:Type.Optional(Type.Array(panelId,{minItems:1,maxItems:24})) }), { minItems: 1, maxItems: 16 }),   // 16: a folder's block-in and 15 elements
   completion: Type.Array(line, { minItems: 1, maxItems: 20 }),
@@ -59,7 +61,7 @@ export const briefSchema = object({ title: line, objective: line, requirements: 
 // Saved plans may carry retired stage controls (stop_after, max_operations, region).
 export function normalizeBrief(brief) {
   if (!brief?.steps) return brief;
-  return {...brief,steps:brief.steps.map(({title,done_when,scope,checks})=>({title,done_when,...(scope ? {scope}:{}),...(checks?.length ? {checks}:{})}))};
+  return {...brief,steps:brief.steps.map(({title,done_when,scope,checks,id})=>({title,done_when,...(scope ? {scope}:{}),...(checks?.length ? {checks}:{}),...(id ? {id}:{})}))};
 }
 const RUN_QUESTION_LIMIT = 2;   // Autopilot questions per run; the rest the painter decides
 const questionSchema = object({ question: line, options: Type.Array(line, { maxItems: 4 }) });
@@ -252,6 +254,8 @@ export class StudioRuntime extends PaintingRuntime {
     // Close-up references for detail (closeups.ts): aligned to the goal once, confirmed by the artist, then sampled by
     // detail transfers there (reference-tool.mjs asks runtime.closeups).
     this.closeups = options.closeups ?? chatCloseups(this.closeupHost());
+    // Plan step controls (plan-steps.ts): Skip / Restore, Good enough → next step, Met / Redo on the panel's plan list.
+    this.planSteps = planStepControls(this.planStepHost());
   }
   async importJournals() {
     const chats = await this.store.chatsWithJsonJournal();
@@ -527,6 +531,10 @@ export class StudioRuntime extends PaintingRuntime {
     const levelled=['continue','none'].includes(act.action) ? levelledOff(history,step) : null;
     if (levelled && step<steps.length-1) act={...act,action:'next_step',step:step+1,levelled};
     else if (levelled && actionsSinceReview>=MIN_ACTIONS_BEFORE_REVIEW && !unchangedSinceReview) act={...act,action:'request_review',levelled};
+    if (act.action==='next_step') {                              // never onto a step the artist skipped or met
+      const open=this.planSteps.nextOpen(act.step);
+      act=open>=0 ? {...act,step:open} : {...act,action:actionsSinceReview>=MIN_ACTIONS_BEFORE_REVIEW && !unchangedSinceReview ? 'request_review' : 'continue'};
+    }
     history[history.length-1].action=act.action;
     goal.pace_history=history.slice(-50);
     this.diagnostics?.record({type:'pacing',action:act.action,step,progress:act.progress ?? null,reason:act.levelled ?? act.reason ?? null});
@@ -534,7 +542,7 @@ export class StudioRuntime extends PaintingRuntime {
     if (act.action==='next_step') {
       const why=act.levelled ? ({cap:'has had its share of the run',stall:'is not moving with the methods tried (Luna’s progress stayed low)'}[act.levelled] ?? 'is as far along as more painting takes it now (Luna’s progress stopped rising)') : 'is established';
       goal.current_step=act.step; goal.pace_unmet=null; goal.progress.push({step:act.step,observation:'Host pacing: step '+(step+1)+' '+(act.levelled ? 'moved on ('+act.levelled+').' : 'established.'),next_focus:steps[act.step].title,source:'decision',at:stamp()});
-      const skipped=act.step-step>1 ? ` The canvas already shows step${act.step-step>2?'s':''} ${Array.from({length:act.step-step-1},(_,i)=>step+2+i).join(', ')}.` : '';
+      const skipped=this.planSteps.jumpNote(step,act.step);
       note=`Step ${step+1} ("${steps[step].title}") ${why}.${skipped}${act.levelled ? ' Later steps and the final review can still correct it.' : ''} Now paint step ${act.step+1}: "${steps[act.step].title}" — ${steps[act.step].done_when} Checked on the canvas: ${stepChecks(steps[act.step]).join(' | ')}`;
       this.emit({type:'action',message:'Moving on to: '+steps[act.step].title,seconds:0});
     } else if (act.action==='request_review') {
@@ -595,9 +603,12 @@ export class StudioRuntime extends PaintingRuntime {
     if (this.mode === 'agent' && this.currentMove && transferJobId(call.tool, call.id, call.args) && seen?.image_path && !seen.region) (this.transferBefore ??= new Map()).set(call.id, seen.unguided_path ?? seen.image_path);
     this.refuseExhaustedMethod(call);
     const unify = await this.unifyPass(call);
-    const response = await run();
+    try { this.planSteps.beforeBatch(call); }            // after the artist's "good enough": nothing more for that step
+    catch (error) { this.batchStarts?.delete(call.id); throw error; }
+    let response;
+    try { response = await run(); } finally { this.planSteps.batchEnded(); }
     if (unify && actionSucceeded(response, unify.index, call)) { this.goal.unify_pass = unify; await this.persist(); }
-    return this.afterPainting(await this.underpaintingOutcome(call, response), call);
+    return this.planSteps.afterBatch(await this.afterPainting(await this.underpaintingOutcome(call, response), call));
   }
   /** A whole-picture transfer that completed in an Agent move closes the move there, as finish_move does; a stopped one
    * leaves it open for continue_reference_painting of that job only (underpainting-move.ts). */
@@ -1041,6 +1052,7 @@ export class StudioRuntime extends PaintingRuntime {
   }
   publish() {
     if (this.goal) this.emit({type:'goal',goal:this.goal,mode:this.mode,references:this.study?.references ?? [],
+      plan_steps:this.planSteps.view(this.goal),
       painting_target:this.study ? {document_id:this.study.target_document_id ?? this.goal.plan_target?.document_id ?? null,
         filename:this.store.resolvePainting(this.study) || (this.study.canvas?.mode==='current' ? this.canvasContext.canvas?.filename : undefined),name:this.study.canvas?.mode==='current' ? (this.canvasContext.canvas?.name || this.study.name) : this.study.name,mode:this.study.needs_resume?'resume':this.study.canvas?.mode ?? 'new',
         bound:!!this.study.bound,missing:!!this.study.painting_missing}:null});
@@ -1217,7 +1229,8 @@ export class StudioRuntime extends PaintingRuntime {
         if (existing) { for (const rule of character.requirements) if (!existing.requirements.includes(rule)) existing.requirements.push(rule); }
         else (brief.characters ??= []).push(structuredClone(character));
       }
-      this.goal.brief = normalizeBrief(brief); this.protectDraftRequirements(); this.goal.revision++; this.goal.approved_revision = null;
+      this.goal.brief = normalizeBrief(brief); if (!this.study.folder) this.goal.brief = withStepIds(this.goal.brief, this.goal.revisions.at(-1)?.brief);
+      this.protectDraftRequirements(); this.goal.revision++; this.goal.approved_revision = null;
       this.goal.plan_target = this.canvasContext.canvas ? {document_id:this.canvasContext.canvas.document_id,filename:this.canvasContext.canvas.filename,width:this.canvasContext.canvas.width,height:this.canvasContext.canvas.height}:null;
       this.goal.target_needs_review = false; this.goal.stage_operations = 0;
       this.goal.status = 'ready'; this.goal.current_step = 0; this.yieldRequested = true;
@@ -1248,6 +1261,7 @@ export class StudioRuntime extends PaintingRuntime {
     add('record_progress', 'Record which plan step (0-based, in the suggested order) you are working on and the concrete visible improvement. Do not mark the overall painting complete.',
       object({ step: Type.Integer({ minimum: 0, maximum: 15 }), observation: line, next_focus: line }), async p => {
         if (this.executionPhase !== 'agent' || p.step >= (this.goal.brief?.steps.length ?? 0)) throw new Error('Use an existing painting step.');
+        if (this.planSteps.isClosed(p.step)) throw new Error('The artist skipped that step or marked it met: paint nothing more for it. Record the step you are painting.');
         this.goal.current_step = p.step; this.goal.progress.push({ ...p, at: stamp() });
         await this.persist(); this.publish(); return { message: 'Progress recorded.' };
       });
@@ -1265,6 +1279,7 @@ export class StudioRuntime extends PaintingRuntime {
     return `HOST MODE: ${this.mode.toUpperCase()}. CURRENT PHASE: ${phase.toUpperCase()}.\n` + this.aiImageContext(phase) + JSON.stringify({
       routing_advice:this.executionSettings?.routing==='guide' ? routingAdvice(this.routingDecision,{phase,offered:name=>this.toolOffered(name)}):null,
       brief: this.goal.brief, current_step_in_order:this.goal.brief?.steps[this.goal.current_step],
+      plan_step_marks:this.goal.brief ? stepMarksContext(this.goal.brief.steps,this.goal.step_marks) : undefined,
       ...(this.mode==='agent' ? {recent_moves:(this.goal.moves ?? []).slice(-4).map(({number,title,status,request})=>({number,title,status,request}))} : {}),
       model_can_receive_images:!!this.models.getModel(this.study.provider,this.study.model)?.input.includes('image'),
       character_records:this.goal.character_records, revision: this.goal.revision, user_requirements: this.goal.locked_requirements,
@@ -1323,6 +1338,38 @@ export class StudioRuntime extends PaintingRuntime {
   // Project folder (project-folder B2): the artist's folder of references. The scan is read-only (project-folder.ts); the
   // goal image is attached as a composition reference and each numbered element as an asset, copied into the chat like
   // any reference. study.folder ({root, guesses}) follows the chat; a folder chosen before a chat waits for its start.
+  /** The panel's plan_step command (plan-steps.ts validates it). Met and Redo are the move's Keep and Undo. A refused
+   * command republishes the plan, so the panel enables its buttons again. */
+  async planStep(command) {
+    try { await this.planSteps.command(command, (move, action, note) => this.moveAction({action, move:move.number, note})); }
+    catch (error) { this.publish(); throw error; }
+  }
+  planStepHost() {
+    return {
+      getGoal:()=>this.goal, mode:()=>this.mode, busy:()=>!!this.busy, currentMove:()=>this.currentMove,
+      folder:()=>!!this.study?.folder, chatDirectory:()=>this.study?.directory ?? null,
+      goalLikeness:()=>(this.goal?.moves ?? []).findLast(m=>m.likeness)?.likeness.after ?? null,   // the goal-likeness check's last ΔE (lower: closer)
+      persist:()=>this.persist(), publish:()=>this.publish(), say:message=>this.emit({type:'action',seconds:0,message}),
+      syncPlan:()=>this.syncFolderPlan(),
+      // After a run: not after Stop, an error, a fault, a mode switch or a message the artist typed meanwhile (it goes first).
+      mayContinue:auto=>this.mode==='agent' && !this.faulted && (!auto || (!this.cancelRequested && !this.runError && !this.pendingText.length)),
+      keepMove:async move=>{
+        move.status='kept'; await this.persist(); this.publish();
+        await this.mergeKept(['move-'+move.number],()=>'Move '+move.number+' · '+String(move.title ?? 'kept').slice(0,80));
+      },
+      tickFolderStep:move=>this.tickFolderStep(move),
+      rejectMove:move=>this.rejectMove(move),
+      retryMove:(move,note)=>this.retryMove(move,note),
+      nextStepMove:async()=>{
+        if (this.folderPlanning() && !this.folderPlanApproved()) {
+          this.goal.status='paused'; await this.persist(); this.publish();
+          this.setActivity('idle','The plan changed since this move started: review it and press Start painting to continue.'); return;
+        }
+        await this.prompt('',{start_plan:true,move_kind:'continue',keep_follow:true});
+      },
+      finish:async message=>{ await this.hideGuides(); this.goal.status='complete'; await this.persist(); this.publish(); this.setActivity('idle',message); },
+    };
+  }
   closeupHost() {
     const studio = this;
     return {
@@ -1452,7 +1499,7 @@ export class StudioRuntime extends PaintingRuntime {
   folderPlanApproved() { return !!this.goal?.brief && this.goal.approved_revision === this.goal.revision; }
   firstOpenStep() {
     const done = new Set(this.goal?.done_steps ?? []), steps = this.goal?.brief?.steps ?? [];
-    const index = steps.findIndex((_, i) => !done.has(i));
+    const index = steps.findIndex((_, i) => !done.has(i) && !this.planSteps.isClosed(i));     // skipped and met steps too
     return index < 0 ? steps.length : index;
   }
   /** The plan the companion suggests: a block-in of the whole composition, then the elements in the folder's numbering. */
@@ -1493,7 +1540,7 @@ export class StudioRuntime extends PaintingRuntime {
     const folder = this.study?.folder;
     if (!folder || !this.goal?.brief) return;
     try {
-      const result = await writePlan(folder.root, this.goal.brief, this.goal.done_steps ?? [], {expected:folder.plan_text, goal:this.folderIndex?.goal?.name});
+      const result = await writePlan(folder.root, this.goal.brief, this.goal.done_steps ?? [], {expected:folder.plan_text, goal:this.folderIndex?.goal?.name, marks:this.goal.step_marks});
       folder.plan_text = result.text;
       if (result.backup) this.emit({type:'action', seconds:0, message:`PLAN.md had changes made outside this chat: saved as ${result.backup} before writing the plan.`});
     } catch (error) { this.emit({type:'action', seconds:0, message:'PLAN.md was not written: '+this.redact(error.message)}); }
@@ -1522,7 +1569,7 @@ export class StudioRuntime extends PaintingRuntime {
     await this.syncFolderPlan();
     return next;
   }
-  folderStepOf(index) { return {step:index, step_key:stepKeys(this.goal.brief.steps)[index], plan_revision:this.goal.revision}; }
+  folderStepOf(index) { return {step:index, step_key:this.planSteps.keyAt(index), plan_revision:this.goal.revision}; }
   folderMoveInstructions(move) {
     if (!Number.isInteger(move.step) || !this.goal.brief?.steps[move.step]) return '';
     const step = this.goal.brief.steps[move.step], file = stepFile(step), name = layerName(step.title);
@@ -1568,12 +1615,12 @@ export class StudioRuntime extends PaintingRuntime {
       if (!Value.Check(briefSchema, brief)) return;
       this.goal.revisions ??= []; this.goal.revisions.push({revision:this.goal.revision,brief:null,at:stamp(),source:'folder'});
       this.goal.brief = brief; this.goal.locked_requirements = [...brief.requirements]; this.goal.revision++; this.goal.approved_revision = null;
-      this.goal.status = 'ready'; this.goal.done_steps = plan.ticked.filter(i => i < brief.steps.length);
+      this.goal.status = 'ready'; this.goal.done_steps = plan.ticked.filter(i => i < brief.steps.length); this.goal.step_marks = plan.marks;
       this.goal.current_step = Math.min(this.firstOpenStep(), brief.steps.length - 1);
       this.goal.folder_plan_root = folder.root;                   // plan_text stays what this chat writes: the artist's file is backed up first
       await this.persist(); this.publish();
     } else if (typeof folder.plan_text === 'string' && plan.text !== folder.plan_text) {
-      const differences = planDifference(this.goal.brief, plan.lines, this.goal.done_steps ?? []);
+      const differences = planDifference(this.goal.brief, plan.lines, this.goal.done_steps ?? [], this.goal.step_marks);
       if (differences.length) {
         this.goal.pending_plan_edit = {text:plan.text};
         this.goal.question = {id:randomUUID(), question:'PLAN.md was edited since this plan was written:\n' + differences.map(d => '• ' + d).join('\n') + '\nFollow the edited plan?', options:FOLDER_ANSWERS, asked_in:'plan'};
@@ -1597,7 +1644,7 @@ export class StudioRuntime extends PaintingRuntime {
       else {
         this.goal.revisions ??= []; this.goal.revisions.push({revision:this.goal.revision,brief:this.goal.brief,at:stamp(),source:'user'});
         this.goal.brief = brief; this.goal.locked_requirements = [...brief.requirements]; this.goal.revision++; this.goal.approved_revision = null;
-        this.goal.done_steps = plan.ticked.filter(i => i < brief.steps.length);
+        this.goal.done_steps = plan.ticked.filter(i => i < brief.steps.length); this.goal.step_marks = plan.marks;
         this.goal.current_step = Math.min(this.firstOpenStep(), brief.steps.length - 1);
         this.goal.folder_plan_root = this.study.folder.root;
       }
@@ -1824,6 +1871,7 @@ export class StudioRuntime extends PaintingRuntime {
     brief = normalizeBrief(structuredClone(brief));
     if (!this.goal || !Value.Check(briefSchema, brief)) throw new Error('Complete the objective, steps, and completion checks.');
     brief = this.folderScopes(brief);
+    if (!this.study?.folder) brief = withStepIds(brief, this.goal.brief);   // a step keeps its id, and its marks, when reworded
     const comicProblem = this.goal.comic ? comicPlanProblems(brief, this.goal.comic.panels) : null;
     if (comicProblem) throw new Error(comicProblem);
     this.goal.revisions ??= []; this.goal.revisions.push({revision:this.goal.revision,brief:this.goal.brief,at:stamp(),source:'user'});
@@ -1865,6 +1913,11 @@ export class StudioRuntime extends PaintingRuntime {
     if (this.goal.pending_plan_edit && !this.busy) {
       if (FOLDER_ANSWERS.includes(text?.trim())) return this.answerPlanEdit(text.trim(), command);
       this.goal.pending_plan_edit = null;                           // another message: the edited PLAN.md is not followed
+    }
+    // Start painting begins at the first step not skipped or met; with none left the plan is finished, nothing painted.
+    if (command.start_plan && this.goal.brief?.steps?.length && !this.busy && !this.planSteps.settleCurrent()) {
+      await this.hideGuides(); this.goal.status = 'complete'; await this.persist(); this.publish();
+      this.setActivity('idle', 'Every step of the plan is met, done or skipped. Restore a step to paint it.'); return;
     }
     if (!text?.trim()) text = this.mode === 'autopilot' ? 'Start painting from the current plan.'
       : this.mode === 'agent' && command.start_plan && this.goal.brief?.steps?.length ? planStepRequest(this.goal)
@@ -1958,6 +2011,7 @@ export class StudioRuntime extends PaintingRuntime {
       this.sleepGuard.stop();
       await this.persist(); this.publish();
       this.busy = false; this.emit({ type:'busy', busy:false });
+      await this.planSteps.afterRun().catch(error => this.setActivity('error', this.redact(error.message)));   // a "good enough" move: kept, next step
       const next = this.pendingText.splice(0);
       if (next.length) await this.prompt(next.map(p => p.text).join('\n\n'), next.at(-1).command);
     }
@@ -2378,9 +2432,12 @@ export class StudioRuntime extends PaintingRuntime {
       const active = await this.bridge.call('context');
       if (active.active_document_id !== this.study.target_document_id) await this.followActiveCanvas(active);
     }
+    const retryStep = this.planSteps.indexOf(command.plan_step_key);      // a Redo repaints the redone move's own step
+    if (retryStep >= 0) this.goal.current_step = retryStep;
     const move = {number:(this.goal.moves?.length ?? 0)+1, request:String(command.display_text ?? text).slice(0,500), status:'painting', actions:0, strokes:0, started_at:stamp(),
       ...(command.move_kind ? {kind:command.move_kind} : {}),
-      ...(this.folderPlanning() && this.folderPlanApproved() ? this.folderStepOf(Math.min(this.goal.current_step ?? 0, this.goal.brief.steps.length - 1)) : {})};
+      ...((this.folderPlanning() && this.folderPlanApproved()) || (!this.study.folder && (command.start_plan || retryStep >= 0) && this.goal.brief?.steps?.length)
+        ? this.folderStepOf(Math.min(this.goal.current_step ?? 0, this.goal.brief.steps.length - 1)) : {})};
     this.goal.moves = [...(this.goal.moves ?? []), move]; this.currentMove = move;
     const element = this.folderElement(move.step);
     if (element) move.element = element.id;                  // a folder element step: the goal-likeness check measures only
@@ -2468,10 +2525,12 @@ export class StudioRuntime extends PaintingRuntime {
     this.fillNudged = move;
     throw new Error((batch ? 'Nothing was painted: ' : '') + fillNudge(state.transfer));
   }
-  async moveAction({action, move: number}) {
+  async moveAction({action, move: number, note}) {
     const move = (this.goal?.moves ?? []).find(m => m.number === number) ?? this.goal?.moves?.at(-1);
     if (this.mode !== 'agent' || !move || move.status !== 'ready') throw new Error('There is no painted move to review.');
     await this.recoverOnResume('move');                          // Keep or Undo is the artist's go-ahead too
+    // A move that painted a plan step: Keep is Met and Undo is Redo (plan-steps.ts), whichever button the artist used.
+    if (['keep','undo'].includes(action) && this.planSteps.stepped(move)) return action === 'keep' ? this.planSteps.met(move) : this.planSteps.redo(move, note);
     if (action === 'keep') {
       move.status = 'kept'; await this.persist();
       await this.mergeKept(['move-'+move.number], () => 'Move '+move.number+' · '+String(move.title ?? 'kept').slice(0,80));
@@ -2507,18 +2566,24 @@ export class StudioRuntime extends PaintingRuntime {
       }
       return this.prompt('Kept. Continue my request with the next move.', {move_kind:'continue'});
     }
-    if (action === 'undo') {
-      await this.reviewPass({action:'reject', pass_id:'stage:move-'+move.number});
-      move.status = 'undone';
-      // An undone colour pass is not done: the reference-first skills go in again in full (reference-first.ts).
-      if (Object.values(this.goal.reference_jobs ?? {}).some(numbers => numbers.includes(move.number))) delete this.goal.reference_skills_shown;
-      await this.persist();
-      // Say what the undone move did, so the retry avoids it, and keep what already works ("clearly different" made
-      // a retry drop good cloud forms and fill flat over the moon, in a live test).
-      const did = move.summary ?? move.title;
-      return this.prompt(`I undid move ${move.number}${did ? ` (it ${String(did).replace(/^[A-Z]/, c => c.toLowerCase())})` : ''}. Try a different way to do the same request: keep what already works in the painting, refine existing forms rather than repainting them, and do not repeat what that move did.`, {move_kind:move.guides_only ? 'guides' : 'retry'});
-    }
+    if (action === 'undo') { await this.rejectMove(move); return this.retryMove(move, note); }
     throw new Error('Choose Keep or Undo, or type a correction.');
+  }
+  /** Undo a move: its passes hidden through the pass review, its status undone. */
+  async rejectMove(move) {
+    await this.reviewPass({action:'reject', pass_id:'stage:move-'+move.number});
+    move.status = 'undone';
+    // An undone colour pass is not done: the reference-first skills go in again in full (reference-first.ts).
+    if (Object.values(this.goal.reference_jobs ?? {}).some(numbers => numbers.includes(move.number))) delete this.goal.reference_skills_shown;
+    await this.persist();
+  }
+  /** Try an undone move again. Say what it did, so the retry avoids it, and keep what already works ("clearly different"
+   * made a retry drop good cloud forms and fill flat over the moon, in a live test). A plan step's retry paints that same
+   * step, with what the artist said to change (plan-steps.ts). */
+  retryMove(move, note) {
+    const did = move.summary ?? move.title;
+    return this.prompt(`I undid move ${move.number}${did ? ` (it ${String(did).replace(/^[A-Z]/, c => c.toLowerCase())})` : ''}. Try a different way to do the same request: keep what already works in the painting, refine existing forms rather than repainting them, and do not repeat what that move did.${note ? ` What to change: ${note}` : ''}`,
+      {move_kind:move.guides_only ? 'guides' : 'retry', ...(move.step_key ? {plan_step_key:move.step_key} : {})});
   }
   async runGoal() {
     if (this.bridgeCompatible === false) throw new Error('Reload the matching Creative Agent build in Krita before painting.');
@@ -2531,6 +2596,7 @@ export class StudioRuntime extends PaintingRuntime {
     if (this.timeAllowanceExceeded() || (this.passAllowanceExceeded() && !this.goal.stage_operations)) { this.goal.status = 'limited'; this.setActivity('idle','Allowance reached. Increase it in the plan to continue.'); return; }
     // Steps are an order, not gates; legacy goals may point past the last step.
     this.goal.current_step = Math.min(this.goal.current_step ?? 0, this.goal.brief.steps.length-1);
+    if (!this.planSteps.settleCurrent()) { this.goal.status = 'complete'; this.setActivity('idle','Every step of the plan is met, done or skipped.'); return; }
     delete this.goal.stage_pending_advance;
     if (this.study.bound) {
       const active = await this.bridge.call('context');

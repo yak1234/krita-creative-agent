@@ -9,6 +9,7 @@ import uuid
 from .qt_compat import sip, enum_value
 from .product_name import product_name
 from .panel_theme import panel_colors
+from .plan_steps import PlanStepsList, plan_steps_stylesheet
 from krita import DockWidget, DockWidgetFactory, DockWidgetFactoryBase, Krita, Selection
 from .creative_document_identity import document_id, open_documents
 from . import node_runtime
@@ -577,7 +578,7 @@ class PlanDialog(QDialog):
         self.export_target = dict(getattr(parent, 'painting_target', {}) or {})
         self.original_brief = json.loads(json.dumps(goal['brief']))
         # Steps are a painting order; retired stage controls are dropped on save.
-        self.stage_metadata = [{key: step[key] for key in ('title', 'done_when', 'scope') if key in step} for step in goal['brief']['steps']]
+        self.stage_metadata = [{key: step[key] for key in ('title', 'done_when', 'scope', 'id') if key in step} for step in goal['brief']['steps']]   # id: a reworded step keeps its marks
         self.stage_index = -1
         layout = QVBoxLayout(self)
         self.title = QLineEdit(goal['brief']['title']); self.title.setAccessibleName('Plan title')
@@ -1415,6 +1416,8 @@ class CreativeAgentDocker(DockWidget):
         plan_layout = QVBoxLayout(self.plan_bar); plan_layout.setContentsMargins(10, 9, 10, 9); plan_layout.setSpacing(6)
         self.plan_summary = QLabel(''); self.plan_summary.setWordWrap(True); self.plan_summary.setObjectName('planSummary')
         self.plan_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred); plan_layout.addWidget(self.plan_summary)
+        # Plan step controls (plan_steps.py): Skip / Restore, Good enough → next step, Met / Redo, per step.
+        self.plan_steps = PlanStepsList(self.send_plan_step); plan_layout.addWidget(self.plan_steps.widget)
         plan_actions = QHBoxLayout(); plan_actions.setSpacing(5)
         self.plan_button = QPushButton('View plan'); self.plan_button.clicked.connect(self.edit_plan); plan_actions.addWidget(self.plan_button)
         self.compare_button = QPushButton('Review changes'); self.compare_button.clicked.connect(self.show_passes); plan_actions.addWidget(self.compare_button)
@@ -1679,7 +1682,7 @@ class CreativeAgentDocker(DockWidget):
             QToolButton#featuresToggle { background: transparent; color: %(text)s; font-size: 12px; font-weight: 500; padding: 0; }
             QHeaderView::section { background: %(raised)s; color: %(text)s; border: none; padding: 7px; font-size: 11px; }
             QTableCornerButton::section { background: %(raised)s; border: none; }
-        ''' % c
+        ''' % c + plan_steps_stylesheet(c, dark)
         stylesheet = re.sub(r'font-size: (\d+)px', lambda match: 'font-size: %dpx' % round(int(match.group(1)) * self.text_scale), stylesheet)
         self.setStyleSheet(stylesheet)
         self.transcript.body_text_size = round(14 * self.text_scale)
@@ -2080,7 +2083,21 @@ class CreativeAgentDocker(DockWidget):
     def move_command(self, action):
         if not self.current_move or self.busy: return
         self.send({'type': 'move', 'action': action, 'move': self.current_move['number']})
-        self.move_bar.hide(); self.current_move = None
+        self.answered_move = self.current_move; self.move_bar.hide(); self.current_move = None
+
+    def restore_answered_move(self):
+        """A refused Keep, Undo, Met or Redo: the card comes back while its move is still ready, and the plan list's
+        buttons are enabled again."""
+        move, self.answered_move = getattr(self, 'answered_move', None), None
+        self.plan_steps.set_busy(self.busy)
+        if not move or self.current_move: return
+        latest = next((m for m in (self.goal or {}).get('moves') or [] if m.get('number') == move.get('number')), move)
+        if latest.get('status') == 'ready': self.show_move(latest)
+
+    def send_plan_step(self, command):
+        if command.get('action') in ('met', 'redo') and self.current_move:   # the step answers the move card: Met keeps, Redo undoes
+            self.answered_move = self.current_move; self.move_bar.hide(); self.current_move = None
+        self.send(command)
 
     def start_plan(self):
         if not self.goal or not self.goal.get('brief'): return
@@ -2436,6 +2453,7 @@ class CreativeAgentDocker(DockWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, 'canvas_button'): self.render_context()
+        if getattr(self, 'plan_steps', None) is not None and self.plan_steps.rows: self.plan_steps.fit_height()   # wrapped titles: a new height
 
 
     def app_data(self):
@@ -2706,6 +2724,7 @@ class CreativeAgentDocker(DockWidget):
                 self.send({'type': 'resume', 'id': identifier})
         elif kind == 'busy':
             self.busy = event['busy']
+            self.plan_steps.set_busy(self.busy)
             if not self.busy: stop_requested.clear()      # the stopped run has ended
             self.run_started = time.monotonic() if self.busy else None
             self.activity_dot.setText('●' if self.busy else '')
@@ -2776,6 +2795,10 @@ class CreativeAgentDocker(DockWidget):
             brief = self.goal.get('brief')
             self.render_ai_images()
             self.plan_bar.setVisible(bool(brief))
+            self.plan_steps.show_steps(event.get('plan_steps') if brief else [], self.busy)
+            if self.current_move:                               # the card goes once its move is kept or undone, not before
+                shown = next((m for m in self.goal.get('moves') or [] if m.get('number') == self.current_move.get('number')), None)
+                if shown is not None and shown.get('status') != 'ready': self.move_bar.hide(); self.current_move = None
             if brief:
                 states = {'draft': 'Plan draft', 'ready': 'Plan ready', 'active': 'Painting', 'paused': 'Paused', 'reviewing': 'Visual review',
                           'complete': 'Finished', 'limited': 'Allowance reached', 'needs_input': 'Needs your input', 'move_ready': 'Move ready'}
@@ -2876,6 +2899,7 @@ class CreativeAgentDocker(DockWidget):
             self.phase = phase
             self.status.setText(event['message'])
             if kind == 'error':
+                self.restore_answered_move()
                 self.pending_restore = None
                 self.focus_after_restore = False
                 self.restore_accepted_model()

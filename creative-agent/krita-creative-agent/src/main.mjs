@@ -70,6 +70,7 @@ async function handle(command) {
       case 'configure_provider': await runtime.configureProvider(command); break;
       case 'decisions': await runtime.configureDecisions(command); break;
       case 'move': await runtime.moveAction(command); break;
+      case 'plan_step': await runtime.planStep(command); break;     // Skip, Restore, Good enough, Met, Redo (plan-steps.ts validates)
       case 'closeup_answer': await runtime.answerCloseup(command); break;   // the panel's answer to a closeup_question
       case 'shapes_model': runtime.shapes.answer(['accept', 'enable'].includes(command.action) ? command.action : 'decline'); break;   // shapes_model_needed's answer, or Ask again
       case 'shutdown': await shutdown(); break;

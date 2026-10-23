@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Value } from 'typebox/value';
 import { scanFolder } from '../src/project-folder.ts';
+import { stepKeys } from '../src/folder-notes.ts';
 import { StudioRuntime, freshGoal, validateReview, normalizeBrief, repeatedReviewFailures, progressStalled, approvedReviewScope, restoredReviewStart, agentMoveInstructions } from '../src/studio.mjs';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64');
@@ -3273,16 +3274,17 @@ async function folderMoves({finish=true, root}={}) {
  return {h,offered};
 }
 
-test('a move that ended without finish_move does not tick its step; Keep continues the same step (I1)',{timeout:60000},async()=>{
+test('Keep on a plan step\'s move is Met, even when the painter did not call finish_move (plan-step-controls ruling, was I1)',{timeout:60000},async()=>{
  const root=await projectFolder();
  const {h}=await folderMoves({finish:false,root});
  try {
   await h.runtime.prompt('',{start_plan:true});
   assert.equal(h.runtime.goal.moves[0].finished,undefined);
   await h.runtime.moveAction({action:'keep',move:1});
-  assert.deepEqual(h.runtime.goal.done_steps,[]);
-  assert.equal(h.runtime.goal.moves[1].step,0,'the next move works the same step');
-  assert.ok(!(await readdir(root)).includes('NOTES.md'));
+  assert.deepEqual(h.runtime.goal.done_steps,[0],'the artist kept the step: it is met');
+  assert.deepEqual(h.runtime.goal.step_marks,{[stepKeys(folderBrief.steps)[0]]:{met:'artist'}});
+  assert.equal(h.runtime.goal.moves[1].step,1,'the next move paints the next step');
+  assert.ok((await readdir(root)).includes('NOTES.md'));
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
 });
 
@@ -3486,6 +3488,186 @@ test('the mass map runs once per chat: a run left from a closed chat does not ho
  runtime.study=b; runtime.startMassMaps();
  assert.equal(runtime.massMapsRunning?.study,b,'the next chat starts its own');
  await first.done; await runtime.massMapsRunning?.done;
+});
+
+// Plan step controls (plan-step-controls): Skip / Restore, Good enough → next step, Met / Redo, through a chat.
+const stepCommand=(h,action,index,extra={})=>h.runtime.planStep({type:'plan_step',id:'test-'+action+'-'+index,action,step_key:h.runtime.planSteps.keyAt(index),...extra});
+const planStepsShown=h=>h.events.filter(e=>e.type==='goal').at(-1)?.plan_steps?.map(s=>s.state);
+
+test('a skipped plan step never runs, PLAN.md says so, the panel sees it and a resumed or new chat restores it',{timeout:60000},async()=>{
+ const root=await projectFolder();
+ const {h}=await folderMoves({root});
+ try {
+  await stepCommand(h,'skip',1);
+  assert.deepEqual(planStepsShown(h),['open','skipped','open','open']);
+  assert.match(await readFile(join(root,'PLAN.md'),'utf8'),/^- \[ \] 2\. Moonlit sky \(assets\/01-moonlit-sky\.png\) · layer "Moonlit sky" · skipped$/m);
+  await h.runtime.prompt('',{start_plan:true});
+  await h.runtime.moveAction({action:'keep',move:1});
+  assert.deepEqual(h.runtime.goal.moves.map(m=>m.step),[0,2],'Keep goes on to the next step not skipped');
+  const told=h.requests.map(latestUserText).find(text=>/Paint step 3 of the plan: Historic buildings/.test(text)) ?? '';
+  assert.match(told,/"artist":"skipped"/,'the painter is told');
+  await assert.rejects(stepCommand(h,'skip',2),/Met or Redo/);
+  const id=h.runtime.study.id; await h.runtime.end();
+  await h.runtime.resume(id);
+  const marks={[stepKeys(folderBrief.steps)[0]]:{met:'artist'},[stepKeys(folderBrief.steps)[1]]:{skipped:true}};    // Keep on a step's move is Met
+  assert.deepEqual(h.runtime.goal.step_marks,marks,'a resumed chat keeps its marks');
+  await h.runtime.end();
+  await h.start('ask','Hello'); await h.runtime.openFolder({path:root});
+  assert.deepEqual(h.runtime.goal.step_marks,marks,'a new chat reads them from PLAN.md');
+  assert.equal(h.runtime.goal.current_step,2,'the first step neither ticked nor skipped');
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('Good enough during a move: the batch in progress finishes, the step is met and the next step\'s move starts; a lesson is kept',{timeout:60000},async()=>{
+ const root=await projectFolder();
+ let pressed=false, h;
+ const {h:made}=await folderMoves({root});
+ h=made;
+ const bridgeCall=h.runtime.bridge.call;
+ h.runtime.bridge.call=async(operation,params,...rest)=>{
+  const result=await bridgeCall.call(h.runtime.bridge,operation,params,...rest);
+  if(operation==='paint_pass' && !pressed) {                     // pressed while the batch paints
+   pressed=true; h.runtime.currentMove.likeness={batches:1,before:9.5,after:4.25,undone:0,kept_worse:0};   // the goal-likeness check's last measure
+   await stepCommand(h,'good_enough',0);
+  }
+  return result;
+ };
+ try {
+  await h.runtime.prompt('',{start_plan:true});
+  const [first,second]=h.runtime.goal.moves;
+  assert.deepEqual([first.status,first.actions],['kept',1],'the batch in progress finished and was kept');
+  assert.deepEqual(h.runtime.goal.done_steps,[0]);
+  assert.deepEqual(h.runtime.goal.step_marks,{[stepKeys(folderBrief.steps)[0]]:{met:'good_enough'}});
+  assert.deepEqual([second?.step,second?.status],[1,'ready'],'the next step\'s move ran');
+  assert.match(await readFile(join(root,'PLAN.md'),'utf8'),/^- \[x\] 1\. Underpainting from the goal image · layer "Underpainting from the goal image" · good enough$/m);
+  const lessons=(await readFile(join(h.runtime.study.directory,'plan-step-lessons.jsonl'),'utf8')).trim().split('\n').map(l=>JSON.parse(l));
+  assert.deepEqual(lessons.map(l=>[l.kind,l.step.number,l.move,l.batches]),[['good_enough',1,1,0]],'pressed during the first batch');
+  assert.equal(lessons[0].goal_likeness,4.25,'the lesson keeps the goal-likeness check\'s last ΔE');
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('Met keeps a finished step and goes on; Redo undoes it and retries with what the artist typed',{timeout:60000},async()=>{
+ const root=await projectFolder();
+ const {h}=await folderMoves({root});
+ try {
+  await h.runtime.prompt('',{start_plan:true});
+  assert.equal(planStepsShown(h)[0],'finished');
+  await stepCommand(h,'redo',0,{text:'keep the sky darker'});
+  assert.equal(h.runtime.goal.moves[0].status,'undone');
+  const retry=h.runtime.goal.moves[1];
+  assert.equal(retry.step,0,'the retry paints the same step');
+  assert.match(retry.request,/keep the sky darker/);
+  await stepCommand(h,'met',0);
+  assert.equal(h.runtime.goal.moves[1].status,'kept');
+  assert.deepEqual(h.runtime.goal.done_steps,[0]);
+  assert.equal(h.runtime.goal.moves[2]?.step,1);
+  assert.match(await readFile(join(root,'PLAN.md'),'utf8'),/^- \[x\] 1\. Underpainting[^\n]* · met by the artist · redone 1 time$/m);
+  const lessons=(await readFile(join(h.runtime.study.directory,'plan-step-lessons.jsonl'),'utf8')).trim().split('\n').map(l=>JSON.parse(l));
+  assert.deepEqual(lessons.map(l=>[l.kind,l.text]),[['redo','keep the sky darker']]);
+  await assert.rejects(h.runtime.planStep({type:'plan_step',id:'x',action:'met'}),/Invalid plan step command/);
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('without a folder, a plan started in Agent mode paints step by step: Met goes on to the next step not skipped',{timeout:60000},async()=>{
+ const turns=new Map(); let h;
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name), move=h.runtime.currentMove;
+  if(!names.includes('paint_batch') || !move || move.finished) return {content:'Done.'};
+  const n=(turns.get(move.number) ?? 0)+1; turns.set(move.number,n);
+  return n===1 ? call('paint_batch',{summary:'Step',actions:[{tool:'paint_pass',arguments:{...pass,name:'Step '+move.number}}]}) : call('finish_move',{summary:'Painted'});
+ },async(operation,_params,_study,id)=>operation==='paint_pass' ? paintResult(h,id) : undefined);
+ try {
+  await h.start('ask','Hello');
+  await h.runtime.editPlan({...brief,steps:[{title:'Sky',done_when:'a'},{title:'Soften the foreground into masses',done_when:'b'},{title:'Figures',done_when:'c'}]});
+  await h.runtime.setMode('agent');
+  await stepCommand(h,'skip',1);
+  await h.runtime.prompt('',{start_plan:true});
+  assert.deepEqual([h.runtime.goal.moves[0].step,h.runtime.goal.moves[0].status],[0,'ready'],'Start painting paints step 1 as a move');
+  await stepCommand(h,'met',0);
+  assert.equal(h.runtime.goal.moves[0].status,'kept');
+  const next=h.runtime.goal.moves.at(-1);
+  assert.equal(next.step,2,'the skipped step 2 is passed over');
+  assert.match(next.request,/Paint step 3 of the plan: Figures/);
+  assert.deepEqual(planStepsShown(h),['met','skipped','finished']);
+ } finally {await h.close();}
+});
+
+const plainSteps={...brief,steps:[{title:'Sky',done_when:'a'},{title:'Soften the foreground into masses',done_when:'b'},{title:'Figures',done_when:'c'}]};
+async function plainMoves({onPaint}={}) {
+ const turns=new Map(); let h;
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name), move=h.runtime.currentMove;
+  if(!names.includes('paint_batch') || !move || move.finished) return {content:'Done.'};
+  const n=(turns.get(move.number) ?? 0)+1; turns.set(move.number,n);
+  return n===1 ? call('paint_batch',{summary:'Step',actions:[{tool:'paint_pass',arguments:{...pass,name:'Step '+move.number}}]}) : call('finish_move',{summary:'Painted'});
+ },async(operation,_params,_study,id)=>{ if(operation!=='paint_pass') return undefined; const result=await paintResult(h,id); await onPaint?.(h); return result; });
+ await h.start('ask','Hello');
+ await h.runtime.editPlan(plainSteps);
+ await h.runtime.setMode('agent');
+ return h;
+}
+
+test('Start painting with every remaining step skipped or met finishes the plan and paints nothing',{timeout:60000},async()=>{
+ const h=await plainMoves();
+ try {
+  for (const i of [0,1,2]) await stepCommand(h,'skip',i);
+  const requests=h.requests.length;
+  await h.runtime.prompt('',{start_plan:true});
+  assert.equal(h.requests.length,requests,'no model request');
+  assert.equal(h.runtime.goal.moves?.length ?? 0,0,'no move');
+  assert.equal(h.runtime.goal.status,'complete');
+ } finally {await h.close();}
+});
+
+test('without a folder, steps get stable ids: a reworded step keeps its marks',{timeout:60000},async()=>{
+ const h=await plainMoves();
+ try {
+  const ids=h.runtime.goal.brief.steps.map(s=>s.id);
+  assert.ok(ids.every(id=>/^[A-Za-z0-9_-]{1,40}$/.test(id)) && new Set(ids).size===3, JSON.stringify(ids));
+  await stepCommand(h,'skip',1);
+  const steps=h.runtime.goal.brief.steps.map((s,i)=>i===1 ? {...s,title:'Keep the foreground soft'} : s);
+  await h.runtime.editPlan({...plainSteps,steps});
+  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.id),ids,'kept through the edit');
+  assert.deepEqual(planStepsShown(h),['open','skipped','open']);
+ } finally {await h.close();}
+});
+
+test('the move card\'s Keep and Undo on a plan step are Met and Redo; Redo repaints the redone move\'s own step',{timeout:60000},async()=>{
+ const h=await plainMoves();
+ try {
+  await stepCommand(h,'skip',0);
+  await h.runtime.prompt('',{start_plan:true});
+  assert.equal(h.runtime.goal.moves[0].step,1);
+  await stepCommand(h,'restore',0);                          // the artist brings step 1 back while move 1 waits
+  assert.equal(h.runtime.goal.current_step,0);
+  await h.runtime.moveAction({action:'undo',move:1});        // Undo on the move card
+  const retry=h.runtime.goal.moves[1];
+  assert.equal(retry.step,1,'the retry paints the step that was redone, not the current one');
+  assert.deepEqual(h.runtime.goal.step_marks['id:'+h.runtime.goal.brief.steps[1].id],{redone:1});
+  await h.runtime.moveAction({action:'keep',move:2});        // Keep on the move card
+  assert.deepEqual(h.runtime.goal.step_marks['id:'+h.runtime.goal.brief.steps[1].id],{redone:1,met:'artist'});
+  assert.equal(h.runtime.goal.moves[2]?.step,0,'then the first open step');
+ } finally {await h.close();}
+});
+
+test('Good enough then Stop: the move is kept and the step met, but no next step starts',{timeout:60000},async()=>{
+ let pressed=false;
+ const h=await plainMoves({onPaint:async h=>{ if(pressed) return; pressed=true; await stepCommand(h,'good_enough',0); h.runtime.stop(); }});
+ try {
+  await h.runtime.prompt('',{start_plan:true});
+  assert.equal(h.runtime.goal.moves.length,1,'nothing started after Stop');
+  assert.equal(h.runtime.goal.moves[0].status,'kept');
+  assert.deepEqual(h.runtime.goal.step_marks,{['id:'+h.runtime.goal.brief.steps[0].id]:{met:'good_enough'}});
+ } finally {await h.close();}
+});
+
+test('a refused plan step command republishes the plan so the panel can try again',{timeout:60000},async()=>{
+ const h=await plainMoves();
+ try {
+  const published=h.events.filter(e=>e.type==='goal').length;
+  await assert.rejects(stepCommand(h,'met',0),/not finished/);
+  assert.equal(h.events.filter(e=>e.type==='goal').length,published+1);
+ } finally {await h.close();}
 });
 
 // Protect the underpainting (crisp-accents goals 7 and 8): a replay of chat 34deca0e's shape. Move 1 is the whole-picture

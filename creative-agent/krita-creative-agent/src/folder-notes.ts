@@ -4,21 +4,28 @@
 // agent's plan as a checklist (ticked as elements are kept), NOTES.md is a short log that only grows, and a Markdown
 // file the agent did not write itself is copied to <name>.backup-<yyyy-mm-dd>.md before it is changed. Every write is a
 // plain .md name directly in the folder, opened without following links (O_NOFOLLOW), the folder resolved first.
+// Plan step controls: a step line may end in the artist's marks (" · skipped", " · met by the artist", " · good enough",
+// " · redone 2 times"), keyed by the step's identity (stepKeys), so a resumed or new chat restores them.
 import { constants } from 'node:fs';
 import { copyFile, lstat, open, realpath } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 
 export type Step = { title: string; done_when: string; scope?: string; checks?: string[] };
 export type Brief = { title: string; objective: string; requirements: string[]; freedom: string[]; completion: string[]; steps: Step[] };
-export type PlanStep = { title: string; file?: string; layer?: string; done: boolean };
-export type Plan = { title: string | null; text: string; lines: string[]; steps: PlanStep[]; ticked: number[] };
+/** The artist's marks on a step: skipped, met (by the Met button, or "good enough" while it painted), redone (count). */
+export type StepMark = { skipped?: boolean; met?: 'artist' | 'good_enough'; redone?: number };
+export type StepMarks = Record<string, StepMark>;
+export type PlanStep = { title: string; file?: string; layer?: string; done: boolean; mark?: StepMark };
+export type Plan = { title: string | null; text: string; lines: string[]; steps: PlanStep[]; ticked: number[]; marks: StepMarks };
 
 export const PLAN_FILE = 'PLAN.md';
 export const NOTES_FILE = 'NOTES.md';
 const IMAGE = /\.(png|jpe?g|gif|webp)$/i;
 const STEP_LINE = /^\s*[-*]\s+\[( |x|X)\]\s+(?:\d+\.\s+)?(.+?)\s*$/;
-const LAYER = /\s+·\s+layer\s+"([^"]*)"$/;
 const FILE = /\s+\(([^()]+)\)$/;
+// A mark or the layer, anywhere after the title (the artist may write them in any order): up to the next " · ", " (" or the end.
+const MARK = /\s+·\s+(skipped|met by the artist|good enough|redone (\d{1,3}) times?)(?=\s+·|\s+\(|\s*$)/gi;
+const LAYER_ANY = /\s+·\s+layer\s+"([^"]*)"(?=\s+·|\s+\(|\s*$)/;
 
 const TEXT_CAP = 200_000;                           // as the folder scan's text cap: a larger file is the artist's, backed up unread
 const MOVES = /^##\s+Moves\s*$/;
@@ -54,17 +61,26 @@ export function stepKeys(steps: readonly { title: string; scope?: string; file?:
   });
 }
 
-function stepLine(step: Step, index: number, done: boolean): string {
+/** A mark as written after the layer: ' · skipped', ' · met by the artist' or ' · good enough', ' · redone N time(s)'. */
+function markText(mark: StepMark | undefined): string {
+  if (!mark) return '';
+  const redone = Number.isInteger(mark.redone) && (mark.redone ?? 0) > 0 ? Math.min(mark.redone ?? 0, 999) : 0;
+  return (mark.skipped ? ' · skipped' : '') + (mark.met === 'artist' ? ' · met by the artist' : mark.met === 'good_enough' ? ' · good enough' : '')
+    + (redone ? ` · redone ${redone} time${redone === 1 ? '' : 's'}` : '');
+}
+
+function stepLine(step: Step, index: number, done: boolean, mark?: StepMark): string {
   const scope = stepFile(step), file = scope ? oneLine(scope).replace(/[()]/g, '') : undefined, title = layerName(step.title);
-  return `- [${done ? 'x' : ' '}] ${index + 1}. ${title}${file ? ` (${file})` : ''} · layer "${title}"`;
+  return `- [${done ? 'x' : ' '}] ${index + 1}. ${title}${file ? ` (${file})` : ''} · layer "${title}"${markText(mark)}`;
 }
 
 /** PLAN.md's text: a few lines of intent, then the checklist. */
-export function planText(brief: Brief, ticked: readonly number[], { goal }: { goal?: string | null } = {}): string {
+export function planText(brief: Brief, ticked: readonly number[], { goal, marks = {} }: { goal?: string | null; marks?: StepMarks } = {}): string {
   const intent = [plainLine(brief.objective), ...(goal ? [`Goal image: ${oneLine(goal)} (it decides the layout).`] : []),
     ...brief.requirements.map(r => `- ${plainLine(r)}`)];
+  const keys = stepKeys(brief.steps);
   return [`# Plan · ${oneLine(brief.title)}`, '', ...intent, '', '## Moves', '',
-    ...brief.steps.map((step, i) => stepLine(step, i, ticked.includes(i))), ''].join('\n');
+    ...brief.steps.map((step, i) => stepLine(step, i, ticked.includes(i), Object.hasOwn(marks, keys[i]) ? marks[keys[i]] : undefined)), ''].join('\n');
 }
 
 /** A plain Markdown name directly in the folder, as an absolute path inside its real location. */
@@ -131,8 +147,8 @@ async function backup(path: string): Promise<string> {
  * by another session) is backed up first, unless it already says what is about to be written.
  */
 export async function writePlan(root: string, brief: Brief, ticked: readonly number[],
-  { expected, goal }: { expected?: string | null; goal?: string | null } = {}): Promise<{ text: string; backup?: string }> {
-  const path = await markdownPath(root, PLAN_FILE), text = planText(brief, ticked, { goal });
+  { expected, goal, marks }: { expected?: string | null; goal?: string | null; marks?: StepMarks } = {}): Promise<{ text: string; backup?: string }> {
+  const path = await markdownPath(root, PLAN_FILE), text = planText(brief, ticked, { goal, marks });
   const before = await existing(path);
   const saved = before !== null && (before.text === null || (before.text !== expected && before.text !== text)) ? await backup(path) : undefined;
   await writeNoFollow(path, text, constants.O_CREAT, true);
@@ -162,18 +178,30 @@ export function parsePlan(text: string): Plan {
     const match = STEP_LINE.exec(line);
     if (!match) continue;
     let rest = match[2];
-    const layer = LAYER.exec(rest)?.[1];
-    rest = rest.replace(LAYER, '');
+    const mark: StepMark = {};
+    rest = rest.replace(MARK, (_all: string, found: string, count?: string) => {
+      const word = found.toLowerCase();
+      if (word === 'skipped') mark.skipped = true;
+      else if (word === 'met by the artist') mark.met ??= 'artist';
+      else if (word === 'good enough') mark.met ??= 'good_enough';
+      else mark.redone = Number(count);
+      return '';
+    });
+    const layer = LAYER_ANY.exec(rest)?.[1];
+    rest = rest.replace(LAYER_ANY, '');
     const file = FILE.exec(rest)?.[1];
     if (file && IMAGE.test(file)) rest = rest.replace(FILE, '');
-    steps.push({ title: oneLine(rest), ...(file && IMAGE.test(file) ? { file } : {}), ...(layer ? { layer } : {}), done: match[1] !== ' ' });
+    steps.push({ title: oneLine(rest), ...(file && IMAGE.test(file) ? { file } : {}), ...(layer ? { layer } : {}), done: match[1] !== ' ',
+      ...(Object.keys(mark).length ? { mark } : {}) });
   }
   const title = /^#\s+(?:Plan\s*·\s*)?(.+)$/m.exec(text)?.[1]?.trim() ?? null;
-  return { title, text, lines, steps, ticked: steps.flatMap((s, i) => s.done ? [i] : []) };
+  const keys = stepKeys(steps), marks: StepMarks = {};
+  steps.forEach((step, i) => { if (step.mark) marks[keys[i]] = step.mark; });
+  return { title, text, lines, steps, ticked: steps.flatMap((s, i) => s.done ? [i] : []), marks };
 }
 
 /** What changed between the agent's plan (and its ticks) and PLAN.md's lines, in words for the artist. */
-export function planDifference(brief: Brief, lines: readonly string[], ticked: readonly number[]): string[] {
+export function planDifference(brief: Brief, lines: readonly string[], ticked: readonly number[], marks: StepMarks = {}): string[] {
   const edited = parsePlan(lines.join('\n')).steps, ourKeyList = stepKeys(brief.steps), theirKeyList = stepKeys(edited);
   const ours = brief.steps.map((s, i) => ({ key: ourKeyList[i], title: layerName(s.title), done: ticked.includes(i) }));
   const theirs = edited.map((s, i) => ({ key: theirKeyList[i], title: layerName(s.title), done: s.done }));
@@ -191,6 +219,12 @@ export function planDifference(brief: Brief, lines: readonly string[], ticked: r
     const mine = ours.find(s => s.key === step.key);
     if (mine && mine.done !== step.done) out.push(`${step.done ? 'Ticked' : 'Unticked'}: ${step.title}`);
   }
+  edited.forEach((step, i) => {                                          // skipped, restored, met or unmet by hand
+    const key = theirKeyList[i], mine = Object.hasOwn(marks, key) ? marks[key] : undefined;
+    if (!ourKeys.has(key)) return;
+    if (!!mine?.skipped !== !!step.mark?.skipped) out.push(`${step.mark?.skipped ? 'Skipped' : 'Restored'}: ${layerName(step.title)}`);
+    if (!!mine?.met !== !!step.mark?.met) out.push(`${step.mark?.met ? 'Marked met' : 'Unmarked met'}: ${layerName(step.title)}`);
+  });
   return out;
 }
 

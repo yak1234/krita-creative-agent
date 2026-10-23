@@ -2148,7 +2148,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         # The details, each timed: on merged New Moscow they took 270 ms an observation together (runs 5-8).
         layers = self._creative_layer_list(doc); lap('layers')
         # Whole-canvas views say how much of the canvas is painted, so a blank document is not taken for a painting.
-        painted = None if region else self._creative_painted_share(shown); lap('painted')
+        painted = None if region else self._creative_painted_share(shown, doc if shown is projection else None, session); lap('painted')
         with open(filename, 'rb') as stream:
             content_id = hashlib.sha256(stream.read()).hexdigest()
         lap('content')
@@ -2241,12 +2241,29 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         from .qt_compat import QImage, image_bytes
         return np.frombuffer(image_bytes(image.convertToFormat(QImage.Format.Format_ARGB32)), np.uint8).reshape(image.height(), image.width(), 4)
 
-    def _creative_painted_share(self, projection):
+    def _creative_thumb_rgba(self, image, size=96):
+        """(RGBA bytes, width, height) of a small copy of image."""
         from .qt_compat import QImage
-        thumb = projection.scaled(96, 96, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation).convertToFormat(QImage.Format.Format_RGBA8888)
+        thumb = image.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation).convertToFormat(QImage.Format.Format_RGBA8888)
         line, width = thumb.bytesPerLine(), thumb.width() * 4
         raw = thumb.constBits().asstring(thumb.sizeInBytes())
-        return painted_share(b''.join(raw[row * line:row * line + width] for row in range(thumb.height())))
+        return b''.join(raw[row * line:row * line + width] for row in range(thumb.height())), thumb.width(), thumb.height()
+
+    def _creative_painted_share(self, projection, doc=None, session=None):
+        """How much of the canvas is painted. A guide line is not paint: the pixels a visible guide layer covers are
+        left out (block-in guides on a blank canvas measured 10% painted, and the underpainting was refused)."""
+        pixels, width, height = self._creative_thumb_rgba(projection)
+        cover = None
+        if doc is not None and hasattr(self, '_guide_group'):
+            try:
+                group = self._guide_group(doc, session=session)
+                layers = [c for c in group.childNodes() if c.visible()] if group is not None and group.visible() else []
+                for layer in layers:
+                    alpha = self._creative_thumb_rgba(layer.thumbnail(width, height))[0][3::4]
+                    cover = alpha if cover is None else bytes(a | b for a, b in zip(cover, alpha))
+            except Exception:                    # a guide that cannot be read: measure as before
+                cover = None
+        return painted_share(pixels, ignore=cover)
 
     def _creative_has_transparency(self, image):
         if not image.hasAlphaChannel():

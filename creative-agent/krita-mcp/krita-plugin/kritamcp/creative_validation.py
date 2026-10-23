@@ -185,17 +185,23 @@ def pen_input(values, name, count):
         raise ValueError('time_ms must not go back along the stroke')
 
 
-def painted_share(pixels, tolerance=12):
+def painted_share(pixels, tolerance=12, ignore=None):
     """The share of pixels that differ from the canvas's dominant colour (0 for a blank canvas).
 
     pixels: 4-byte pixels of a small thumbnail of the whole canvas. Whether a canvas is already a
     painting is a question about what is visible, not about how many layers or whether it was
     saved: Krita's new document has a Background and an empty Paint Layer 1.
+    ignore: one byte per pixel, non-zero under a guide line. Guides are not paint: block-in guides on a
+    blank New Moscow canvas measured 10% painted and the whole-picture underpainting was refused.
     """
     count = len(pixels) // 4
     if not count:
         return 0.0
     quads = [pixels[i:i + 4] for i in range(0, count * 4, 4)]
+    if ignore is not None:
+        quads = [quad for quad, skip in zip(quads, ignore) if not skip]
+        if not quads:
+            return 0.0
     from collections import Counter
     dominant = Counter(quads).most_common(1)[0][0]
     differing = sum(1 for quad in quads if max(abs(a - b) for a, b in zip(quad, dominant)) > tolerance)

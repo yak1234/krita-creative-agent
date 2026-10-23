@@ -411,6 +411,24 @@ class DrawGuideTests(GuideSetup, unittest.TestCase):
 
 
 class ObserveWithoutGuidesTests(GuideSetup, unittest.TestCase):
+    def test_guide_lines_do_not_make_a_blank_canvas_a_painting(self):
+        """Block-in guides on a blank canvas measured 10% painted live (New Moscow, 2026-10-23), so the canvas was taken
+        for an existing painting and the whole-picture underpainting was refused. The pixels a visible guide layer
+        covers are left out of painted_share."""
+        self.guide()
+        layer = self.guides_group().children[0]
+        white, blue, clear = bytes([255, 255, 255, 255]), bytes([79, 179, 255, 255]), bytes(4)
+        class Thumb:                                                       # 10 x 10 pixels, rows 3-4 a guide band
+            def __init__(self, rest, band): self.data = rest * 30 + band * 20 + rest * 50
+        layer.thumbnail = lambda w, h: Thumb(clear, blue)
+        self.h._creative_thumb_rgba = lambda image, size=96: (image.data, 10, 10)
+        blank_with_guides = Thumb(white, blue)
+        session = dict(self.h._creative_session)
+        self.assertEqual(self.h._creative_painted_share(blank_with_guides, self.h.doc, session), 0.0)
+        layer.setVisible(False)
+        self.assertEqual(self.h._creative_painted_share(blank_with_guides, self.h.doc, session), 0.2,
+                         'a hidden guide layer covers nothing')
+
     def test_observe_passes_the_flag_and_refuses_a_bad_one(self):
         run(self.h, 'observe', {'guides': False})
         run(self.h, 'observe', {})
@@ -444,7 +462,7 @@ class ObserveWithoutGuidesTests(GuideSetup, unittest.TestCase):
         h.doc.projection = lambda *args: projection
         shown, asked = [], []
         h._creative_view_image = lambda doc, image, region=None, scaled_read=True: shown.append(image.tag) or image
-        h._creative_painted_share = lambda image: 0.5
+        h._creative_painted_share = lambda image, *context: 0.5
         h._view_artist_focus = lambda doc: None
         h._guide_unguided = lambda doc, image, region=None, session=None: asked.append(region) or (Image('without guides'), None)
         session = {'output': h._creative_session['output'], 'document_id': 'x', 'passes': []}

@@ -1247,5 +1247,17 @@ class PaintedShareTests(unittest.TestCase):
         self.assertEqual(module.painted_share(white * 75 + red * 25), 0.25)
         self.assertEqual(module.painted_share(b''), 0.0)
 
+    def test_guide_lines_are_not_paint(self):
+        """A live New Moscow chat drew its block-in guides on a blank canvas, measured 10% painted, was taken for an
+        existing painting and lost its whole-picture underpainting. Pixels under a guide never count."""
+        from importlib import util
+        spec = util.spec_from_file_location('creative_validation_share', SOURCE / 'creative_validation.py')
+        module = util.module_from_spec(spec); spec.loader.exec_module(module)
+        white, blue, red = bytes([255, 255, 255, 255]), bytes([79, 179, 255, 255]), bytes([200, 20, 20, 255])
+        under_guides = bytes([0] * 80 + [1] * 20)
+        self.assertEqual(module.painted_share(white * 80 + blue * 20, ignore=under_guides), 0.0)
+        self.assertEqual(module.painted_share(white * 70 + red * 10 + blue * 20, ignore=under_guides), 0.1, 'paint beside the guides still counts')
+        self.assertEqual(module.painted_share(blue * 60 + white * 40, ignore=bytes([1] * 60 + [0] * 40)), 0.0, 'guides never decide the ground colour')
+
 
 if __name__ == '__main__': unittest.main()

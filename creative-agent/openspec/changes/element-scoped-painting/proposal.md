@@ -1,6 +1,6 @@
 # Element-scoped painting: select it, protect it, paint only inside it
 
-Status: PROPOSED (2026-10-23), for the artist's OK. Follows element shapes phase 1 and the project folder.
+Status: APPROVED by the artist (2026-10-23). Phase A: goals 2 and 3. Follows element shapes phase 1 and the project folder.
 
 ## Why
 

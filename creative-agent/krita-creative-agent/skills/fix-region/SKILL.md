@@ -40,5 +40,5 @@ Tool details for the AI image route are in the `image-asset` skill.
 3. **Check:** an `asset_check` that says the edit moved content means a smaller region or a stricter prompt.
 4. **Paint it:** `paint_from_reference` with the result's arguments. On an established painting this is a
    patch: it fades over its outer edge and may cover only the region the tool allows.
-5. **Blend** smooth areas with `paint_reference_surface` and sharpen key contours with
-   `paint_reference_edges`. Then `observe_canvas` and compare with the area before.
+5. **Blend** smooth areas with `paint_reference_surface` and make it crisp with
+   `paint_accents` on the area. Then `observe_canvas` and compare with the area before.

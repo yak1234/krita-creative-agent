@@ -32,6 +32,7 @@ tracing; accents go on their own layer.
 1. **`paint_accents`**, one tool. The painter names an area (the whole picture, an element, a selection, a box) and
    which kinds and how many ("the 40 strongest city lights", "railing bars and lamp posts"). The host finds and places
    them; the painter types no coordinates. Kinds:
+   *(Replaced by decision 7 below: the kinds are found as described, but adjusted in the canvas's own paint, not drawn as marks.)*
    - **lights**: small bright spots (windows, lamps, stars, a moon's rim) — a dot, optionally with a soft halo;
    - **lines**: thin straight or gently curved features (railing bars, posts, masts, the spire, window frames) — one
      smooth stroke each, tapered;
@@ -81,6 +82,25 @@ tracing; accents go on their own layer.
 - Fork-first; plugin code via `qt_compat` (PyQt5 and PyQt6); new companion modules strict TypeScript.
 - Shapes model only with the artist's consent and never prompting from an automatic step.
 - Live tests on copies, never the artist's `new_moscow` folder.
+
+## Decided by the artist during the build (2026-10-23)
+
+5. **Accents only where the canvas lacks them.** The reference (mapped onto the canvas) and the current canvas view are
+   compared at fine scale (each one's detail: the plane minus its blur at the accent scale, in lightness plus chroma);
+   the residual decides: a sharp light the canvas blurred away is a light or glint, a sharp dark it lacks a dark, a thin
+   residual ridge a line. Nothing is added where the canvas has the accent already, or was repainted there. The finder
+   decides only each mark's shape; its strength is the residual. Without a canvas view the finder refuses. This
+   replaces the "canvas still resembles the reference" skip.
+6. **Lights stamped from a real lamp in the reference, dot as fallback**: lights (and glints where it works) are stamped
+   with a material cut from a real accent in the reference (the material stamp), today's dot and soft halo as the
+   fallback.
+7. **Accents adjust the painting's own paint with Krita's features, not marks** (supersedes 6 and the marks in goals
+   1-3): no dots, strokes, needles or stamps. Where the residual (5) finds the canvas softer, duller or paler than the
+   reference, soft (feathered) masks made from the found accents limit Krita's own filters on a copy of the canvas's own
+   visible pixels: lights by Dodge (highlights; exposure from the strength) with a bloom (the same pixels blurred, Screen,
+   low opacity); darks by Burn (shadows); lost detail (thin lines, edges) by Gaussian High Pass in Overlay. Nothing of the
+   reference's pixels is placed on the canvas. Each call is one reversible pass: one Accents group of baked layers in
+   the move's group (no live filter masks, so nothing recomputes on refresh). Material stamping stays its own tool.
 
 ## My calls (the artist can overrule)
 

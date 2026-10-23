@@ -1,9 +1,10 @@
 // The artist's short slash commands, beside Pi's /skill:name: one table, read by the studio (expandSkillCommand in
-// skills.mjs; /trace's guide-only move) and sent to the panel for its "/" menu (the skills event), so the panel
+// skills.mjs) and sent to the panel for its "/" menu (the skills event), so the panel
 // never names a skill itself.
 // Ruling: /refine is repaint-area. Its first rule is "refine or replace": refining keeps the forms already painted and
 // adds light, edges and detail on clipped layers, never a fill over them. fix-region repairs damage (a seam, a wrong
-// building); reference-transfer, whose finishing tools also sharpen edges, is already /colour.
+// building); reference-transfer is already /colour. /trace (guides traced from the reference) was removed by
+// crisp-accents: traced lines never helped a painting, and accents (paint_accents) make it crisp.
 
 export type SkillCommand = {
   name: string;
@@ -17,8 +18,6 @@ export type SkillCommand = {
 };
 
 export const SKILL_COMMANDS: readonly SkillCommand[] = Object.freeze([
-  { name: 'trace', aliases: [], skill: 'guided-trace', move_kind: 'guides', needs: 'guides',
-    description: 'Draw guides from the reference for placement and shape, painting nothing.' },
   { name: 'colour', aliases: ['color', 'from-reference'], skill: 'reference-transfer',
     description: 'Lay the reference\'s colours on the canvas first, then refine them.' },
   { name: 'refine', aliases: [], skill: 'repaint-area',
@@ -26,7 +25,7 @@ export const SKILL_COMMANDS: readonly SkillCommand[] = Object.freeze([
 ]);
 
 /** The short command that starts the artist's message, and the text after it; null for anything else. Any case, and
- * punctuation after the command word ("/Trace:", "/colour.") is allowed. */
+ * punctuation after the command word ("/Colour:", "/refine.") is allowed. */
 export function skillCommand(text: string | undefined): (SkillCommand & { rest: string }) | null {
   const match = /^\/([a-z-]+)[.,:;!?]*(?:\s+([\s\S]*))?$/i.exec(text?.trim() ?? '');
   if (!match) return null;

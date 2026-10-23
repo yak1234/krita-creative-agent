@@ -2,6 +2,10 @@
 
 Status: PROPOSED (2026-10-21), for the artist's OK. Follows guided trace and developed guides (both merged).
 
+**Amended by crisp-accents (2026-10-23, the artist):** visible tracing is removed. Goal 1 (`draw_guide from_reference` with `shape`) goes with tracing. Shapes
+on the painting (passes inside a shape, protection from a shape) stay, and `paint_accents` may use an element's
+shape as its area when the shapes model is already allowed.
+
 ## Why
 
 Guides traced from a rectangle of the reference pick up everything inside it: the tower's box also holds clouds and the

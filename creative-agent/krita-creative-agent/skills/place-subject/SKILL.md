@@ -36,4 +36,4 @@ Tool details for the AI image route are in the `image-asset` skill.
    only the subject is painted.
 6. **Ground it:** a soft contact shadow under it on its own layer (`create_layer` `blend_mode: multiply`,
    low opacity, then a short soft `paint_pass` along the ground line, darkest where it touches).
-7. **Crisp edges:** `paint_reference_edges` on the subject's region. Then `observe_canvas`.
+7. **Crisp accents:** `paint_accents` on the subject's region (a box). Then `observe_canvas`.

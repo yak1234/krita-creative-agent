@@ -30,6 +30,7 @@ from .protection import ProtectionCraft, PANEL_ONLY as PROTECTION_PANEL_ONLY
 from .script_steps import one_step
 from .feature_guard import EXPRESSION_LIMIT, FeatureCraft, PANEL_ONLY as FEATURE_PANEL_ONLY, agent_writing, reject_privileged
 from .material_stamp import MaterialCraft, RESOURCE_PREFIX as STAMP_RESOURCE_PREFIX
+from .accent_adjust import AccentCraft
 from .guide_craft import GuideCraft
 from .tool_craft import ToolCraft, OPERATIONS as TOOL_OPERATIONS, PASS_TITLES as TOOL_TITLES, tool_functions_available
 from .journal_store import Journal
@@ -87,7 +88,7 @@ def wait_for_krita(seconds):
 # later results and `save_status`. Actions after the copy stay unsaved. Without the helper, before the painting is its
 # own file, and at the end of a chat, the save is synchronous as before.
 # Pass kinds that add a new agent layer or mask.
-NEW_CONTRIBUTIONS = ('paint_pass', 'guide', 'create_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp') + TOOL_OPERATIONS
+NEW_CONTRIBUTIONS = ('paint_pass', 'guide', 'create_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp', 'accents') + TOOL_OPERATIONS
 CHECKPOINT_SECONDS = 180
 # Operations that paint as one fork stroke job: waited on by the job itself, never by Document.waitForDone.
 STROKE_JOBS = ('paint_pass', 'draw_guide')
@@ -115,7 +116,7 @@ def merge_pass_record_error(result, error):
             'error': result['error'] + ' (' + note + ')' if result.get('error') else note}
 
 
-class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, ProtectionCraft, FeatureCraft, NativeCraft, MaterialCraft, ToolCraft, GuideCraft):
+class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, ProtectionCraft, FeatureCraft, NativeCraft, MaterialCraft, ToolCraft, GuideCraft, AccentCraft):
     def cmd_creative(self, request):
         fields(request, ('operation', 'session_id', 'operation_id', 'params'), ('operation', 'params'))
         operation = request['operation']
@@ -144,17 +145,21 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             from .creative_reference import decode_reference
             return decode_reference(params)
         if operation == 'trace_reference':
-            # Guided trace's own reduced decode (from_reference); decode_reference keeps the reference tools' limits.
+            # A reduced decode (the canvas view element shapes are found on); decode_reference keeps the reference tools' limits.
             from .creative_reference import trace_reference
             return trace_reference(params)
         if operation == 'mass_reference':
-            # The mass map's smoothed copy of a reference crop (draw_guide from_reference masses); never a document.
+            # The mass map's smoothed copy of a reference crop (the masses summary and thumbnail); never a document.
             from .creative_masses import mass_reference
             return mass_reference(params)
         if operation == 'trace_edges':
-            # Guided trace's lines from a reference at full resolution (edge_trace.py): only lines go back.
+            # Lines from a reference at full resolution (edge_trace.py; its chains are paint_accents' line finder): only lines go back.
             from .creative_reference import trace_edges
             return trace_edges(params)
+        if operation == 'find_accents':
+            # paint_accents' finder (accent_find.py): only the accents go back, in the reference's listed pixels.
+            from .creative_reference import find_accents
+            return find_accents(params)
         if operation == 'align_closeup':
             # Where a close-up sits in the goal image (closeup_align.py): only the placement goes back.
             from .closeup_align import align_closeup
@@ -568,7 +573,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             self._creative_store_operations(session)
             return dict(self._creative_observe(doc, session), unresolved_operations=[],
                         committed_operation_count=self._creative_committed_count(session))
-        if operation not in ('paint_pass', 'adjust_layer', 'painting_toolbox', 'review_pass', 'create_layer', 'set_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp', 'draw_guide') + TOOL_OPERATIONS:
+        if operation not in ('paint_pass', 'adjust_layer', 'painting_toolbox', 'review_pass', 'create_layer', 'set_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp', 'accents', 'draw_guide') + TOOL_OPERATIONS:
             raise ValueError('Unsupported creative operation')
         self._guide_refuse_target(doc, session, operation, params)
         operation_id = text(request.get('operation_id'), 'operation_id', 100)
@@ -665,6 +670,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             self._native_validate_split(doc, session, params)
         elif operation == 'stamp':
             self._stamp_validate(doc, session, params)
+        elif operation == 'accents':
+            self._accents_validate(doc, session, params)
         elif operation == 'draw_guide':
             if not on_fork():
                 raise ValueError('Guides need our Krita (the fork), which paints them on a layer of their own.')
@@ -740,6 +747,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 result.update(self._native_split(doc, session, params))
             elif operation == 'stamp':
                 result.update(self._stamp_apply(doc, session, params, result))
+            elif operation == 'accents':
+                result.update(self._accents_apply(doc, session, params, result))
             elif operation == 'draw_guide':
                 result.update(self._guide_draw(doc, session, params, result))
             elif operation in TOOL_OPERATIONS:
@@ -857,7 +866,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 self._creative_settle_containers(doc, session, self._creative_node(doc, layer_id))
             if layer_id:
                 state = self._creative_layer_state(self._creative_node(doc, layer_id), doc)
-                entry = dict(id=operation_id, title=params.get('name') or {'fill_region': 'Region fill', 'apply_filter': params.get('filter'), 'colorize_flats': 'Colorized flats', 'transform_layer': 'Transform', 'comic_page': 'Comic page', 'letter': 'Lettering', 'merge_passes': 'Merged passes', 'krita_action': result.get('action_label'), 'clone_layer': 'Clone', 'split_by_color': 'Split by colour', 'stamp': 'Stamp', **TOOL_TITLES}.get(operation) or 'Layer adjustment', kind=operation,
+                entry = dict(id=operation_id, title=params.get('name') or {'fill_region': 'Region fill', 'apply_filter': params.get('filter'), 'colorize_flats': 'Colorized flats', 'transform_layer': 'Transform', 'comic_page': 'Comic page', 'letter': 'Lettering', 'merge_passes': 'Merged passes', 'krita_action': result.get('action_label'), 'clone_layer': 'Clone', 'split_by_color': 'Split by colour', 'stamp': 'Stamp', 'accents': 'Accents', **TOOL_TITLES}.get(operation) or 'Layer adjustment', kind=operation,
                              stage_id=params.get('stage_id'), region=params.get('region'), layer_id=layer_id,
                              continuation_of=params.get('continue_layer_id'),
                              group_id=result.get('group_id'),

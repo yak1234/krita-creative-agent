@@ -2150,7 +2150,7 @@ class CreativeAgentDocker(DockWidget):
             self.show_references()
 
     def update_slash_menu(self):
-        # The companion's commands (its skills event: /trace, /colour, ... then /skill:<name>); an older companion sends
+        # The companion's commands (its skills event: /colour, /refine, ... then /skill:<name>); an older companion sends
         # skills only, listed as /skill:<name>. Typing filters by a command or its aliases, or by a skill's bare name.
         text = self.prompt.toPlainText()
         typed = text.lower() if text.startswith('/') and ' ' not in text and '\n' not in text else None   # any case, as the companion matches

@@ -2831,11 +2831,12 @@ test('reference first: the move\'s batch guidance lays masses from the reference
 
 test('the move instructions say a guides-only request draws guides, paints nothing and finishes the move',()=>{
  for (const size of ['quick','subject','large'])
-  assert.match(agentMoveInstructions(size),/asks only for guides, an outline or a tracing, draw the guides and call finish_move, painting nothing/,size);
+  assert.match(agentMoveInstructions(size),/asks only for guides, draw them \(hand-placed lines, perspective\) and call finish_move, painting nothing/,size);
 });
 
-// /trace starts a guide-only move: "trace the outline first" drew 7 guides, then 21 fills and passes in the same move.
-async function traceMove(respond, {size='subject', text='/trace the moon and the towers'}={}) {
+// A guide-only move (an Undo retry of a guides move, or the panel's move_kind guides): "trace the outline first" drew 7
+// guides, then 21 fills and passes in the same move. /trace itself is gone (crisp-accents).
+async function traceMove(respond, {size='subject', text='Guides for the moon and the towers'}={}) {
  let h; const offered=[], reqs=[];
  h=await harness(req=>{
   const names=req.tools.map(t=>t.function.name);
@@ -2852,12 +2853,12 @@ async function traceMove(respond, {size='subject', text='/trace the moon and the
  const path=join(h.output,'final_goal.png'); await writeFile(path,png);
  await h.start('ask','Hello',{references:[{path}]}); h.runtime.forkTools=true;
  await h.runtime.setExecutionSettings({move_size:size}); await h.runtime.setMode('agent');
- if (text) await h.runtime.prompt(text);
+ if (text) await h.runtime.prompt(text,{move_kind:'guides'});
  return {h,offered,reqs};
 }
 const guide=n=>call('draw_guide',{element:'Moon '+n,lines:[{points:[[100,100],[200,100],[200,200]]}]});
 
-test('/trace starts a guide-only move: only guide and look tools are offered, and finish_move ends it with a guides card',{timeout:30000},async()=>{
+test('a guide-only move: only guide and look tools are offered, and finish_move ends it with a guides card',{timeout:30000},async()=>{
  const {h,offered}=await traceMove(n=>n===1 ? guide(1) : n===2 ? call('finish_move',{summary:'Moon and towers'}) : {content:'Done.'});
  try {
   assert.equal(offered.length,2,'the move ended at finish_move');
@@ -2870,7 +2871,7 @@ test('/trace starts a guide-only move: only guide and look tools are offered, an
   assert.deepEqual([move.kind,move.status,move.guides],['guides','ready',1]);
   assert.match(move.title,/^Drew guides: Moon and towers/);
   assert.match(h.events.filter(e=>e.type==='status').at(-1)?.message ?? '',/drew guides/);
-  assert.equal(h.runtime.goal.messages.filter(m=>m.role==='user').at(-1).text,'/trace the moon and the towers','the transcript shows what the artist typed');
+  assert.equal(h.runtime.goal.messages.filter(m=>m.role==='user').at(-1).text,'Guides for the moon and the towers','the transcript shows what the artist typed');
   assert.ok(!h.calls.some(c=>['paint_pass','fill_region'].includes(c.operation)));
  } finally {await h.close();}
 });
@@ -2915,33 +2916,31 @@ test('reference first: the nudge shows calmly in the panel, not as a failed acti
  } finally {await h.close();}
 });
 
-test('a /trace move with a reference gets only guide-only instructions: no reference-transfer, transfer or subject-move text',{timeout:30000},async()=>{
+test('a guide-only move with a reference gets only guide-only instructions: no reference-transfer, transfer or subject-move text',{timeout:30000},async()=>{
  const {h,reqs}=await traceMove(n=>n===1 ? guide(1) : call('finish_move',{summary:'Moon'}));
  try {
-  const text=JSON.stringify(reqs[0].messages.at(-1)).replace(/<skill name=\\"guided-trace\\"[\s\S]*?<\/skill>/,'');
-  assert.equal(skillCount(JSON.stringify(reqs[0].messages.at(-1)),'guided-trace'),1,'the /trace skill itself');
+  const text=JSON.stringify(reqs[0].messages.at(-1));
   assert.equal(skillCount(text,'reference-transfer'),0);
   assert.doesNotMatch(text,/paint_from_reference|REFERENCE FIRST|work the subject through|Work the subject through/);
   assert.match(text,/GUIDE-ONLY MOVE/); assert.match(text,/finish_move/);
  } finally {await h.close();}
 });
 
-test('/trace where guides are unavailable tells the artist and leaves /trace out of the menu',{timeout:60000},async()=>{
+test('a guides move where guides are unavailable tells the artist; /trace is never in the menu',{timeout:60000},async()=>{
  for (const [label,setup] of [['stock Krita',h=>{h.runtime.forkTools=false;}],['Guides off',async h=>{await h.runtime.setExecutionSettings({guides:false});}]]) {
   const {h}=await traceMove(()=>({content:'Done.'}),{text:null});
   try {
    await setup(h);
-   await assert.rejects(h.runtime.prompt('/trace the moon'),/Tracing needs the Guides setting on \(Settings › Guides\) in Toska\./,label);
+   await assert.rejects(h.runtime.prompt('Guides for the moon',{move_kind:'guides'}),/Guides need the Guides setting on \(Settings › Guides\) in Toska\./,label);
    assert.equal(h.runtime.goal.moves?.length ?? 0,0,label+': no move started');
-   h.runtime.emitSkills();
-   const menu=h.events.filter(e=>e.type==='skills').at(-1);
-   assert.ok(!menu.commands.some(c=>c.command==='/trace'),label);
-   assert.ok(menu.commands.some(c=>c.command==='/colour'),label);
   } finally {await h.close();}
  }
  const {h}=await traceMove(()=>({content:'Done.'}),{text:null});
- try { h.runtime.emitSkills(); assert.ok(h.events.filter(e=>e.type==='skills').at(-1).commands.some(c=>c.command==='/trace'),'available: listed'); }
- finally {await h.close();}
+ try {
+  h.runtime.emitSkills();
+  const menu=h.events.filter(e=>e.type==='skills').at(-1);
+  assert.ok(!menu.commands.some(c=>c.command==='/trace') && menu.commands.some(c=>c.command==='/colour'),'no /trace: visible tracing is gone');
+ } finally {await h.close();}
 });
 
 test('Keep of a guides move waits for the artist; with request_done its guides stay showing; Undo retries a guides move',{timeout:60000},async()=>{
@@ -3473,10 +3472,10 @@ test('a folder plan step the artist approved that names guides is a guides step'
  assert.match(under,/paint_from_reference/); assert.doesNotMatch(under,/draw_guide/);
 });
 
-test('a guides-only move draws what the artist named; the masses are an option, never the default',()=>{
+test('a guides-only move draws what the artist named, by hand: nothing is traced from the reference',()=>{
  const text=agentMoveInstructions('subject',{guidesOnly:true});
- assert.doesNotMatch(text,/masses first|unless the artist said otherwise/);
- assert.match(text,/masses: true/,'masses stay an option');
+ assert.doesNotMatch(text,/masses first|unless the artist said otherwise|from_reference|masses: true/);
+ assert.match(text,/hand-placed lines and perspective/);
 });
 
 test('the mass map runs once per chat: a run left from a closed chat does not hold up the next chat\'s',async()=>{
@@ -3786,5 +3785,42 @@ test('goal likeness policy: Luna off leaves a typed move measure only; a folder 
   await h.runtime.likenessGrid(goalPath.replace(h.output,h.output),{source:[-0.4,0.6,30.7,40.2],size:[30,40],grid:[8,8]}).catch(()=>{});
   const last=asked.at(-1);
   assert.ok(last.source[0]>=0 && last.source[1]>=0 && last.source[0]+last.source[2]<=30 && last.source[1]+last.source[3]<=40,JSON.stringify(last.source));
+ } finally {await h.close();}
+});
+
+// crisp-accents: paint_accents is a painting call like the others: paced, reviewed by Luna, measured, saved.
+test('paint_accents is a paced painting tool: Luna review and the save see it',async()=>{
+ const h=await harness(()=>({content:'Hello.'}),async()=>undefined);
+ try {
+  await h.start('ask','Hello');
+  assert.equal(h.runtime.reviewHost().painting('paint_accents'),true);
+  assert.equal(h.runtime.saveHost().painting('paint_accents'),true);
+  let paced=0; const original=h.runtime.paced.bind(h.runtime);
+  h.runtime.paced=(call,run)=>{ if(call.tool==='paint_accents') paced++; return original(call,run); };
+  const tool=h.runtime.buildTools().find(t=>t.name==='paint_accents');
+  await tool.execute('a1',{reference_id:'missing'}).catch(()=>{});
+  assert.equal(paced,1,'each paint_accents call goes through the pacing hook');
+ } finally {await h.close();}
+});
+
+// crisp-accents: more than 150 accents at once need the artist's yes to an actual question, for that move and count, once.
+test('paint_accents asks an actual question; only the artist’s yes to it lets the accents through, once',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Noted.'}),async()=>undefined);
+ try {
+  await h.start('ask','Hello');
+  h.runtime.askAccents({question:'Make the painting crisper at 160 accents at once?',options:['Yes, all 160','No, fewer'],key:'move-3',count:160});
+  assert.equal(h.runtime.goal.question?.question,'Make the painting crisper at 160 accents at once?');
+  assert.deepEqual(h.runtime.goal.question.accents,{key:'move-3',count:160});
+  assert.ok(h.events.some(e=>e.type==='question' && e.question.startsWith('Make the painting crisper')),'the panel shows it');
+  assert.equal(h.runtime.takeAccentsAnswer('move-3'),null,'no answer yet');
+  h.runtime.goal.user_updates.push('The artist edited the canvas during the run. Keep and build on their changes; do not paint over or undo them.');
+  assert.equal(h.runtime.takeAccentsAnswer('move-3'),null,'a note is no answer');
+  await h.runtime.prompt('Yes, all 160');
+  assert.equal(h.runtime.takeAccentsAnswer('move-2'),null,'another move');
+  assert.deepEqual(h.runtime.takeAccentsAnswer('move-3'),{key:'move-3',count:160,yes:true});
+  assert.equal(h.runtime.takeAccentsAnswer('move-3'),null,'used once');
+  h.runtime.askAccents({question:'Make the painting crisper at 200 accents at once?',options:['Yes, all 200','No, fewer'],key:'move-3',count:200});
+  await h.runtime.prompt('No, fewer');
+  assert.equal(h.runtime.takeAccentsAnswer('move-3').yes,false);
  } finally {await h.close();}
 });

@@ -15,7 +15,7 @@ reference tools unchanged; shapes never reach the canvas as pixels. Speed and me
   first, resumable, refused on a checksum mismatch. The model chosen is recorded on the chat; no fallback model. Tests
   with a local fake server.
 - [x] 1.3 **Cache**: shapes kept in the chat folder by (reference hash, prompt); a repeat prompt never re-runs the model.
-- [x] 1.4 **Guides from a shape**: `draw_guide` `from_reference` gains `shape: {box} | {points}`; the outline (and inner
+- [x] 1.4 (removed by crisp-accents: no tracing from a reference) **Guides from a shape**: `draw_guide` `from_reference` gains `shape: {box} | {points}`; the outline (and inner
   structure inside the shape) is traced with the existing tracing code; only lines reach the plugin. Tests: a synthetic
   tower inside a cluttered box gives lines on the tower only.
 - [x] 1.5 **Selection from a shape** for one painting call on the painting itself (plugin: shape to Krita selection,

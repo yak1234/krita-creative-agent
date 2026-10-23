@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The guided-trace skill's development files: the wording for SKILL.md (DEVELOPMENT.md), the worked night-city
-// underdrawing and the subject notes. The example's calls are real: each draw_guide call passes the tool's schema and
+// The guided-trace skill's files: SKILL.md, the worked harbour underdrawing and the subject notes. Guides are drawn by
+// hand only (crisp-accents removed tracing from a reference). The example's calls are real: each draw_guide call passes the tool's schema and
 // its reference mappings are ones the tool accepts. Reads the skill folder only.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,14 +18,16 @@ const words = text => text.split(/\s+/).filter(Boolean).length;
 test('SKILL.md carries the move order, the checks and the pointers, in 700 words or fewer', () => {
   for (const name of ['SKILL.md', 'example-harbour-dusk.md', ...SUBJECTS]) assert.ok(existsSync(new URL(name, folder)), name);
   const skill = read('SKILL.md');
-  for (const term of ['eye level', 'vanishing point', 'perspective', 'from_reference', 'lights: true', "weight: 'light'", 'replace: true',
-    'never fill a guide shape flat', 'meet at the vanishing point', 'same fraction', 'say what it is', 'outlined warm',
-    'a guides move', 'masses: true', 'finish_move', 'paint_from_reference', 'one element per move', 'example-harbour-dusk.md', ...SUBJECTS])
+  for (const term of ['eye level', 'vanishing point', 'perspective', "weight: 'light'", 'replace: true', 'reference_id',
+    'never fill a guide shape flat', 'meet at the vanishing point', 'same fraction', 'marked warm', 'paint_accents',
+    'a guides move', 'finish_move', 'paint_from_reference', 'one element per move', 'example-harbour-dusk.md', ...SUBJECTS])
     assert.ok(skill.toLowerCase().includes(term.toLowerCase()), term);
   assert.ok(skill.indexOf('paint_from_reference') < skill.indexOf('a guides move') && skill.indexOf('a guides move') < skill.indexOf('one element per move'),
     'the underpainting first; a guides move only when asked; then one element per move');
   assert.match(skill, /only when the artist asks/i, 'guides are never the default (the artist, 2026-10-23)');
-  assert.doesNotMatch(skill, /unless the artist says otherwise/i, 'the masses are not a default');
+  assert.doesNotMatch(skill, /unless the artist says otherwise/i, 'guides are not a default');
+  for (const name of ['SKILL.md', 'example-harbour-dusk.md', 'project-folder.md', ...SUBJECTS])
+    assert.doesNotMatch(read(name), /(?<!paint_)from_reference|lights: true|masses: true|\/trace/, `${name}: nothing is traced (crisp-accents)`);
   assert.ok(words(skill) <= 700, `${words(skill)} words`);
   for (const name of SUBJECTS) {
     const text = read(name);
@@ -50,7 +52,7 @@ test('the worked example is real calls in three kinds of move, on a general subj
       const definition = tools.find(t => t.name === tool);
       assert.ok(definition, `${tool} is a painter tool`);
       assert.ok(Value.Check(definition.parameters, args), `move ${m + 1} call ${index} (${tool}) passes its schema: ${JSON.stringify([...Value.Errors(definition.parameters, args)].slice(0, 2))}`);
-      for (const from of [args.from_reference, tool === 'paint_from_reference' ? args : null].filter(Boolean)) {
+      for (const from of [args.reference_id && tool === 'draw_guide' ? args : null, tool === 'paint_from_reference' ? args : null].filter(Boolean)) {
         const [rw, rh] = example.references[from.reference_id] ?? [];
         assert.ok(rw && rh, `${from.reference_id} is a listed reference`);
         const source = from.source ?? [0, 0, rw, rh];
@@ -66,31 +68,21 @@ test('the worked example is real calls in three kinds of move, on a general subj
   const guides = construction.filter(c => c.tool === 'draw_guide').map(c => c.args);
   assert.ok(construction.every(c => ['draw_guide', 'finish_move'].includes(c.tool)), 'the construction move paints nothing');
   assert.ok(guides[0].perspective?.eye_level_y !== undefined && guides[0].perspective.vanishing_points?.length, 'eye level and vanishing point first');
-  const elements = guides.filter(g => g.from_reference && !g.from_reference.masses);
-  assert.ok(elements.length >= 4, 'from_reference per element');
-  assert.deepEqual(new Set(elements.map(g => g.from_reference.detail)), new Set(['simple', 'medium']), 'both detail levels');
-  assert.ok(guides.some(g => g.from_reference?.lights) && guides.some(g => g.lines?.some(l => l.weight === 'light')), 'light shapes both ways');
+  assert.ok(guides.filter(g => g.lines?.length).length >= 4, 'hand lines per element');
+  assert.ok(guides.some(g => g.reference_id) && guides.some(g => !g.reference_id && g.lines), 'reference pixels and canvas pixels');
+  assert.ok(guides.some(g => g.lines?.some(l => l.weight === 'light')), 'light shapes marked warm');
   assert.equal(element[0].tool, 'draw_guide'); assert.equal(element[0].args.replace, true, 'then one element: tightened first');
   assert.ok(element.some(c => c.tool === 'finish_guide') && element.some(c => c.tool === 'paint_pass'), 'painted in own strokes, then its guide finished');
+  assert.ok(element.some(c => c.tool === 'paint_accents'), 'made crisp with accents');
   assert.match(text, /fraction of the canvas/i, 'positions come from measuring the reference');
 });
 
-test('element shapes: one box or a few points per element, one box per member of a group, and "shape", never "mask"', () => {
-  const skill = read('SKILL.md');
-  assert.match(skill, /shape: \{box/, 'the skill shows from_reference shape');
-  assert.match(skill, /one box or a few points per element/i);
-  assert.match(skill, /one box per member/i);
-  assert.match(skill, /each tower/i, 'a skyline is one box per tower, not the cluster');
-  assert.match(skill, /score/i, 'a low score means prompt again');
-  assert.match(skill, /inside_shape/);
-  assert.match(skill, /points[^.]*fitted into `target`/, 'with points, target is the box the element is fitted into');
-  assert.ok(words(skill) <= 700, `${words(skill)} words`);
-  for (const name of ['SKILL.md', 'example-harbour-dusk.md', ...SUBJECTS]) assert.doesNotMatch(read(name), /\bmasks?\b/i, `${name} says shape, never mask`);
+test('the subject notes say what to place by hand and their common errors, briefly', () => {
   for (const name of SUBJECTS) {
-    assert.match(read(name), /shape/, `${name} names the shape prompt`);
+    assert.match(read(name), /common errors/i, name);
     assert.ok(words(read(name)) <= 350, name);
   }
-  assert.match(read('subject-architecture.md'), /one box per (building|tower)/i);
+  assert.match(read('subject-architecture.md'), /one top (line )?per (building|tower)/i, 'a skyline is one height per tower, not the cluster');
 });
 
 test('a project folder plan starts with the underpainting from the goal image; guides only when the artist asks', () => {

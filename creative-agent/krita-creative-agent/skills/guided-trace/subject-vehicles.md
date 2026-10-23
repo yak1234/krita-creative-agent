@@ -3,12 +3,12 @@
 **What to guide**
 - The ground line under the wheels and the eye level. A car seen from above the eye level shows its roof; seen from
   below, it does not.
-- The body's silhouette from the reference (`from_reference` with `shape: {box}` around the car alone, `detail:
-  'simple'`), then the wheel arches and the windows (`'medium'`). Two cars are two shapes.
+- The body's length, roofline and wheel centres as a few lines measured in the reference, then the wheel arches and
+  the windows. Two cars are two sets of lines.
 - Wheels as ellipses whose short axis points along the axle. Both wheels of one side sit on one line to the vanishing
   point.
 - The body's long edges (sills, the waist line, the roof line) recede to the vanishing point.
-- Headlamps, tail lamps and bright reflections as light shapes (`lights: true` or `weight: 'light'`).
+- Headlamps, tail lamps and bright reflections as light shapes (`weight: 'light'`).
 
 **Common errors**
 - A foreground car drawn too small: measure its top and bottom in the reference. A car that fills the bottom half

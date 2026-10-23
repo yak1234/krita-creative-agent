@@ -109,10 +109,10 @@ export function approvedReviewScope(changes=[]) {
 export const restoredReviewStart = goal => goal?.review_start_index ?? goal?.reviews?.length ?? 0;
 const jsonResult = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }], details: value });
 const MODEL_IMAGE_SIDE = 1568;        // long side; Claude and GPT downscale larger images to about this
-const mutates = op => ['paint_pass','adjust_layer','painting_toolbox','stamp','draw_guide',...CRAFT_OPERATIONS,...COMIC_OPERATIONS].includes(op);
+const mutates = op => ['paint_pass','adjust_layer','painting_toolbox','stamp','draw_guide','accents',...CRAFT_OPERATIONS,...COMIC_OPERATIONS].includes(op);
 // Guided trace (guide-tool.ts): offered in Agent and Autopilot painting while the guides setting is on.
 const GUIDE_TOOLS = ['draw_guide','finish_guide'];
-// A guide-only move (/trace, skill-commands.ts): guides, looking and finish_move; nothing paints.
+// A guide-only move (the panel's move_kind guides, or an Undo retry of one): guides, looking and finish_move; nothing paints.
 const GUIDE_MOVE_TOOLS = [...GUIDE_TOOLS,'observe_canvas','sample_canvas_colors','view_reference','read','finish_move'];
 // The image Luna and the reviewer judge: the painting without the agent's guide lines. While guides show, the plugin's looks
 // carry the view without them (unguided_path, guide_craft.py); without guides it is the view itself.
@@ -170,11 +170,11 @@ export function aiImageGuidance(allowance, used = 0, backend = 'codex') {
     (backend === 'openrouter' ? 'Each one costs the artist money. ' : '') + SKILL_HINT;
 }
 // A plain-words guides request ("trace the outline first") went on through 21 fills and passes in one move.
-const GUIDES_ONLY = 'When the artist asks only for guides, an outline or a tracing, draw the guides and call finish_move, painting nothing.';
-// A guide-only move (/trace): the subject-move text ("work the subject through", masses, batches) contradicted it.
-const GUIDES_MOVE = 'COLLABORATIVE AGENT MODE. GUIDE-ONLY MOVE: the artist asked for guides. Draw the guides for what they named with draw_guide (placement and shape from the references; from_reference masses: true draws the big masses\u2019 boundaries when the artist asks for a block-in of the whole picture), look at the result, then call finish_move with a one-line summary. Paint nothing: the painting tools are off in this move.';
+const GUIDES_ONLY = 'When the artist asks only for guides, draw them (hand-placed lines, perspective) and call finish_move, painting nothing.';
+// A guide-only move: the subject-move text ("work the subject through", masses, batches) contradicted it.
+const GUIDES_MOVE = 'COLLABORATIVE AGENT MODE. GUIDE-ONLY MOVE: the artist asked for guides. Draw the guides for what they named with draw_guide (hand-placed lines and perspective, measured from the references), look at the result, then call finish_move with a one-line summary. Paint nothing: the painting tools are off in this move.';
 /** referenceFirst ({transfer}, reference-first.ts): flat fills over guide shapes made grey blocks in two live chats with a goal
- * reference, so the masses are laid from the reference instead. guidesOnly: a /trace move. */
+ * reference, so the masses are laid from the reference instead. guidesOnly: a guide-only move. */
 export function agentMoveInstructions(size = 'subject', { referenceFirst = null, guidesOnly = false } = {}) {
   if (guidesOnly) return GUIDES_MOVE;
   const batch = (referenceFirst ? massGuidance(referenceFirst.transfer) : MASS_GUIDANCE) + ' ' + BATCH_GUIDANCE;
@@ -216,7 +216,7 @@ function moveReviewLine({verdict,findings,undone_batches,batches}) {
 }
 // Likeness grids kept per chat (goal-likeness.ts): the goal, and the latest canvas views (one batch's after is the next's before).
 const LIKENESS_CACHE=8;
-const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer','painting_toolbox','stamp_material',...CRAFT_OPERATIONS,'letter','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface'];
+const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer','painting_toolbox','stamp_material',...CRAFT_OPERATIONS,'letter','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_accents'];
 /** Agent mode's request for "Paint this plan": the plan's current step, one move at a time. */
 // Project folder (B3): with a folder, Agent mode plans first. Nothing paints before the artist approves with Start painting.
 const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist approves the plan with Start painting. Call propose_plan now: step 1 is the underpainting of the whole composition from the goal image (a whole-picture reference transfer), then one step per element, back to front in the folder\'s numbering, as in folder_plan_draft. Keep each element step\'s scope as its file name; improve titles, done_when and checks from the brief, the prompts and the images. Leave an element out only when the artist asks ("only the sky today"). Add a guides step only when the artist asks for guides. Then stop.\n';
@@ -1091,7 +1091,7 @@ export class StudioRuntime extends PaintingRuntime {
     // Skills (read opens skill files only) and image assets, while planning and painting.
     if (vision && (phase === 'plan' || phase === 'agent')) names.push('read','make_asset','run_skill_script');
     if (phase === 'plan' && this.mode === 'autopilot' && this.goal?.brief) names.push('start_painting');
-    if (phase === 'agent') names.push('propose_protection','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','list_brushes','paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer',...CRAFT_TOOLS,...GUIDE_TOOLS,'letter','finish_move','painting_toolbox','painting_tool_help','ask_question','record_progress','request_review');
+    if (phase === 'agent') names.push('propose_protection','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_accents','list_brushes','paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer',...CRAFT_TOOLS,...GUIDE_TOOLS,'letter','finish_move','painting_toolbox','painting_tool_help','ask_question','record_progress','request_review');
     // Agent (collaborative) paints one move per turn: no review or progress bookkeeping tools.
     // With Luna pacing, Autopilot's host tracks plan steps; request_review stays as a backstop.
     const hidden = phase !== 'agent' ? [] : this.mode === 'agent' ? ['record_progress','request_review','ask_question',...(this.executionSettings?.move_size === 'quick' ? ['finish_move'] : [])]
@@ -1142,9 +1142,27 @@ export class StudioRuntime extends PaintingRuntime {
     if (reached && limit.calls > 1) move.limited = true;
     return reached;
   }
+  /** paint_accents' confirmation scope: the move (an Agent move, else the plan step) the question was asked in. */
+  accentsKey() { return this.mode==='agent' && this.currentMove ? 'move-'+this.currentMove.number : 'step-'+this.goal?.revision+'-'+this.goal?.current_step; }
+  /** paint_accents past 150 accents: an actual question to the artist (as ask_question asks one), tied to its move and count. */
+  askAccents({question, options, key, count}) {
+    if (!this.goal) return;
+    this.goal.question = {question, options, id:randomUUID(), asked_in:this.executionPhase, accents:{key, count}};
+    this.goal.status = 'needs_input'; this.yieldRequested = true;
+    this.persist().then(() => this.publish()).catch(() => {});
+    this.emit({type:'question', ...this.goal.question});
+  }
+  /** The artist's answer to that question for `key` ({key, count, yes}), used once; null otherwise. Only an answer to the
+   * question counts: notes the host adds to the conversation never do. */
+  takeAccentsAnswer(key) {
+    const answer = this.goal?.accents_answer;
+    if (!answer || answer.key !== key) return null;
+    this.goal.accents_answer = null;
+    return answer;
+  }
   /** Guides need our Krita (fork tools) and the Guides setting. */
   guidesAvailable() { return this.forkTools === true && this.executionSettings?.guides !== false; }
-  /** The panel's "/" menu; /trace only while guides are available. */
+  /** The panel's "/" menu. */
   emitSkills() { this.emit(skillsEvent(undefined, {guides:this.guidesAvailable()})); }
   acceptBridgeHealth(bridgeStatus) { super.acceptBridgeHealth(bridgeStatus); this.emitSkills(); }
   toolOffered(name) {
@@ -1171,7 +1189,7 @@ export class StudioRuntime extends PaintingRuntime {
         return execute(id, args, ...rest);
       };
     }
-    // An Agent move counts its guides, so a guides-only move (/trace, or "trace the outline") is a move to keep or undo.
+    // An Agent move counts its guides, so a guides-only move ("draw guides for the towers") is a move to keep or undo.
     const drawGuide = tools.find(t=>t.name==='draw_guide');
     if (drawGuide) {
       const execute = drawGuide.execute;
@@ -1925,7 +1943,7 @@ export class StudioRuntime extends PaintingRuntime {
     // "/skill:name ..." becomes the skill's instructions for the model; the transcript keeps what the artist typed.
     const modelText = expandSkillCommand(text);
     if (this.mode === 'agent' && (skillCommand(text)?.move_kind ?? command.move_kind) === 'guides' && !this.guidesAvailable())
-      throw new Error('Tracing needs the Guides setting on (Settings › Guides) in Toska.');
+      throw new Error('Guides need the Guides setting on (Settings › Guides) in Toska.');
     if (this.busy) {
       this.pendingText.push({ text, command }); this.stop(false);
       this.setActivity('stopping', 'Finishing this brush action, then reading your message…'); return;
@@ -1959,6 +1977,9 @@ export class StudioRuntime extends PaintingRuntime {
       }
       const answered = this.goal.question;
       if (answered) this.goal.user_updates.push('Answer to ' + answered.question + ': ' + text);
+      // paint_accents' question: a yes is the first option (the panel sends it as typed) or a plain yes, nothing else.
+      if (answered?.accents) this.goal.accents_answer = {...answered.accents,
+        yes:text.trim().toLowerCase() === String(answered.options?.[0] ?? '').toLowerCase() || /^(y|yes|ok|okay|sure|go ahead|do it)\b[.!]*$/i.test(text.trim())};
       else if (!command.start_plan) this.goal.user_updates.push(text);
       // A run's question allowance lasts until the artist starts or steers it again.
       if (answered?.asked_in !== 'agent') this.goal.run_questions = 0;

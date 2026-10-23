@@ -4,9 +4,10 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 import { createHash } from 'node:crypto';
 import { imageContent } from './files.mjs';
-import {referenceTools,traceReferencePixels,traceReferenceEdges,massReferencePixels} from './reference-tool.mjs';
+import {referenceTools,findReferenceAccents} from './reference-tool.mjs';
 import { mapReferencePoint } from './reference-generator.mjs';
 import { guideTools } from './guide-tool.ts';
+import { accentTools } from './accents-tool.ts';
 import { canvasShape, checkPassLimits, passShape, shapeReport, shapeSchema, shapeTimings } from './shapes/use.ts';
 import { recipeTool } from './recipe-tool.mjs';
 import { contourTool } from './contour-tool.mjs';
@@ -324,10 +325,11 @@ export function paintingTools(runtime) {
   // reference tools once a move. The reference tools' toned ground (above) keeps the plain fill.
   const fill = tools.find(t=>t.name==='fill_region'), fillRegion = fill.execute;
   fill.execute = async (...args) => { await runtime.fillNudge?.(); return fillRegion(...args); };
-  // Guided trace: construction lines on the element's own guide layer (guide-tool.ts), mapped from reference pixels as above.
-  tools.push(...guideTools(runtime, { execute: operation => nativeExecute(runtime, operation), mapPoint: mapReferencePoint,
-    referencePixels: (id, side) => traceReferencePixels(runtime, id, side), traceEdges: request => traceReferenceEdges(runtime, request),
-    massPixels: (id, source) => massReferencePixels(runtime, id, source) }));
+  // Guides: hand-placed construction lines and perspective on the element's own guide layer (guide-tool.ts), only when
+  // the artist asks; nothing is traced from a reference (crisp-accents).
+  tools.push(...guideTools(runtime, { execute: operation => nativeExecute(runtime, operation), mapPoint: mapReferencePoint }));
+  // Accents (accents-tool.ts): stage two, what the canvas lacks next to the reference, adjusted in its own paint by Krita's filters.
+  tools.push(...accentTools(runtime, { findAccents: request => findReferenceAccents(runtime, request), adjust: nativeExecute(runtime, 'accents') }));
   // A flat fill anywhere in a batch is nudged before anything paints (studio.mjs fillNudge), so the batch is refused whole.
   tools.push(batchTool(tools, name => runtime.toolOffered?.(name) ?? true,
     async actions => { if (actions.some(a => a.tool === 'fill_region')) await runtime.fillNudge?.({batch:true}); return prepareBatchShapes(runtime, actions); }));

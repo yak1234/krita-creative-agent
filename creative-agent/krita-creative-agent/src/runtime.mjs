@@ -416,8 +416,8 @@ export class PaintingRuntime {
       // Reference first's nudge (reference-first.ts) is advice, not a failure.
       if (tool && event.isError && isFillNudge(JSON.stringify(event.result ?? ''))) this.emit({ type: 'action', error: false,
         message: 'Reference first: suggested laying the reference colours before a flat fill.', seconds: (Date.now() - tool.at) / 1000 });
-      else if (tool && ['paint_pass','adjust_layer',...CRAFT_OPERATIONS,...COMIC_OPERATIONS,'painting_toolbox','paint_recipe','paint_contours','stamp_material','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface'].includes(tool.name)) this.emit({ type: 'action', error: !!event.isError,
-        message: event.isError ? 'Painting action needs attention' : ['paint_pass','painting_toolbox','create_layer','fill_region','bucket_fill','enclose_and_fill','krita_gradient','smart_patch','paint_recipe','paint_contours','stamp_material','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface'].includes(tool.name) ? 'Painted: ' + (tool.args?.name ?? 'new layer') : 'Adjusted a layer',
+      else if (tool && ['paint_pass','adjust_layer',...CRAFT_OPERATIONS,...COMIC_OPERATIONS,'painting_toolbox','paint_recipe','paint_contours','stamp_material','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_accents'].includes(tool.name)) this.emit({ type: 'action', error: !!event.isError,
+        message: event.isError ? 'Painting action needs attention' : ['paint_pass','painting_toolbox','create_layer','fill_region','bucket_fill','enclose_and_fill','krita_gradient','smart_patch','paint_recipe','paint_contours','stamp_material','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_accents'].includes(tool.name) ? 'Painted: ' + (tool.args?.name ?? 'new layer') : 'Adjusted a layer',
         seconds: (Date.now() - tool.at) / 1000 });
       this.lastModelActivityAt = Date.now();
       if (!this.cancelRequested) this.setActivity('waiting', 'Waiting for the model…');

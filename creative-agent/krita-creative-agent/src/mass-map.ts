@@ -19,8 +19,6 @@ export type MassHost = {
   decisionObservation?: { width?: unknown; height?: unknown } | null;
   canvasContext?: { canvas?: { width?: unknown; height?: unknown } | null } | null;
   callNative(operation: string, params: Record<string, unknown>): Promise<unknown>;
-  /** reference-tool.mjs massReferencePixels's cache (by id, content and source crop), which the attach-time copy fills. */
-  massCache?: Map<string, unknown>;
 };
 
 /** The mass map's version: a record or file of another version counts as missing (the tracing or smoothing changed). */
@@ -103,9 +101,6 @@ async function massMap(host: MassHost, directory: string, reference: MassReferen
   if (!live()) return null;
   const pixels: MassPixels = { width: decoded.width, height: decoded.height, data: Buffer.from(decoded.rgba_base64, 'base64'),
     ...(decoded.source ? { source: decoded.source } : {}), ...(decoded.ms !== undefined ? { ms: decoded.ms } : {}) };
-  // draw_guide masses on the whole reference asks for the same copy (reference-tool.mjs massReferencePixels): reuse it.
-  if (Number(reference.width) > 0 && Number(reference.height) > 0)
-    (host.massCache ??= new Map()).set(`${reference.id}:${sha256}:0,0,${reference.width},${reference.height}`, { ...pixels, sha256 });
   const traced = await traceMasses(pixels);
   const record: MassMapRecord = { version: MASS_MAP_VERSION, sha256, summary: describeMasses(traced.masses), masses: traced.masses.length,
     thumbnail, ms: Math.round(performance.now() - started), peak_mb: Math.round(Math.max(process.memoryUsage().rss, rss) / 1e6) };

@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Element shapes end to end with the real service code path (chat.ts, index.ts, core.ts; only ONNX Runtime is the fake
-// of tests/fixtures/fake-shape-runtime.mjs): a guide traced from a shape on a reference, a pass painted inside a shape
-// on the painting and a protection proposed from a shape, then the shape timings the chat emitted read by the test
+// of tests/fixtures/fake-shape-runtime.mjs): a pass painted inside a shape on the painting and a protection proposed
+// from a shape, then the shape timings the chat emitted read by the test
 // driver's companion as its state's shape_timings. The plugin and the companion process are fakes. Files go to a
 // temporary folder that is removed.
 import test from 'node:test';
@@ -12,15 +12,12 @@ import { PassThrough } from 'node:stream';
 import { mkdtemp, mkdir, rm, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { guideTools } from '../src/guide-tool.ts';
 import { paintingTools } from '../src/tools.mjs';
-import { mapReferencePoint } from '../src/reference-generator.mjs';
 import { chatShapes } from '../src/shapes/chat.ts';
 import { workerCore } from '../src/shapes/core.ts';
 import { SHAPES_MODEL, modelDirectory } from '../src/shapes/model.ts';
 import { TestCompanion } from '../src/test-companion.ts';
 import { fakeRuntime } from './fixtures/fake-shape-runtime.mjs';
-import { fakeTraceEdges } from './fixtures/fake-trace-edges.mjs';
 
 function grey(width, height, dark) {
   const data = new Uint8Array(width * height * 4);
@@ -37,7 +34,7 @@ async function markReady(directory) {
   await writeFile(join(directory, 'verified.json'), JSON.stringify({ revision: SHAPES_MODEL.revision, files: Object.fromEntries(SHAPES_MODEL.files.map(f => [f.name, f.sha256])) }));
 }
 
-test('a guide, a pass and a protection from shapes through the real service, and their timings in the driver state', async t => {
+test('a pass and a protection from shapes through the real service, and their timings in the driver state', async t => {
   const folder = await mkdtemp(join(tmpdir(), 'shapes-e2e-'));
   t.after(() => rm(folder, { recursive: true, force: true }));
   const data = join(folder, 'data'), chat = join(folder, 'chat');
@@ -46,7 +43,6 @@ test('a guide, a pass and a protection from shapes through the real service, and
   const view = join(chat, '.previews', 'view-1.png');
   await writeFile(view, 'the canvas view');
   const events = [], records = [], calls = [], ort = fakeRuntime();
-  const reference = grey(400, 600, (x, y) => x >= 100 && x < 300 && y >= 40);             // a dark tower
   const canvas = grey(1000, 500, (x, y) => Math.hypot(x - 150, y - 120) <= 40);         // a dark moon on the view
   const runtime = {
     config: { data_dir: data }, forkTools: true, faulted: false, calls,
@@ -65,15 +61,6 @@ test('a guide, a pass and a protection from shapes through the real service, and
   } });
   t.after(() => runtime.shapes.close());
 
-  // A guide from a shape on the reference.
-  const guides = guideTools(runtime, {
-    execute: operation => async (id, params) => { calls.push({ operation, params }); return { content: [{ type: 'text', text: '{"status":"ok"}' }], details: { status: 'ok' } }; },
-    mapPoint: mapReferencePoint, referencePixels: async () => reference, traceEdges: fakeTraceEdges(() => [400, 600]) });
-  const guide = await guides.find(x => x.name === 'draw_guide').execute('g1',
-    { element: 'Tower', from_reference: { reference_id: 'goal', shape: { box: [90, 30, 220, 570] }, target: [100, 100, 440, 1140] } });
-  assert.match(guide.content.map(p => p.text ?? '').join(' '), /"shape":\{"score":0\.93/);
-  assert.ok(calls.some(c => c.operation === 'draw_guide' && c.params.strokes.length > 0), 'guide lines reach the plugin');
-
   // A pass inside a shape on the painting, and a protection proposed from one.
   const tools = paintingTools(runtime);
   await tools.find(x => x.name === 'paint_pass').execute('p1', { name: 'Moon glow', preset: 'b) Basic-1',
@@ -84,12 +71,12 @@ test('a guide, a pass and a protection from shapes through the real service, and
   await tools.find(x => x.name === 'propose_protection').execute('pr1', { name: 'Moon', shape: { box: [200, 140, 200, 200] } });
   assert.ok(calls.find(c => c.operation === 'propose_protection').params.area[0].element_shape);
 
-  // Two images, two studies, three shapes: all through the worker core, with the cache in the chat folder.
-  assert.equal(ort.counts.encode, 2);
+  // One image, one study, two shapes: all through the worker core, with the cache in the chat folder.
+  assert.equal(ort.counts.encode, 1);
   const timings = events.filter(e => e.type === 'shape_timing');
-  assert.deepEqual(timings.map(e => e.kind), ['study', 'shape', 'study', 'shape', 'shape']);
+  assert.deepEqual(timings.map(e => e.kind), ['study', 'shape', 'shape']);
   assert.ok(timings.every(e => e.provider === 'cpu' || e.provider === 'cache'));
-  assert.equal(records.filter(r => r.type === 'shape_timing').length, 5, 'and in the diagnostics');
+  assert.equal(records.filter(r => r.type === 'shape_timing').length, 3, 'and in the diagnostics');
 
   // The test driver's companion reads them from the companion's events, as its state's shape_timings.
   const child = new EventEmitter();
@@ -108,7 +95,7 @@ test('a guide, a pass and a protection from shapes through the real service, and
   for (const event of timings) child.stdout.write(JSON.stringify(event) + '\n');
   child.stdout.write(JSON.stringify({ type: 'busy', busy: false }) + '\n');
   const state = await driven.waitIdle(2000);
-  assert.deepEqual(state.shape_timings.map(e => e.kind), ['study', 'shape', 'study', 'shape', 'shape']);
+  assert.deepEqual(state.shape_timings.map(e => e.kind), ['study', 'shape', 'shape']);
   assert.ok(state.shape_timings.every(e => typeof e.ms === 'number' && typeof e.peak_mb === 'number' && e.provider));
   await driven.end();
 });

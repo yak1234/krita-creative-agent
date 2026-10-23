@@ -141,16 +141,3 @@ test('the cache is versioned: a mass map of another version counts as missing', 
     assert.ok((await readdir(join(folder, '.masses'))).every(name => name.includes(`.v${MASS_MAP_VERSION}.`)));
   } finally { await rm(folder, { recursive: true, force: true }); }
 });
-
-test('the attach-time smoothed copy is reused by draw_guide masses on the whole reference', async () => {
-  const folder = await mkdtemp(join(tmpdir(), 'mass-map-'));
-  try {
-    await writeFile(join(folder, 'goal.png'), 'goal image bytes');
-    const { createHash } = await import('node:crypto');
-    const sha = createHash('sha256').update('goal image bytes').digest('hex');
-    const host = { study: goalStudy(folder), decisionObservation: null, async callNative(_o, params) { return smoothed(params); } };
-    await ensureMassMaps(host, () => {});
-    const kept = host.massCache?.get(`goal:${sha}:0,0,480,360`);
-    assert.ok(kept && kept.width === 240 && kept.sha256 === sha, 'the same key massReferencePixels looks up');
-  } finally { await rm(folder, { recursive: true, force: true }); }
-});

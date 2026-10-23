@@ -118,7 +118,7 @@ test('weights, light lines and replace reach the plugin', async () => {
   assert.equal(calls[0].params.replace, true);
   assert.equal(calls[0].params.strokes[0].weight, 'light');
   assert.equal(draw.parameters.properties.lines.items.properties.width, undefined, 'widths come from the canvas, not the model');
-  await assert.rejects(draw.execute('w2', { element: 'Moon' }), /lines, perspective or from_reference/);
+  await assert.rejects(draw.execute('w2', { element: 'Moon' }), /lines or perspective/);
 });
 
 /** Distance from point p to the infinite line through a and b. */

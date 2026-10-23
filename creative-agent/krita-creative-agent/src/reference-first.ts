@@ -13,7 +13,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** The skills a move gets: lay the colours. Guides are not a default (the artist, 2026-10-23: traced lines were
- * distracting next to the solid underpainting); guided-trace comes only with a request for guides (/trace). */
+ * distracting next to the solid underpainting); guided-trace comes only with a request for guides. */
 export const REFERENCE_FIRST_SKILLS = ['reference-transfer'] as const;
 
 const NUDGE_START = 'This painting has a reference.';

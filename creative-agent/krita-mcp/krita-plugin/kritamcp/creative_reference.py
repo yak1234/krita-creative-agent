@@ -1,5 +1,6 @@
 """Read attached image bytes without opening or mutating a Krita document."""
 import base64
+import math
 import hashlib
 from .creative_validation import fields
 
@@ -87,7 +88,7 @@ def _number(value, name, low, high):
 
 
 def trace_edges(params):
-    """Guide lines of a reference crop at full resolution (draw_guide from_reference; edge_trace.py): the reference
+    """Lines of a reference crop at full resolution (edge_trace.py; no longer drawn as guides since crisp-accents): the reference
     decoded at most TRACE_PIXELS, `source` [x, y, w, h] and the lines in its original pixels. scale: canvas pixels a
     reference pixel (simplification and the shortest line are measured on the canvas); labels: the shapes the
     companion found, an 8-bit PNG of shape ids (0 none) at `bounds` of an image of size `space` (the shapes' own
@@ -138,6 +139,83 @@ def trace_edges(params):
     lines = [{'kind': line['kind'], 'points': [[round(clamp(px / kx, x, w), 2), round(clamp(py / ky, y, h), 2)] for px, py in line['points']]}
              for line in out['lines']]
     return {'status': 'ok', 'lines': lines, 'silhouette': out['silhouette'], 'width': dw, 'height': dh,
+            'original_width': image_width, 'original_height': image_height, 'ms': int((time.monotonic() - started) * 1000)}
+
+
+def _decoded_rgba(image):
+    import numpy as np
+    dw, dh = image.width(), image.height()
+    rows = np.frombuffer(image.constBits().asstring(image.sizeInBytes()), np.uint8).reshape(dh, image.bytesPerLine())
+    return np.ascontiguousarray(rows[:, :dw * 4].reshape(dh, dw, 4))
+
+
+def find_accents(params):
+    """The accents a reference crop has and the canvas lacks (paint_accents; accent_find.py): the reference decoded at most TRACE_PIXELS,
+    `source` [x, y, w, h] and the accents in its listed pixels (`size`, the file's own when not given): lights, glints,
+    darks and thin lines with their place, size, colour and strength (the residual). canvas (required): the canvas view
+    the painter last saw ({image_base64, sha256, target}: where source sits in that view, its pixels). Only accents go
+    back, with the time it took."""
+    import time
+    fields(params, ('image_base64', 'sha256', 'source', 'size', 'kinds', 'strength', 'max_accents', 'canvas'),
+           ('image_base64', 'sha256', 'source'))
+    if params.get('canvas') is None:
+        raise ValueError('Finding accents needs the canvas view: accents go only where the canvas lacks a sharp light or dark '
+                         'the reference has. Look at the canvas first.')
+    from . import accent_find
+    source = params['source']
+    if not isinstance(source, list) or len(source) != 4 or any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in source):
+        raise ValueError('source is [x, y, w, h] in whole reference pixels.')
+    kinds = params.get('kinds', list(accent_find.KINDS))
+    if not isinstance(kinds, list) or not kinds or len(set(kinds)) != len(kinds) or any(k not in accent_find.KINDS for k in kinds):
+        raise ValueError('kinds are some of: ' + ', '.join(accent_find.KINDS))
+    strength = params.get('strength', 'medium')
+    if strength not in accent_find.STRENGTHS:
+        raise ValueError('strength is one of: ' + ', '.join(accent_find.STRENGTHS))
+    max_accents = params.get('max_accents', 200)
+    if isinstance(max_accents, bool) or not isinstance(max_accents, int) or not 1 <= max_accents <= 1000:
+        raise ValueError('max_accents must be 1-1000')
+    size = params.get('size')
+    if size is not None and (not isinstance(size, list) or len(size) != 2
+                             or any(isinstance(v, bool) or not isinstance(v, int) or not 1 <= v <= 100000 for v in size)):
+        raise ValueError('size is [w, h] in whole pixels.')
+    canvas = params['canvas']
+    if not isinstance(canvas, dict) or set(canvas) != {'image_base64', 'sha256', 'target'}:
+        raise ValueError('The canvas view is {image_base64, sha256, target}.')
+    target = canvas['target']
+    if not isinstance(target, list) or len(target) != 4 or any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in target):
+        raise ValueError('The canvas target is [x, y, w, h] in whole pixels of the canvas view.')
+    started = time.monotonic()
+    image, width, height = _trace_decode(params)
+    image_width, image_height = width, height
+    if size is not None:
+        width, height = size
+    x, y, w, h = source
+    if not (w > 0 and h > 0 and x + w <= width and y + h <= height):
+        raise ValueError('Source crop must fit the reference.')
+    rgba = _decoded_rgba(image)
+    dw, dh = image.width(), image.height()
+    kx, ky = dw / width, dh / height
+    left, top = min(dw - 1, int(x * kx)), min(dh - 1, int(y * ky))
+    crop = [left, top, max(1, min(dw, int(math.ceil((x + w) * kx))) - left), max(1, min(dh, int(math.ceil((y + h) * ky))) - top)]
+    decoded, view_width, view_height = _trace_decode(canvas)
+    if (decoded.width(), decoded.height()) != (view_width, view_height):
+        raise ValueError('The canvas view must be at most %d pixels.' % TRACE_PIXELS)
+    view = _decoded_rgba(decoded)
+    tx, ty, tw, th = canvas['target']
+    if not (tw > 0 and th > 0 and tx + tw <= view.shape[1] and ty + th <= view.shape[0]):
+        raise ValueError('The canvas target must fit the canvas view.')
+    out = accent_find.find(rgba, crop, kinds=kinds, strength=strength, max_accents=max_accents, canvas=view, target=canvas['target'])
+    k = (kx + ky) / 2
+    clamp = lambda v, low, extent: round(min(low + extent, max(low, v)), 2)
+    accents = []
+    for accent in out['accents']:
+        item = dict(accent, x=clamp(accent['x'] / kx, x, w), y=clamp(accent['y'] / ky, y, h), size=round(accent['size'] / k, 2))
+        if 'length' in item:
+            item['length'] = round(item['length'] / k, 2)
+        if 'points' in item:
+            item['points'] = [[clamp(px / kx, x, w), clamp(py / ky, y, h)] for px, py in item['points']]
+        accents.append(item)
+    return {'status': 'ok', 'accents': accents, 'found': out['found'], 'width': dw, 'height': dh,
             'original_width': image_width, 'original_height': image_height, 'ms': int((time.monotonic() - started) * 1000)}
 
 

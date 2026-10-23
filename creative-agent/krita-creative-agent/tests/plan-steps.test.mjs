@@ -329,3 +329,18 @@ test('lessons are appended in the chat folder only, never through a link or into
     await assert.rejects(recordLesson(dir, { kind: 'redo' }), /not a plain file/, 'a pipe is refused without waiting for a reader');
   } finally { await rm(outside, { recursive: true, force: true }); }
 }));
+
+test('crisp-accents: a paint_accents call running at Good enough finishes, then the step closes and no more accents paint', async () => {
+  const host = fakeHost({ busy: true, folder: false, goal: { status: 'active' } });
+  const move = { number: 1, status: 'painting', step: 0, step_key: keys[0], calls: 1 };
+  host.state.move = move; host.goal.moves = [move];
+  const controls = planStepControls(host);
+  assert.doesNotThrow(() => controls.beforeBatch({ tool: 'paint_accents', args: { reference_id: 'goal' } }), 'the accents call starts');
+  await controls.command(command('good_enough', 0), reviewer(controls));   // the artist presses Good enough while it runs
+  controls.batchEnded();                                                  // it finishes
+  assert.throws(() => controls.beforeBatch({ tool: 'paint_accents', args: { reference_id: 'goal' } }), /good enough/, 'no further accents');
+  host.state.busy = false; host.state.move = undefined; move.status = 'ready';
+  await controls.afterRun();
+  assert.deepEqual(host.goal.step_marks, { [keys[0]]: { met: 'good_enough' } });
+  assert.ok(host.calls.some(c => c.startsWith('keepMove 1')), 'the move (with its Accents group) is kept');
+});

@@ -66,8 +66,8 @@ at exactly that aspect ratio, with ready `paint_from_reference` arguments (sourc
      where it meets existing paint.
    - A sky or background band on its own: fade its lower edge first (`fade_edges.py`, `edges: "bottom"`) so it
      melts into what is below.
-4. Finish: `paint_reference_edges` on the subject's region for crisp contours, then
-   `paint_reference_surface` for smooth areas (sky, snow, skin). Then look at the canvas.
+4. Finish: `paint_reference_surface` for smooth areas (sky, snow, skin), then `paint_accents` on the
+   subject's region, which brightens, deepens and sharpens its own paint where the subject image is crisper. Then look at the canvas.
 
 ## 5. Order for a scene
 

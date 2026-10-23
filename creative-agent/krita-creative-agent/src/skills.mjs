@@ -33,7 +33,7 @@ export function listSkills(directory = SKILLS_DIR) {
 // The artist's "/skill:name rest" (Pi's form) or "/name rest" (the panel's slash menu) becomes the
 // skill's instructions followed by the rest, as Pi does. The studio expands before it adds its own
 // context, which would otherwise hide the command from Pi. "/word" that names no skill is left as typed.
-// The short commands (skill-commands.ts: /trace, /colour, /refine) expand as /skill:<their skill>.
+// The short commands (skill-commands.ts: /colour, /refine) expand as /skill:<their skill>.
 export function expandSkillCommand(text, directory = SKILLS_DIR) {
   const short = skillCommand(text);
   if (short) return expandSkillCommand('/skill:' + short.skill + (short.rest ? ' ' + short.rest : ''), directory);

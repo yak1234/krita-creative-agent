@@ -1,22 +1,18 @@
 // SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Element shapes in use (element-shapes 1.4-1.6): a fake shape service returns synthetic shapes; draw_guide traces
-// only the element inside a cluttered box, paint_pass and paint_batch paint inside a shape on the painting, and
-// propose_protection proposes a shape. Mask files go to a temporary folder that each test removes.
+// Element shapes in use (element-shapes 1.5-1.6): a fake shape service returns synthetic shapes; paint_pass and
+// paint_batch paint inside a shape on the painting, and propose_protection proposes a shape. Mask files go to a temporary folder that each test removes.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { guideTools } from '../src/guide-tool.ts';
 import { paintingTools } from '../src/tools.mjs';
-import { mapReferencePoint } from '../src/reference-generator.mjs';
 import { decodePlane, encodePlane } from '../src/shapes/png.ts';
 import { LOW_SCORE, findShape, pruneShapes, scalePrompt, SHAPE_STUDIES, CANVAS_SHAPES } from '../src/shapes/use.ts';
 import { EMPTY_SHAPE, KEPT_REFERENCES } from '../src/shapes/index.ts';
 import { KEPT_STUDIES } from '../src/shapes/core.ts';
 import { prunePreviews } from '../src/previews.mjs';
-import { fakeTraceEdges } from './fixtures/fake-trace-edges.mjs';
 import { readdir } from 'node:fs/promises';
 
 const TOWER = [[100, 600], [100, 400], [140, 400], [140, 250], [175, 250], [175, 150], [190, 150], [200, 40], [210, 150], [225, 150],
@@ -80,93 +76,6 @@ async function scratch(t) {
   t.after(() => rm(folder, { recursive: true, force: true }));
   return folder;
 }
-
-/** The reference decodes to 400 x 600 (the tower and its clutter), listed at `listed`; the shape is the tower's. */
-function guideSetup(folder, { listed = [400, 600], score = 0.93 } = {}) {
-  const calls = [], events = [], sides = [], traces = [];
-  const pixels = image(400, 600, cluttered);
-  const shapes = fakeShapes(folder, () => ({ bounds: [100, 40, 200, 560], within: (x, y) => inside(x, y, TOWER), score }));
-  const runtime = { study: { references: [{ id: 'goal', width: listed[0], height: listed[1] }] }, decisionObservation: { width: 2000, height: 2000 },
-    shapes: shapes.service, emit: event => events.push(event) };
-  const tools = guideTools(runtime, {
-    execute: operation => async (id, params) => { calls.push({ operation, params }); return { content: [{ type: 'text', text: '{"status":"ok"}' }], details: { status: 'ok' } }; },
-    mapPoint: mapReferencePoint, referencePixels: async (id, side) => { sides.push(side); return pixels; },
-    traceEdges: fakeTraceEdges(() => listed, traces) });
-  return { calls, events, shapes, sides, runtime, traces, draw: tools.find(t => t.name === 'draw_guide') };
-}
-
-test('a tower inside a cluttered box: lines on the tower only, none on the clutter, mapped onto the target', async t => {
-  const folder = await scratch(t);
-  const { calls, shapes, draw, events, traces } = guideSetup(folder);
-  const box = [10, 30, 385, 570], target = [100, 100, 770, 1140];             // scale 2
-  const result = await draw.execute('g1', { element: 'Tower', from_reference: { reference_id: 'goal', shape: { box }, target, detail: 'medium' } });
-  const map = mapReferencePoint(box, target), back = ([x, y]) => [(x - 100) / 2 + 10, (y - 100) / 2 + 30];
-  const lines = strokeLines(calls[0].params.strokes).map(line => line.map(back));
-  assert.ok(lines.length >= 1, 'the tower is outlined');
-  for (const line of lines) for (const p of along(line)) {
-    assert.ok(inside(...p, TOWER) || distance(p, TOWER) <= 4, `${p.map(Math.round)} lies on or in the tower`);
-    for (const clutter of [BUILDING, BLOCK]) assert.ok(distance(p, clutter) > 8 || inside(...p, TOWER), 'never on the clutter');
-    assert.ok(Math.abs(Math.hypot(p[0] - CLOUD.x, p[1] - CLOUD.y) - CLOUD.r) > 8, 'never on the cloud');
-  }
-  const outline = along(TOWER, 3), covered = outline.filter(p => lines.some(line => along(line).some(q => Math.hypot(q[0] - p[0], q[1] - p[1]) <= 4)));
-  assert.ok(covered.length / outline.length >= 0.85, `the outline is covered (${covered.length}/${outline.length})`);
-  // The mapping is the reference tools': the tower's corners land where mapReferencePoint puts them.
-  const mapped = strokeLines(calls[0].params.strokes).flatMap(line => along(line));
-  for (const corner of [[100, 400], [140, 250], [260, 250], [300, 400]]) {
-    const at = map(...corner);
-    assert.ok(mapped.some(p => Math.hypot(p[0] - at[0], p[1] - at[1]) <= 8), `the corner ${corner} lands on the target`);
-  }
-  assert.ok(Object.keys(calls[0].params).every(key => ['element', 'strokes'].includes(key)), 'only lines reach the plugin');
-  assert.deepEqual(shapes.shapes[0].prompt, { box }, 'the prompt in the decoded reference’s pixels');
-  const text = result.content.map(part => part.text ?? '').join(' ');
-  assert.match(text, /"shape":\{"score":0\.93/, 'the score is in the result');
-  assert.doesNotMatch(text, /uncertain/);
-  assert.equal(result.details.shape.score, 0.93);
-  assert.ok(events.some(e => /shape/.test(e.message) && !/mask/i.test(e.message)), 'the panel says "shape"');
-  // The same box without a shape (and no shapes for a block-in here: the service finds the tower wherever it is
-  // pointed, which is one shape) is traced without the element's own: the shape is what keeps the clutter out.
-  assert.equal(traces[0].labels.inside, true, 'the plugin traces inside the shape only');
-  await draw.execute('g0', { element: 'Tower', from_reference: { reference_id: 'goal', source: box, target, detail: 'medium' } });
-  assert.notEqual(traces[1].labels?.inside, true, 'a box alone is not one element');
-  // Studied once per reference and content; each prompt is its own shape.
-  await draw.execute('g2', { element: 'Tower', from_reference: { reference_id: 'goal', shape: { points: [[200, 300, 1], [50, 450, 0]] }, target: [0, 0, 800, 1200] } });
-  assert.equal(shapes.studies.length, 1, 'the reference is studied once');
-  const asked = shapes.shapes.filter(s => s.prompt.points?.length !== 1);     // the block-in's grid points are one each
-  assert.equal(asked.length, 2);
-  assert.deepEqual(asked[1].prompt, { points: [[200, 300, 1], [50, 450, 0]] });
-});
-
-test('a low score is reported so the painter can prompt again', async t => {
-  const folder = await scratch(t);
-  const { draw } = guideSetup(folder, { score: 0.42 });
-  const result = await draw.execute('g1', { element: 'Tower', from_reference: { reference_id: 'goal', shape: { box: [10, 30, 385, 570] }, target: [0, 0, 385, 570] } });
-  const text = result.content.map(part => part.text ?? '').join(' ');
-  assert.match(text, /uncertain \(score 0\.42 < 0\.6\)/);
-  assert.match(text, /tighter box|points/);
-  assert.equal(LOW_SCORE, 0.6);
-});
-
-test('a reference decoded smaller gets its prompt scaled down and its lines scaled back', async t => {
-  const folder = await scratch(t);
-  const { calls, shapes, draw } = guideSetup(folder, { listed: [800, 1200] });
-  await draw.execute('g1', { element: 'Tower', from_reference: { reference_id: 'goal', shape: { box: [20, 60, 770, 1140] }, target: [0, 0, 770, 1140] } });
-  assert.deepEqual(shapes.shapes[0].prompt, { box: [10, 30, 385, 570] }, 'reference pixels to the decode’s');
-  const lines = strokeLines(calls[0].params.strokes).map(line => line.map(([x, y]) => [x + 20, y + 60]));   // target = source, offset
-  const big = TOWER.map(([x, y]) => [2 * x, 2 * y]);
-  for (const line of lines) for (const p of along(line, 4)) assert.ok(inside(...p, big) || distance(p, big) <= 8, `${p.map(Math.round)} on the tower at full size`);
-});
-
-test('shape refusals: bad prompts, and no shape service', async t => {
-  const folder = await scratch(t);
-  const { draw, calls } = guideSetup(folder);
-  for (const [shape, message] of [[{ box: [0, 0, 0, 10] }, /width and a height/], [{ points: [[1, 1, 0]] }, /label 1/], [{ points: [[1, 1, 2]] }, /label/]])
-    await assert.rejects(draw.execute('bad', { element: 'Tower', from_reference: { reference_id: 'goal', shape, target: [0, 0, 400, 600] } }), message);
-  const runtime = { study: { references: [{ id: 'goal', width: 400, height: 600 }] }, decisionObservation: { width: 900, height: 900 }, emit() {} };
-  const bare = guideTools(runtime, { execute: () => async () => ({ content: [], details: {} }), mapPoint: mapReferencePoint, referencePixels: async () => image(400, 600, cluttered),
-    traceEdges: fakeTraceEdges(() => [400, 600]) });
-  await assert.rejects(bare.find(t => t.name === 'draw_guide').execute('x', { element: 'Tower', from_reference: { reference_id: 'goal', shape: { box: [10, 30, 385, 570] }, target: [0, 0, 385, 570] } }), /not available/);
-  assert.equal(calls.length, 0);
-});
 
 /** A painting runtime whose canvas view is 1000 x 500 for a 2000 x 1000 canvas; the plugin is a fake. */
 async function canvasSetup(t, { score = 0.95, scoreFor = null, observation = {}, decoded = [1000, 500], forkTools = true } = {}) {
@@ -368,38 +277,14 @@ test('I2: a study the service forgot (not_studied) is studied again and the shap
   assert.equal(fake.service.generation, undefined, 'no generation in the contract');
 });
 
-test('I3: one reference is one study, whatever the boxes; studies are bounded and the evicted forgotten', async t => {
+test('I3: studies are bounded and the evicted forgotten', async t => {
   const folder = await scratch(t);
-  const { draw, shapes, sides } = guideSetup(folder, { listed: [4000, 6000] });
-  for (let i = 0; i < 10; i++)
-    await draw.execute('g' + i, { element: 'Tower', from_reference: { reference_id: 'goal', shape: { box: [i * 100, i * 100, 200, 300] }, target: [0, 0, 200, 300] } });
-  assert.equal(shapes.studies.length, 1, 'ten boxes, one study');
-  assert.equal(new Set(sides).size, 1, 'the decode does not follow the box');
+  const shapes = fakeShapes(folder, () => ({ bounds: [100, 40, 200, 560], within: (x, y) => inside(x, y, TOWER), score: 0.93 }));
   const host = { shapes: shapes.service };
   const picture = image(400, 600, cluttered);
   for (let i = 0; i <= SHAPE_STUDIES; i++) await findShape(host, 'k' + i, picture, { box: [0, 0, 4, 4] });
   assert.equal(host.shapeStudies.size, SHAPE_STUDIES);
   assert.deepEqual(shapes.forgotten, ['k0'], 'the oldest is evicted and the service told');
-});
-
-test('I4: points without a source fit the element into target, its proportions kept', async t => {
-  const folder = await scratch(t);
-  const { calls, draw } = guideSetup(folder);
-  await draw.execute('g1', { element: 'Tower', from_reference: { reference_id: 'goal', shape: { points: [[200, 300, 1]] }, target: [0, 0, 400, 560] } });
-  // The shape's bounds [100,40,200,560] fit 400 x 560 at scale 1, centred: x + 0, y - 40.
-  const mapped = strokeLines(calls[0].params.strokes).flatMap(line => along(line));
-  for (const [x, y] of [[140, 250], [260, 250], [100, 400], [300, 400]])
-    assert.ok(mapped.some(p => Math.hypot(p[0] - x, p[1] - (y - 40)) <= 6), `corner ${x},${y}`);
-  assert.ok(mapped.every(([x]) => x >= 99 && x <= 301), 'centred in the target, not stretched');
-  assert.match(draw.parameters.properties.from_reference.properties.target.description, /points/);
-});
-
-test('minor 1: shape lines are not clamped to the box; the canvas cuts them', async t => {
-  const folder = await scratch(t);
-  const { calls, draw } = guideSetup(folder);
-  await draw.execute('g1', { element: 'Tower', from_reference: { reference_id: 'goal', shape: { box: [100, 300, 200, 300] }, target: [500, 500, 200, 300] } });
-  const mapped = strokeLines(calls[0].params.strokes).flat();
-  assert.ok(mapped.some(([, y]) => y < 480), 'the spire above the box is drawn above the target');
 });
 
 test('I5 and minor 3: mask files are bounded before inflating, and a bad header is damaged', async () => {

@@ -21,7 +21,7 @@ export const SETTINGS = Object.freeze([
   // A combo, as merge_kept: the panel's checkbox starts unchecked until the settings arrive, which suits only a default-off setting.
   { key: 'guides', type: 'boolean', default: true, panel: 'generic', label: 'Guides', accessible: 'Draw guides from references',
     error: 'guides must be true or false.', options: [[true, 'Draw guides from references'], [false, 'No guides']],
-    tooltip: 'Lets the painter draw guides (construction lines on a guide layer) when you ask for them: a block-in, guides, a trace or /trace. They show until the element is finished, then hide.' },
+    tooltip: 'Lets the painter draw guides (construction lines on a guide layer) when you ask for them: guides, perspective or a construction, drawn by hand (nothing is traced). They show until the element is finished, then hide.' },
   // Reference first (reference-first.ts): with a goal reference, an Agent move gets the reference-transfer skill and a nudge
   // before a flat fill, until a reference colour pass exists. A combo, as guides (default on).
   { key: 'reference_first', type: 'boolean', default: true, panel: 'generic', label: 'Reference colours', accessible: 'Start from the reference\'s colours',

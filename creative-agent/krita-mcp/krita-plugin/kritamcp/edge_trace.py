@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Guide lines from a reference at full resolution (draw_guide from_reference; openspec sharper-guides goals 2 and 3).
+"""Lines from a reference at full resolution (openspec sharper-guides goals 2 and 3). draw_guide no longer traces from a
+reference (crisp-accents); the structure chains below are the line finder of accent_find.py (paint_accents).
 
 The companion maps the lines onto the canvas and draws them; this module only finds them, in the reference's own pixels
 (the decode creative_reference.trace_edges makes, at most TRACE_PIXELS). Nothing here touches Krita or Qt.

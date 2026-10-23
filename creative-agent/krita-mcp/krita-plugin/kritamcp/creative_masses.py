@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The mass map's smoothed copy of a reference crop (draw_guide from_reference masses).
+"""The mass map's smoothed copy of a reference crop (the masses summary and panel thumbnail).
 
 The companion traces the big masses of a reference (sky, each building mass, a head, a car) with VTracer and draws their
 boundaries as guide lines. Traced from the raw image the masses are blotchy (every texture speck is a region), so here

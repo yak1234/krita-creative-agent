@@ -18,7 +18,7 @@ const sameScope=(job,r)=>{if(job.scope===scope(r))return true;try{return !!r.goa
 const allowed=r=>{if(!isPaintingMode(r.mode)||r.executionPhase!=='agent'||r.cancelRequested||r.faulted)throw new Error('Reference painting requires active Agent execution without pending recovery.');};
 const summary=j=>({job_id:j.id,name:j.recipe.name,status:j.status,completed_strokes:j.completed,total_strokes:j.total,pass:j.pass+1,pass_count:j.pass_count,
  ...(j.closeup?{closeup:j.closeup}:{}),
- ...(j.fitted?{fitted:`Steps widened from [${j.fitted.from}] to [${j.recipe.steps}] so the transfer fits ${j.fitted.move?`one Agent move (about ${j.fitted.move} strokes)`:`about ${j.fitted.minutes} of the ${j.fitted.left} minutes left`}; the dabs are larger, so refine focal areas by hand or with paint_reference_edges.`}:{}),
+ ...(j.fitted?{fitted:`Steps widened from [${j.fitted.from}] to [${j.recipe.steps}] so the transfer fits ${j.fitted.move?`one Agent move (about ${j.fitted.move} strokes)`:`about ${j.fitted.minutes} of the ${j.fitted.left} minutes left`}; the dabs are larger, so refine focal areas by hand, and make the picture crisp with paint_accents.`}:{}),
  ...(j.ground?{ground:'A toned ground layer in the reference\u2019s colours, top to bottom, lies under the transfer, so gaps between dabs show its tone, not white canvas.'}:{}),
  next_action:j.status==='complete'?'Review the finished canvas.':j.status==='awaiting_review'?'Inspect this pass image, then continue_reference_painting for the next refinement pass.':'Resume with continue_reference_painting after inspecting any interruption.'});
 // A transfer is underpainting: on a large canvas its dabs are 25-60 px whatever the steps, so running
@@ -109,7 +109,7 @@ export function wholeReferenceRefusal(recipe,reference,canvas){
  const source=reference.width/reference.height>canvas.width/canvas.height
   ?(w=>[Math.floor((reference.width-w)/2),0,w,reference.height])(Math.round(reference.height*canvas.width/canvas.height))
   :(h=>[0,Math.floor((reference.height-h)/2),reference.width,h])(Math.round(reference.width*canvas.height/canvas.width));
- return `This reference has the canvas\u2019s proportions, so the first transfer underpaints the whole picture from all of it: source [${source}], target [0,0,${canvas.width},${canvas.height}]. After the first transfer, transfers are patches of at most ${Math.round(REGION_SHARE*100)}% of the canvas, so a regional first transfer would leave the rest of the picture untransferable. Then refine regions with patches, paint_reference_edges and hand strokes.`;
+ return `This reference has the canvas\u2019s proportions, so the first transfer underpaints the whole picture from all of it: source [${source}], target [0,0,${canvas.width},${canvas.height}]. After the first transfer, transfers are patches of at most ${Math.round(REGION_SHARE*100)}% of the canvas, so a regional first transfer would leave the rest of the picture untransferable. Then refine regions with patches, make it crisp with paint_accents, and add hand strokes.`;
 }
 // The colours a toned ground grades through, top to bottom: the source crop's average in each band.
 // A dab transfer leaves canvas between its dabs (white specks over a dark Vermeer); the ground shows there instead.
@@ -128,50 +128,16 @@ export function groundStops(pixels,source){
 }
 // A part keeps its original's size, mostly transparent: it may be as large as any attached reference (12 MB).
 async function reference(runtime,id){const ref=runtime.study.references.find(r=>r.id===id);if(!ref)throw new Error('Use an attached reference ID.');const file=await containedFile(runtime.study.directory,ref.path),limit=ref.part_kind==='part'?12:5;if((await stat(file)).size>limit*1024*1024)throw new Error('Use a reference smaller than '+limit+' MB for native reconstruction.');const data=await readFile(file);return {data,sha256:hash(data)};}
-// Guided trace (guide-tool.ts from_reference) traces lines from a reference; the pixels themselves never go to the
-// canvas. It has its own decode (the plugin's trace_reference): reduced to max_side on the long side, from an
-// attachment of up to TRACE_REFERENCE_MB (a full-size goal image), cached for the chat per reference, content and size.
-// The reference tools' own decode and limits are not touched.
+// The largest reference the plugin's finders take (find_accents): a full-size goal image.
 export const TRACE_REFERENCE_MB=12;
-const TRACE_CACHE=4;
-export async function traceReferencePixels(runtime,id,maxSide){
- const ref=runtime.study.references.find(r=>r.id===id);if(!ref)throw new Error('Use an attached reference ID.');
- const file=await containedFile(runtime.study.directory,ref.path);
- if((await stat(file)).size>TRACE_REFERENCE_MB*1024*1024)throw new Error(`This reference is too large to trace a guide from (over ${TRACE_REFERENCE_MB} MB). Attach a smaller copy, or draw the guide's lines yourself.`);
- const data=await readFile(file),sha256=hash(data),key=`${id}:${sha256}:${maxSide}`;
- const cache=runtime.guideTraceCache??=new Map();
- const cached=cache.get(key);if(cached)return cached;
- const decoded=await runtime.callNative('trace_reference',{image_base64:data.toString('base64'),sha256,max_side:maxSide});
- if(decoded.sha256!==sha256)throw new Error('Decoded reference identity differs.');
- const pixels={width:decoded.width,height:decoded.height,data:Buffer.from(decoded.rgba_base64,'base64')};
- cache.set(key,pixels);while(cache.size>TRACE_CACHE)cache.delete(cache.keys().next().value);
- return pixels;
-}
-// The mass map (guide-masses.ts) traces a smoothed copy of a reference crop: the plugin's mass_reference decodes the crop
-// at most 720 px on its long side and smooths it (creative_masses.py). Cached for the chat per reference, content and crop.
-export async function massReferencePixels(runtime,id,source){
- const ref=runtime.study.references.find(r=>r.id===id);if(!ref)throw new Error('Use an attached reference ID.');
- const file=await containedFile(runtime.study.directory,ref.path);
- if((await stat(file)).size>TRACE_REFERENCE_MB*1024*1024)throw new Error(`This reference is too large to find its masses (over ${TRACE_REFERENCE_MB} MB). Attach a smaller copy.`);
- const data=await readFile(file),sha256=hash(data),key=`${id}:${sha256}:${source?source.join(','):'all'}`;
- const cache=runtime.massCache??=new Map();
- const cached=cache.get(key);if(cached)return cached;
- // source is in the listed pixels (the size the study lists the reference at), as for trace_edges.
- const size=ref.width>0&&ref.height>0?{size:[ref.width,ref.height]}:{};
- const decoded=await runtime.callNative('mass_reference',{image_base64:data.toString('base64'),sha256,...(source?{source}:{}),...size});
- if(decoded.sha256!==sha256)throw new Error('Decoded reference identity differs.');
- const pixels={width:decoded.width,height:decoded.height,data:Buffer.from(decoded.rgba_base64,'base64'),source:decoded.source,ms:decoded.ms,sha256};
- cache.set(key,pixels);while(cache.size>TRACE_CACHE)cache.delete(cache.keys().next().value);
- return pixels;
-}
-// The guide lines themselves are traced by the plugin at full resolution (trace_edges, edge_trace.py): the file goes as
-// it is, only lines come back, in its own pixels. Same size limit as the decode above.
-export async function traceReferenceEdges(runtime,{reference_id,...request}){
+// paint_accents' finder (accents-tool.ts): the plugin's find_accents reads the file as it is (same size limit as tracing)
+// and sends back only the accents, in its listed pixels.
+export async function findReferenceAccents(runtime,{reference_id,...request}){
  const ref=runtime.study.references.find(r=>r.id===reference_id);if(!ref)throw new Error('Use an attached reference ID.');
  const file=await containedFile(runtime.study.directory,ref.path);
- if((await stat(file)).size>TRACE_REFERENCE_MB*1024*1024)throw new Error(`This reference is too large to trace a guide from (over ${TRACE_REFERENCE_MB} MB). Attach a smaller copy, or draw the guide's lines yourself.`);
+ if((await stat(file)).size>TRACE_REFERENCE_MB*1024*1024)throw new Error(`This reference is too large to find accents in (over ${TRACE_REFERENCE_MB} MB). Attach a smaller copy.`);
  const data=await readFile(file);
- return runtime.callNative('trace_edges',{image_base64:data.toString('base64'),sha256:hash(data),...request});
+ return runtime.callNative('find_accents',{image_base64:data.toString('base64'),sha256:hash(data),...request});
 }
 export function referenceTools(runtime,executePass,fillRegion){
  const folder=()=>join(runtime.study.directory,'reference-paintings');
@@ -282,10 +248,10 @@ export function referenceTools(runtime,executePass,fillRegion){
   defineTool({name:'list_reference_paintings',label:'Finding saved reference painting jobs',executionMode:'sequential',parameters:Type.Object({},{additionalProperties:false}),description:'List saved reference jobs and their completion counts for this study. Read-only; use their IDs to resume after a restart.',
    execute:async()=>{const list=(await jobs()).map(summary);return {content:[{type:'text',text:JSON.stringify(list)}],details:{jobs:list}};}}),
   defineTool({name:'paint_reference_edges',label:'Sharpening edges from the reference',executionMode:'sequential',parameters:edgeSchema,
-   description:'Finishing: paint the reference\u2019s own edges in a region as thin strokes that follow each edge, one in each side\u2019s colour, so forms, contours, highlights and reflections become crisp where the canvas is soft or mosaic-like. Source/target are [x,y,width,height] with matching aspect ratios; target the region on the canvas where that source content already sits. Choose focal regions (a figure, a vehicle, a railing, lit windows), not the whole picture. On a painted canvas the target may be at most 2x the source; past that attach a closer reference of the area. Use a crisp opaque preset (Basic-6 Details, Ink-2 Fineliner). One editable layer; resumable with continue_reference_painting.',
+   description:'Edges from the reference (not for finishing: paint_accents makes a painting crisp; these paired strokes look scratchy on painterly references): paint the reference\u2019s own edges in a region as thin strokes that follow each edge, one in each side\u2019s colour, so forms, contours, highlights and reflections become crisp where the canvas is soft or mosaic-like. Source/target are [x,y,width,height] with matching aspect ratios; target the region on the canvas where that source content already sits. Choose focal regions (a figure, a vehicle, a railing, lit windows), not the whole picture. On a painted canvas the target may be at most 2x the source; past that attach a closer reference of the area. Use a crisp opaque preset (Basic-6 Details, Ink-2 Fineliner). One editable layer; resumable with continue_reference_painting.',
    execute:(id,args,signal)=>start(id,{...args,mode:'edges'},signal)}),
   defineTool({name:'paint_reference_surface',label:'Blending surfaces along the forms',executionMode:'sequential',parameters:surfaceSchema,
-   description:'Finishing: blend the dab or mosaic texture in smooth areas into continuous paint, then repaint the region\u2019s edges crisp, in one call. Short smudge strokes follow the reference\u2019s own form direction (sky, clouds, hair, skin, car body) at half strength and leave busy areas alone (lit windows, reflections, snow, fur: max_detail), which need paint_reference_edges and hand strokes instead. The smudge mixes the colours already on the canvas onto its own new layer and never repaints your layers. Use a Color Smudge blender preset (k) Blender Basic). Source/target are [x,y,width,height] with matching aspect ratios; target the canvas region where that source content already sits. On a painted canvas the target may be at most 2x the source. Two editable layers (surface, edges); resumable with continue_reference_painting.',
+   description:'Finishing: blend the dab or mosaic texture in smooth areas into continuous paint, then repaint the region\u2019s edges crisp, in one call. Short smudge strokes follow the reference\u2019s own form direction (sky, clouds, hair, skin, car body) at half strength and leave busy areas alone (lit windows, reflections, snow, fur: max_detail), which need paint_accents and hand strokes instead. The smudge mixes the colours already on the canvas onto its own new layer and never repaints your layers. Use a Color Smudge blender preset (k) Blender Basic). Source/target are [x,y,width,height] with matching aspect ratios; target the canvas region where that source content already sits. On a painted canvas the target may be at most 2x the source. Two editable layers (surface, edges); resumable with continue_reference_painting.',
    execute:(id,args,signal)=>start(id,{...args,mode:'surface'},signal)})
  ];
 }

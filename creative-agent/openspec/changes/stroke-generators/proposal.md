@@ -69,5 +69,5 @@ measured.
 
 ## Left to the builder
 
-Field maths for `around`/`along` (distance transform of the area), seed spacing and collision checks, defaults per
+Field maths for `around` (distance transform of the area), seed spacing and collision checks, defaults per
 preset, whether simplex-noise is worth a dependency, and the exact schema names.

@@ -656,6 +656,57 @@ class ShapesModelPrompt(unittest.TestCase):
         self.assertNotIn('mask', block.lower())
 
 
+class CloseupQuestion(unittest.TestCase):
+    """Close-up references (src/closeups.ts): the companion's question about where a close-up sits in the goal carries the
+    goal with that place drawn on it; the panel shows it in the question card. A question without one shows no picture."""
+    def setUp(self):
+        import tempfile
+        from panel_features_test.qt_compat import QImage, QColor
+        state.document = None
+        self.folder = tempfile.TemporaryDirectory()
+        self.preview = os.path.join(self.folder.name, 'woman.jpg')
+        image = QImage(320, 240, QImage.Format.Format_RGB32); image.fill(QColor('#204060')); image.save(self.preview, 'JPEG')
+        self.panel = module.CreativeAgentDocker(); self.panel.resize(440, 820); self.panel.show()
+
+    def tearDown(self):
+        self.panel.close(); KEEP.append(self.panel); self.folder.cleanup()
+        for _ in range(4): app.processEvents()
+
+    def pictures(self):
+        from panel_features_test.qt_compat import QLabel
+        card = self.panel.transcript.messages[-1]['card']
+        return [label for label in card.findChildren(QLabel) if label.objectName() == 'questionImage' and not label.pixmap().isNull()]
+
+    def test_the_question_shows_the_goal_with_the_close_ups_place(self):
+        self.panel.handle_event({'type': 'question', 'id': 'q1', 'question': '11-woman-back-view.png matches part of the goal image. Use it?',
+                                 'options': ['Use the close-up there', 'Not this close-up'], 'image_path': self.preview})
+        pictures = self.pictures()
+        self.assertEqual(len(pictures), 1)
+        self.assertLessEqual(pictures[0].pixmap().width(), 360)
+        self.assertEqual([b.text() for b in self.panel.question_controls], ['Use the close-up there', 'Not this close-up', 'You decide'])
+
+    def test_a_close_up_question_is_answered_beside_the_run_by_its_id(self):
+        sent = []
+        self.panel.process = types.SimpleNamespace(state=lambda: QProcess.ProcessState.Running, write=lambda data: sent.append(json.loads(data)))
+        self.panel.handle_event({'type': 'closeup_question', 'id': 'c1', 'closeup_id': 'woman', 'question': '11-woman-back-view.png matches part of the goal image. Use it?',
+                                 'options': ['Use the close-up there', 'Not this close-up'], 'image_path': self.preview})
+        self.assertEqual(len(self.pictures()), 1)
+        buttons = self.panel.closeup_controls
+        self.assertEqual([b.text() for b in buttons], ['Use the close-up there', 'Not this close-up', 'You decide'])
+        self.assertEqual(self.panel.question_controls, [], 'not the chat question: the run is not held')
+        buttons[0].click()
+        self.assertEqual(sent, [{'type': 'closeup_answer', 'question_id': 'c1', 'answer': 'Use the close-up there'}])
+        self.assertEqual(self.panel.prompt.toPlainText(), '', 'nothing typed into the chat')
+        self.assertTrue(all(not b.isEnabled() for b in buttons), 'answered once')
+        self.panel.handle_event({'type': 'closeup_question', 'id': 'c1', 'closeup_id': 'woman', 'question': 'again', 'options': []})
+        self.assertIs(self.panel.closeup_controls, buttons, 'the same question shown again (a resume) adds no card')
+        self.panel.process = None
+
+    def test_a_question_without_a_picture_shows_none(self):
+        self.panel.handle_event({'type': 'question', 'id': 'q2', 'question': 'How matte?', 'options': ['Matte', 'Glossy']})
+        self.assertEqual(self.pictures(), [])
+
+
 # The "/" menu (skill-commands.ts): the companion sends the commands in its skills event, so the panel names no skill.
 import subprocess
 SKILLS_EVENT = json.loads(subprocess.run(['node', '-e', "import('./src/skills.mjs').then(m=>process.stdout.write(JSON.stringify(m.skillsEvent())))"],

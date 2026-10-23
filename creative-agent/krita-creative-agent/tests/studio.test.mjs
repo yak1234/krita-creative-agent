@@ -3414,6 +3414,53 @@ test('propose_plan in a folder chat: bare file names resolve to the folder, unkn
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
 });
 
+// Close-up references for detail (closeups.ts): the studio aligns a reference of other proportions to the goal, asks the
+// artist once with the place drawn on the goal (the chat's question, with its picture), records the answer, and tells
+// the painter which areas have a close-up.
+function sizedPng(width, height) {
+ const head=Buffer.alloc(13); head.writeUInt32BE(width,0); head.writeUInt32BE(height,4); head[8]=8;
+ const chunk=(type,data)=>{const length=Buffer.alloc(4);length.writeUInt32BE(data.length);const body=Buffer.concat([Buffer.from(type),data]);
+  const crc=Buffer.alloc(4);crc.writeUInt32BE(crc32(body));return Buffer.concat([length,body,crc]);};
+ return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',head),chunk('IDAT',deflateSync(Buffer.from([0,1]))),chunk('IEND',Buffer.alloc(0))]);
+}
+test('a close-up is aligned once, confirmed by the artist through the chat’s question, and listed for the painter',{timeout:30000},async()=>{
+ const aligned=[];
+ const h=await harness(()=>({content:'Noted.'}),async(op,params)=>{
+  if(op!=='align_closeup')return undefined;
+  aligned.push(params);
+  return {status:'ok',aligned:true,matrix:[0.5,0,100,0,0.5,200,0,0,1],quad:[[100,200],[300,200],[300,350],[100,350]],box:[100,200,200,150],scale:2,rotation:0,
+   matches:200,inliers:190,score:.95,similarity:.97,ms:120,goal_size:[768,1024],closeup_size:[400,300],preview_jpeg_base64:Buffer.from('jpeg').toString('base64')};
+ });
+ try {
+  const goal=join(h.output,'goal.png'), close=join(h.output,'face.png');
+  await writeFile(goal,sizedPng(768,1024)); await writeFile(close,sizedPng(400,300));
+  await h.start('ask','Hello',{references:[{path:goal},{path:close}]});
+  h.runtime.decisionObservation={width:768,height:1024,revision:'revision-0'};
+  await h.runtime.closeups.refresh(); await h.runtime.closeups.refresh();
+  assert.equal(aligned.length,1,'aligned once');
+  const [goalRef,closeRef]=h.runtime.study.references;
+  assert.equal(await h.runtime.closeups.route({reference_id:goalRef.id,source:[150,250,40,30],target:[0,0,160,120]}),null,'not confirmed: the goal is sampled');
+  assert.equal(h.runtime.goal.question,null,'nothing holds the run');
+  assert.notEqual(h.runtime.goal.status,'needs_input');
+  const asked=h.events.filter(e=>e.type==='closeup_question').at(-1);
+  assert.match(asked.question,/face\.png/);
+  assert.equal(await readFile(asked.image_path,'utf8'),'jpeg');
+  assert.equal(h.runtime.goal.closeup_question.id,asked.id);
+  await h.runtime.prompt('Use the close-up there');
+  assert.equal(h.runtime.study.closeups[closeRef.id].confirmed,undefined,'a chat message is not the answer');
+  await h.runtime.answerCloseup({question_id:'another',answer:'Use the close-up there'});
+  assert.equal(h.runtime.study.closeups[closeRef.id].confirmed,undefined,'only the answer to this question counts');
+  await h.runtime.answerCloseup({question_id:asked.id,answer:'Use the close-up there'});
+  assert.equal(h.runtime.study.closeups[closeRef.id].confirmed,'yes');
+  assert.equal(h.runtime.goal.closeup_question,null);
+  const used=await h.runtime.closeups.route({reference_id:goalRef.id,source:[150,250,40,30],target:[0,0,160,120]});
+  assert.deepEqual(used.recipe.source,[100,100,80,60]);
+  assert.match(h.runtime.context('agent'),/Close-ups for detail: [^"]*face\.png, about 2x sharper/);
+  await h.runtime.removeReference({id:closeRef.id});
+  assert.equal(h.runtime.study.closeups[closeRef.id],undefined,'a removed close-up\u2019s record goes');
+ } finally {await h.close();}
+});
+
 test('a folder plan step the artist approved that names guides is a guides step',async()=>{
  const runtime=Object.create(StudioRuntime.prototype);
  runtime.goal={brief:{steps:[{title:'Guides: block in the whole composition',done_when:'d',scope:'whole composition'},{title:'Underpainting from the goal image',done_when:'d',scope:'whole composition'}]}};

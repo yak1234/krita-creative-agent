@@ -155,6 +155,10 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             # Guided trace's lines from a reference at full resolution (edge_trace.py): only lines go back.
             from .creative_reference import trace_edges
             return trace_edges(params)
+        if operation == 'align_closeup':
+            # Where a close-up sits in the goal image (closeup_align.py): only the placement goes back.
+            from .closeup_align import align_closeup
+            return align_closeup(params)
         if operation == 'model_image':
             from .creative_reference import model_image
             return model_image(params)

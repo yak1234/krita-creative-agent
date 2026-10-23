@@ -931,9 +931,15 @@ class ChatTranscript(QScrollArea):
             item['layout'].insertWidget(1 + index + bool(item.get('receipt')) + bool(item.get('region_receipt')), button)
         item['reference_receipts'] = snapshots
 
-    def add_question(self, question, options, answer):
+    def add_question(self, question, options, answer, image_path=None):
         item = self.add_message('A quick question', question)
         item['card'].setObjectName('questionMessage')
+        # A picture the question is about (a close-up's place drawn on the goal image), scaled to the card.
+        pixmap = QPixmap(image_path) if image_path else QPixmap()
+        if not pixmap.isNull():
+            picture = QLabel(); picture.setObjectName('questionImage')
+            picture.setPixmap(pixmap.scaled(QSize(360, 270), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            item['layout'].addWidget(picture)
         choices = list(options)
         if not any(choice.casefold().strip(' .') == 'you decide' for choice in choices): choices.append('You decide')
         controls = []
@@ -1191,6 +1197,8 @@ class CreativeAgentDocker(DockWidget):
         self.canvas_context = {'selected': True, 'follow_active': True, 'state': 'none', 'canvas': None}
         self.question_id = None
         self.question_controls = []
+        self.closeup_question_id = None
+        self.closeup_controls = []
         self.streaming_text = ''
         self.last_user_item = None
         self.history_dialog = None
@@ -2391,7 +2399,7 @@ class CreativeAgentDocker(DockWidget):
         self.transcript.clear()
         self.current_reply = None; self.reply_open = False
         self.folder_card.hide(); self.folder_guesses = {}; self.folder_elements.clear(); self.clear_folder_masses()
-        self.goal = None; self.plan_bar.hide(); self.move_bar.hide(); self.current_move = None; self.question_id = None; self.question_controls = []
+        self.goal = None; self.plan_bar.hide(); self.move_bar.hide(); self.current_move = None; self.question_id = None; self.question_controls = []; self.closeup_question_id = None; self.closeup_controls = []
         self.pending_references = []; self.attached_references = []; self.show_references()
         self.empty_state.show()
         self.last_user_item = None
@@ -2787,11 +2795,20 @@ class CreativeAgentDocker(DockWidget):
         elif kind == 'mode':
             self.mode_selector.blockSignals(True); self.mode_selector.setCurrentIndex(self.mode_selector.findData(event['mode'])); self.mode_selector.blockSignals(False)
             self.chat_mode = event['mode']; self.update_controls()
+        elif kind == 'closeup_question':
+            # Close-up references (closeups.ts): asked beside the run, answered by this question's id, never typed into the chat.
+            if self.closeup_question_id != event['id']:
+                self.closeup_question_id = event['id']
+                question_id = event['id']
+                def answer(value, question_id=question_id):
+                    for button in self.closeup_controls: button.setEnabled(False)
+                    self.send({'type': 'closeup_answer', 'question_id': question_id, 'answer': value})
+                self.closeup_controls = self.transcript.add_question(event['question'], event.get('options', []), answer, event.get('image_path'))
         elif kind == 'question':
             self.flush_stream(); self.reply_open = False
             if self.question_id != event['id']:
                 self.question_id = event['id']
-                self.question_controls = self.transcript.add_question(event['question'], event.get('options', []), self.answer_question)
+                self.question_controls = self.transcript.add_question(event['question'], event.get('options', []), self.answer_question, event.get('image_path'))
             self.prompt.setPlaceholderText('Answer here, or choose an option above…')
         elif kind == 'review':
             self.flush_stream(); self.reply_open = False

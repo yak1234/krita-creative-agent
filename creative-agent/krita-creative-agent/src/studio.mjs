@@ -2,6 +2,7 @@ import { MODES as modes, isPaintingMode } from './modes.mjs';
 import {LunaRouter, routingState, contextIdentity, routingAdvice} from './routing.mjs';
 import { DecisionService } from './decisions/service.ts';
 import { chatShapes } from './shapes/chat.ts';
+import { chatCloseups } from './closeups.ts';
 import {passCheck, progressCheck, moveCheck, seamCheck} from './visual-checks.ts';
 import { executionSettings, thinkingLevel, AUTO_REASONING_NOTE } from './execution-settings.mjs';
 import { panelSchema } from './settings-schema.mjs';
@@ -12,7 +13,7 @@ import { mayBeDone, askWhenDoneNote } from './ask-when-done.ts';
 import { unifyActions, unifyRefusal, WHOLE_CANVAS_SHARE } from './unify-pass.ts';
 import { COMIC_GUIDANCE, COMIC_REVIEW, comicContext, comicPlanProblems, panelId, storySchema } from './comic.mjs';
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
-import { mkdir, readFile, readdir, rename, writeFile, rm, access, realpath } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, writeFile, rm, access, realpath, stat } from 'node:fs/promises';
 import { join, basename, relative, resolve } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { Type } from 'typebox';
@@ -244,6 +245,9 @@ export class StudioRuntime extends PaintingRuntime {
     this.store = options.store ?? new ProjectStore({projectRoot:this.paintingsDirectory,dataDirectory:options.config.data_dir,legacyRoots:[options.config.output,options.config.legacy_output].filter(Boolean)});
     // Element shapes (src/shapes): the open chat's study/shape/close, and answer() for the panel's shapes_model command.
     this.shapes = options.shapes ?? chatShapes(this);
+    // Close-up references for detail (closeups.ts): aligned to the goal once, confirmed by the artist, then sampled by
+    // detail transfers there (reference-tool.mjs asks runtime.closeups).
+    this.closeups = options.closeups ?? chatCloseups(this.closeupHost());
   }
   async importJournals() {
     const chats = await this.store.chatsWithJsonJournal();
@@ -1121,6 +1125,7 @@ export class StudioRuntime extends PaintingRuntime {
       reference_images: this.study.references.length ? this.referenceImagesNote ?? null : undefined,
       comic: comicContext(this.goal.comic),
       folder: this.folderContext(),
+      closeups: this.closeups?.context(),
       layer_need: phase==='agent' && this.layerNeed ? this.layerNeed : undefined,
     }) + '\n\n' + (this.goal.comic && COMIC_GUIDANCE[phase] ? COMIC_GUIDANCE[phase] + '\n\n' : '');
   }
@@ -1159,6 +1164,36 @@ export class StudioRuntime extends PaintingRuntime {
   // Project folder (project-folder B2): the artist's folder of references. The scan is read-only (project-folder.ts); the
   // goal image is attached as a composition reference and each numbered element as an asset, copied into the chat like
   // any reference. study.folder ({root, guesses}) follows the chat; a folder chosen before a chat waits for its start.
+  closeupHost() {
+    const studio = this;
+    return {
+      get study() { return studio.study; },
+      get canvas() { return studio.decisionObservation ?? studio.lastObservation ?? null; },
+      get diagnostics() { return studio.diagnostics; },
+      callNative: (operation, params) => this.callNative(operation, params),
+      readReference: async ref => readFile(await containedFile(this.study.directory, ref.path)),
+      statReference: async ref => { const {size, mtimeMs} = await stat(await containedFile(this.study.directory, ref.path)); return {size, mtimeMs}; },
+      persist: () => this.persist(),
+      emit: event => this.emit(event),
+      // A question beside the chat, never goal.question: the run goes on sampling the goal, and only the panel's answer to
+      // this question's id (answerCloseup) confirms it. One at a time: a newer one replaces it.
+      ask: question => {
+        if (!this.goal) return;
+        this.goal.closeup_question = {...question, id:randomUUID()};
+        this.persist().then(() => this.publish()).catch(() => {});
+        this.emit({type:'closeup_question', ...this.goal.closeup_question});
+      },
+    };
+  }
+  /** The panel's answer to a close-up question: applied only to the question it answers. "You decide" is a no. */
+  async answerCloseup({question_id, answer} = {}) {
+    const asked = this.goal?.closeup_question;
+    if (!asked || asked.id !== question_id || typeof answer !== 'string') return;
+    this.goal.closeup_question = null;
+    if (this.closeups.answer(asked.closeup_id, answer))
+      this.emit({type:'action', seconds:0, message:(this.study.closeups?.[asked.closeup_id]?.confirmed === 'yes' ? 'Close-up confirmed: ' : 'Close-up not used: ') + asked.question.split(' matches')[0]});
+    await this.persist(); this.publish();
+  }
   folderState() { return this.study?.folder ?? this.pendingFolder ?? null; }
   folderGuessOf(element) { return this.folderState()?.guesses?.[element.name] ?? element.guess; }
   async openFolder({path} = {}) {
@@ -1535,7 +1570,12 @@ export class StudioRuntime extends PaintingRuntime {
   async removeReference(command) {
     if (this.busy) throw new Error('Pause before removing a reference.');
     if (!this.study) return;
-    this.study.references = this.study.references.filter(r => r.id !== command.id && r.path !== command.path && r.source_path !== command.path);
+    const kept = this.study.references.filter(r => r.id !== command.id && r.path !== command.path && r.source_path !== command.path);
+    for (const removed of this.study.references.filter(r => !kept.includes(r))) {
+      this.closeups.forget(removed.id);
+      if (this.goal?.closeup_question?.closeup_id === removed.id) this.goal.closeup_question = null;
+    }
+    this.study.references = kept;
     // Historical snapshots and files remain available to earlier messages.
     if (this.goal.brief) { this.goal.approved_revision = null; this.goal.status = 'ready'; }
     await this.persist(); this.publish();
@@ -2191,6 +2231,7 @@ export class StudioRuntime extends PaintingRuntime {
       this.selectTools('agent');
       let canvas = await this.callNative('observe');
       this.decisionObservation = canvas; this.lastObservation = canvas; this.publish();
+      this.closeups.startRun(); await this.closeups.refresh();   // new or changed close-ups are aligned before the painter plans
       // Luna review finds a batch's passes by what it adds to this list (reviewHost.batch): know it before the first batch.
       if (this.seenPasses?.study !== this.study && this.lunaMode() !== 'off') {
         const listed = await this.bridge.call('list_passes',{output_dir:this.study.directory},this.study.id).catch(() => null);
@@ -2347,6 +2388,7 @@ export class StudioRuntime extends PaintingRuntime {
         this.goal.status = 'active'; this.yieldRequested = false; this.passesThisCycle = 0; this.selectTools('agent'); this.publish();
         const before = this.lastObservation?.revision;
         let canvas = await this.callNative('observe');
+        if (cycle === 0) { this.closeups.startRun(); await this.closeups.refresh(); }
         if (this.goal.comic && !this.goal.comic.built) { this.decisionObservation = canvas; canvas = await this.ensureComicPage(); }
         // The artist's own edits are direction, not a reason to stop: keep them.
         if (cycle > 0 && before && canvas.revision !== before) {
@@ -2731,6 +2773,7 @@ export class StudioRuntime extends PaintingRuntime {
       if (record.missingPainting) this.emit({type:'needs_relink',id,path:record.paintingPath,message:'This painting moved. Locate it before resuming Agent.'});
       await this.persist(); this.publish();
       if (this.goal.question) this.emit({type:'question',...this.goal.question});
+      if (this.goal.closeup_question) this.emit({type:'closeup_question',...this.goal.closeup_question});
       this.setActivity('idle','Conversation restored and paused. Ask about the current canvas or resume your plan.');
     } catch(error) {
       this.untrace?.(); this.untrace = undefined; this.session?.dispose(); this.session=undefined; this.study=undefined; this.goal=undefined; this.emit({type:'ended'}); throw error;

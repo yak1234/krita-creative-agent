@@ -17,6 +17,7 @@ const scope=r=>r.goal?JSON.stringify([r.goal.revision]):null;
 const sameScope=(job,r)=>{if(job.scope===scope(r))return true;try{return !!r.goal&&JSON.parse(job.scope)[0]===r.goal.revision;}catch{return false;}};
 const allowed=r=>{if(!isPaintingMode(r.mode)||r.executionPhase!=='agent'||r.cancelRequested||r.faulted)throw new Error('Reference painting requires active Agent execution without pending recovery.');};
 const summary=j=>({job_id:j.id,name:j.recipe.name,status:j.status,completed_strokes:j.completed,total_strokes:j.total,pass:j.pass+1,pass_count:j.pass_count,
+ ...(j.closeup?{closeup:j.closeup}:{}),
  ...(j.fitted?{fitted:`Steps widened from [${j.fitted.from}] to [${j.recipe.steps}] so the transfer fits ${j.fitted.move?`one Agent move (about ${j.fitted.move} strokes)`:`about ${j.fitted.minutes} of the ${j.fitted.left} minutes left`}; the dabs are larger, so refine focal areas by hand or with paint_reference_edges.`}:{}),
  ...(j.ground?{ground:'A toned ground layer in the reference\u2019s colours, top to bottom, lies under the transfer, so gaps between dabs show its tone, not white canvas.'}:{}),
  next_action:j.status==='complete'?'Review the finished canvas.':j.status==='awaiting_review'?'Inspect this pass image, then continue_reference_painting for the next refinement pass.':'Resume with continue_reference_painting after inspecting any interruption.'});
@@ -193,10 +194,14 @@ export function referenceTools(runtime,executePass,fillRegion){
  async function start(id,recipe,signal){
   signal?.throwIfAborted();allowed(runtime);await mkdir(folder(),{recursive:true});const identifier=hash(id).slice(0,32);let old;try{old=JSON.parse(await readFile(path(identifier),'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
   if(old){if(JSON.stringify(old.requested??old.recipe)!==JSON.stringify(recipe))throw new Error('Operation ID reused with different reference instructions.');return response(old,await runtime.callNative('observe'));}
+  // A detail transfer from the goal samples a confirmed close-up of that area instead (closeups.ts); until the artist has
+  // confirmed one, it samples the goal and the close-up is shown to them beside the run.
+  const asked=recipe,routed=await runtime.closeups?.route(recipe);
+  if(routed)recipe=routed.recipe;
   const source=await reference(runtime,recipe.reference_id);
   const observation=await runtime.callNative('observe');runtime.decisionObservation=observation;
   const pixels=await decode(source);
-  let ground=null,fitted=null,requested=recipe;
+  let ground=null,fitted=null,requested=asked;
   if(!recipe.mode&&scope(runtime)){
    const painted=(await paintedJobs()).filter(j=>!j.recipe.mode).length,established=existingPainting(runtime,observation);
    const ref=runtime.study.references.find(r=>r.id===recipe.reference_id),part=ref?.part_kind==='part'&&ref.bounds?ref:null;
@@ -214,7 +219,7 @@ export function referenceTools(runtime,executePass,fillRegion){
    if(refusal)throw new Error(refusal);
   }
   const plan=buildPlan(recipe,pixels,observation);
-  const job={id:identifier,version:REFERENCE_GENERATOR_VERSION,recipe,...(requested!==recipe?{requested}:{}),...(fitted?{fitted}:{}),...(ground?{ground}:{}),reference_hash:source.sha256,plan_hash:hash(JSON.stringify(plan)+'\n'),canvas:{width:observation.width,height:observation.height},scope:scope(runtime),status:'ready',pass:0,pass_count:plan.passes.length,offset:0,completed:0,total:plan.total,last_revision:observation.revision,layer_id:null,pending:null};await atomic(path(identifier),job);return run(job,signal,plan);
+  const job={id:identifier,version:REFERENCE_GENERATOR_VERSION,recipe,...(requested!==recipe?{requested}:{}),...(routed?{closeup:routed.note}:{}),...(fitted?{fitted}:{}),...(ground?{ground}:{}),reference_hash:source.sha256,plan_hash:hash(JSON.stringify(plan)+'\n'),canvas:{width:observation.width,height:observation.height},scope:scope(runtime),status:'ready',pass:0,pass_count:plan.passes.length,offset:0,completed:0,total:plan.total,last_revision:observation.revision,layer_id:null,pending:null};await atomic(path(identifier),job);return run(job,signal,plan);
  }
  async function run(job,signal,built){
   allowed(runtime);

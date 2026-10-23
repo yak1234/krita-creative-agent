@@ -1,7 +1,7 @@
 # After the underpainting: close-ups, a stretch limit, one unify pass, ask when it may be done
 
-Status: PROPOSED (2026-10-23, written up at the artist's request); waiting for the artist's go. Would build after
-sharper-guides merges.
+Status: APPROVED by the artist (2026-10-23: "yes what are you waiting for"). Builds in parallel with sharper-guides goal 4
+(two branches: close-ups, and goals 2-5).
 
 ## Why
 

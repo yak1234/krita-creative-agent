@@ -1,11 +1,11 @@
 # Sharper guides: tasks
 
 ## 1. Full-resolution tracing and outlines by shape (goals 2, 3) — branch agent/sharper-trace
-- [ ] 1.1 Plugin: OpenCV edge trace of a reference crop at full resolution (bounded by TRACE_PIXELS): edge-preserving smoothing, Canny, contours, simplification in canvas terms; thin tall parts kept
-- [ ] 1.2 Line/point caps grow with the element's size on the canvas
-- [ ] 1.3 Element outlines from the shapes model when allowed (existing consent, cache, timings); brightness split only as the fallback
-- [ ] 1.4 Whole-reference block-in: big shapes found once, each outlined; edges inside a shape become structure lines
-- [ ] 1.5 Tests (plugin + companion), time and memory measured; three references (New Moscow copy, a portrait, a landscape)
+- [x] 1.1 Plugin: OpenCV edge trace of a reference crop at full resolution (bounded by TRACE_PIXELS): edge-preserving smoothing, Canny, contours, simplification in canvas terms; thin tall parts kept
+- [x] 1.2 Line/point caps grow with the element's size on the canvas
+- [x] 1.3 Element outlines from the shapes model when allowed (existing consent, cache, timings); brightness split only as the fallback
+- [x] 1.4 Whole-reference block-in: big shapes found once, each outlined; edges inside a shape become structure lines
+- [x] 1.5 Tests (plugin + companion), time and memory measured; three references (New Moscow copy, a portrait, a landscape)
 
 ## 2. Mass map with VTracer (goal 4) — branch agent/mass-map
 - [ ] 2.1 Plugin: smoothed copy (bilateral + mean shift, at most ~720 px long side)

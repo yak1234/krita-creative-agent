@@ -40,6 +40,9 @@ export interface ShapeService {
   forget(imageId: string): Promise<void>;
   /** Stops the worker and cancels what waits or runs, without waiting for it. The service can be used again. */
   close(): Promise<void>;
+  /** Whether a shape can be found without asking the artist anything (the model is downloaded and not declined). A
+   * service without it never asks. */
+  ready?(): Promise<boolean>;
 }
 /** The worker as the service sees it: forkWorker's child process, or a test's stand-in. */
 export type WorkerLink = {

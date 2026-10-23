@@ -28,6 +28,8 @@ export type ChatShapes = ShapeService & {
   answer(action: 'accept' | 'decline' | 'enable'): boolean;
   /** The panel's Stop: a pending download question or a download in progress is cancelled. */
   stop(): void;
+  /** The model is downloaded and checked, and the artist has not declined it for this chat: no question would be asked. */
+  ready(): Promise<boolean>;
 };
 type Download = (options: { directory: string; spec: ModelSpec; onProgress?: (done: number, total: number) => void; signal?: AbortSignal }) => Promise<void>;
 
@@ -145,6 +147,10 @@ export function chatShapes(runtime: ChatRuntime, { spec = SHAPES_MODEL, download
       return true;
     },
     stop() { cancelAll(); },
+    async ready() {
+      if (runtime.study?.shapes_declined) return false;
+      try { return await modelReady(modelDirectory(dataDir(), spec), spec); } catch { return false; }
+    },
     async close() {
       cancelAll();
       await service.close();

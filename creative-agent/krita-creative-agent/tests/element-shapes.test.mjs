@@ -16,6 +16,7 @@ import { LOW_SCORE, findShape, pruneShapes, scalePrompt, SHAPE_STUDIES, CANVAS_S
 import { EMPTY_SHAPE, KEPT_REFERENCES } from '../src/shapes/index.ts';
 import { KEPT_STUDIES } from '../src/shapes/core.ts';
 import { prunePreviews } from '../src/previews.mjs';
+import { fakeTraceEdges } from './fixtures/fake-trace-edges.mjs';
 import { readdir } from 'node:fs/promises';
 
 const TOWER = [[100, 600], [100, 400], [140, 400], [140, 250], [175, 250], [175, 150], [190, 150], [200, 40], [210, 150], [225, 150],
@@ -82,20 +83,21 @@ async function scratch(t) {
 
 /** The reference decodes to 400 x 600 (the tower and its clutter), listed at `listed`; the shape is the tower's. */
 function guideSetup(folder, { listed = [400, 600], score = 0.93 } = {}) {
-  const calls = [], events = [], sides = [];
+  const calls = [], events = [], sides = [], traces = [];
   const pixels = image(400, 600, cluttered);
   const shapes = fakeShapes(folder, () => ({ bounds: [100, 40, 200, 560], within: (x, y) => inside(x, y, TOWER), score }));
   const runtime = { study: { references: [{ id: 'goal', width: listed[0], height: listed[1] }] }, decisionObservation: { width: 2000, height: 2000 },
     shapes: shapes.service, emit: event => events.push(event) };
   const tools = guideTools(runtime, {
     execute: operation => async (id, params) => { calls.push({ operation, params }); return { content: [{ type: 'text', text: '{"status":"ok"}' }], details: { status: 'ok' } }; },
-    mapPoint: mapReferencePoint, referencePixels: async (id, side) => { sides.push(side); return pixels; } });
-  return { calls, events, shapes, sides, runtime, draw: tools.find(t => t.name === 'draw_guide') };
+    mapPoint: mapReferencePoint, referencePixels: async (id, side) => { sides.push(side); return pixels; },
+    traceEdges: fakeTraceEdges(() => listed, traces) });
+  return { calls, events, shapes, sides, runtime, traces, draw: tools.find(t => t.name === 'draw_guide') };
 }
 
 test('a tower inside a cluttered box: lines on the tower only, none on the clutter, mapped onto the target', async t => {
   const folder = await scratch(t);
-  const { calls, shapes, draw, events } = guideSetup(folder);
+  const { calls, shapes, draw, events, traces } = guideSetup(folder);
   const box = [10, 30, 385, 570], target = [100, 100, 770, 1140];             // scale 2
   const result = await draw.execute('g1', { element: 'Tower', from_reference: { reference_id: 'goal', shape: { box }, target, detail: 'medium' } });
   const map = mapReferencePoint(box, target), back = ([x, y]) => [(x - 100) / 2 + 10, (y - 100) / 2 + 30];
@@ -121,15 +123,17 @@ test('a tower inside a cluttered box: lines on the tower only, none on the clutt
   assert.doesNotMatch(text, /uncertain/);
   assert.equal(result.details.shape.score, 0.93);
   assert.ok(events.some(e => /shape/.test(e.message) && !/mask/i.test(e.message)), 'the panel says "shape"');
-  // The same box without a shape traces the clutter too: the shape is what keeps it out.
+  // The same box without a shape (and no shapes for a block-in here: the service finds the tower wherever it is
+  // pointed, which is one shape) is traced without the element's own: the shape is what keeps the clutter out.
+  assert.equal(traces[0].labels.inside, true, 'the plugin traces inside the shape only');
   await draw.execute('g0', { element: 'Tower', from_reference: { reference_id: 'goal', source: box, target, detail: 'medium' } });
-  const plain = strokeLines(calls[1].params.strokes).map(line => line.map(back));
-  assert.ok(plain.some(line => along(line).some(p => distance(p, BUILDING) <= 4 || distance(p, BLOCK) <= 4)), 'a box alone outlines the clutter');
+  assert.notEqual(traces[1].labels?.inside, true, 'a box alone is not one element');
   // Studied once per reference and content; each prompt is its own shape.
   await draw.execute('g2', { element: 'Tower', from_reference: { reference_id: 'goal', shape: { points: [[200, 300, 1], [50, 450, 0]] }, target: [0, 0, 800, 1200] } });
   assert.equal(shapes.studies.length, 1, 'the reference is studied once');
-  assert.equal(shapes.shapes.length, 2);
-  assert.deepEqual(shapes.shapes[1].prompt, { points: [[200, 300, 1], [50, 450, 0]] });
+  const asked = shapes.shapes.filter(s => s.prompt.points?.length !== 1);     // the block-in's grid points are one each
+  assert.equal(asked.length, 2);
+  assert.deepEqual(asked[1].prompt, { points: [[200, 300, 1], [50, 450, 0]] });
 });
 
 test('a low score is reported so the painter can prompt again', async t => {
@@ -158,7 +162,8 @@ test('shape refusals: bad prompts, and no shape service', async t => {
   for (const [shape, message] of [[{ box: [0, 0, 0, 10] }, /width and a height/], [{ points: [[1, 1, 0]] }, /label 1/], [{ points: [[1, 1, 2]] }, /label/]])
     await assert.rejects(draw.execute('bad', { element: 'Tower', from_reference: { reference_id: 'goal', shape, target: [0, 0, 400, 600] } }), message);
   const runtime = { study: { references: [{ id: 'goal', width: 400, height: 600 }] }, decisionObservation: { width: 900, height: 900 }, emit() {} };
-  const bare = guideTools(runtime, { execute: () => async () => ({ content: [], details: {} }), mapPoint: mapReferencePoint, referencePixels: async () => image(400, 600, cluttered) });
+  const bare = guideTools(runtime, { execute: () => async () => ({ content: [], details: {} }), mapPoint: mapReferencePoint, referencePixels: async () => image(400, 600, cluttered),
+    traceEdges: fakeTraceEdges(() => [400, 600]) });
   await assert.rejects(bare.find(t => t.name === 'draw_guide').execute('x', { element: 'Tower', from_reference: { reference_id: 'goal', shape: { box: [10, 30, 385, 570] }, target: [0, 0, 385, 570] } }), /not available/);
   assert.equal(calls.length, 0);
 });

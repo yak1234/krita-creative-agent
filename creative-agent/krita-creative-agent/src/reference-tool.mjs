@@ -136,6 +136,15 @@ export async function traceReferencePixels(runtime,id,maxSide){
  cache.set(key,pixels);while(cache.size>TRACE_CACHE)cache.delete(cache.keys().next().value);
  return pixels;
 }
+// The guide lines themselves are traced by the plugin at full resolution (trace_edges, edge_trace.py): the file goes as
+// it is, only lines come back, in its own pixels. Same size limit as the decode above.
+export async function traceReferenceEdges(runtime,{reference_id,...request}){
+ const ref=runtime.study.references.find(r=>r.id===reference_id);if(!ref)throw new Error('Use an attached reference ID.');
+ const file=await containedFile(runtime.study.directory,ref.path);
+ if((await stat(file)).size>TRACE_REFERENCE_MB*1024*1024)throw new Error(`This reference is too large to trace a guide from (over ${TRACE_REFERENCE_MB} MB). Attach a smaller copy, or draw the guide's lines yourself.`);
+ const data=await readFile(file);
+ return runtime.callNative('trace_edges',{image_base64:data.toString('base64'),sha256:hash(data),...request});
+}
 export function referenceTools(runtime,executePass,fillRegion){
  const folder=()=>join(runtime.study.directory,'reference-paintings');
  const path=id=>{if(!/^[a-f0-9]{32}$/.test(id))throw new Error('Invalid reference painting ID.');return join(folder(),id+'.json');};

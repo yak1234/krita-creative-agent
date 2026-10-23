@@ -147,6 +147,10 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             # Guided trace's own reduced decode (from_reference); decode_reference keeps the reference tools' limits.
             from .creative_reference import trace_reference
             return trace_reference(params)
+        if operation == 'trace_edges':
+            # Guided trace's lines from a reference at full resolution (edge_trace.py): only lines go back.
+            from .creative_reference import trace_edges
+            return trace_edges(params)
         if operation == 'model_image':
             from .creative_reference import model_image
             return model_image(params)

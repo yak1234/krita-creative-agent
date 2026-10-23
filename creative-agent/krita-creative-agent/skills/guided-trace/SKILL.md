@@ -24,7 +24,7 @@ With a goal reference, work in three kinds of move:
 With no goal reference (an element reference only, or none), guides give placement and your own strokes give the
 colour, from the element reference or the artist's description.
 
-Never fill a guide shape flat (a grey block per outline): a guide marks where a form goes, not its colour. Keep the
+Never fill a guide shape flat: a guide marks where a form goes, not its colour. Keep the
 light sources bright: a moon or a lamp is the lightest value in the picture, and the brightest element stays the
 brightest; never paint it dark or mid-grey.
 
@@ -35,8 +35,8 @@ reference** decides **shape and proportions**. When they disagree, fit the eleme
 
 ## Measure, then draw
 
-Look at the goal image (`view_reference`). Write down where the eye level and each big mass sit as a **fraction of
-the canvas** (top, bottom, centre), and turn those into canvas boxes.
+View the goal image (`view_reference`). Note where the eye level and each big mass sit as a **fraction of
+the canvas**, and turn those into canvas boxes.
 
 1. **Eye level and vanishing points first:** `draw_guide` with `perspective: {eye_level_y, vanishing_points, rays}`
    draws a thin eye-level line and rays fanning from each vanishing point.
@@ -45,12 +45,13 @@ the canvas** (top, bottom, centre), and turn those into canvas boxes.
    around it. Give one box or a few points per element (`points: [[x,y,1]]` on it, `0` beside it; points are fitted into `target`);
    a group is one box per member: each tower of a skyline, not the cluster. A score under 0.6 is uncertain: a tighter
    box or points.
-   `'medium'` adds inner structure. Add your own `lines` where it misses one (a railing to the vanishing point).
+   `'medium'` adds inner structure. Without `shape`, the big shapes (sky, masses, figures) get outlines; a `trace.note`
+   means outlines by brightness: give a blue tower on blue sky a `shape`. Add missing `lines`.
 3. **Light shapes:** outline every light source and the brightest areas warm, with `lights: true` or lines with
    `weight: 'light'`. A shape outlined warm is painted light.
 4. **Tighten before painting:** when an element's own photo shows it better, draw it again with `replace: true`.
 
-Weights follow the canvas size: `construction` thin, `contour` (the default) stronger, `light` warm.
+Weights: `construction` thin, `contour` (the default) stronger, `light` warm.
 
 ## Check after each stage
 

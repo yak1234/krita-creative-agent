@@ -20,6 +20,7 @@ import { workerCore } from '../src/shapes/core.ts';
 import { SHAPES_MODEL, modelDirectory } from '../src/shapes/model.ts';
 import { TestCompanion } from '../src/test-companion.ts';
 import { fakeRuntime } from './fixtures/fake-shape-runtime.mjs';
+import { fakeTraceEdges } from './fixtures/fake-trace-edges.mjs';
 
 function grey(width, height, dark) {
   const data = new Uint8Array(width * height * 4);
@@ -67,7 +68,7 @@ test('a guide, a pass and a protection from shapes through the real service, and
   // A guide from a shape on the reference.
   const guides = guideTools(runtime, {
     execute: operation => async (id, params) => { calls.push({ operation, params }); return { content: [{ type: 'text', text: '{"status":"ok"}' }], details: { status: 'ok' } }; },
-    mapPoint: mapReferencePoint, referencePixels: async () => reference });
+    mapPoint: mapReferencePoint, referencePixels: async () => reference, traceEdges: fakeTraceEdges(() => [400, 600]) });
   const guide = await guides.find(x => x.name === 'draw_guide').execute('g1',
     { element: 'Tower', from_reference: { reference_id: 'goal', shape: { box: [90, 30, 220, 570] }, target: [100, 100, 440, 1140] } });
   assert.match(guide.content.map(p => p.text ?? '').join(' '), /"shape":\{"score":0\.93/);

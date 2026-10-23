@@ -732,9 +732,10 @@ class SlashMenu(unittest.TestCase):
         self.prompt.setPlainText('/')
         self.assertTrue(self.menu.isVisible())
         self.assertEqual(self.rows(), [entry['command'] for entry in SKILLS_EVENT['commands']])
-        self.assertEqual(self.rows()[:3], ['/trace', '/colour', '/refine'])
+        self.assertEqual(self.rows()[:2], ['/colour', '/refine'])
+        self.assertNotIn('/trace', self.rows(), 'tracing was removed (crisp-accents)')
         self.assertIn('/skill:guided-trace', self.rows())
-        self.assertIn('Draw guides', self.menu.item(0).text(), 'each entry shows its one-line description')
+        self.assertIn("Lay the reference's colours", self.menu.item(0).text(), 'each entry shows its one-line description')
 
     def test_the_list_filters_by_command_and_alias(self):
         self.prompt.setPlainText('/col'); self.assertEqual(self.rows(), ['/colour'])
@@ -746,10 +747,10 @@ class SlashMenu(unittest.TestCase):
     def test_arrows_then_enter_or_tab_insert_and_escape_closes(self):
         self.prompt.setPlainText('/'); self.key(Qt.Key.Key_Down)
         self.key(Qt.Key.Key_Return)
-        self.assertEqual(self.prompt.toPlainText(), '/colour ')
+        self.assertEqual(self.prompt.toPlainText(), '/refine ')
         self.assertFalse(self.menu.isVisible())
-        self.prompt.setPlainText('/tr'); self.key(Qt.Key.Key_Tab)
-        self.assertEqual(self.prompt.toPlainText(), '/trace ')
+        self.prompt.setPlainText('/col'); self.key(Qt.Key.Key_Tab)
+        self.assertEqual(self.prompt.toPlainText(), '/colour ')
         self.prompt.setPlainText('/'); self.assertTrue(self.menu.isVisible())
         self.key(Qt.Key.Key_Escape)
         self.assertFalse(self.menu.isVisible()); self.assertEqual(self.prompt.toPlainText(), '/')
@@ -777,18 +778,18 @@ class SlashMenu(unittest.TestCase):
         self.assertEqual(self.prompt.toPlainText(), '/skill:paint-sky ')
 
     def test_typing_matches_whatever_the_case(self):
-        self.prompt.setPlainText('/TR'); self.assertEqual(self.rows(), ['/trace'])
+        self.prompt.setPlainText('/COL'); self.assertEqual(self.rows(), ['/colour'])
 
     def test_enter_sends_when_the_menu_is_closed(self):
         sent = []
         self.prompt.submitted.connect(lambda: sent.append(self.prompt.toPlainText()))
-        self.prompt.setPlainText('/trace the moon'); self.assertFalse(self.menu.isVisible())
+        self.prompt.setPlainText('/refine the moon'); self.assertFalse(self.menu.isVisible())
         self.key(Qt.Key.Key_Return)
-        self.assertEqual(sent, ['/trace the moon'])
-        self.prompt.setPlainText('/trace'); self.assertTrue(self.menu.isVisible())
+        self.assertEqual(sent, ['/refine the moon'])
+        self.prompt.setPlainText('/refine'); self.assertTrue(self.menu.isVisible())
         self.key(Qt.Key.Key_Return)
-        self.assertEqual(sent, ['/trace the moon'], 'Enter on an open menu inserts the command, it does not send')
-        self.assertEqual(self.prompt.toPlainText(), '/trace ')
+        self.assertEqual(sent, ['/refine the moon'], 'Enter on an open menu inserts the command, it does not send')
+        self.assertEqual(self.prompt.toPlainText(), '/refine ')
         self.assertFalse(self.menu.isVisible())
 
 

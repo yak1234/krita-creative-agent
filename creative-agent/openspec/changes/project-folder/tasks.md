@@ -173,15 +173,15 @@ over it, keeps the guide layer separate, and hides it on `finish_guide`.
   name (`04-kremlin-towers.png` → "Kremlin towers") and a matching entry in a `*prompts*.json`; `PLAN.md` and
   `NOTES.md` are recognised as plan and notes.
 
-- [ ] **Step 1: Write the failing tests** with temporary folders (removed after): `the artist's layout is read`
+- [x] **Step 1: Write the failing tests** with temporary folders (removed after): `the artist's layout is read`
   (a copy of the new_moscow shape built from tiny PNGs: goal found, 12 elements ordered by their number, guesses
   "Moonlit sky" … "Vintage convertible", the brief recognised, prompts read), `caps and skips` (41 images → 40 read +
   1 skipped "too many images"; a 13 MB file skipped "too large"; `run.py`, `app.zip`, a `.webp` skipped with reasons),
   `a symlink pointing outside is skipped`, `nothing is written while scanning` (folder bytes unchanged).
-- [ ] **Step 2: Run** `npm run test:unit` — Expected: fail.
-- [ ] **Step 3: Implement** `scanFolder` (no external dependencies).
-- [ ] **Step 4: Run** `npm run test:unit`, `npm run typecheck` — Expected: pass.
-- [ ] **Step 5: Commit** "Project folder: a read-only scan with caps, roles and guesses".
+- [x] **Step 2: Run** `npm run test:unit` — Expected: fail.
+- [x] **Step 3: Implement** `scanFolder` (no external dependencies).
+- [x] **Step 4: Run** `npm run test:unit`, `npm run typecheck` — Expected: pass.
+- [x] **Step 5: Commit** "Project folder: a read-only scan with caps, roles and guesses".
 
 ### Task B2: Opening a folder from the panel
 
@@ -201,15 +201,15 @@ over it, keeps the guide layer separate, and hides it on `finish_guide`.
   `{type:'folder', index: FolderIndex (paths relative to root), references: {name: reference_id}}`. The folder path
   is stored on the study (`study.folder`) and so follows the chat.
 
-- [ ] **Step 1: Write the failing tests**: companion `opening a folder attaches its images and tells the panel`,
+- [x] **Step 1: Write the failing tests**: companion `opening a folder attaches its images and tells the panel`,
   `a corrected guess reaches the painter's context`; panel (stubbed `process.write`, pattern of
   `tests/ui_panel_features.py:90-104`) `the attach menu has Open project folder`, `a folder event shows the goal, the
   elements and the skipped count`, `editing a guess sends folder_guess`.
-- [ ] **Step 2: Run** the tests — Expected: fail.
-- [ ] **Step 3: Implement**; strings through `product_name()` where they name the app.
-- [ ] **Step 4: Run** `npm run test:unit`, the uv discover suite and `uv run -q --with pyqt5 python
+- [x] **Step 2: Run** the tests — Expected: fail.
+- [x] **Step 3: Implement**; strings through `product_name()` where they name the app.
+- [x] **Step 4: Run** `npm run test:unit`, the uv discover suite and `uv run -q --with pyqt5 python
   tests/ui_panel_folder.py` — Expected: pass.
-- [ ] **Step 5: Commit** "Project folder: open it from the panel; the agent sees the goal and elements".
+- [x] **Step 5: Commit** "Project folder: open it from the panel; the agent sees the goal and elements".
 
 ### Task B3: The element plan in Agent mode, Markdown in the folder, resume
 
@@ -231,16 +231,16 @@ over it, keeps the guide layer separate, and hides it on `finish_guide`.
   `<name>.backup-<yyyy-mm-dd>.md` and returns `{changed: true, backup}`. All writes stay inside `root`
   (realpath check) and only to `.md`.
 
-- [ ] **Step 1: Write the failing tests**: `PLAN.md is written with ticks and references`, `NOTES.md only grows`,
+- [x] **Step 1: Write the failing tests**: `PLAN.md is written with ticks and references`, `NOTES.md only grows`,
   `editing the artist's brief makes a dated backup first`, `writing anything but .md or outside the folder is refused`,
   `planDifference lists a reorder and a removal`; studio: `with a folder, Agent mode proposes the element plan and
   paints nothing before approval`, `after Keep the step is ticked, PLAN.md updated, NOTES.md gains a line and the
   element's guide is finished`, `resume with a hand-edited PLAN.md shows the difference and waits`.
-- [ ] **Step 2: Run** `npm run test:unit` — Expected: fail.
-- [ ] **Step 3: Implement** `folder-notes.ts` and the studio wiring.
-- [ ] **Step 4: Run** `npm run test:unit`, `npm run typecheck`, the uv suite and the panel UI scripts — Expected:
+- [x] **Step 2: Run** `npm run test:unit` — Expected: fail.
+- [x] **Step 3: Implement** `folder-notes.ts` and the studio wiring.
+- [x] **Step 4: Run** `npm run test:unit`, `npm run typecheck`, the uv suite and the panel UI scripts — Expected:
   pass.
-- [ ] **Step 5: Commit** "Project folder: an element plan approved first, PLAN.md and NOTES.md, resume".
+- [x] **Step 5: Commit** "Project folder: an element plan approved first, PLAN.md and NOTES.md, resume".
 
 **Group B done when:** a live session on a copy of the `new_moscow` folder (never the original; images only read)
 opens the folder, shows the plan, paints the sky as one element with a guide, ticks it in `PLAN.md`, and resumes after

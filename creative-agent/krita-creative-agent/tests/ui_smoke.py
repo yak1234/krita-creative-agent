@@ -442,13 +442,13 @@ class PartDocument:
     def close(self):
         if self in part_documents: part_documents.remove(self)
         return True
-part_documents, shown_views = [], []
+part_documents, shown_views, part_tools = [], [], []
 def open_part_document(path):
     document = PartDocument(path); part_documents.append(document); return document
 part_window = types.SimpleNamespace(addView=lambda document: None, activeView=lambda: 'painting-view', showView=shown_views.append)
 before_parts_krita = module.Krita
 module.Krita = types.SimpleNamespace(instance=lambda: types.SimpleNamespace(openDocument=open_part_document, activeWindow=lambda: part_window,
-    documents=lambda: list(part_documents), action=lambda name: None, activeDocument=lambda: None))
+    documents=lambda: list(part_documents), action=lambda name: types.SimpleNamespace(trigger=lambda: part_tools.append(name)), activeDocument=lambda: None))
 moscow = {'id': 'ref-moscow', 'name': 'New Moscow', 'path': image_path, 'purpose': 'general', 'notes': '', 'role': 'reference'}
 panel.attached_references = [moscow]; panel.show_references()
 preview = module.ReferencePreview(panel, moscow)
@@ -458,6 +458,7 @@ assert not any(b.isEnabled() for b in busy_preview.part_buttons) and busy_previe
 busy_preview.close()
 panel.start_part(moscow, 'part')
 assert panel.part_bar.isVisible() and panel.part_bar_label.text() == 'Selecting a part of New Moscow' and len(part_documents) == 1
+assert part_tools == ['KisToolSelectOutline'], 'selecting a part hands the artist the Freehand Selection Tool, never a colour wand'
 temporary = part_documents[0].path; assert temporary != image_path and os.path.exists(temporary), 'a copy is opened, never the reference'
 panel.use_part()
 assert panel.status.text() == 'Select the part first.' and len(part_documents) == 1, 'nothing selected: the document stays open'

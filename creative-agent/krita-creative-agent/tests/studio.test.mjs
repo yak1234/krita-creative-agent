@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { Value } from 'typebox/value';
+import { scanFolder } from '../src/project-folder.ts';
 import { StudioRuntime, freshGoal, validateReview, normalizeBrief, repeatedReviewFailures, progressStalled, approvedReviewScope, restoredReviewStart, agentMoveInstructions } from '../src/studio.mjs';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64');
@@ -2914,4 +2915,369 @@ test('reference first: whether a whole transfer is available asks transferRefusa
   assert.ok(transferRefusal(h.runtime.goal,whole,fresh,1,{established:false}));
   assert.equal(await h.runtime.wholeTransferAvailable({...fresh,protected_areas:[{id:'a'}]}),true,'protected areas lift the size caps, as in transferRefusal');
  } finally {await h.close();}
+});
+
+// Project folder B2: opening a folder attaches its goal and elements as references and tells the panel.
+async function projectFolder(elements=['01-moonlit-sky','02-historic-buildings','04-kremlin-towers']) {
+ const root=await mkdtemp(join(tmpdir(),'project-folder-studio-'));
+ await writeFile(join(root,'ART_BRIEF.md'),'# New Moscow\n\nA snowy night; warm windows against a blue sky.\n');
+ await writeFile(join(root,'final_goal.png'),png);
+ await writeFile(join(root,'finished_review.png'),png);
+ await writeFile(join(root,'old.kra'),'not read');
+ await mkdir(join(root,'assets'));
+ for (const name of elements) await writeFile(join(root,'assets',name+'.png'),png);
+ return root;
+}
+const folderSnapshot=async root=>JSON.stringify(await Promise.all((await readdir(root,{recursive:true})).sort().map(async name=>[name,(await readFile(join(root,name)).catch(()=>Buffer.from('dir'))).toString('base64')])));
+
+test('opening a folder attaches its images and tells the panel',{timeout:20000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}));
+ const root=await projectFolder();
+ try {
+  await h.start('ask','Hello');
+  const before=await folderSnapshot(root);
+  await h.runtime.openFolder({path:root});
+  const refs=h.runtime.study.references;
+  const goal=refs.find(r=>r.role==='reference');
+  assert.deepEqual([goal?.name,goal?.purpose,goal?.source],['final_goal.png','composition','folder']);
+  const elements=refs.filter(r=>r.role==='asset');
+  assert.deepEqual(elements.map(r=>r.folder_name),['assets/01-moonlit-sky.png','assets/02-historic-buildings.png','assets/04-kremlin-towers.png']);
+  assert.ok(elements.every(r=>r.source==='folder' && r.path.startsWith(h.runtime.study.directory)),'copied into the chat like any reference');
+  assert.ok(!refs.some(r=>r.name==='finished_review.png'),'other images are listed, not attached');
+  const event=h.events.filter(e=>e.type==='folder').at(-1);
+  assert.equal(event.index.goal.name,'final_goal.png');
+  assert.deepEqual(event.index.elements.map(e=>e.guess),['Moonlit sky','Historic buildings','Kremlin towers']);
+  assert.deepEqual(event.index.others.map(e=>e.name),['finished_review.png']);
+  assert.ok(event.index.skipped.some(s=>s.name==='old.kra'));
+  assert.ok(!JSON.stringify(event.index).includes(root+'/'),'the panel gets paths relative to the folder');
+  assert.equal(event.references['assets/04-kremlin-towers.png'],elements[2].id);
+  assert.equal(h.runtime.study.folder.root,event.index.root);
+  const context=JSON.parse(h.runtime.context('agent').split('\n').find(line=>line.startsWith('{')));
+  assert.equal(context.folder.goal.reference_id,goal.id);
+  assert.deepEqual(context.folder.elements.map(e=>[e.name,e.reference_id]),elements.map(r=>[r.folder_name,r.id]));
+  assert.deepEqual(context.folder.elements.map(e=>e.guess),['Moonlit sky','Historic buildings','Kremlin towers']);
+  assert.match(context.folder.brief ?? '',/warm windows/,'the brief is read for the painter');
+  assert.equal(await folderSnapshot(root),before,'opening writes nothing into the folder');
+  await h.runtime.openFolder({path:root});
+  assert.equal(h.runtime.study.references.length,refs.length,'opening it again attaches nothing twice');
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('a corrected guess reaches the painter\'s context; a folder chosen before the chat is attached when it starts',{timeout:20000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}));
+ const root=await projectFolder();
+ try {
+  await h.runtime.openFolder({path:root});
+  assert.equal(h.events.filter(e=>e.type==='folder').length,1,'the panel sees the folder before any chat');
+  await h.start('ask','Hello');
+  assert.equal(h.runtime.study.references.filter(r=>r.source==='folder').length,4);
+  await h.runtime.folderGuess({name:'assets/02-historic-buildings.png',guess:'Lamps and trees'});
+  const context=JSON.parse(h.runtime.context('agent').split('\n').find(line=>line.startsWith('{')));
+  assert.equal(context.folder.elements[1].guess,'Lamps and trees');
+  assert.equal(h.events.filter(e=>e.type==='folder').at(-1).index.elements[1].guess,'Lamps and trees');
+  assert.match(h.runtime.study.references.find(r=>r.folder_name==='assets/02-historic-buildings.png').notes,/Lamps and trees/);
+  await assert.rejects(h.runtime.folderGuess({name:'assets/99-nothing.png',guess:'x'}),/not an element/);
+  const id=h.runtime.study.id; await h.runtime.end(); h.events.length=0;
+  await h.runtime.resume(id);
+  assert.equal(h.events.filter(e=>e.type==='folder').at(-1)?.index.elements[1].guess,'Lamps and trees','the folder and the correction follow the chat');
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+// Project folder B3: the element plan approved first, PLAN.md and NOTES.md, resume.
+const PAINT_TOOLS=['paint_batch','paint_pass','paint_recipe','fill_region','draw_guide','paint_from_reference','paint_reference_surface','create_layer'];
+const folderBrief={title:'New Moscow',objective:'A snowy night, one element per move.',requirements:['Keep the warm windows.'],freedom:[],completion:['Every element is painted.'],
+ steps:[{title:'Block-in: the whole composition',done_when:'Everything placed.',scope:'whole composition'},
+  {title:'Moonlit sky',done_when:'The sky is painted.',scope:'assets/01-moonlit-sky.png'},
+  {title:'Historic buildings',done_when:'The buildings are painted.',scope:'assets/02-historic-buildings.png'},
+  {title:'Kremlin towers',done_when:'The towers are painted.',scope:'assets/04-kremlin-towers.png'}]};
+const paintResult=async(h,id)=>{const dir=h.runtime.study.directory; await writeFile(join(dir,'view.png'),png);
+ return {status:'ok',document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,image_path:join(dir,'view.png'),layers:[],revision:'r-'+id,content_id:'c-'+id,passes:[]};};
+
+test('with a folder, Agent mode proposes the element plan and paints nothing before approval',{timeout:30000},async()=>{
+ const offered=[]; let proposals=0;
+ const h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name); offered.push({names,text:latestUserText(req)});
+  if(names.includes('propose_plan') && !proposals++) return call('propose_plan',folderBrief);
+  return {content:'The plan is ready for you.'};
+ });
+ const root=await projectFolder();
+ try {
+  await h.runtime.openFolder({path:root});
+  await h.start('agent','Paint this folder.');
+  const planning=offered[0];
+  assert.ok(planning.names.includes('propose_plan'),'the first turn proposes the plan');
+  for (const name of PAINT_TOOLS) assert.ok(!planning.names.includes(name),name+' is not offered before approval');
+  const draft=JSON.parse(planning.text.match(/folder_plan_draft: (\{.*\})/)[1]);
+  assert.deepEqual(draft.steps.map(s=>s.title),['Block-in: the whole composition','Moonlit sky','Historic buildings','Kremlin towers'],'block-in first, then the elements back to front by number');
+  assert.equal(draft.steps[2].scope,'assets/02-historic-buildings.png');
+  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.title),folderBrief.steps.map(s=>s.title));
+  assert.equal(h.runtime.goal.approved_revision,null);
+  assert.ok(!h.calls.some(c=>['begin','paint_pass','draw_guide','fill_region'].includes(c.operation)),'nothing touches the canvas');
+  const plan=await readFile(join(root,'PLAN.md'),'utf8');
+  assert.match(plan,/^- \[ \] 3\. Historic buildings \(assets\/02-historic-buildings\.png\) · layer "Historic buildings"$/m);
+  await h.runtime.prompt('Only the sky today.');
+  assert.ok(offered.at(-1).names.includes('propose_plan') && !offered.at(-1).names.includes('paint_batch'),'a direction before approval revises the plan');
+  assert.ok(!h.calls.some(c=>c.operation==='begin'));
+  assert.equal(h.runtime.goal.moves?.length ?? 0,0,'no move was started');
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('with a folder and a model that proposes nothing, the host proposes the element plan itself',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Let us look at the folder first.'}));
+ const root=await projectFolder();
+ try {
+  await h.start('ask','Hello'); await h.runtime.openFolder({path:root}); await h.runtime.setMode('agent');
+  await h.runtime.prompt('Paint it.');
+  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>[s.title,s.scope]),[['Block-in: the whole composition','whole composition'],
+   ['Moonlit sky','assets/01-moonlit-sky.png'],['Historic buildings','assets/02-historic-buildings.png'],['Kremlin towers','assets/04-kremlin-towers.png']]);
+  assert.match(h.events.filter(e=>e.type==='status').at(-1).message,/Start painting/);
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('after Keep the step is ticked, PLAN.md updated, NOTES.md gains a line and the element\'s guide is finished',{timeout:60000},async()=>{
+ const turns=new Map(), painters=[];
+ let h;
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(names.includes('propose_plan')) return call('propose_plan',folderBrief);
+  const move=h.runtime.currentMove;
+  if(!names.includes('paint_batch') || !move || move.finished) return {content:'Done.'};
+  const n=(turns.get(move.number) ?? 0)+1; turns.set(move.number,n);
+  if(n===1) { painters.push(req); return call('paint_batch',{summary:'Element',actions:[{tool:'paint_pass',arguments:{...pass,name:'Element '+move.number}}]}); }
+  return call('finish_move',{summary:'Painted step '+(move.step+1)});
+ },async(operation,params,_study,id)=>{
+  if(operation==='paint_pass') return paintResult(h,id);
+  if(operation==='finish_guide') return {status:'ok',element:params.element,visible:false};
+  return undefined;
+ });
+ const root=await projectFolder();
+ try {
+  await h.runtime.openFolder({path:root});
+  await h.start('agent','Paint this folder.');
+  h.runtime.forkTools=true; h.runtime.guidesView=true;
+  await h.runtime.prompt('',{start_plan:true});
+  assert.equal(h.runtime.goal.approved_revision,h.runtime.goal.revision,'Start painting approves the plan');
+  const [first]=h.runtime.goal.moves;
+  assert.deepEqual([first.step,first.status],[0,'ready']);
+  assert.match(latestUserText(painters[0]),/Paint step 1 of the plan: Block-in/);
+  await h.runtime.moveAction({action:'keep',move:1});
+  assert.deepEqual(h.runtime.goal.done_steps,[0]);
+  const second=h.runtime.goal.moves[1];
+  assert.deepEqual([second.step,second.status],[1,'ready'],'Keep starts the next element\'s move, which stops for Keep / Undo again');
+  const skyText=latestUserText(painters[1]);
+  assert.match(skyText,/Paint step 2 of the plan: Moonlit sky/);
+  const sky=h.runtime.study.references.find(r=>r.folder_name==='assets/01-moonlit-sky.png');
+  assert.ok(skyText.includes(sky.id),'the move names the element\'s reference');
+  assert.match(skyText,/draw_guide[^.]*"Moonlit sky"/,'the guide is named for the element');
+  assert.equal(imagesInLatestMessage(painters[1]).length,3,'the goal, this element and the canvas: not every element of the folder');
+  await h.runtime.moveAction({action:'keep',move:2});
+  assert.deepEqual(h.runtime.goal.done_steps,[0,1]);
+  const finished=h.calls.filter(c=>c.operation==='finish_guide').map(c=>c.params.element);
+  assert.ok(finished.includes('Moonlit sky'),'the ticked element\'s guide is hidden');
+  const plan=await readFile(join(root,'PLAN.md'),'utf8');
+  assert.match(plan,/^- \[x\] 1\. Block-in/m); assert.match(plan,/^- \[x\] 2\. Moonlit sky/m); assert.match(plan,/^- \[ \] 3\. Historic buildings/m);
+  const notes=(await readFile(join(root,'NOTES.md'),'utf8')).split('\n').filter(l=>l.startsWith('- '));
+  assert.equal(notes.length,2); assert.match(notes[1],/Moonlit sky/);
+  assert.equal(h.runtime.goal.current_step,2);
+  assert.deepEqual((await readdir(root)).filter(n=>n.endsWith('.md')).sort(),['ART_BRIEF.md','NOTES.md','PLAN.md'],'only PLAN.md and NOTES.md were added');
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('resume with a hand-edited PLAN.md shows the difference and waits; a new chat on the folder picks the plan up',{timeout:60000},async()=>{
+ const h=await harness(req=>req.tools.some(t=>t.function.name==='propose_plan') && !h.runtime.goal.brief ? call('propose_plan',folderBrief) : {content:'Noted.'});
+ const root=await projectFolder();
+ try {
+  await h.runtime.openFolder({path:root});
+  await h.start('agent','Paint this folder.');
+  const id=h.runtime.study.id; await h.runtime.end();
+  const lines=(await readFile(join(root,'PLAN.md'),'utf8')).split('\n');
+  const edited=lines.filter(l=>!l.includes('Historic buildings'));
+  const towers=edited.findIndex(l=>l.includes('Kremlin towers')), sky=edited.findIndex(l=>l.includes('Moonlit sky'));
+  [edited[towers],edited[sky]]=[edited[sky],edited[towers]];
+  await writeFile(join(root,'PLAN.md'),edited.join('\n'));
+  const requests=h.requests.length; h.events.length=0;
+  await h.runtime.resume(id);
+  const question=h.events.find(e=>e.type==='question');
+  assert.ok(question,'the artist is asked');
+  assert.match(question.question,/Removed: Historic buildings/); assert.match(question.question,/Moved: Kremlin towers/);
+  assert.deepEqual(question.options,['Follow the edited plan','Keep the current plan']);
+  assert.equal(h.runtime.goal.brief.steps.length,4,'nothing is followed before the answer');
+  await h.runtime.prompt('Follow the edited plan');
+  assert.equal(h.requests.length,requests,'answering makes no model request and paints nothing');
+  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.title),['Block-in: the whole composition','Kremlin towers','Moonlit sky']);
+  assert.equal(h.runtime.goal.brief.steps[1].done_when,'The towers are painted.');
+  assert.equal(h.runtime.goal.approved_revision,null,'the edited plan is approved with Start painting');
+  const backups=(await readdir(root)).filter(n=>n.includes('.backup-'));
+  assert.equal(backups.length,1,'the artist\'s file is backed up before the plan is rewritten in its own format');
+  assert.ok(!(await readFile(join(root,backups[0]),'utf8')).includes('Historic buildings'));
+  await h.runtime.end();
+  await h.start('ask','Hello');
+  await h.runtime.openFolder({path:root});
+  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.title),['Block-in: the whole composition','Kremlin towers','Moonlit sky'],'a new chat reads PLAN.md');
+  assert.match(h.events.filter(e=>e.type==='action').map(e=>e.message).join('\n'),/0 of 3 done, next: Block-in/);
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+// Project folder review fixes.
+async function folderMoves({finish=true, root}={}) {
+ const turns=new Map(), offered=[]; let h;
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name); offered.push(names);
+  if(names.includes('propose_plan')) return h.runtime.goal.brief ? {content:'Revised.'} : call('propose_plan',folderBrief);
+  const move=h.runtime.currentMove;
+  if(!names.includes('paint_batch') || !move || move.finished) return {content:'Done.'};
+  const n=(turns.get(move.number) ?? 0)+1; turns.set(move.number,n);
+  if(n===1) return call('paint_batch',{summary:'Element',actions:[{tool:'paint_pass',arguments:{...pass,name:'Element '+move.number}}]});
+  return finish ? call('finish_move',{summary:'Painted step '+(move.step+1)}) : {content:'I painted some of it.'};
+ },async(operation,params,_study,id)=>{
+  if(operation==='paint_pass') return paintResult(h,id);
+  if(operation==='finish_guide') return {status:'ok',element:params.element,visible:false};
+  return undefined;
+ });
+ await h.runtime.openFolder({path:root});
+ await h.start('agent','Paint this folder.');
+ h.runtime.forkTools=true; h.runtime.guidesView=true;
+ return {h,offered};
+}
+
+test('a move that ended without finish_move does not tick its step; Keep continues the same step (I1)',{timeout:60000},async()=>{
+ const root=await projectFolder();
+ const {h}=await folderMoves({finish:false,root});
+ try {
+  await h.runtime.prompt('',{start_plan:true});
+  assert.equal(h.runtime.goal.moves[0].finished,undefined);
+  await h.runtime.moveAction({action:'keep',move:1});
+  assert.deepEqual(h.runtime.goal.done_steps,[]);
+  assert.equal(h.runtime.goal.moves[1].step,0,'the next move works the same step');
+  assert.ok(!(await readdir(root)).includes('NOTES.md'));
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('Keep after the plan was edited ticks the move\'s own step by identity and does not approve the new plan (C1)',{timeout:60000},async()=>{
+ const root=await projectFolder();
+ const {h}=await folderMoves({root});
+ try {
+  await h.runtime.prompt('',{start_plan:true});
+  await h.runtime.moveAction({action:'keep',move:1});
+  const sky=h.runtime.goal.moves[1];
+  assert.deepEqual([sky.step,sky.status],[1,'ready']);
+  const [block,skyStep,buildings,towers]=folderBrief.steps;
+  await h.runtime.editPlan({...folderBrief,steps:[block,towers,buildings,skyStep]});
+  assert.equal(h.runtime.goal.approved_revision,null);
+  await h.runtime.moveAction({action:'keep',move:2});
+  assert.deepEqual(h.runtime.goal.done_steps,[0,3],'the sky is ticked where it now is');
+  assert.equal(h.runtime.goal.moves.length,2,'no move starts on an unapproved plan');
+  assert.equal(h.runtime.goal.approved_revision,null,'Keep never approves a plan');
+  assert.match(h.events.filter(e=>e.type==='status').at(-1).message,/Start painting/);
+  assert.match(await readFile(join(root,'PLAN.md'),'utf8'),/^- \[x\] 4\. Moonlit sky/m);
+  // A step that is gone is not ticked at all.
+  await h.runtime.prompt('',{start_plan:true});
+  const towersMove=h.runtime.goal.moves.at(-1);
+  assert.equal(h.runtime.goal.brief.steps[towersMove.step].title,'Kremlin towers');
+  await h.runtime.editPlan({...folderBrief,steps:[block,buildings,skyStep]});
+  await h.runtime.moveAction({action:'keep',move:towersMove.number});
+  assert.deepEqual(h.runtime.goal.done_steps,[0,2]);
+  assert.match(h.events.filter(e=>e.type==='action').map(e=>e.message).join('\n'),/no longer in the plan/);
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('a PLAN.md the agent did not write is backed up on the first rewrite (I5)',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}));
+ const root=await projectFolder();
+ try {
+  await writeFile(join(root,'PLAN.md'),'# My plan\n\n## Moves\n\n- [x] 1. Moonlit sky (assets/01-moonlit-sky.png)\n- [ ] 2. Kremlin towers (assets/04-kremlin-towers.png)\n');
+  await h.start('ask','Hello'); await h.runtime.openFolder({path:root});
+  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.title),['Moonlit sky','Kremlin towers']);
+  await h.runtime.editPlan(h.runtime.goal.brief);
+  const backups=(await readdir(root)).filter(n=>n.includes('.backup-'));
+  assert.equal(backups.length,1);
+  assert.match(await readFile(join(root,backups[0]),'utf8'),/# My plan/);
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('opening a folder in a chat with an approved plan that is not the folder\'s makes Agent plan the folder first (I6)',{timeout:30000},async()=>{
+ const offered=[];
+ const h=await harness(req=>{const names=req.tools.map(t=>t.function.name); offered.push(names); return {content:'Noted.'};});
+ const root=await projectFolder();
+ try {
+  await h.start('ask','Hello'); await h.runtime.editPlan(brief);
+  h.runtime.goal.approved_revision=h.runtime.goal.revision;
+  await h.runtime.openFolder({path:root});
+  assert.equal(h.runtime.goal.approved_revision,null);
+  await h.runtime.setMode('agent'); await h.runtime.prompt('',{start_plan:true});
+  assert.ok(offered.at(-1).includes('propose_plan') && !offered.at(-1).includes('paint_batch'),'a planning turn, not a move');
+  assert.ok(!(h.runtime.goal.moves ?? []).length);
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('the folder\'s goal image does not count toward the four references; one unreadable element is skipped, not fatal',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}));
+ const root=await projectFolder();
+ try {
+  const references=[];
+  for (let i=0;i<4;i++){const path=join(h.output,'ref'+i+'.png'); await writeFile(path,png); references.push({path});}
+  await h.start('ask','Hello',{references});
+  await h.runtime.openFolder({path:root});
+  assert.ok(h.runtime.study.references.some(r=>r.name==='final_goal.png' && r.source==='folder'),'the goal is attached beside four references');
+  const fifth=join(h.output,'ref5.png'); await writeFile(fifth,png);
+  await assert.rejects(h.runtime.addReferences([{path:fifth}]),/four reference/,'the artist\'s own references still stop at four');
+  const index=await scanFolder(root);
+  index.elements.push({...index.elements[0],name:'assets/09-gone.png',path:join(root,'assets','09-gone.png')});
+  await h.runtime.attachFolder(index);
+  assert.match(h.events.filter(e=>e.type==='action').map(e=>e.message).join('\n'),/09-gone\.png was not attached/);
+  assert.equal(h.runtime.study.references.filter(r=>r.source==='folder' && r.role==='asset').length,3);
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('more than fifteen elements: the plan says which were left out',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Let us see.'}));
+ const root=await projectFolder(Array.from({length:17},(_,i)=>String(i+1).padStart(2,'0')+'-element-'+(i+1)));
+ try {
+  await h.start('ask','Hello'); await h.runtime.openFolder({path:root}); await h.runtime.setMode('agent');
+  await h.runtime.prompt('Paint it.');
+  assert.equal(h.runtime.goal.brief.steps.length,16);
+  assert.match(h.events.filter(e=>e.type==='status').at(-1).message,/2 elements .*left out/);
+  assert.equal(h.events.filter(e=>e.type==='folder').at(-1).plan_limit,15);
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('plan-edit answers: an edit that cannot be followed says so; another message drops the pending edit',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Noted.'}));
+ const root=await projectFolder();
+ try {
+  await h.start('ask','Hello'); await h.runtime.openFolder({path:root}); await h.runtime.editPlan(folderBrief);
+  h.runtime.goal.pending_plan_edit={text:'# x\n\n## Moves\n\n'};
+  await h.runtime.prompt('Follow the edited plan');
+  assert.match(h.events.filter(e=>e.type==='status').at(-1).message,/could not follow/i);
+  assert.equal(h.runtime.goal.brief.steps.length,4);
+  h.runtime.goal.pending_plan_edit={text:'# x\n'};
+  await h.runtime.prompt('What do you see?');
+  assert.equal(h.runtime.goal.pending_plan_edit,null);
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('propose_plan in a folder chat: bare file names resolve to the folder, unknown and repeated elements are refused; the planner reads the prompts',{timeout:30000},async()=>{
+ const results=[]; let n=0; const texts=[];
+ const h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  texts.push(latestUserText(req));
+  for (const m of req.messages.filter(m=>m.role==='tool')) results.push(JSON.stringify(m.content));
+  if(!names.includes('propose_plan')) return {content:'ok'};
+  n++;
+  const [block,sky,buildings]=folderBrief.steps;
+  if(n===1) return call('propose_plan',{...folderBrief,steps:[block,{...sky,scope:'zz-unknown.png'}]});
+  if(n===2) return call('propose_plan',{...folderBrief,steps:[block,sky,{...buildings,scope:'assets/01-moonlit-sky.png'}]});
+  if(n===3) return call('propose_plan',{...folderBrief,steps:[block,{...sky,scope:'01-moonlit-sky.png'},buildings]});
+  return {content:'Plan proposed.'};
+ });
+ const root=await projectFolder();
+ try {
+  await writeFile(join(root,'assets','generation-prompts.json'),JSON.stringify({assets:[{name:'01-moonlit-sky',prompt:'Subject: Only the moonlit blue night sky.'}]}));
+  await h.runtime.openFolder({path:root});
+  await h.start('agent','Paint this folder.');
+  assert.match(texts[0],/Only the moonlit blue night sky/,'the planner reads the element prompts');
+  assert.ok(results.some(r=>/zz-unknown\.png.*not an element/.test(r)),results.join('\n'));
+  assert.ok(results.some(r=>/more than one step/.test(r)),results.join('\n'));
+  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.scope),['whole composition','assets/01-moonlit-sky.png','assets/02-historic-buildings.png']);
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
 });

@@ -1,0 +1,226 @@
+// SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Project folder (project-folder B1): a read-only scan of the artist's folder of references. The folder and one level of
+// subfolders are listed; images (PNG, JPEG, GIF) are read for their size only, text files for their length, a
+// *prompts*.json for what each image shows. Nothing is run, no link is followed (a symlink, file or folder, is skipped),
+// nothing is written. Caps keep a big folder from stalling the panel.
+// Ruling (builder): numbered images (`04-kremlin-towers.png`, in the folder or one subfolder) are the elements, in number
+// order; loose unnumbered images are "other images" (listed, never attached), so review leftovers such as
+// finished_review.png never become elements; .kra documents, `~` backups, scripts and archives are skipped with a reason.
+// This module imports no .mjs (strict TypeScript); the image header reader mirrors imageInfo in files.mjs.
+import { lstat, open, readdir, readFile, realpath } from 'node:fs/promises';
+import { basename, extname, isAbsolute, join, relative, sep } from 'node:path';
+
+export type FolderLimits = { images: number; imageBytes: number; textBytes: number; files: number };
+export const FOLDER_LIMITS: Readonly<FolderLimits> = Object.freeze({ images: 40, imageBytes: 12_000_000, textBytes: 200_000, files: 400 });
+
+export type FolderImage = { name: string; path: string; width: number; height: number; mimeType: string;
+  role: 'goal' | 'element' | 'other'; guess: string; number?: number; prompt?: string };
+export type FolderText = { name: string; path: string; kind: 'brief' | 'readme' | 'plan' | 'notes' | 'other'; chars: number };
+export type FolderIndex = { root: string; goal: FolderImage | null; elements: FolderImage[]; others: FolderImage[];
+  texts: FolderText[]; prompts: Record<string, string>; skipped: { name: string; reason: string }[] };
+
+const IMAGE_TYPES = new Set(['.png', '.jpg', '.jpeg', '.gif']);
+const TEXT_TYPES = new Set(['.md', '.txt']);
+const ARCHIVES = new Set(['.zip', '.tar', '.gz', '.tgz', '.bz2', '.xz', '.7z', '.rar', '.dmg', '.pkg']);
+const PROGRAMS = new Set(['.py', '.sh', '.zsh', '.bash', '.command', '.js', '.mjs', '.cjs', '.ts', '.rb', '.pl', '.php', '.bat', '.cmd',
+  '.ps1', '.exe', '.app', '.jar', '.scpt', '.applescript', '.workflow', '.so', '.dylib', '.dll']);
+const KRITA = new Set(['.kra', '.krz', '.ora', '.psd', '.xcf', '.blend']);
+const HEADER_BYTES = 512 * 1024;                     // enough for a JPEG's size marker after its metadata
+const NUMBERED = /^(\d{1,3})(?:[-_ .]|$)/;
+const GOAL = /^(?:final[-_ ]?)?(?:goal|target)(?:[-_ ].*)?$/i;
+const BACKUP = /\.backup-\d{4}-\d{2}-\d{2}(?:-\d+)?\.md$/i;
+
+/** "04-kremlin-towers.png" → "Kremlin towers": the number and extension go, separators become spaces. */
+export function elementGuess(name: string): string {
+  const stem = basename(name, extname(name)).replace(NUMBERED, '').replace(/[-_.]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return stem ? stem[0].toUpperCase() + stem.slice(1) : basename(name);
+}
+
+/** A PNG, GIF or JPEG's type and size from its first bytes (as imageInfo in files.mjs), or null. */
+export function imageHeader(data: Buffer): { mimeType: string; width: number; height: number } | null {
+  if (data.length >= 24 && data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
+    return { mimeType: 'image/png', width: data.readUInt32BE(16), height: data.readUInt32BE(20) };
+  if (data.length >= 10 && data.subarray(0, 3).toString('latin1') === 'GIF')
+    return { mimeType: 'image/gif', width: data.readUInt16LE(6), height: data.readUInt16LE(8) };
+  if (data[0] === 255 && data[1] === 216) {
+    let at = 2;
+    while (at + 9 < data.length && data[at] === 255) {
+      const marker = data[at + 1];
+      if ([192, 193, 194, 195, 197, 198, 199, 201, 202, 203, 205, 206, 207].includes(marker))
+        return { mimeType: 'image/jpeg', width: data.readUInt16BE(at + 7), height: data.readUInt16BE(at + 5) };
+      if (marker === 218 || marker === 217) break;
+      const length = data.readUInt16BE(at + 2);
+      if (length < 2) break;
+      at += 2 + length;
+    }
+  }
+  return null;
+}
+
+function textKind(name: string): FolderText['kind'] {
+  const base = basename(name).toLowerCase();
+  if (base === 'plan.md') return 'plan';
+  if (base === 'notes.md') return 'notes';
+  if (base.startsWith('readme')) return 'readme';
+  if (base.includes('brief')) return 'brief';
+  return 'other';
+}
+
+/** Why a file that is not an image or text is passed over, in the artist's words. */
+function skipReason(name: string): string {
+  const ext = extname(name).toLowerCase();
+  if (name.endsWith('~')) return 'a backup copy';
+  if (ext === '.webp') return 'WebP is not supported yet';
+  if (KRITA.has(ext)) return 'a Krita document or other painting file (not read)';
+  if (ARCHIVES.has(ext)) return 'an archive (not opened)';
+  if (PROGRAMS.has(ext)) return 'a script or program (not run)';
+  return 'not an image or text file';
+}
+
+function inside(root: string, path: string): boolean {
+  const part = relative(root, path);
+  return part !== '' && part !== '..' && !part.startsWith('..' + sep) && !isAbsolute(part);
+}
+
+async function readHead(path: string, bytes: number): Promise<Buffer> {
+  const handle = await open(path, 'r');
+  try {
+    const buffer = Buffer.alloc(bytes);
+    const { bytesRead } = await handle.read(buffer, 0, bytes, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally { await handle.close(); }
+}
+
+/** Text from a prompts file: {assets:[{name, prompt}]}, [{name|file, prompt}] or {name: prompt}; keyed by file stem. */
+// A Map, not an object: a file named constructor.png or __proto__.png must not find an inherited property.
+function promptEntries(value: unknown): Map<string, string> {
+  const out = new Map<string, string>();
+  const add = (name: unknown, prompt: unknown) => {
+    if (typeof name === 'string' && typeof prompt === 'string' && name.trim() && prompt.trim())
+      out.set(basename(name.trim(), extname(name.trim())), prompt.trim().slice(0, 4000));
+  };
+  const list = Array.isArray(value) ? value : value && typeof value === 'object' && Array.isArray((value as { assets?: unknown }).assets)
+    ? (value as { assets: unknown[] }).assets : null;
+  if (list) for (const item of list) {
+    if (item && typeof item === 'object') {
+      const entry = item as Record<string, unknown>;
+      add(entry.name ?? entry.file ?? entry.filename, entry.prompt ?? entry.description);
+    }
+  }
+  else if (value && typeof value === 'object') for (const [name, prompt] of Object.entries(value)) add(name, prompt);
+  return out;
+}
+
+/** The part of a generation prompt that names the subject ("Subject: Only the moonlit sky…"), else the start of it. */
+function promptSubject(prompt: string): string {
+  const subject = /\bSubject:\s*([\s\S]+)$/i.exec(prompt)?.[1] ?? prompt;
+  return subject.replace(/\s+/g, ' ').trim().slice(0, 300);
+}
+
+type Candidate = { name: string; path: string; size: number };
+
+/**
+ * Read a folder of references: the goal image, the numbered element images, other images, briefs and notes, the prompts
+ * file. Only regular files in `dir` and its direct subfolders are considered, and each must resolve inside `dir`.
+ * Names are relative to the folder ('moscow-painting-assets/01-moonlit-sky.png'); paths are absolute and real.
+ */
+export async function scanFolder(dir: string, limits: FolderLimits = FOLDER_LIMITS): Promise<FolderIndex> {
+  let root: string;
+  try {
+    root = await realpath(dir);
+    if (!(await lstat(root)).isDirectory()) throw new Error('not a folder');
+  } catch { throw new Error('Choose a folder that exists: ' + basename(dir) + ' is not a readable folder.'); }
+  const skipped: { name: string; reason: string }[] = [];
+  const images: Candidate[] = [], texts: Candidate[] = [], prompts: Candidate[] = [];
+  let seen = 0, over = 0;
+  const visit = async (folder: string, depth: number) => {
+    let entries;
+    try { entries = (await readdir(folder, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name)); }
+    catch (error) {
+      if (depth === 0) throw error;
+      skipped.push({ name: relative(root, folder).split(sep).join('/'), reason: 'a folder that could not be read (' + ((error as NodeJS.ErrnoException).code ?? 'error') + ')' });
+      return;
+    }
+    const later: string[] = [];
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue;                              // .DS_Store and other hidden files
+      const path = join(folder, entry.name), name = relative(root, path).split(sep).join('/');
+      if (seen >= limits.files) { over++; continue; }
+      if (/[\u0000-\u001f\u007f]/.test(entry.name)) { seen++; skipped.push({ name: name.replace(/[\u0000-\u001f\u007f]/g, '?'), reason: 'a name with control characters (not read)' }); continue; }
+      seen++;
+      if (entry.isSymbolicLink()) { skipped.push({ name, reason: 'a link (links are never followed)' }); continue; }
+      if (entry.isDirectory()) {
+        if (depth === 0) later.push(path);
+        else skipped.push({ name, reason: 'a folder deeper than one level (not read)' });
+        continue;
+      }
+      if (!entry.isFile()) { skipped.push({ name, reason: 'not a regular file' }); continue; }
+      let real: string, size: number;
+      try { real = await realpath(path); size = (await lstat(real)).size; }
+      catch { skipped.push({ name, reason: 'could not be read' }); continue; }
+      if (!inside(root, real)) { skipped.push({ name, reason: 'outside the folder (not read)' }); continue; }
+      const ext = extname(entry.name).toLowerCase();
+      if (entry.name.endsWith('~')) skipped.push({ name, reason: skipReason(entry.name) });
+      else if (IMAGE_TYPES.has(ext)) {
+        if (size > limits.imageBytes) skipped.push({ name, reason: `too large (over ${Math.round(limits.imageBytes / 1_000_000)} MB)` });
+        else images.push({ name, path: real, size });
+      }
+      else if (TEXT_TYPES.has(ext) || ext === '.json') {
+        if (BACKUP.test(entry.name)) { skipped.push({ name, reason: 'a backup copy' }); continue; }
+        if (size > limits.textBytes) { skipped.push({ name, reason: `too large for a text file (over ${Math.round(limits.textBytes / 1000)} KB)` }); continue; }
+        (ext === '.json' && /prompt/i.test(entry.name) ? prompts : texts).push({ name, path: real, size });
+      }
+      else skipped.push({ name, reason: skipReason(entry.name) });
+    }
+    for (const sub of later) await visit(sub, depth + 1);
+  };
+  await visit(root, 0);
+  if (over) skipped.push({ name: `${over} more`, reason: `too many files (the first ${limits.files} were read)` });
+
+  const promptText = new Map<string, string>();
+  for (const file of prompts) {
+    try { for (const [stem, prompt] of promptEntries(JSON.parse(await readFile(file.path, 'utf8')))) promptText.set(stem, prompt); }
+    catch { skipped.push({ name: file.name, reason: 'a prompts file that is not valid JSON' }); }
+  }
+  const number = (name: string) => { const match = NUMBERED.exec(basename(name)); return match ? Number(match[1]) : null; };
+  const isGoal = (name: string) => GOAL.test(basename(name, extname(name)));
+  // Read order decides what the image cap keeps: the goal, then elements by number, then other images.
+  const rank = (c: Candidate) => isGoal(c.name) ? -1 : number(c.name) ?? Number.MAX_SAFE_INTEGER;
+  images.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  let goal: FolderImage | null = null;
+  const elements: FolderImage[] = [], others: FolderImage[] = [];
+  let read = 0;
+  for (const image of images) {
+    if (read >= limits.images) { skipped.push({ name: image.name, reason: `too many images (the first ${limits.images} were read)` }); continue; }
+    let info: ReturnType<typeof imageHeader>;
+    try { info = imageHeader(await readHead(image.path, Math.min(HEADER_BYTES, Math.max(image.size, 1)))); }
+    catch { info = null; }
+    if (!info) { skipped.push({ name: image.name, reason: 'an image whose size could not be read' }); continue; }
+    read++;
+    const stem = basename(image.name, extname(image.name)), n = number(image.name);
+    const prompt = promptText.get(stem);
+    const item: FolderImage = { name: image.name, path: image.path, ...info, role: 'other', guess: elementGuess(image.name),
+      ...(n !== null ? { number: n } : {}), ...(prompt ? { prompt: promptSubject(prompt) } : {}) };
+    if (!goal && isGoal(image.name)) goal = { ...item, role: 'goal', guess: 'Goal image' };
+    else if (n !== null) elements.push({ ...item, role: 'element' });
+    else others.push(item);
+  }
+  const folderTexts: FolderText[] = [];
+  for (const text of texts) {
+    let chars = 0;
+    try { chars = (await readFile(text.path, 'utf8')).length; }
+    catch { skipped.push({ name: text.name, reason: 'could not be read' }); continue; }
+    folderTexts.push({ name: text.name, path: text.path, kind: textKind(text.name), chars });
+  }
+  const promptsByName: Record<string, string> = Object.fromEntries([...promptText].map(([stem, prompt]) => [stem, promptSubject(prompt)]));
+  return { root, goal, elements, others, texts: folderTexts, prompts: promptsByName, skipped };
+}
+
+/** A text file of the folder (a brief, PLAN.md), read only if it resolves inside the folder; at most `max` characters. */
+export async function readFolderText(root: string, name: string, max = 4000): Promise<string> {
+  const base = await realpath(root), path = await realpath(join(base, name));
+  if (!inside(base, path) || !(await lstat(path)).isFile()) throw new Error('That file is not inside the project folder.');
+  const text = (await readHead(path, Math.min(FOLDER_LIMITS.textBytes, max * 4))).toString('utf8');
+  return text.slice(0, max);
+}

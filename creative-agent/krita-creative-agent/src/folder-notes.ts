@@ -1,0 +1,232 @@
+// SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Project folder (project-folder B3): the only things the agent writes into the artist's folder. PLAN.md mirrors the
+// agent's plan as a checklist (ticked as elements are kept), NOTES.md is a short log that only grows, and a Markdown
+// file the agent did not write itself is copied to <name>.backup-<yyyy-mm-dd>.md before it is changed. Every write is a
+// plain .md name directly in the folder, opened without following links (O_NOFOLLOW), the folder resolved first.
+import { constants } from 'node:fs';
+import { copyFile, lstat, open, realpath } from 'node:fs/promises';
+import { basename, extname, join } from 'node:path';
+
+export type Step = { title: string; done_when: string; scope?: string; checks?: string[] };
+export type Brief = { title: string; objective: string; requirements: string[]; freedom: string[]; completion: string[]; steps: Step[] };
+export type PlanStep = { title: string; file?: string; layer?: string; done: boolean };
+export type Plan = { title: string | null; text: string; lines: string[]; steps: PlanStep[]; ticked: number[] };
+
+export const PLAN_FILE = 'PLAN.md';
+export const NOTES_FILE = 'NOTES.md';
+const IMAGE = /\.(png|jpe?g|gif|webp)$/i;
+const STEP_LINE = /^\s*[-*]\s+\[( |x|X)\]\s+(?:\d+\.\s+)?(.+?)\s*$/;
+const LAYER = /\s+·\s+layer\s+"([^"]*)"$/;
+const FILE = /\s+\(([^()]+)\)$/;
+
+const TEXT_CAP = 200_000;                           // as the folder scan's text cap: a larger file is the artist's, backed up unread
+const MOVES = /^##\s+Moves\s*$/;
+
+const day = () => new Date().toISOString().slice(0, 10);
+/** One line, no control characters. */
+const oneLine = (text: string) => text.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+/** A line of intent that cannot read as a heading or a checklist item. */
+const plainLine = (text: string) => oneLine(text).replace(/^([-*+#>\[]|\d+\.)/, '\\$1');
+/** A step title as written: one line, double quotes made single (the layer name is quoted), no brackets at the start. */
+const stepTitle = (text: string) => oneLine(text).replaceAll('"', "'").replace(/^[\[\]]+\s*/, '');
+
+/** The image file a step paints from (its scope when that names an image), or undefined. */
+export function stepFile(step: Pick<Step, 'scope'>): string | undefined {
+  return step.scope && IMAGE.test(step.scope.trim()) ? step.scope.trim() : undefined;
+}
+
+/** A step's layer name: its title without a trailing "(file)". */
+export function layerName(title: string): string {
+  const line = stepTitle(title), file = FILE.exec(line)?.[1];
+  return (file && IMAGE.test(file) ? line.replace(FILE, '') : line).slice(0, 60);
+}
+
+/** Each step's identity: its image file, else its title and how many earlier steps share that title. */
+export function stepKeys(steps: readonly { title: string; scope?: string; file?: string }[]): string[] {
+  const seen = new Map<string, number>();
+  return steps.map(step => {
+    const file = step.file ?? stepFile(step);
+    if (file) return 'file:' + oneLine(file).toLowerCase();
+    const title = layerName(step.title).toLowerCase(), n = seen.get(title) ?? 0;
+    seen.set(title, n + 1);
+    return `title:${title}#${n}`;
+  });
+}
+
+function stepLine(step: Step, index: number, done: boolean): string {
+  const scope = stepFile(step), file = scope ? oneLine(scope).replace(/[()]/g, '') : undefined, title = layerName(step.title);
+  return `- [${done ? 'x' : ' '}] ${index + 1}. ${title}${file ? ` (${file})` : ''} · layer "${title}"`;
+}
+
+/** PLAN.md's text: a few lines of intent, then the checklist. */
+export function planText(brief: Brief, ticked: readonly number[], { goal }: { goal?: string | null } = {}): string {
+  const intent = [plainLine(brief.objective), ...(goal ? [`Goal image: ${oneLine(goal)} (it decides the layout).`] : []),
+    ...brief.requirements.map(r => `- ${plainLine(r)}`)];
+  return [`# Plan · ${oneLine(brief.title)}`, '', ...intent, '', '## Moves', '',
+    ...brief.steps.map((step, i) => stepLine(step, i, ticked.includes(i))), ''].join('\n');
+}
+
+/** A plain Markdown name directly in the folder, as an absolute path inside its real location. */
+async function markdownPath(root: string, name: string): Promise<string> {
+  if (typeof name !== 'string' || name !== basename(name) || name.startsWith('.') || extname(name).toLowerCase() !== '.md')
+    throw new Error(`Only a Markdown file directly inside the project folder can be written (${name}).`);
+  const base = await realpath(root);
+  if (!(await lstat(base)).isDirectory()) throw new Error('The project folder is not a folder.');
+  return join(base, name);
+}
+
+type Found = { size: number; text: string | null };       // text is null for a file over TEXT_CAP (not read)
+
+/** The file as found, or null when there is none; a link or anything but a regular file is refused. */
+async function existing(path: string): Promise<Found | null> {
+  let info;
+  try { info = await lstat(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+  if (info.isSymbolicLink()) throw new Error(`${basename(path)} is a link; links are never followed in the project folder.`);
+  if (!info.isFile()) throw new Error(`${basename(path)} is not a regular file.`);
+  if (info.nlink > 1) throw new Error(`${basename(path)} is a hard link to another file; links are never followed in the project folder.`);
+  if (info.size > TEXT_CAP) return { size: info.size, text: null };
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try { return { size: info.size, text: await handle.readFile('utf8') }; } finally { await handle.close(); }
+}
+
+/** Open for writing without following a link, refuse a hard link, then truncate (when asked) and write. */
+async function writeNoFollow(path: string, text: string, flags: number, truncate = false): Promise<void> {
+  let handle;
+  try { handle = await open(path, flags | constants.O_WRONLY | constants.O_NOFOLLOW, 0o644); }
+  catch (error) {
+    if (['ELOOP', 'EMLINK'].includes((error as NodeJS.ErrnoException).code ?? '')) throw new Error(`${basename(path)} is a link; links are never followed in the project folder.`);
+    throw error;
+  }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) throw new Error(`${basename(path)} is not a regular file.`);
+    if (info.nlink > 1) throw new Error(`${basename(path)} is a hard link to another file; links are never followed in the project folder.`);
+    if (truncate) await handle.truncate(0);
+    await handle.write(text, null, 'utf8');
+  } finally { await handle.close(); }
+}
+
+/** The last byte of a file (is there a final newline?), read without reading the rest. */
+async function lastByte(path: string, size: number): Promise<string> {
+  if (!size) return '';
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try { const buffer = Buffer.alloc(1); await handle.read(buffer, 0, 1, size - 1); return buffer.toString('latin1'); }
+  finally { await handle.close(); }
+}
+
+/** <stem>.backup-<yyyy-mm-dd>.md beside the file (a byte copy), never over an earlier backup. Returns the backup's name. */
+async function backup(path: string): Promise<string> {
+  const stem = basename(path, extname(path)), folder = path.slice(0, path.length - basename(path).length);
+  for (let n = 1; n < 100; n++) {
+    const name = `${stem}.backup-${day()}${n > 1 ? '-' + n : ''}.md`;
+    try { await copyFile(path, join(folder, name), constants.COPYFILE_EXCL); return name; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+  }
+  throw new Error('Too many backups of ' + basename(path) + ' today.');
+}
+
+/**
+ * Write PLAN.md. `expected` is the text this chat last wrote: a file that differs from it (changed by hand, or written
+ * by another session) is backed up first, unless it already says what is about to be written.
+ */
+export async function writePlan(root: string, brief: Brief, ticked: readonly number[],
+  { expected, goal }: { expected?: string | null; goal?: string | null } = {}): Promise<{ text: string; backup?: string }> {
+  const path = await markdownPath(root, PLAN_FILE), text = planText(brief, ticked, { goal });
+  const before = await existing(path);
+  const saved = before !== null && (before.text === null || (before.text !== expected && before.text !== text)) ? await backup(path) : undefined;
+  await writeNoFollow(path, text, constants.O_CREAT, true);
+  return saved ? { text, backup: saved } : { text };
+}
+
+/** One dated line at the end of NOTES.md (created when missing); what is there is never changed. */
+export async function appendNote(root: string, line: string): Promise<void> {
+  const path = await markdownPath(root, NOTES_FILE);
+  const before = await existing(path);
+  const lead = before === null ? '# Notes\n\n' : before.size && await lastByte(path, before.size) !== '\n' ? '\n' : '';
+  await writeNoFollow(path, `${lead}- ${day()} · ${oneLine(line).slice(0, 400)}\n`, constants.O_CREAT | constants.O_APPEND);
+}
+
+/** PLAN.md as the artist may have left it: its checklist lines in order, which are ticked, the title. Null without one. */
+export async function readPlan(root: string): Promise<Plan | null> {
+  const found = await existing(await markdownPath(root, PLAN_FILE));
+  return found?.text == null ? null : parsePlan(found.text);
+}
+
+export function parsePlan(text: string): Plan {
+  const lines = text.split('\n'), steps: PlanStep[] = [];
+  let moves = false;
+  for (const line of lines) {
+    if (/^#{1,2}\s/.test(line)) { moves = MOVES.test(line); continue; }   // only the checklist under "## Moves" is the plan
+    if (!moves) continue;
+    const match = STEP_LINE.exec(line);
+    if (!match) continue;
+    let rest = match[2];
+    const layer = LAYER.exec(rest)?.[1];
+    rest = rest.replace(LAYER, '');
+    const file = FILE.exec(rest)?.[1];
+    if (file && IMAGE.test(file)) rest = rest.replace(FILE, '');
+    steps.push({ title: oneLine(rest), ...(file && IMAGE.test(file) ? { file } : {}), ...(layer ? { layer } : {}), done: match[1] !== ' ' });
+  }
+  const title = /^#\s+(?:Plan\s*·\s*)?(.+)$/m.exec(text)?.[1]?.trim() ?? null;
+  return { title, text, lines, steps, ticked: steps.flatMap((s, i) => s.done ? [i] : []) };
+}
+
+/** What changed between the agent's plan (and its ticks) and PLAN.md's lines, in words for the artist. */
+export function planDifference(brief: Brief, lines: readonly string[], ticked: readonly number[]): string[] {
+  const edited = parsePlan(lines.join('\n')).steps, ourKeyList = stepKeys(brief.steps), theirKeyList = stepKeys(edited);
+  const ours = brief.steps.map((s, i) => ({ key: ourKeyList[i], title: layerName(s.title), done: ticked.includes(i) }));
+  const theirs = edited.map((s, i) => ({ key: theirKeyList[i], title: layerName(s.title), done: s.done }));
+  const out: string[] = [];
+  const theirKeys = new Set(theirs.map(s => s.key)), ourKeys = new Set(ours.map(s => s.key));
+  for (const step of ours) if (!theirKeys.has(step.key)) out.push(`Removed: ${step.title}`);
+  for (const step of theirs) if (!ourKeys.has(step.key)) out.push(`Added: ${step.title}`);
+  const common = (list: typeof ours) => list.filter(s => theirKeys.has(s.key) && ourKeys.has(s.key)).map(s => s.key);
+  const a = common(ours), b = common(theirs);
+  for (const [i, k] of a.entries()) {
+    const j = b.indexOf(k);
+    if (j !== i) out.push(`Moved: ${ours.find(s => s.key === k)?.title} from step ${ours.findIndex(s => s.key === k) + 1} to step ${theirs.findIndex(s => s.key === k) + 1}`);
+  }
+  for (const step of theirs) {
+    const mine = ours.find(s => s.key === step.key);
+    if (mine && mine.done !== step.done) out.push(`${step.done ? 'Ticked' : 'Unticked'}: ${step.title}`);
+  }
+  return out;
+}
+
+/** The plan as PLAN.md lists it: steps in its order, each keeping its done_when and checks from `brief` when it matches. */
+export function briefFromPlan(plan: Pick<Plan, 'title' | 'steps'>, brief?: Brief | null): Brief {
+  const mineKeys = stepKeys(brief?.steps ?? []), theirKeys = stepKeys(plan.steps);
+  const known = new Map((brief?.steps ?? []).map((s, i) => [mineKeys[i], s]));
+  const steps: Step[] = plan.steps.slice(0, 16).map((s, i) => {
+    const mine = known.get(theirKeys[i]);
+    const scope = s.file ?? mine?.scope;
+    return { title: s.title.slice(0, 200), done_when: mine?.done_when ?? `${s.title} is painted where the goal image places it.`,
+      ...(scope ? { scope } : {}), ...(mine?.checks?.length ? { checks: mine.checks } : {}) };
+  });
+  return { title: (brief?.title ?? plan.title ?? 'Project folder plan').slice(0, 200),
+    objective: brief?.objective ?? 'Paint the folder’s elements one move each, as PLAN.md lists them.',
+    requirements: brief?.requirements ?? [], freedom: brief?.freedom ?? [],
+    completion: brief?.completion?.length ? brief.completion : ['Every step of PLAN.md is painted and ticked.'], steps };
+}
+
+/** The ticked steps' new indices once the plan is revised: a tick follows its step by title. */
+export function remapTicks(before: Pick<Brief, 'steps'> | null | undefined, after: Pick<Brief, 'steps'>, ticked: readonly number[]): number[] {
+  const beforeKeys = stepKeys(before?.steps ?? []), afterKeys = stepKeys(after.steps);
+  const done = new Set(ticked.filter(i => i >= 0 && i < beforeKeys.length).map(i => beforeKeys[i]));
+  return afterKeys.flatMap((k, i) => done.has(k) ? [i] : []);
+}
+
+/**
+ * Write a Markdown file of the folder. One the agent did not create (not in `created`) is copied to a dated backup
+ * first, so the artist's own words are never lost. Returns whether it changed and the backup's name.
+ */
+export async function editMarkdown(root: string, name: string, text: string,
+  { created = [] }: { created?: readonly string[] } = {}): Promise<{ changed: boolean; backup?: string }> {
+  const path = await markdownPath(root, name);
+  const before = await existing(path);
+  if (before?.text === text) return { changed: false };
+  const saved = before !== null && !created.includes(name) ? await backup(path) : undefined;
+  await writeNoFollow(path, text, constants.O_CREAT, true);
+  return saved ? { changed: true, backup: saved } : { changed: true };
+}

@@ -67,5 +67,6 @@ If a check fails, redraw that element with `replace: true` before you paint it.
 - `example-harbour-dusk.md`: the three kinds of move as real calls; read it before a scene's first guide.
 - `subject-architecture.md`, `subject-vehicles.md`, `subject-figures.md`, `subject-landscape.md`: what to guide and
   the common errors; read only one.
+- `project-folder.md`: a project folder's plan moves.
 
 `finish_guide` hides an element's guide (the artist can show it again); undo of a move removes its guide with its paint.

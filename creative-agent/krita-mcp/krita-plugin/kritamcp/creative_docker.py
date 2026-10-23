@@ -657,7 +657,7 @@ class PlanDialog(QDialog):
         buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject); layout.addWidget(buttons)
 
     def add_stage(self):
-        if self.steps.rowCount() >= 12: return
+        if self.steps.rowCount() >= 16: return
         self.save_stage(); self.stage_metadata.append({})
         self.steps.insertRow(self.steps.rowCount()); self.steps.setCurrentCell(self.steps.rowCount() - 1, 0)
 
@@ -1366,6 +1366,21 @@ class CreativeAgentDocker(DockWidget):
         self.jump_button.clicked.connect(self.transcript.jump_to_latest); self.jump_button.hide(); jump_row.addWidget(self.jump_button); jump_row.addStretch()
         self.transcript.followChanged.connect(lambda following: self.jump_button.setVisible(not following))
         layout.addLayout(jump_row)
+        # Project folder: the folder the agent works from, its goal image and element images (the artist renames a guess in place).
+        self.folder_card = QFrame(); self.folder_card.setObjectName('planBar')
+        folder_layout = QVBoxLayout(self.folder_card); folder_layout.setContentsMargins(10, 9, 10, 9); folder_layout.setSpacing(4)
+        self.folder_title = QLabel(''); self.folder_title.setObjectName('planSummary'); self.folder_title.setWordWrap(True)
+        folder_layout.addWidget(self.folder_title)
+        self.folder_goal = QLabel(''); self.folder_goal.setObjectName('muted'); self.folder_goal.setWordWrap(True)
+        self.folder_goal.setTextFormat(Qt.TextFormat.PlainText); folder_layout.addWidget(self.folder_goal)   # file names are text
+        self.folder_elements = QListWidget(); self.folder_elements.setObjectName('folderElements'); self.folder_elements.setMaximumHeight(150)
+        self.folder_elements.setAccessibleName('Elements of the project folder')
+        self.folder_elements.setToolTip('The elements, painted in this order. Double-click a name to correct it.')
+        self.folder_elements.itemChanged.connect(self.folder_guess_changed); folder_layout.addWidget(self.folder_elements)
+        self.folder_footer = QLabel(''); self.folder_footer.setObjectName('muted'); self.folder_footer.setWordWrap(True)
+        self.folder_footer.setTextFormat(Qt.TextFormat.PlainText); folder_layout.addWidget(self.folder_footer)
+        layout.addWidget(self.folder_card); self.folder_card.hide()
+        self.folder_guesses = {}
         self.plan_bar = QFrame(); self.plan_bar.setObjectName('planBar')
         plan_layout = QVBoxLayout(self.plan_bar); plan_layout.setContentsMargins(10, 9, 10, 9); plan_layout.setSpacing(6)
         self.plan_summary = QLabel(''); self.plan_summary.setWordWrap(True); self.plan_summary.setObjectName('planSummary')
@@ -1473,6 +1488,8 @@ class CreativeAgentDocker(DockWidget):
         self.attach_menu = QMenu(self)
         self.attach_menu.addAction('Current canvas', lambda: self.context_command('attach'))
         self.attach_menu.addAction('Reference image…', lambda: self.attach('reference'))
+        self.folder_action = self.attach_menu.addAction('Open project folder…', self.open_project_folder)
+        self.folder_action.setToolTip('Point %s at a folder of references: a goal image and numbered element images, painted one element per move.' % product_name())
         self.selected_area_action = self.attach_menu.addAction('Selected area')
         self.selected_area_action.setToolTip('Attach a rectangular crop around the active selection. This does not authorize painting.')
         self.selected_area_action.triggered.connect(self.attach_selected_area)
@@ -2051,7 +2068,7 @@ class CreativeAgentDocker(DockWidget):
         for path in paths:
             if not path.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
                 self.status.setText('Attach a PNG, JPEG or GIF reference image.'); continue
-            if len(self.pending_references) + len(self.attached_references) >= 4:
+            if len(self.pending_references) + len([r for r in self.attached_references if r.get('source') != 'folder']) >= 4:
                 self.status.setText('Use up to four references. Remove one to replace it.'); break
             if os.path.isfile(path) and not any(r['path'] == path for r in self.pending_references + self.attached_references):
                 self.pending_references.append({'path': path, 'role': role, 'name': os.path.basename(path), 'purpose': 'composition' if role == 'construction-map' else 'general', 'notes': ''})
@@ -2128,12 +2145,60 @@ class CreativeAgentDocker(DockWidget):
             self.send({'type': 'set_mode', 'mode': self.chat_mode})
         self.update_controls(); self.render_context()
 
+    def open_project_folder(self):
+        path = QFileDialog.getExistingDirectory(self, 'Open project folder', getattr(self, 'folder_root', '') or '')
+        if path: self.send({'type': 'open_folder', 'path': path})
+
+    def show_folder(self, event):
+        index = event.get('index') or {}
+        self.folder_root = index.get('root', '')
+        self.folder_title.setText('<b>Project folder</b> · %s' % html.escape(index.get('name') or os.path.basename(self.folder_root)))
+        goal = index.get('goal')
+        self.folder_goal.setText('Goal image: %s' % goal['name'] if goal else 'No goal image found: name it final_goal.png to set the layout.')
+        elements = index.get('elements') or []
+        self.folder_guesses = {element['name']: element.get('guess') or element['name'] for element in elements}
+        self.folder_elements.blockSignals(True); self.folder_elements.clear()
+        for element in elements:
+            item = QListWidgetItem(self.folder_guesses[element['name']])
+            item.setData(Qt.ItemDataRole.UserRole, element['name'])
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            item.setToolTip(self.text_tip([element['name']] + ([element['prompt']] if element.get('prompt') else [])))
+            self.folder_elements.addItem(item)
+        self.folder_elements.blockSignals(False); self.folder_elements.setVisible(bool(elements))
+        others, skipped = index.get('others') or [], index.get('skipped') or []
+        plural = lambda n, word: '%d %s%s' % (n, word, '' if n == 1 else 's')
+        limit = event.get('plan_limit')
+        over = ' (the plan takes the first %d)' % limit if limit and len(elements) > limit else ''
+        parts = [plural(len(elements), 'element') + over] + ([plural(len(others), 'other image')] if others else []) + (['%d skipped' % len(skipped)] if skipped else [])
+        self.folder_footer.setText(' · '.join(parts))
+        tip = (['Other images (listed, not attached): ' + ', '.join(o['name'] for o in others)] if others else []) \
+            + (['Skipped:'] + ['%s: %s' % (s['name'], s['reason']) for s in skipped] if skipped else [])
+        self.folder_footer.setToolTip(self.text_tip(tip) if tip else '')
+        self.folder_card.show()
+
+    @staticmethod
+    def text_tip(lines):
+        """A tooltip of plain lines (file names may hold < or &): escaped inside rich text, so nothing is read as markup."""
+        return '<p style="white-space:pre-wrap">%s</p>' % '<br>'.join(html.escape(str(line)) for line in lines)
+
+    def folder_guess_changed(self, item):
+        name = item.data(Qt.ItemDataRole.UserRole)
+        guess = ' '.join(item.text().split())
+        if not guess or guess == self.folder_guesses.get(name):
+            self.folder_elements.blockSignals(True); item.setText(self.folder_guesses.get(name, '')); self.folder_elements.blockSignals(False)
+            return
+        self.folder_guesses[name] = guess
+        if item.text() != guess:
+            self.folder_elements.blockSignals(True); item.setText(guess); self.folder_elements.blockSignals(False)
+        self.send({'type': 'folder_guess', 'name': name, 'guess': guess})
+
     def show_references(self):
         while self.attachment_row.count():
             item = self.attachment_row.takeAt(0)
             if item.widget(): item.widget().hide(); item.widget().deleteLater()
         self.reference_remove_buttons = []
-        references = list(self.attached_references) + self.pending_references
+        # The project folder's images show on its card; the tiles keep the artist's own references.
+        references = [r for r in self.attached_references if r.get('source') != 'folder'] + self.pending_references
         for ref in references[:4]:
             tile = QFrame(); tile.setObjectName('referenceTile'); tile.setFixedWidth(72)
             column = QVBoxLayout(tile); column.setContentsMargins(0, 0, 0, 0); column.setSpacing(1)
@@ -2273,6 +2338,7 @@ class CreativeAgentDocker(DockWidget):
         self.flush_stream()
         self.transcript.clear()
         self.current_reply = None; self.reply_open = False
+        self.folder_card.hide(); self.folder_guesses = {}; self.folder_elements.clear()
         self.goal = None; self.plan_bar.hide(); self.move_bar.hide(); self.current_move = None; self.question_id = None; self.question_controls = []
         self.pending_references = []; self.attached_references = []; self.show_references()
         self.empty_state.show()
@@ -2653,12 +2719,19 @@ class CreativeAgentDocker(DockWidget):
                           'complete': 'Finished', 'limited': 'Allowance reached', 'needs_input': 'Needs your input', 'move_ready': 'Move ready'}
                 step = max(0, min(self.goal.get('current_step', 0), len(brief['steps']) - 1))
                 label = 'Canvas changed · review plan' if self.goal.get('target_needs_review') else 'Needs your answer' if self.goal.get('question') else states.get(self.goal['status'], self.goal['status'])
-                self.plan_summary.setText(label + ' · ' + brief['title'] + ('\nStep %d of %d · %s' % (step + 1, len(brief['steps']), brief['steps'][step]['title']) if brief['steps'] else ''))
+                current = brief['steps'][step] if brief['steps'] else {}
+                # A project folder's plan: the step's element file (its scope) and how many steps are ticked.
+                source = current.get('scope', '') if re.search(r'\.(png|jpe?g|gif)$', current.get('scope', ''), re.I) else ''
+                done = len(self.goal.get('done_steps') or [])
+                self.plan_summary.setText(label + ' · ' + brief['title'] + ('\nStep %d of %d · %s' % (step + 1, len(brief['steps']), current['title']) if brief['steps'] else '')
+                                          + (' · from %s' % os.path.basename(source) if source else '') + (' · %d of %d done' % (done, len(brief['steps'])) if done else ''))
                 self.plan_summary.setToolTip('Step %d/%d: %s\n%d painting passes · %d tokens used' %
                     (step + 1, len(brief['steps']), brief['steps'][step]['title'], self.goal.get('passes', 0), self.goal.get('tokens', 0)))
             if not self.goal.get('question'):
                 for button in self.question_controls: button.setEnabled(False)
             self.update_controls()
+        elif kind == 'folder':
+            self.show_folder(event)
         elif kind == 'mode':
             self.mode_selector.blockSignals(True); self.mode_selector.setCurrentIndex(self.mode_selector.findData(event['mode'])); self.mode_selector.blockSignals(False)
             self.chat_mode = event['mode']; self.update_controls()
@@ -2864,7 +2937,8 @@ class CreativeAgentDocker(DockWidget):
         if (doc.colorModel(), doc.colorDepth()) != ('RGBA', 'U8'):             # a part is cut from 8-bit RGBA pixels
             doc.setColorSpace('RGBA', 'U8', 'sRGB-elle-V2-srgbtrc.icc')
         if window: window.addView(doc)
-        tool = app.action('KisToolSelectSimilar' if kind == 'part' else 'KisToolSelectRectangular')
+        # A part is drawn around with the Freehand Selection Tool: a colour wand grabs look-alike pixels across the image.
+        tool = app.action('KisToolSelectOutline' if kind == 'part' else 'KisToolSelectRectangular')
         if tool is not None: tool.trigger()
         name = reference.get('name') or os.path.basename(reference['path'])
         self.part_session = {'reference': reference, 'kind': kind, 'doc': doc, 'copy': copy, 'view': previous, 'window': window, 'name': name}

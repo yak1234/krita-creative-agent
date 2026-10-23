@@ -50,6 +50,8 @@ async function handle(command) {
       case 'import_archive': await runtime.importArchive(command); break;
       case 'set_reference_purpose': await runtime.setReferencePurpose(command); break;
       case 'remove_reference': await runtime.removeReference(command); break;
+      case 'open_folder': await runtime.openFolder(command); break;
+      case 'folder_guess': await runtime.folderGuess(command); break;
       case 'inspect_result': await runtime.inspectResult(); break;
       case 'reconcile': await runtime.reconcile(); break;
       case 'review_pass': await runtime.reviewPass(command); break;

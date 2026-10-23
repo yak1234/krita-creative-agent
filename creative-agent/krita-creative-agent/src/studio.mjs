@@ -33,6 +33,10 @@ import { decisionId } from './decision-records.mjs';
 import { skillCommand } from './skill-commands.ts';
 import { fillNudge, massGuidance, hasGoalReference, paintedTransfers, referenceColourPassMade, referenceFirstContext } from './reference-first.ts';
 import { transferRefusal, existingPainting } from './reference-tool.mjs';
+import { scanFolder, readFolderText } from './project-folder.ts';
+import { writePlan, appendNote, readPlan, parsePlan, planDifference, briefFromPlan, remapTicks, stepFile, stepKeys, layerName } from './folder-notes.ts';
+import { constants as fsConstants } from 'node:fs';
+import { open as openFile } from 'node:fs/promises';
 
 const object = fields => Type.Object(fields, { additionalProperties: false });
 const line = Type.String({ minLength: 1, maxLength: 2000 });
@@ -43,7 +47,7 @@ export const briefSchema = object({ title: line, objective: line, requirements: 
   characters:Type.Optional(Type.Array(object({name:line,requirements:lines}),{maxItems:30})),
   steps: Type.Array(object({ title: line, done_when: line, scope:Type.Optional(line),
     checks:Type.Optional(Type.Array(Type.String({minLength:1,maxLength:300}),{minItems:1,maxItems:5,description:'What the finished area visibly looks like, judged on the canvas. Describe the painted result, not the absence of a seam around the rectangle being repaired.'})),
-    panels:Type.Optional(Type.Array(panelId,{minItems:1,maxItems:24})) }), { minItems: 1, maxItems: 12 }),
+    panels:Type.Optional(Type.Array(panelId,{minItems:1,maxItems:24})) }), { minItems: 1, maxItems: 16 }),   // 16: a folder's block-in and 15 elements
   completion: Type.Array(line, { minItems: 1, maxItems: 20 }),
   story:Type.Optional(storySchema) });
 // Saved plans may carry retired stage controls (stop_after, max_operations, region).
@@ -197,6 +201,10 @@ function moveReviewLine({verdict,findings,undone_batches,batches}) {
 }
 const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer','painting_toolbox','stamp_material',...CRAFT_OPERATIONS,'letter','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface'];
 /** Agent mode's request for "Paint this plan": the plan's current step, one move at a time. */
+// Project folder (B3): with a folder, Agent mode plans first. Nothing paints before the artist approves with Start painting.
+const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist approves the plan with Start painting. Call propose_plan now: step 1 is a block-in of the whole composition (construction guides, then a reference colour pass from the goal image), then one step per element, back to front in the folder\'s numbering, as in folder_plan_draft. Keep each element step\'s scope as its file name; improve titles, done_when and checks from the brief, the prompts and the images. Leave an element out only when the artist asks ("only the sky today"). Then stop.\n';
+const FOLDER_ANSWERS = ['Follow the edited plan','Keep the current plan'];
+const FOLDER_PLAN_ELEMENTS = 15;                       // a plan holds 16 steps: the block-in and 15 elements
 function planStepRequest(goal) {
   const steps = goal.brief.steps, index = Math.min(goal.current_step ?? 0, steps.length - 1);
   return 'Paint step ' + (index + 1) + ' of the plan: ' + String(steps[index].title).trim().replace(/[.\s]+$/, '') + '.';
@@ -993,7 +1001,7 @@ export class StudioRuntime extends PaintingRuntime {
       if (this.executionPhase !== 'plan') throw new Error('Switch to Plan before changing the brief.');
       const comicProblem = this.goal.comic ? comicPlanProblems(brief, this.goal.comic.panels) : null;
       if (comicProblem) throw new Error(comicProblem);
-      brief=structuredClone(brief);this.protectDraftRequirements();
+      brief=this.folderScopes(structuredClone(brief));this.protectDraftRequirements();
       for (const rule of this.goal.locked_requirements) if (!brief.requirements.includes(rule)) brief.requirements.push(rule);
       this.goal.revisions ??= []; this.goal.revisions.push({revision:this.goal.revision,brief:this.goal.brief,at:stamp(),source:'model'});
       for (const character of this.goal.character_records ?? []) {
@@ -1006,7 +1014,8 @@ export class StudioRuntime extends PaintingRuntime {
       this.goal.target_needs_review = false; this.goal.stage_operations = 0;
       this.goal.status = 'ready'; this.goal.current_step = 0; this.yieldRequested = true;
       await this.persist(); this.publish();
-      return { message: 'Plan saved. The host will handle starting Autopilot.', revision: this.goal.revision };
+      await this.folderPlanChanged(this.goal.revisions.at(-1)?.brief);
+      return { message: this.study.folder ? 'Plan saved and written to PLAN.md. Stop now: the artist reviews it and presses Start painting.' : 'Plan saved. The host will handle starting Autopilot.', revision: this.goal.revision };
     });
     add('start_painting', 'Start or continue the existing painting plan when the latest user message requests execution. Do not use for questions or planning-only requests. The host enables native painting tools after this handoff.', object({user_quote:line}), async p => {
       const latest = this.goal.messages.filter(m=>m.role==='user').at(-1)?.text ?? '';
@@ -1029,7 +1038,7 @@ export class StudioRuntime extends PaintingRuntime {
         return {message:'The proposed requirement change is awaiting explicit acceptance. Stop now.'};
       });
     add('record_progress', 'Record which plan step (0-based, in the suggested order) you are working on and the concrete visible improvement. Do not mark the overall painting complete.',
-      object({ step: Type.Integer({ minimum: 0, maximum: 11 }), observation: line, next_focus: line }), async p => {
+      object({ step: Type.Integer({ minimum: 0, maximum: 15 }), observation: line, next_focus: line }), async p => {
         if (this.executionPhase !== 'agent' || p.step >= (this.goal.brief?.steps.length ?? 0)) throw new Error('Use an existing painting step.');
         this.goal.current_step = p.step; this.goal.progress.push({ ...p, at: stamp() });
         await this.persist(); this.publish(); return { message: 'Progress recorded.' };
@@ -1065,14 +1074,16 @@ export class StudioRuntime extends PaintingRuntime {
       references: this.study.references.map(({id,role,name,width,height,purpose,notes,part_of,part_kind,bounds}) => ({id,role,name,width,height,purpose,notes,part_of,part_kind,bounds})),
       reference_images: this.study.references.length ? this.referenceImagesNote ?? null : undefined,
       comic: comicContext(this.goal.comic),
+      folder: this.folderContext(),
       layer_need: phase==='agent' && this.layerNeed ? this.layerNeed : undefined,
     }) + '\n\n' + (this.goal.comic && COMIC_GUIDANCE[phase] ? COMIC_GUIDANCE[phase] + '\n\n' : '');
   }
   async addReferences(items) {
     for (const item of items ?? []) {
       if (this.study.references.some(r => r.source_path === item.path || r.path === item.path || r.id === item.id)) continue;
-      if (this.study.references.filter(r => r.role !== 'asset').length >= 4) throw new Error('Attach up to four reference images per conversation.');
-      const data = await readFile(item.path);
+      // The artist's own references stop at four; the project folder's goal and elements come on top (they have their card).
+      if (!item.folder && this.study.references.filter(r => r.role !== 'asset' && r.source !== 'folder').length >= 4) throw new Error('Attach up to four reference images per conversation.');
+      const data = item.folder ? await this.readFolderImage(item.path) : await readFile(item.path);
       if (data.length > 12 * 1024 * 1024) throw new Error('Use references smaller than 12 MB.');
       const info = imageInfo(data); const id = 'reference-' + randomUUID();
       const path = join(this.study.directory, id + ({ 'image/png':'.png','image/jpeg':'.jpg','image/gif':'.gif' }[info.mimeType]));
@@ -1082,9 +1093,251 @@ export class StudioRuntime extends PaintingRuntime {
       // An original removed before sending leaves part_of null; the part still paints only its area.
       const part = ['part','crop'].includes(item.part_kind) && Array.isArray(item.bounds) && item.bounds.length === 4 && item.bounds.every(Number.isInteger)
         ? {part_of:original?.id ?? null, part_kind:item.part_kind, bounds:item.bounds} : {};
-      this.study.references.push({ id, path, source_path: item.path, role: item.role ?? 'reference',purpose:['likeness','composition','palette','material','general'].includes(item.purpose)?item.purpose:'general',notes:String(item.notes ?? '').slice(0,2000),name:String(item.name || basename(item.path)).slice(0,200), ...info, ...part });
+      // An image from the project folder keeps its name there (study.folder), so the plan and the panel can find it.
+      const folder = typeof item.folder === 'string' && item.folder ? {source:'folder', folder_name:item.folder.slice(0,400)} : {};
+      this.study.references.push({ id, path, source_path: item.path, role: item.role ?? 'reference',purpose:['likeness','composition','palette','material','general'].includes(item.purpose)?item.purpose:'general',notes:String(item.notes ?? '').slice(0,2000),name:String(item.name || basename(item.path)).slice(0,200), ...info, ...part, ...folder });
     }
     await this.persist(); this.publish();
+  }
+  // Project folder (project-folder B2): the artist's folder of references. The scan is read-only (project-folder.ts); the
+  // goal image is attached as a composition reference and each numbered element as an asset, copied into the chat like
+  // any reference. study.folder ({root, guesses}) follows the chat; a folder chosen before a chat waits for its start.
+  folderState() { return this.study?.folder ?? this.pendingFolder ?? null; }
+  folderGuessOf(element) { return this.folderState()?.guesses?.[element.name] ?? element.guess; }
+  async openFolder({path} = {}) {
+    if (this.busy) throw new Error('Pause before opening a project folder.');
+    if (typeof path !== 'string' || !path.trim()) throw new Error('Choose a project folder.');
+    const index = await scanFolder(path);
+    const current = this.folderState();
+    if (this.study?.folder && current.root !== index.root) throw new Error('This chat already works from the folder '+basename(current.root)+'. Start a new chat for another folder.');
+    if (!this.study) {
+      this.pendingFolder = {root:index.root, guesses:current?.root === index.root ? current.guesses ?? {} : {}};
+      await this.readFolder(index); this.emitFolder(); return;
+    }
+    await this.attachFolder(index);
+  }
+  async readFolder(index) {
+    this.folderIndex = index;
+    const brief = index.texts.find(t => t.kind === 'brief') ?? index.texts.find(t => t.kind === 'readme');
+    this.folderBrief = brief ? await readFolderText(index.root, brief.name, 1500).catch(() => null) : null;
+  }
+  /** A folder image, read without following a link: a regular file under the size cap. */
+  async readFolderImage(path) {
+    const handle = await openFile(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    try {
+      const info = await handle.stat();
+      if (!info.isFile()) throw new Error('not a regular file');
+      if (info.size > 12 * 1024 * 1024) throw new Error('larger than 12 MB');
+      return await handle.readFile();
+    } finally { await handle.close(); }
+  }
+  /** In a folder chat, every image scope names an element of the folder (a bare file name is resolved), at most once. */
+  folderScopes(brief) {
+    const index = this.folderIndex;
+    if (!this.study?.folder || !index) return brief;
+    const used = new Set();
+    for (const step of brief.steps) {
+      const file = stepFile(step);
+      if (!file) continue;
+      const exact = index.elements.find(e => e.name === file) ?? (index.goal?.name === file ? index.goal : null);
+      const bare = exact ? [] : index.elements.filter(e => basename(e.name) === basename(file));
+      const element = exact ?? (bare.length === 1 ? bare[0] : null);
+      if (!element) throw new Error(`Step "${step.title}": ${file} is not an element of the project folder. Use one of: ${index.elements.slice(0, 20).map(e => e.name).join(', ')}.`);
+      if (used.has(element.name)) throw new Error(`${element.name} is the scope of more than one step: one element per step.`);
+      used.add(element.name); step.scope = element.name;
+    }
+    return brief;
+  }
+  async attachFolder(index) {
+    const previous = this.study.folder;
+    this.study.folder = {...(previous?.root === index.root ? previous : {}), root:index.root, guesses:previous?.root === index.root ? previous.guesses ?? {} : {}};
+    await this.readFolder(index);
+    if (index.goal) {
+      try { await this.addReferences([{path:index.goal.path, role:'reference', purpose:'composition', name:basename(index.goal.name), folder:index.goal.name, notes:'The goal image of the project folder: it decides the layout.'}]); }
+      catch (error) { this.emit({type:'action', seconds:0, message:'The goal image was not attached: '+this.redact(error.message)}); }
+    }
+    for (const e of index.elements) {                            // one unreadable element is reported, the rest attach
+      try { await this.addReferences([{path:e.path, role:'asset', purpose:'general', name:basename(e.name), folder:e.name, notes:'Element: '+this.folderGuessOf(e)}]); }
+      catch (error) { this.emit({type:'action', seconds:0, message:`${e.name} was not attached: ${this.redact(error.message)}`}); }
+    }
+    // A plan made before the folder (not from it) is not the folder's plan: Agent plans the folder before painting.
+    if (this.goal.brief && this.goal.folder_plan_root !== index.root) this.goal.approved_revision = null;
+    this.emitFolder();
+    await this.checkFolderPlan();
+  }
+  async folderGuess({name, guess} = {}) {
+    const state = this.folderState(), element = this.folderIndex?.elements.find(e => e.name === name);
+    if (!state || !element) throw new Error('That is not an element of the project folder.');
+    const text = String(guess ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (!text) throw new Error('Name the element.');
+    state.guesses = {...state.guesses, [name]: text};
+    const reference = this.study?.references.find(r => r.folder_name === name);
+    if (reference) reference.notes = 'Element: ' + text;
+    await this.persist(); this.publish(); this.emitFolder();
+  }
+  /** The panel's folder card: the index with paths relative to the folder, the artist's names, and the attached ids. */
+  emitFolder() {
+    const index = this.folderIndex;
+    if (!index) return;
+    const strip = ({path, ...rest}) => rest;
+    const references = Object.fromEntries((this.study?.references ?? []).filter(r => r.folder_name).map(r => [r.folder_name, r.id]));
+    this.emit({type:'folder', index:{root:index.root, name:basename(index.root), goal:index.goal ? strip(index.goal) : null,
+      elements:index.elements.map(e => ({...strip(e), guess:this.folderGuessOf(e)})), others:index.others.map(strip),
+      texts:index.texts.map(strip), skipped:index.skipped}, references, plan_limit:FOLDER_PLAN_ELEMENTS});
+  }
+  /** What the painter knows of the folder: the goal, the elements with the artist's names, the texts and the brief. */
+  folderContext() {
+    const index = this.folderIndex;
+    if (!this.study?.folder || !index) return undefined;
+    const id = name => this.study.references.find(r => r.folder_name === name)?.id ?? null;
+    return {name:basename(index.root), goal:index.goal ? {name:index.goal.name, reference_id:id(index.goal.name)} : null,
+      elements:index.elements.map(e => ({name:e.name, guess:this.folderGuessOf(e), reference_id:id(e.name), ...(e.prompt ? {prompt:e.prompt} : {})})),
+      texts:index.texts.map(({name, kind, chars}) => ({name, kind, chars})), other_images:index.others.length,
+      ...(this.goal?.brief ? {plan_done_steps:(this.goal.done_steps ?? []).map(i => i + 1), plan_approved:this.folderPlanApproved()} : {}),
+      ...(this.folderBrief ? {brief:this.folderBrief} : {})};
+  }
+  // Project folder B3: the element plan, PLAN.md and NOTES.md (folder-notes.ts), resume.
+  folderPlanning() { return this.mode === 'agent' && !!this.study?.folder && !!this.folderIndex?.elements.length; }
+  folderPlanApproved() { return !!this.goal?.brief && this.goal.approved_revision === this.goal.revision; }
+  firstOpenStep() {
+    const done = new Set(this.goal?.done_steps ?? []), steps = this.goal?.brief?.steps ?? [];
+    const index = steps.findIndex((_, i) => !done.has(i));
+    return index < 0 ? steps.length : index;
+  }
+  /** The plan the companion suggests: a block-in of the whole composition, then the elements in the folder's numbering. */
+  folderPlanDraft() {
+    const index = this.folderIndex, name = basename(index.root);
+    return normalizeBrief({title:name.slice(0,200), objective:`Paint ${name} from its goal image, one element per move, back to front.`, requirements:[], freedom:[],
+      completion:['Every element of the plan is painted where the goal image places it.'],
+      steps:[{title:'Block-in: the whole composition', done_when:'Construction guides and a loose colour block-in place every element where the goal image has it.', scope:'whole composition'},
+        ...index.elements.slice(0, FOLDER_PLAN_ELEMENTS).map(e => { const guess = this.folderGuessOf(e);
+          return {title:guess.slice(0,200), done_when:`${guess} is painted in its place as the goal image shows it, its look from ${basename(e.name)}.`, scope:e.name}; })]});
+  }
+  /** Agent mode with a folder and no approved plan: a planning turn (propose_plan, no painting tools). */
+  async planFolder(text, images) {
+    this.goal.status = this.goal.brief ? 'paused' : 'draft';
+    this.selectTools('plan'); this.publish();
+    const draft = this.folderPlanDraft();
+    try { await super.runPrompt(this.context('plan') + FOLDER_PLAN + 'folder_plan_draft: ' + JSON.stringify(draft) + '\n\nArtist:\n' + text, images); }
+    finally { this.selectTools(this.mode); }
+    if (this.cancelRequested || this.runError || this.goal.question) return;
+    if (!this.goal.brief || this.goal.folder_plan_root !== this.study.folder.root) {   // nothing proposed for the folder: the host proposes the draft
+      this.goal.revisions ??= []; this.goal.revisions.push({revision:this.goal.revision,brief:this.goal.brief ?? null,at:stamp(),source:'folder'});
+      this.goal.brief = draft; this.goal.revision++; this.goal.approved_revision = null; this.goal.current_step = 0; this.goal.done_steps = [];
+      await this.persist(); await this.folderPlanChanged(null);
+    }
+    this.goal.status = 'ready'; await this.persist(); this.publish();
+    const over = this.folderIndex.elements.length - FOLDER_PLAN_ELEMENTS;
+    this.setActivity('idle', `Plan ready: ${this.goal.brief.steps.length} moves, one element each.` + (over > 0 ? ` ${over} element${over === 1 ? ' was' : 's were'} left out (a plan holds the block-in and ${FOLDER_PLAN_ELEMENTS} elements): ${this.folderIndex.elements.slice(FOLDER_PLAN_ELEMENTS).map(e => basename(e.name)).join(', ')}.` : '') + ' Review or edit it, then press Start painting.');
+  }
+  /** After the plan changed: ticks follow their steps by title, the next open step is current, PLAN.md is rewritten. */
+  async folderPlanChanged(before) {
+    if (!this.study?.folder || !this.goal?.brief) return;
+    this.goal.folder_plan_root = this.study.folder.root;          // this plan is the folder's
+    this.goal.done_steps = before ? remapTicks(before, this.goal.brief, this.goal.done_steps ?? []) : this.goal.done_steps ?? [];
+    this.goal.current_step = Math.min(this.firstOpenStep(), this.goal.brief.steps.length - 1);
+    await this.syncFolderPlan();
+  }
+  async syncFolderPlan() {
+    const folder = this.study?.folder;
+    if (!folder || !this.goal?.brief) return;
+    try {
+      const result = await writePlan(folder.root, this.goal.brief, this.goal.done_steps ?? [], {expected:folder.plan_text, goal:this.folderIndex?.goal?.name});
+      folder.plan_text = result.text;
+      if (result.backup) this.emit({type:'action', seconds:0, message:`PLAN.md had changes made outside this chat: saved as ${result.backup} before writing the plan.`});
+    } catch (error) { this.emit({type:'action', seconds:0, message:'PLAN.md was not written: '+this.redact(error.message)}); }
+    await this.persist(); this.publish();
+  }
+  /** Tick the move's own step, found by its identity (file, else title and occurrence) in the plan as it is now. */
+  async tickFolderStep(move) {
+    const steps = this.goal.brief.steps, index = move.step_key ? stepKeys(steps).indexOf(move.step_key) : move.step;
+    if (!(index >= 0) || !steps[index]) {
+      this.emit({type:'action', seconds:0, message:`Kept. The step move ${move.number} painted is no longer in the plan, so nothing was ticked.`});
+      return this.firstOpenStep();
+    }
+    const step = steps[index], name = layerName(step.title);
+    move = {...move, step:index};
+    this.goal.done_steps = [...new Set([...(this.goal.done_steps ?? []), index])].sort((a, b) => a - b);
+    if (this.guidesAvailable()) {                                // the element is done: its guide goes (the artist can show it again)
+      try {
+        const result = await this.bridge.call('finish_guide', {element:name}, this.study.id);
+        if (result?.visible === false && !result.unchanged) this.emit({type:'action', seconds:0, message:`Hid the guide for ${name}.`});
+      } catch (error) { this.diagnostics?.record({type:'finish_guide_skipped', message:this.redact(error.message)}); }
+    }
+    try { await appendNote(this.study.folder.root, `Move ${move.number} kept: ${name} (step ${move.step + 1} of ${steps.length})${move.title && move.title !== name ? ' · ' + move.title : ''}.`); }
+    catch (error) { this.emit({type:'action', seconds:0, message:'NOTES.md was not written: '+this.redact(error.message)}); }
+    const next = this.firstOpenStep();
+    this.goal.current_step = Math.min(next, steps.length - 1);
+    await this.syncFolderPlan();
+    return next;
+  }
+  folderStepOf(index) { return {step:index, step_key:stepKeys(this.goal.brief.steps)[index], plan_revision:this.goal.revision}; }
+  folderMoveInstructions(move) {
+    if (!Number.isInteger(move.step) || !this.goal.brief?.steps[move.step]) return '';
+    const step = this.goal.brief.steps[move.step], file = stepFile(step), name = layerName(step.title);
+    const element = file && this.study.references.find(r => r.folder_name === file);
+    const goal = this.study.references.find(r => r.source === 'folder' && r.role === 'reference');
+    const goalText = goal ? `the goal image ${goal.id}` : 'the goal image';
+    if (!element) return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: construction guides (draw_guide, element "${name}") placed from ${goalText}, then a reference colour pass. Paint only this step, then finish_move.\n`;
+    return `\nPROJECT FOLDER MOVE: paint only step ${move.step + 1} of the approved plan, "${name}", on a layer named "${name}". Its look comes from the element reference ${element.id} (${file}); ${goalText} decides where it sits. First draw_guide with element "${name}", paint the element over it in your own strokes, then finish_move. When it reads as finished you may propose protecting it (propose_protection).\n`;
+  }
+  /** The references the painter is sent as images: a folder chat sends its goal and the current step's element only. */
+  painterReferences() {
+    const references = this.study?.references ?? [];
+    if (!this.study?.folder) return references;
+    const step = this.goal?.brief?.steps?.[this.goal.current_step ?? 0], file = step ? stepFile(step) : undefined;
+    return references.filter(r => !(r.source === 'folder' && r.role === 'asset') || r.folder_name === file);
+  }
+  /** On opening or resuming a folder: a new chat takes PLAN.md as its plan; a PLAN.md edited by hand is shown and asked about. */
+  async checkFolderPlan() {
+    const folder = this.study.folder;
+    let plan;
+    try { plan = await readPlan(folder.root); }
+    catch (error) { this.emit({type:'action', seconds:0, message:'PLAN.md could not be read: '+this.redact(error.message)}); return; }
+    if (!plan?.steps.length) return;
+    if (!this.goal.brief) {
+      const brief = normalizeBrief(briefFromPlan(plan, null));
+      if (!Value.Check(briefSchema, brief)) return;
+      this.goal.revisions ??= []; this.goal.revisions.push({revision:this.goal.revision,brief:null,at:stamp(),source:'folder'});
+      this.goal.brief = brief; this.goal.locked_requirements = [...brief.requirements]; this.goal.revision++; this.goal.approved_revision = null;
+      this.goal.status = 'ready'; this.goal.done_steps = plan.ticked.filter(i => i < brief.steps.length);
+      this.goal.current_step = Math.min(this.firstOpenStep(), brief.steps.length - 1);
+      this.goal.folder_plan_root = folder.root;                   // plan_text stays what this chat writes: the artist's file is backed up first
+      await this.persist(); this.publish();
+    } else if (typeof folder.plan_text === 'string' && plan.text !== folder.plan_text) {
+      const differences = planDifference(this.goal.brief, plan.lines, this.goal.done_steps ?? []);
+      if (differences.length) {
+        this.goal.pending_plan_edit = {text:plan.text};
+        this.goal.question = {id:randomUUID(), question:'PLAN.md was edited since this plan was written:\n' + differences.map(d => '• ' + d).join('\n') + '\nFollow the edited plan?', options:FOLDER_ANSWERS, asked_in:'plan'};
+        this.goal.status = 'needs_input'; await this.persist(); this.publish(); this.emit({type:'question', ...this.goal.question});
+        return;
+      }
+    }
+    const steps = this.goal.brief.steps, next = this.firstOpenStep();
+    this.emit({type:'action', seconds:0, message:`Folder plan: ${(this.goal.done_steps ?? []).length} of ${steps.length} done` + (next < steps.length ? `, next: ${layerName(steps[next].title)}. Press Start painting to continue.` : '. Every step is done.')});
+  }
+  async answerPlanEdit(answer, command = {}) {
+    const edit = this.goal.pending_plan_edit;
+    this.goal.pending_plan_edit = null; this.goal.question = null;
+    await this.remember('user', answer, command.message_id);
+    let follow = answer === FOLDER_ANSWERS[0], failed = false;
+    if (follow) {
+      const plan = parsePlan(edit.text);
+      let brief = normalizeBrief(briefFromPlan(plan, this.goal.brief));
+      try { brief = plan.steps.length && Value.Check(briefSchema, brief) ? this.folderScopes(brief) : null; } catch { brief = null; }
+      if (!brief) { failed = true; follow = false; }
+      else {
+        this.goal.revisions ??= []; this.goal.revisions.push({revision:this.goal.revision,brief:this.goal.brief,at:stamp(),source:'user'});
+        this.goal.brief = brief; this.goal.locked_requirements = [...brief.requirements]; this.goal.revision++; this.goal.approved_revision = null;
+        this.goal.done_steps = plan.ticked.filter(i => i < brief.steps.length);
+        this.goal.current_step = Math.min(this.firstOpenStep(), brief.steps.length - 1);
+        this.goal.folder_plan_root = this.study.folder.root;
+      }
+    }
+    await this.syncFolderPlan();                                 // the edited file is backed up before the plan is rewritten
+    this.goal.status = this.goal.brief ? 'ready' : 'draft'; await this.persist(); this.publish();
+    this.setActivity('idle', failed ? 'I could not follow the edited PLAN.md (no steps I can read, or a step names a file that is not in the folder). Kept the current plan; your edit was saved as a backup.'
+      : follow ? 'Following your edited PLAN.md (saved as a backup first). Review it, then press Start painting.' : 'Kept the current plan; your edited PLAN.md was saved as a backup.');
   }
   publishContext() {
     const value = {...this.canvasContext,...this.canvasSelection,region:this.contextRegion ?? (this.regionSelection ? {...this.regionSelection,state:'unavailable'}:null)};
@@ -1245,6 +1498,10 @@ export class StudioRuntime extends PaintingRuntime {
     try {
       await mkdir(directory,{recursive:true});
       await this.addReferences(p.references);
+      if (this.pendingFolder) {
+        const pending = this.pendingFolder; this.pendingFolder = null;
+        this.study.folder = pending; await this.attachFolder(await scanFolder(pending.root));
+      }
       await this.openSession(model); this.selectTools();
       const text=p.prompt?.trim() || (this.study.references.length ? 'Help me work from these reference images.':'Help me develop a painting idea.');
       if (transition.cancelled) {
@@ -1293,6 +1550,7 @@ export class StudioRuntime extends PaintingRuntime {
     if (this.busy) throw new Error('Pause before editing the plan.');
     brief = normalizeBrief(structuredClone(brief));
     if (!this.goal || !Value.Check(briefSchema, brief)) throw new Error('Complete the objective, steps, and completion checks.');
+    brief = this.folderScopes(brief);
     const comicProblem = this.goal.comic ? comicPlanProblems(brief, this.goal.comic.panels) : null;
     if (comicProblem) throw new Error(comicProblem);
     this.goal.revisions ??= []; this.goal.revisions.push({revision:this.goal.revision,brief:this.goal.brief,at:stamp(),source:'user'});
@@ -1302,6 +1560,7 @@ export class StudioRuntime extends PaintingRuntime {
     this.goal.target_needs_review = false; this.goal.current_step = 0; this.goal.stage_operations = 0;
     this.goal.approved_revision = null; this.goal.status = 'ready';
     await this.persist(); this.publish();
+    await this.folderPlanChanged(this.goal.revisions.at(-1)?.brief);
   }
   async setLimits(limits) {
     if (this.busy) throw new Error('Pause before changing the allowance.');
@@ -1330,6 +1589,10 @@ export class StudioRuntime extends PaintingRuntime {
     // A chat on a signed-out OAuth model (e.g. Codex) says how to sign in again; it keeps its model.
     await this.recheckSignIn(this.study.provider); this.assertConnected(this.study.provider);
     if (command.chat_mode && command.chat_mode !== this.mode) await this.setMode(command.chat_mode);
+    if (this.goal.pending_plan_edit && !this.busy) {
+      if (FOLDER_ANSWERS.includes(text?.trim())) return this.answerPlanEdit(text.trim(), command);
+      this.goal.pending_plan_edit = null;                           // another message: the edited PLAN.md is not followed
+    }
     if (!text?.trim()) text = this.mode === 'autopilot' ? 'Start painting from the current plan.'
       : this.mode === 'agent' && command.start_plan && this.goal.brief?.steps?.length ? planStepRequest(this.goal)
       : 'Generate a painting plan from our discussion and references.';
@@ -1378,6 +1641,11 @@ export class StudioRuntime extends PaintingRuntime {
       await this.refreshPlanIdentity();
       if (command.start_plan && this.goal.target_needs_review) throw new Error('The canvas changed since this plan was made. Review or regenerate the plan before painting.');
       const moveKind = skillCommand(text)?.move_kind ?? (command.move_kind === 'guides' ? 'guides' : undefined);
+      // A project folder's plan is approved before anything paints: Start painting approves it, anything else revises it.
+      if (this.mode === 'agent' && this.folderPlanning() && !this.folderPlanApproved()) {
+        if (command.start_plan && !command.keep_follow && this.goal.brief && this.goal.folder_plan_root === this.study.folder.root) { this.goal.approved_revision = this.goal.revision; this.goal.done_steps ??= []; }
+        else { await this.planFolder(modelText, images); return; }
+      }
       if (this.mode === 'agent') { await this.runMove(modelText, images, {...command, display_text:text, ...(moveKind ? {move_kind:moveKind} : {})}); return; }
       // Autopilot works toward the brief like a goal: an answer to a question the painter asked
       // mid-run goes straight back to painting, without a planning turn.
@@ -1440,16 +1708,16 @@ export class StudioRuntime extends PaintingRuntime {
     } catch { return original.content; }                  // Krita unavailable: send the original
   }
   async referenceImages() {
-    return Promise.all(this.study.references.map(r => this.modelImage(r)));
+    return Promise.all(this.painterReferences().map(r => this.modelImage(r)));
   }
   // The painter's chat keeps every message, so references attached to each one piled up as copies
   // in its context and in the chat log (one 11 MB reference stored 20 times). Attach them when this
   // chat has not seen them: a new chat or resume, changed references, a new plan step (`key`), or
   // after the SDK compacted the history.
   async painterReferenceImages(key = '') {
-    if (!this.study.references.length) { this.referenceImagesNote = null; return []; }
+    if (!this.painterReferences().length) { this.referenceImagesNote = null; return []; }
     const compactions = this.session?.sessionManager?.getEntries?.().filter(entry => entry.type === 'compaction').length ?? 0;
-    const state = JSON.stringify([this.study.references.map(r => r.id + ':' + r.path), key, compactions]);
+    const state = JSON.stringify([this.painterReferences().map(r => r.id + ':' + r.path), key, compactions]);
     if (this.referencesSent?.session === this.session && this.referencesSent.state === state) {
       this.referenceImagesNote = 'attached earlier in this chat, unchanged; refer back to them'; return [];
     }
@@ -1838,7 +2106,8 @@ export class StudioRuntime extends PaintingRuntime {
       if (active.active_document_id !== this.study.target_document_id) await this.followActiveCanvas(active);
     }
     const move = {number:(this.goal.moves?.length ?? 0)+1, request:String(command.display_text ?? text).slice(0,500), status:'painting', actions:0, strokes:0, started_at:stamp(),
-      ...(command.move_kind ? {kind:command.move_kind} : {})};
+      ...(command.move_kind ? {kind:command.move_kind} : {}),
+      ...(this.folderPlanning() && this.folderPlanApproved() ? this.folderStepOf(Math.min(this.goal.current_step ?? 0, this.goal.brief.steps.length - 1)) : {})};
     this.goal.moves = [...(this.goal.moves ?? []), move]; this.currentMove = move;
     this.goal.status = 'active'; this.runError = undefined; this.goalStartedAt = Date.now(); this.passesThisCycle = 0; this.yieldRequested = false;
     this.setActivity('painting', 'Planning move '+move.number+'…');
@@ -1862,7 +2131,7 @@ export class StudioRuntime extends PaintingRuntime {
       const full = !this.goal.reference_skills_shown;
       const referenceFirst = state ? referenceFirstContext(text, name => expandSkillCommand('/skill:' + name), {transfer:state.transfer, full}) : '';
       if (state && full) this.goal.reference_skills_shown = true;
-      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + '\nArtist:\n' + text, images);
+      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + this.folderMoveInstructions(move) + '\nArtist:\n' + text, images);
     } finally {
       this.goal.used_ms += Date.now() - this.goalStartedAt; this.goalStartedAt = undefined;
       const guidesOnly = !move.actions && move.guides > 0;
@@ -1917,10 +2186,27 @@ export class StudioRuntime extends PaintingRuntime {
       move.status = 'kept'; await this.persist();
       await this.mergeKept(['move-'+move.number], () => 'Move '+move.number+' · '+String(move.title ?? 'kept').slice(0,80));
       // Kept guides are for the artist to see: a guides-only request leaves them showing, and nothing paints until asked.
-      if (move.guides_only && !move.request_done) {
+      if (move.guides_only && (!move.request_done || Number.isInteger(move.step))) {
         this.goal.status = 'paused'; await this.persist(); this.publish();
         this.setActivity('idle', 'Guides kept. Tell me what to paint next.');
         return;
+      }
+      // A project folder's step: ticked in PLAN.md, a line in NOTES.md, its guide hidden, then the next element's move.
+      // Only a move the painter finished (finish_move) ticks; a stopped, failed or unfinished one leaves the step open and
+      // Keep continues it. Keep never approves a plan: one edited while this move waited needs Start painting first.
+      if (Number.isInteger(move.step) && this.study.folder && this.goal.brief && move.finished) {
+        const next = await this.tickFolderStep(move);
+        if (next >= this.goal.brief.steps.length) {
+          await this.hideGuides(); this.goal.status = 'complete'; await this.persist(); this.publish();
+          this.setActivity('idle', `Kept. Every step of the folder plan is done (${this.goal.brief.steps.length} of ${this.goal.brief.steps.length}).`);
+          return;
+        }
+        if (!this.folderPlanApproved()) {
+          this.goal.status = 'paused'; await this.persist(); this.publish();
+          this.setActivity('idle', 'Kept. The plan changed since this move started: review it and press Start painting to continue.');
+          return;
+        }
+        return this.prompt('', {start_plan:true, move_kind:'continue', keep_follow:true});
       }
       // Keep always asking for "the next move" polished a finished Rothko for six more moves (a traced run, 32 minutes).
       if (move.request_done) {
@@ -2356,6 +2642,10 @@ export class StudioRuntime extends PaintingRuntime {
       // Restoring is deliberately metadata-only. No begin, duplicate, save or model request occurs.
       this.emit({type:'history',messages:this.goal.messages});
       this.selectTools(this.mode==='autopilot'?'plan':this.mode);
+      if (this.study.folder) {
+        try { await this.attachFolder(await scanFolder(this.study.folder.root)); }
+        catch (error) { this.emit({type:'action',seconds:0,message:'The project folder could not be read: '+this.redact(error.message)}); }
+      }
       await this.canvas({action:'refresh'}).catch(()=>{});
       if (record.missingPainting) this.emit({type:'needs_relink',id,path:record.paintingPath,message:'This painting moved. Locate it before resuming Agent.'});
       await this.persist(); this.publish();
@@ -2398,6 +2688,7 @@ export class StudioRuntime extends PaintingRuntime {
     this.untrace?.(); this.untrace = undefined;
     await this.shapes?.close().catch(() => {});        // the shape worker and what it studied belong to the chat
     this.shapeStudies = undefined; this.canvasPixels = null;   // use.ts's studies and canvas decode, with them
+    this.folderIndex = undefined; this.folderBrief = undefined; this.pendingFolder = null;
     await this.tracing?.endSession(this.study?.id,{metadata:{goal_status:this.goal?.status,goal_revision:this.goal?.revision}});
     this.session?.dispose(); this.session=undefined; this.study=undefined; this.goal=undefined; this.faulted=false;
     this.contextSerial++; this.mode='ask'; this.emit({type:'ended'});

@@ -218,7 +218,8 @@ async function checked(runtime, prepared, kind, before, signal) {
 // The ceiling on stored assets per conversation (any source), apart from the artist's AI image allowance.
 function assertAssetRoom(runtime) {
   const limit = runtime.executionSettings?.assets === 'openrouter' ? ASSET_LIMIT : CODEX_ASSET_LIMIT;
-  if (runtime.study.references.filter(r => r.role === 'asset').length >= limit) throw new Error('This conversation already has ' + limit + ' assets. Reuse one of them.');
+  // Element images from the project folder are the artist's, not made assets: they take no room.
+  if (runtime.study.references.filter(r => r.role === 'asset' && r.source !== 'folder').length >= limit) throw new Error('This conversation already has ' + limit + ' assets. Reuse one of them.');
 }
 
 async function attach(runtime, { id, file, name, notes, source }) {

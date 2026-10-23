@@ -62,6 +62,9 @@ class PanelWithoutDocument(unittest.TestCase):
     def tearDown(self):
         self.panel.process = None; self.panel.close(); self.panel.deleteLater()
         for _ in range(4): app.processEvents()
+        # processEvents() never runs a deleteLater posted outside an event loop: without this the panel lived on, its timers
+        # firing, while the collector freed its Python side, and the script crashed at random at exit.
+        module.QCoreApplication.sendPostedEvents(None, module.QEvent.Type.DeferredDelete)
 
     def test_the_docker_registers_on_the_right_without_needing_a_document(self):
         state.factories.clear()

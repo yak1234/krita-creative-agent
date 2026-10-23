@@ -112,6 +112,10 @@ class PlanStepsList:
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.scroll.viewport().setAutoFillBackground(False); self.list.setAutoFillBackground(False)
         layout.addWidget(self.scroll)
+        # The height is fitted once Qt has shown new rows: a timer the list's own frame owns, so it dies with the panel. A
+        # QTimer.singleShot to this object's method could fire after the panel was gone and crashed the UI tests at exit.
+        self.fit_timer = QTimer(self.widget); self.fit_timer.setSingleShot(True); self.fit_timer.setInterval(0)
+        self.fit_timer.timeout.connect(self.fit_height)
         self.widget.hide()
 
     def isVisible(self):
@@ -145,7 +149,7 @@ class PlanStepsList:
         parts = ['%d of %d met' % (met, len(rows))] + (['%d skipped' % counts['skipped']] if counts.get('skipped') else [])
         self.summary.setText(' · '.join(parts) if rows else '')
         self.set_busy(self.busy)
-        QTimer.singleShot(0, self.fit_height)                   # once the new rows are shown (Qt shows them queued)
+        self.fit_timer.start()                                  # once the new rows are shown (Qt shows them queued)
 
     MAX_HEIGHT = 280
 

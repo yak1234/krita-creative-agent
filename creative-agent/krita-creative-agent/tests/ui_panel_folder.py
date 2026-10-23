@@ -57,6 +57,9 @@ class PanelFolder(unittest.TestCase):
     def tearDown(self):
         self.panel.process = None; self.panel.close(); self.panel.deleteLater()
         for _ in range(4): app.processEvents()
+        # processEvents() never runs a deleteLater posted outside an event loop: without this the panel lived on, its timers
+        # firing, while the collector freed its Python side, and the script crashed at random at exit.
+        module.QCoreApplication.sendPostedEvents(None, module.QEvent.Type.DeferredDelete)
 
     def test_the_attach_menu_has_open_project_folder(self):
         actions = [action.text() for action in self.panel.attach_menu.actions()]

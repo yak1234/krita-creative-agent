@@ -5,7 +5,7 @@ Status: APPROVED by the artist (2026-10-23: "1,2,3", then goal 4 with VTracer: "
 **Amended by crisp-accents (2026-10-23, the artist):** visible tracing is removed. Goals 2-4 lose their visible guide lines: `draw_guide from_reference` (traced outlines, structure, lights, masses as
 guide lines) and the traced block-in are gone. The full-resolution tracer (`trace_edges`, edge_trace.py) stays as
 analysis: its structure chains are the line finder of `paint_accents` (accent_find.py). The mass map stays as
-invisible analysis (the masses summary and the panel thumbnail). Goal 1 (perspective as Krita assistants) is parked.
+invisible analysis (the masses summary and the panel thumbnail). Goal 1 (perspective as Krita assistants) is dropped by the artist (2026-10-23: "we dont need it, toska is focused on agentic painting").
 
 ## Why
 

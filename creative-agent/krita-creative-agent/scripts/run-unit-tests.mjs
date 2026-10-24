@@ -11,7 +11,10 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const scratch = await mkdtemp(join(tmpdir(), 'creative-agent-tests-'));
 const tests = (await readdir(join(root, 'tests'))).filter(f => f.endsWith('.test.mjs')).map(f => join('tests', f));
-const child = spawn(process.execPath, ['--test', ...process.argv.slice(2), ...tests], {
+// No test may wait forever (a shapes-chat test once raced its own 10 ms tick under load and hung the suite for 35 minutes):
+// a test without its own timeout fails after TEST_TIMEOUT_MS. Tests that need longer set { timeout } themselves.
+const TEST_TIMEOUT_MS = 120000;
+const child = spawn(process.execPath, ['--test', `--test-timeout=${TEST_TIMEOUT_MS}`, ...process.argv.slice(2), ...tests], {
   cwd: root, stdio: 'inherit', env: { ...process.env, TMPDIR: scratch, TMP: scratch, TEMP: scratch } });
 const stop = signal => child.kill(signal);
 process.on('SIGINT', stop); process.on('SIGTERM', stop);

@@ -45,12 +45,23 @@ import { ensureMassMaps } from './mass-map.ts';
 import { writePlan, writePlanGoal, appendNote, readPlan, parsePlan, planDifference, briefFromPlan, remapTicks, stepFile, stepKeys, layerName } from './folder-notes.ts';
 import { planStepControls, stepMarksContext, withStepIds, STEP_ID } from './plan-steps.ts';
 import { applyPaintOnlyCommand, areaContext, adoptArea, askForArea, chipLine } from './paint-only-here.ts';
-import { findArea, timingLine, FindError } from './find-it.ts';
+import { findArea, timingLine, FindError, FIND_PIXELS } from './find-it.ts';
 import { decisionLocator } from './find-it-locate.ts';
+import { boundedImage, boundedPixels } from './bounded-image.ts';
+import { WORKING_PIXELS } from './reference-limits.ts';
 import { elementStepRefusal } from './element-step-rules.ts';
 import { viewPixels } from './shapes/use.ts';
 import { constants as fsConstants, realpathSync } from 'node:fs';
 import { open as openFile } from 'node:fs/promises';
+
+/** A Find it failure for the diagnostics: the message as the panel showed it, the FindError's code, and why the decision
+ * model gave no answer (its fallback, HTTP status or error name, time and the picture it was sent) when that was it. */
+function findFailure(type, part, error, redact) {
+  const reason = error?.reason;
+  return {type, part:typeof part === 'string' ? part.slice(0, 60) : null, code:error?.code ?? null, message:redact(String(error?.message ?? error)),
+    ...(reason ? {reason:{fallback:reason.fallback, ...(reason.status ? {status:reason.status} : {}), ...(reason.error ? {error:reason.error} : {}),
+      ms:reason.ms, ...(reason.picture ? {picture:reason.picture} : {})}} : {})};
+}
 
 const object = fields => Type.Object(fields, { additionalProperties: false });
 const line = Type.String({ minLength: 1, maxLength: 2000 });
@@ -838,8 +849,10 @@ export class StudioRuntime extends PaintingRuntime {
   /** One image's likeness grid from the plugin (goal_likeness.py), cached by content: the view after one batch is
    * usually the view before the next. The grid's size follows the goal's target on the canvas. */
   async likenessGrid(path,{source,size,grid=this.likenessCells}) {
-    const data=await readFile(await containedFile(this.study.directory,path));
-    const sha256=createHash('sha256').update(data).digest('hex'), key=[sha256,source,size,grid].join(':');
+    // A large goal goes as a bounded copy (bounded-image.ts) of what the plugin decodes anyway, not decoded whole on
+    // Krita's GUI thread; the crop is in the listed pixels (size), which the plugin maps onto what it decodes.
+    const {data,sha256}=await boundedImage(this.study.directory,await containedFile(this.study.directory,path),WORKING_PIXELS);
+    const key=[sha256,source,size,grid].join(':');
     const cache=this.likenessCache?.study === this.study ? this.likenessCache.grids : (this.likenessCache={study:this.study,grids:new Map()}).grids;
     if (!cache.has(key)) {
       // Rounded, then clamped inside the image: the plugin refuses a crop past its edge.
@@ -936,7 +949,8 @@ export class StudioRuntime extends PaintingRuntime {
       let check;
       try {
         const image=(await imageContent(study.directory,judgedImage(canvas))).content;
-        const reference=study.references?.[0] ? (await imageContent(study.directory,study.references[0].path)).content : null;
+        // The model's copy of the reference (modelImage): a goal sharpened 4x is a 38 MB file, past imageContent's 12 MB.
+        const reference=study.references?.[0] ? await this.modelImage(study.references[0]) : null;
         check=await layerNeedCheck({client:await this.luna(),canvas:image,reference,area:label,signal});
       } catch { check={fallback:'service_or_response_error'}; }
       if (this.study!==study || signal.aborted) return null;
@@ -1195,12 +1209,25 @@ export class StudioRuntime extends PaintingRuntime {
         this.findView = seen;
         return {path:seen.unguided_path ?? seen.image_path, width:Number(seen.width), height:Number(seen.height), revision:seen.revision ?? null};
       },
-      // The goal's pixels are decoded reduced like a view, cached apart from the canvas view's.
-      pixels: path => path === placed?.path ? viewPixels({callNative:(op, params) => this.callNative(op, params), get canvasPixels() { return studio.goalFindPixels; },
-        set canvasPixels(value) { studio.goalFindPixels = value; }}, path) : viewPixels(this, path, [Number(this.findView?.image_width), Number(this.findView?.image_height)]),
+      pixels: path => path === placed?.path ? this.findGoalPixels(placed) : viewPixels(this, path, [Number(this.findView?.image_width), Number(this.findView?.image_height)]),
       goal: async () => (placed = await this.placedGoal()),
       locate: decisionLocator(async () => { const client = await this.luna().catch(() => null); return client?.connected ? client : null; }),
     }, request);
+  }
+  /** The placed goal as Find it looks at it: at most FIND_PIXELS, made in the companion (bounded-image.ts), never decoded
+   * whole on Krita's GUI thread (LIVE rehearsal 2, 2026-10-24: a goal sharpened 4x, 25 million pixels, took 4.7 s there and
+   * its 9.7 MB grid picture got no answer). A sharpened goal is looked at as the picture it was (the same picture, already
+   * about this size); only coordinates matter, and they map through the placement by proportion. A goal only Krita reads
+   * (a JPEG) is decoded there, reduced to the same size while read, and cached apart from the canvas view's. */
+  async findGoalPixels(placed) {
+    const directory = this.study.directory, goal = (this.study.references ?? []).find(r => r.path === placed.path);
+    const before = goal?.sharpened?.from?.path ? await containedFile(directory, goal.sharpened.from.path).catch(() => null) : null;
+    const bounded = await boundedPixels(directory, before ?? placed.path, FIND_PIXELS).catch(() => null);
+    if (bounded) return {sha:bounded.sha, pixels:bounded.pixels};
+    const side = Math.max(16, Math.min(8192, Math.floor(Math.sqrt(FIND_PIXELS * Math.max(placed.width, placed.height) / Math.max(1, Math.min(placed.width, placed.height))))));
+    const studio = this;
+    return viewPixels({callNative:(op, params) => this.callNative(op, params), get canvasPixels() { return studio.goalFindPixels; },
+      set canvasPixels(value) { studio.goalFindPixels = value; }}, placed.path, undefined, side);
   }
   /** The goal reference as the chat's whole-picture transfer placed it on the canvas (Find it finds named parts on it), or
    * null: the latest transfer job from a goal (a whole picture, not a part) that painted, was not undone, and covered at
@@ -1232,11 +1259,14 @@ export class StudioRuntime extends PaintingRuntime {
       this.emit({type:'status', phase:this.activity ?? 'idle', message:part ? `Finding ${part}…` : 'Finding what you clicked…'});
       const found = await this.findArea({part});
       const message = timingLine(found) + (found.note ? ' ' + found.note : '');
-      this.diagnostics?.record({type:'find_it', part, cached:found.cached, ms:found.ms, share:found.share, score:found.score, prompts:found.prompts, kept:found.kept, found_on:found.found_on});
+      this.diagnostics?.record({type:'find_it', part, cached:found.cached, ms:found.ms, share:found.share, score:found.score, prompts:found.prompts, kept:found.kept, found_on:found.found_on,
+        ...(found.looked_at ? {looked_at:found.looked_at} : {}), ...(found.locate_picture ? {locate_picture:found.locate_picture} : {})});
       this.emit({type:'found_area', request_id, part, mask_path:found.mask_path, bounds:found.bounds, canvas:found.canvas, share:found.share, found_on:found.found_on,
         score:found.score, cached:found.cached, ms:found.ms, message});
       return found;
     } catch (error) {
+      // Why it failed, for the diagnostics: a decision model's fallback (timeout, refused, HTTP status) never reaches the panel.
+      this.diagnostics?.record(findFailure('find_it_failed', command?.part, error, this.redact.bind(this)));
       this.emit({type:'found_area', request_id, error:this.redact(error.message)});
       return null;
     }
@@ -1251,7 +1281,7 @@ export class StudioRuntime extends PaintingRuntime {
       this.emit({type:'action', seconds:0, message:timingLine(found)});
       return found;
     } catch (error) {
-      this.diagnostics?.record({type:'find_it_unavailable', part, message:this.redact(error.message)});
+      this.diagnostics?.record(findFailure('find_it_unavailable', part, error, this.redact.bind(this)));
       return null;
     }
   }

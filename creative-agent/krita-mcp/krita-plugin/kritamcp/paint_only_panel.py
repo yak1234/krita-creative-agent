@@ -199,7 +199,7 @@ class PaintOnlyBar(QWidget):
     def open_find(self):
         """Find it for me: a field to name the part."""
         if not self.panel.study_active:
-            self.say('Start a chat first: Find it for me outlines what you name or click on your painting.'); return
+            self.say('Start a chat first: Find it for me outlines what you name on your painting.'); return
         if self.document() is None:
             self.say('Open your painting first, then press Find it for me.'); return
         self.find_row.show(); self.find_field.setFocus()

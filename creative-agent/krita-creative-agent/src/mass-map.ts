@@ -7,7 +7,8 @@
 // own colours and shares, drawn as a flat colour bar, with one plain sentence. No outline picture: outlines over the
 // reference looked like the tracing the artist removed. Style, colour and close-up references get none. A failure only
 // means no mass map: it never stops a chat.
-import { REFERENCE_BYTES } from './reference-limits.ts';
+import { REFERENCE_BYTES, WORKING_PIXELS } from './reference-limits.ts';
+import { boundedImage } from './bounded-image.ts';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -96,10 +97,15 @@ async function massMap(host: MassHost, directory: string, reference: MassReferen
     if (kept.version === MASS_MAP_VERSION) return kept;
   } catch { /* not computed yet */ }
   const started = performance.now(), rss = process.memoryUsage().rss;
-  const decoded = await host.callNative('mass_reference', { image_base64: data.toString('base64'), sha256,
-    ...(Number(reference.width) > 0 && Number(reference.height) > 0 ? { size: [reference.width, reference.height] } : {}) }) as
+  // Listed at its size, a large reference goes as a bounded copy (bounded-image.ts) of what the plugin decodes anyway:
+  // a goal sharpened 4x is never decoded whole on Krita's GUI thread for its masses. Without a listed size the plugin
+  // reads the file's own pixels, so the file itself goes.
+  const listed = Number(reference.width) > 0 && Number(reference.height) > 0;
+  const sent = listed ? await boundedImage(directory, reference.path, WORKING_PIXELS) : { data, sha256 };
+  const decoded = await host.callNative('mass_reference', { image_base64: sent.data.toString('base64'), sha256: sent.sha256,
+    ...(listed ? { size: [reference.width, reference.height] } : {}) }) as
     { width: number; height: number; rgba_base64: string; sha256: string; ms?: number; source?: number[] };
-  if (decoded?.sha256 !== sha256) throw new Error('Decoded reference identity differs.');
+  if (decoded?.sha256 !== sent.sha256) throw new Error('Decoded reference identity differs.');
   if (!live()) return null;
   const pixels: MassPixels = { width: decoded.width, height: decoded.height, data: Buffer.from(decoded.rgba_base64, 'base64'),
     ...(decoded.source ? { source: decoded.source } : {}), ...(decoded.ms !== undefined ? { ms: decoded.ms } : {}) };

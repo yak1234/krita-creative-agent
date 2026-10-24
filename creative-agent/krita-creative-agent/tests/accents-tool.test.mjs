@@ -210,3 +210,20 @@ test('with a Paint only here area and no area given, accents work inside it: onl
   await tool.execute('a2', { reference_id: 'goal', kinds: ['lights'], area: 'whole' });
   assert.equal(adjusts()[1].params.inside_shape, undefined, 'an area the painter names still goes');
 });
+
+// LIVE rehearsal 2 (Toska, 2026-10-24): with the goal sharpened 4x every find_accents decoded the 25-million-pixel file on
+// Krita's GUI thread (5-34 s a call). A large goal goes as a bounded copy of the size the plugin decodes, still listed at
+// its own size, so the accents come back in the same pixels.
+test('a large goal goes to find_accents as a bounded copy, with its listed size and its own hash', async t => {
+  const { encodeRgba } = await import('../src/shapes/png.ts');
+  const { pngSize } = await import('../src/png-rgba.ts');
+  const { WORKING_PIXELS } = await import('../src/reference-limits.ts');
+  const { createHash } = await import('node:crypto');
+  const { tool, calls, runtime } = await setup(t);
+  await writeFile(runtime.study.references[0].path, encodeRgba({ width: 2600, height: 1950, data: new Uint8Array(2600 * 1950 * 4).fill(128) }));
+  await tool.execute('a1', { reference_id: 'goal', kinds: ['lights'] });
+  const params = calls.find(c => c.operation === 'find_accents').params, sent = Buffer.from(params.image_base64, 'base64'), size = pngSize(sent);
+  assert.ok(size.width * size.height <= WORKING_PIXELS && size.width < 2600, JSON.stringify(size));
+  assert.deepEqual(params.size, [1000, 750], 'the listed size: source and accents stay in its pixels');
+  assert.equal(params.sha256, createHash('sha256').update(sent).digest('hex'));
+});

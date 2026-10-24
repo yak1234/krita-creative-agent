@@ -7,8 +7,9 @@ import { mkdtemp, readFile, rm, writeFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findArea, promptsFromCells, cleanMask, leakShare, toCanvas, timingLine, readFound, foundPath, checkRequest, FindError, POSITIVE, NEGATIVE } from '../src/find-it.ts';
-import { decisionLocator, gridPicture, gridSize, cellRect, GRID_CELLS } from '../src/find-it-locate.ts';
+import { decisionLocator, gridPicture, gridSize, cellRect, unanswered, GRID_CELLS, LOCATE_PIXELS } from '../src/find-it-locate.ts';
 import { decodePlane, encodePlane } from '../src/shapes/png.ts';
+import { pngSize } from '../src/png-rgba.ts';
 
 // The scene, in view pixels (64 x 48; the canvas is 128 x 96): the sky above y 20, a tower x 40-47 from y 8 down, ground.
 const VW = 64, VH = 48, CW = 128, CH = 96;
@@ -88,8 +89,30 @@ test('the decision locator asks one question a cell in one request with the numb
   assert.equal(requests[0].parts.filter(p => typeof p === 'object').length, 1, 'one picture');
   assert.match(requests[0].parts[0], /8 columns and 6 rows/);
   assert.deepEqual([cells.cols, cells.rows, cells.p.length, cells.p[0], cells.p[47], cells.model], [8, 6, 48, 0.9, 0.05, 'luna']);
-  assert.equal(await decisionLocator(async () => ({ decide: async () => ({ fallback: 'images_unverified' }) }))('the sky', { width: 64, height: 48, data: new Uint8Array(64 * 48 * 4) }), null);
-  assert.equal(await decisionLocator(async () => null)('the sky', { width: 64, height: 48, data: new Uint8Array(64 * 48 * 4) }), null);
+  assert.deepEqual(cells.picture, { width: 64, height: 48, bytes: Buffer.from(requests[0].parts[1].data, 'base64').length });
+  // No answer comes back with why, for the diagnostics.
+  const view = { width: 64, height: 48, data: new Uint8Array(64 * 48 * 4) };
+  const refused = await decisionLocator(async () => ({ decide: async () => ({ fallback: 'images_unverified' }) }))('the sky', view);
+  assert.equal(unanswered(refused), true); assert.equal(refused.fallback, 'images_unverified');
+  const failed = await decisionLocator(async () => ({ decide: async () => ({ fallback: 'service_or_response_error', status: 413 }) }))('the sky', view);
+  assert.deepEqual([failed.fallback, failed.status, failed.picture.width], ['service_or_response_error', 413, 64]);
+  const thrown = await decisionLocator(async () => ({ decide: async () => { throw new TypeError('fetch failed'); } }))('the sky', view);
+  assert.deepEqual([thrown.fallback, thrown.error], ['service_or_response_error', 'TypeError']);
+  assert.equal((await decisionLocator(async () => null)('the sky', view)).fallback, 'not_connected');
+});
+
+test('the locator\'s picture is at most LOCATE_PIXELS whatever the view\'s size; its cells are proportions of the view', async () => {
+  // LIVE rehearsal 2 (2026-10-24): a goal sharpened 4x was looked at as 2309 x 1732, and its 9.7 MB grid picture got no answer.
+  const requests = [];
+  const decider = { async decide(request) { requests.push(request); return { answers: { cell_1: { type: 'noul', noul: 0.9 } }, model: 'luna' }; } };
+  const width = 2309, height = 1732, view = { width, height, data: new Uint8Array(width * height * 4) };
+  const cells = await decisionLocator(async () => decider)('the sky', view);
+  const sent = pngSize(Buffer.from(requests[0].parts[1].data, 'base64'));
+  assert.ok(sent.width * sent.height <= LOCATE_PIXELS, `${sent.width} x ${sent.height}`);
+  assert.ok(Math.abs(sent.width / sent.height - width / height) < 0.01, 'on the view\'s proportions');
+  assert.deepEqual([cells.picture.width, cells.picture.height], [sent.width, sent.height]);
+  assert.deepEqual([cells.cols, cells.rows], [gridSize(width, height).cols, gridSize(width, height).rows], 'the grid follows the view');
+  assert.equal(cells.p[0], 0.9);
 });
 
 test('one point a confident cell, strongest first; the confident "not" cells guard against leaks', () => {
@@ -155,11 +178,15 @@ test('a clicked point is one prompt in view pixels, the object under it', async 
 test('refusals the panel shows as they are: no locator for a name, nothing confident, an invalid click, no painting', async () => {
   const h = await harness({ locate: null });
   try {
-    await assert.rejects(findArea(h.host, { part: 'the sky' }), e => e instanceof FindError && e.code === 'no_locator' && /Click it on the canvas instead/.test(e.message));
+    await assert.rejects(findArea(h.host, { part: 'the sky' }), e => e instanceof FindError && e.code === 'no_locator' && /Select it with the Freehand tool instead\.$/.test(e.message));
     h.host.locate = async () => null;
-    await assert.rejects(findArea(h.host, { part: 'the sky' }), /did not answer where the sky is/);
+    await assert.rejects(findArea(h.host, { part: 'the sky' }), /did not answer where the sky is\. Try again, or select it with the Freehand tool\.$/);
+    // The reason travels with the error for the diagnostics; the canvas click it once offered is gone from every message.
+    h.host.locate = async () => ({ fallback: 'timeout', ms: 4003, picture: { width: 1024, height: 768, bytes: 3_000_000 } });
+    await assert.rejects(findArea(h.host, { part: 'the sky' }), e => e.code === 'no_locator' && e.reason.fallback === 'timeout' && e.reason.ms === 4003
+      && !/canvas/.test(e.message));
     h.host.locate = async () => ({ cols, rows, p: Array(cols * rows).fill(0.3), ms: 1 });
-    await assert.rejects(findArea(h.host, { part: 'the sky' }), e => e.code === 'not_found');
+    await assert.rejects(findArea(h.host, { part: 'the sky' }), e => e.code === 'not_found' && /Freehand tool\.$/.test(e.message));
     await assert.rejects(findArea(h.host, { points: [[500, 10, 1]] }), /inside the painting/);
     await assert.rejects(findArea(h.host, { points: [[5, 10, 0]] }), /on the part itself/);
     await assert.rejects(findArea(h.host, { part: '  ' }), /Say what to find/);

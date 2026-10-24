@@ -339,8 +339,8 @@ class PaintOnlyHere(unittest.TestCase):
         self.assertIn('Start a chat first', self.panel.status.text()); self.assertEqual(self.sent('find_it'), [])
         self.chat(); self.bar.find('the moon')
         request = self.sent('find_it')[-1]
-        self.panel.handle_event({'type': 'found_area', 'request_id': request['request_id'], 'error': 'I could not see the moon on the painting. Click it on the canvas instead.'})
-        self.assertEqual(self.panel.status.text(), 'I could not see the moon on the painting. Click it on the canvas instead.')
+        self.panel.handle_event({'type': 'found_area', 'request_id': request['request_id'], 'error': 'I could not see the moon on the painting. Try another name for it, or select it with the Freehand tool.'})
+        self.assertEqual(self.panel.status.text(), 'I could not see the moon on the painting. Try another name for it, or select it with the Freehand tool.')
         self.assertIsNone(self.doc.selected)
         self.bar.find('the sky'); request = self.sent('find_it')[-1]
         self.panel.handle_event({'type': 'found_area', 'request_id': request['request_id'], 'mask_path': os.path.join(self.folder, 'elsewhere.png'), 'bounds': [0, 0, 2, 2]})

@@ -10,18 +10,32 @@
 // Measured on a copy of New Moscow's goal (2026-10-24): one request, 48 cells, about 0.8 s and 8,600 input tokens; drawn
 // numbers placed the sky's cells far better than cells described in words (the second row of sky scored 0.07-0.45 in
 // words, 0.85-0.96 numbered).
+// The picture is at most LOCATE_PIXELS whatever the view's size (LIVE rehearsal 2, 2026-10-24): on a goal sharpened 4x the
+// grid picture was 2309 x 1732 and 9.7 MB, and the model gave no answer; the cells only say where to point, so a smaller
+// picture places them as well (the sharpened goal at 1155 x 866 and at 2309 x 1732 gave the same ten sky cells, 1.0 s
+// against 2.5 s). When the model does not answer, the reason comes back (Unanswered) for the diagnostics.
 // Mechanism only: the decision client comes in as a small interface; this module imports no .mjs.
 import { encodeRgb } from './shapes/png.ts';
+import { reduceRgba } from './bounded-image.ts';
 
 export type Rgba = { width: number; height: number; data: Uint8Array };
+/** The grid picture the model read: its size in pixels and PNG bytes. */
+export type LocatePicture = { width: number; height: number; bytes: number };
 /** Probability per cell (row-major), the grid's size, and what answering cost. */
-export type Cells = { cols: number; rows: number; p: number[]; ms: number; model?: string };
+export type Cells = { cols: number; rows: number; p: number[]; ms: number; model?: string; picture?: LocatePicture };
+/** No answer, and why: the decision client's fallback (not_connected, timeout, refused, service_or_response_error...), its
+ * HTTP status or error name when it has one, how long it took, and the picture sent. */
+export type Unanswered = { fallback: string; status?: number; error?: string; ms: number; picture?: LocatePicture };
 export type Decider = { decide(request: { parts: unknown[]; questions: Record<string, unknown>; signal?: AbortSignal; purpose?: string }):
-  Promise<{ answers?: Record<string, { type: string; noul?: number } | undefined>; fallback?: string; model?: string; elapsed_ms?: number }> };
-export type PartLocator = (part: string, view: Rgba, signal?: AbortSignal) => Promise<Cells | null>;
+  Promise<{ answers?: Record<string, { type: string; noul?: number } | undefined>; fallback?: string; status?: number; error?: string; model?: string; elapsed_ms?: number }> };
+export type PartLocator = (part: string, view: Rgba, signal?: AbortSignal) => Promise<Cells | Unanswered | null>;
+/** Whether a locator's answer is no answer. */
+export const unanswered = (cells: Cells | Unanswered | null): cells is Unanswered | null => !cells || 'fallback' in cells;
 
 /** Cells in the grid: about 48, close to square on the canvas's proportions. */
 export const GRID_CELLS = 48;
+/** The grid picture is at most this many pixels (1024 x 1024): about 1 s and a few MB a request. */
+export const LOCATE_PIXELS = 1024 * 1024;
 export function gridSize(width: number, height: number, cells = GRID_CELLS): { cols: number; rows: number } {
   const cols = Math.max(2, Math.round(Math.sqrt(cells * width / height)));
   return { cols, rows: Math.max(2, Math.round(cells / cols)) };
@@ -68,25 +82,35 @@ export function gridPicture(view: Rgba, cols: number, rows: number): { width: nu
   return { width, height, data: rgb };
 }
 
-/** A part's cells from a decision model that reads images: one request, a yes/no question a cell. Null when the model does
- * not answer (not connected, text only, refused, timed out), so the caller can ask the artist to click the part instead. */
-export function decisionLocator(client: () => Promise<Decider | null>, { cells = GRID_CELLS }: { cells?: number } = {}): PartLocator {
+/** A part's cells from a decision model that reads images: one request, a yes/no question a cell, on the view reduced to
+ * at most `pixels` (the cells are proportions of the view, so they place on any size of it). Unanswered (with the reason)
+ * when the model does not answer (not connected, text only, refused, timed out), so the caller can say so. */
+export function decisionLocator(client: () => Promise<Decider | null>, { cells = GRID_CELLS, pixels = LOCATE_PIXELS }: { cells?: number; pixels?: number } = {}): PartLocator {
   return async (part, view, signal) => {
+    const started = performance.now(), ms = () => Math.round(performance.now() - started);
     const decider = await client();
-    if (!decider) return null;
-    const { cols, rows } = gridSize(view.width, view.height, cells), started = performance.now();
-    const picture = encodeRgb(gridPicture(view, cols, rows)).toString('base64');
+    if (!decider) return { fallback: 'not_connected', ms: ms() };
+    const { cols, rows } = gridSize(view.width, view.height, cells);
+    const shown = reduceRgba(view, pixels), png = encodeRgb(gridPicture(shown, cols, rows));
+    const picture = { width: shown.width, height: shown.height, bytes: png.length };
     const name = part.trim().replace(/[.?!]+$/, '');
     const questions: Record<string, unknown> = {};
     for (let i = 1; i <= cols * rows; i++)
       questions['cell_' + i] = { type: 'noul', instructions: `Is cell ${i} (the yellow-outlined cell labelled ${i}) mostly ${name}?` };
-    const result = await decider.decide({ purpose: 'find-it', signal,
-      parts: [`The painting is divided into a numbered grid of ${cols} columns and ${rows} rows.`, { data: picture, mimeType: 'image/png' }], questions });
-    if (!result.answers) return null;
+    let result: Awaited<ReturnType<Decider['decide']>>;
+    try {
+      result = await decider.decide({ purpose: 'find-it', signal,
+        parts: [`The painting is divided into a numbered grid of ${cols} columns and ${rows} rows.`, { data: png.toString('base64'), mimeType: 'image/png' }], questions });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      return { fallback: 'service_or_response_error', error: (error as Error)?.name ?? 'Error', ms: ms(), picture };
+    }
+    if (!result.answers) return { fallback: result.fallback ?? 'service_or_response_error', ...(result.status ? { status: result.status } : {}),
+      ...(result.error ? { error: result.error } : {}), ms: ms(), picture };
     const p = Array.from({ length: cols * rows }, (_, i) => {
       const answer = result.answers?.['cell_' + (i + 1)];
       return answer?.type === 'noul' && typeof answer.noul === 'number' && Number.isFinite(answer.noul) ? answer.noul : 0.5;
     });
-    return { cols, rows, p, ms: Math.round(performance.now() - started), ...(result.model ? { model: result.model } : {}) };
+    return { cols, rows, p, ms: ms(), picture, ...(result.model ? { model: result.model } : {}) };
   };
 }

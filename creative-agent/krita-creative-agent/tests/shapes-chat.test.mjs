@@ -52,21 +52,32 @@ async function markReady(directory) {
   await writeFile(join(directory, 'verified.json'), JSON.stringify({ revision: SHAPES_MODEL.revision, files: Object.fromEntries(SHAPES_MODEL.files.map(f => [f.name, f.sha256])) }));
 }
 const tick = () => new Promise(resolve => setTimeout(resolve, 10));
+/** Waits until `ready()` holds (at most `ms`), then fails loudly. A fixed 10 ms tick before answering the download question
+ * raced a loaded suite: the question was not asked yet, answer() found nothing waiting, and the study waited forever. */
+async function until(ready, what, ms = 5000) {
+  for (const end = Date.now() + ms; !ready();) {
+    if (Date.now() > end) throw new Error('Timed out waiting for ' + what);
+    await tick();
+  }
+}
+const asked = (events, n = 1) => until(() => events.filter(e => e.type === 'shapes_model_needed').length >= n, `${n} download question(s)`);
+// No test may wait forever: each one fails after this long instead.
+const LIMIT = { timeout: 20000 };
 
-test('the first shape asks the artist before downloading the model, with its size, and goes on after the OK', async t => {
+test('the first shape asks the artist before downloading the model, with its size, and goes on after the OK', LIMIT, async t => {
   const { runtime, shapes, events, downloads, spawned, directory } = await setup(t);
   const studied = shapes.study('ref-hash', pixels(), W, H);
-  await tick();
-  const asked = events.filter(e => e.type === 'shapes_model_needed');
-  assert.equal(asked.length, 1);
-  assert.equal(asked[0].model, 'sam2.1-hiera-base-plus'); assert.equal(asked[0].revision, SHAPES_MODEL.revision);
-  assert.ok(asked[0].size_mb >= 320 && asked[0].size_mb <= 340);
-  assert.match(asked[0].message, /328 MB/);
+  await asked(events);
+  const question = events.filter(e => e.type === 'shapes_model_needed');
+  assert.equal(question.length, 1);
+  assert.equal(question[0].model, 'sam2.1-hiera-base-plus'); assert.equal(question[0].revision, SHAPES_MODEL.revision);
+  assert.ok(question[0].size_mb >= 320 && question[0].size_mb <= 340);
+  assert.match(question[0].message, /328 MB/);
   assert.equal(downloads.length, 0, 'nothing is downloaded before the OK');
   const second = shapes.study('ref-hash-2', pixels(), W, H);       // a second call meanwhile waits for the same answer
   await tick();
   assert.equal(events.filter(e => e.type === 'shapes_model_needed').length, 1);
-  shapes.answer('accept');
+  assert.equal(shapes.answer('accept'), true);
   await studied; await second;
   assert.deepEqual(downloads, [directory]);
   assert.ok(events.some(e => e.type === 'status' && /Downloading the shape model/.test(e.message)));
@@ -76,10 +87,10 @@ test('the first shape asks the artist before downloading the model, with its siz
   assert.ok(runtime.persisted >= 1, 'the chat records the model and revision it uses');
 });
 
-test('a decline lasts for the chat: every waiting call gets it, later calls fail at once, until the artist allows shapes again', async t => {
+test('a decline lasts for the chat: every waiting call gets it, later calls fail at once, until the artist allows shapes again', LIMIT, async t => {
   const { shapes, events, runtime } = await setup(t);
   const first = shapes.study('ref-hash', pixels(), W, H), second = shapes.study('ref-hash-2', pixels(), W, H);
-  await tick(); shapes.answer('decline');
+  await asked(events); assert.equal(shapes.answer('decline'), true);
   for (const call of [first, second]) await assert.rejects(call, error => error.code === 'declined' && /download/.test(error.message));
   assert.equal(runtime.study.shapes_model, undefined, 'a chat records a model only once it used it');
   assert.equal(runtime.study.shapes_declined, true); assert.ok(runtime.persisted >= 1, 'the decline is kept with the chat');
@@ -89,27 +100,26 @@ test('a decline lasts for the chat: every waiting call gets it, later calls fail
   assert.equal(shapes.answer('enable'), true);                       // the panel's "Ask again"
   assert.equal(runtime.study.shapes_declined, undefined);
   const again = shapes.study('ref-hash', pixels(), W, H);
-  await tick();
+  await asked(events, 2);
   assert.equal(events.filter(e => e.type === 'shapes_model_needed').length, 2);
-  shapes.answer('accept'); await again;
+  assert.equal(shapes.answer('accept'), true); await again;
 });
 
-test('Stop cancels a pending download question; the next shape asks again', async t => {
+test('Stop cancels a pending download question; the next shape asks again', LIMIT, async t => {
   const { shapes, events } = await setup(t);
   const waiting = shapes.study('ref-hash', pixels(), W, H);
-  await tick(); shapes.stop();
+  await asked(events); shapes.stop();
   await assert.rejects(waiting, error => error.code === 'cancelled');
   const again = shapes.study('ref-hash', pixels(), W, H);
-  await tick();
-  assert.equal(events.filter(e => e.type === 'shapes_model_needed').length, 2);
-  shapes.answer('accept'); await again;
+  await asked(events, 2);
+  assert.equal(shapes.answer('accept'), true); await again;
 });
 
-test('close during a download does not wait for it: the download is aborted and the call cancelled', async t => {
+test('close during a download does not wait for it: the download is aborted and the call cancelled', LIMIT, async t => {
   let signal = null;
-  const { shapes } = await setup(t, { download: async options => { signal = options.signal; await new Promise(() => {}); } });
+  const { shapes, events } = await setup(t, { download: async options => { signal = options.signal; await new Promise(() => {}); } });
   const waiting = shapes.study('ref-hash', pixels(), W, H);
-  await tick(); shapes.answer('accept'); await tick();
+  await asked(events); assert.equal(shapes.answer('accept'), true); await until(() => signal, 'the download to start');
   const started = Date.now();
   await shapes.close();
   assert.ok(Date.now() - started < 200, 'close returned at once');
@@ -117,7 +127,7 @@ test('close during a download does not wait for it: the download is aborted and 
   await assert.rejects(waiting, error => error.code === 'cancelled');
 });
 
-test('a model the worker cannot load is checked again: its verified record is removed and the files fetched as needed', async t => {
+test('a model the worker cannot load is checked again: its verified record is removed and the files fetched as needed', LIMIT, async t => {
   const dir = await mkdtemp(join(tmpdir(), 'shapes-chat-')); t.after(() => rm(dir, { recursive: true, force: true }));
   const events = [], downloads = [];
   const runtime = { config: { data_dir: dir }, study: { id: 'c', directory: join(dir, 'c') }, emit: e => events.push(e), async persist() {} };
@@ -137,24 +147,24 @@ test('a model the worker cannot load is checked again: its verified record is re
   assert.equal(events.filter(e => e.type === 'shapes_model_needed').length, 0, 'the artist agreed to this model already');
 });
 
-test('a ready model is used at once; a failed download is a plain error and nothing else is tried', async t => {
+test('a ready model is used at once; a failed download is a plain error and nothing else is tried', LIMIT, async t => {
   const ready = await setup(t, { ready: true });
   await ready.shapes.study('ref-hash', pixels(), W, H);
   assert.equal(ready.events.filter(e => e.type === 'shapes_model_needed').length, 0);
   const broken = await setup(t, { download: async () => { throw Object.assign(new Error('vision_encoder.onnx does not match its pinned checksum: refused and removed.'), { code: 'checksum' }); } });
   const studied = broken.shapes.study('ref-hash', pixels(), W, H);
-  await tick(); broken.shapes.answer('accept');
+  await asked(broken.events); assert.equal(broken.shapes.answer('accept'), true);
   await assert.rejects(studied, error => error.code === 'model' && /checksum/.test(error.message) && /shape model/.test(error.message));
   assert.equal(broken.spawned.length, 0);
 });
 
-test('a chat keeps the model it started with: another revision recorded on the chat is refused, not swapped', async t => {
+test('a chat keeps the model it started with: another revision recorded on the chat is refused, not swapped', LIMIT, async t => {
   const { runtime, shapes } = await setup(t, { ready: true });
   runtime.study.shapes_model = { model: 'sam2.1-hiera-base-plus', revision: 'an-older-revision' };
   await assert.rejects(shapes.study('ref-hash', pixels(), W, H), error => error.code === 'model' && /an-older-revision/.test(error.message));
 });
 
-test('every study and shape logs its time, peak memory and provider to the diagnostics and as an event', async t => {
+test('every study and shape logs its time, peak memory and provider to the diagnostics and as an event', LIMIT, async t => {
   const { shapes, events, records, runtime } = await setup(t, { ready: true });
   await shapes.study('ref-hash', pixels(), W, H);
   const shape = await shapes.shape('ref-hash', { box: [8, 4, 40, 20] });
@@ -169,13 +179,13 @@ test('every study and shape logs its time, peak memory and provider to the diagn
   assert.deepEqual(events.filter(e => e.type === 'shape_timing').map(e => e.kind), ['study', 'shape', 'shape']);
 });
 
-test('shapes need an open chat', async t => {
+test('shapes need an open chat', LIMIT, async t => {
   const { runtime, shapes } = await setup(t, { ready: true });
   runtime.study = undefined;
   await assert.rejects(shapes.study('ref-hash', pixels(), W, H), /chat/);
 });
 
-test('the studio carries the chat’s shapes, the panel’s answer reaches them, and a chat’s end stops the worker', async () => {
+test('the studio carries the chat’s shapes, the panel’s answer reaches them, and a chat’s end stops the worker', LIMIT, async () => {
   const { readFile } = await import('node:fs/promises');
   const { StudioRuntime } = await import('../src/studio.mjs');
   const runtime = new StudioRuntime({ config: { output: '/tmp/creative-store-placeholder' }, emit: () => {} });

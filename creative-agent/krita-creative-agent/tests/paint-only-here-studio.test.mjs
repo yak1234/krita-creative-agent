@@ -11,7 +11,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { StudioRuntime } from '../src/studio.mjs';
-import { encodePlane } from '../src/shapes/png.ts';
+import { encodePlane, encodeRgba } from '../src/shapes/png.ts';
+import { pngSize } from '../src/png-rgba.ts';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64');
 const call = (name, args) => ({ tool_calls: [{ index: 0, id: 'call-' + Math.random().toString(36).slice(2), type: 'function', function: { name, arguments: JSON.stringify(args) } }] });
@@ -172,7 +173,15 @@ test('find_it: the outline of a named part on the painting comes back as found_a
     assert.equal(shaped.length, 12);
     h.runtime.lunaClient = { connected: false, decide: async () => ({ fallback: 'not_connected' }) };
     await h.runtime.findIt({ request_id: 'r4', part: 'the moon' });
-    assert.match(h.events.filter(e => e.type === 'found_area').at(-1).error, /decision model did not answer where the moon is\. Click it on the canvas instead/);
+    assert.match(h.events.filter(e => e.type === 'found_area').at(-1).error, /decision model did not answer where the moon is\. Try again, or select it with the Freehand tool\.$/);
+    // LIVE rehearsal 2 (2026-10-24): the failure left no reason behind. It is recorded now, beside the panel's message.
+    const recorded = []; h.runtime.diagnostics = { record: e => recorded.push(e) };
+    h.runtime.lunaClient = { connected: true, decide: async () => ({ fallback: 'timeout', elapsed_ms: 4001 }) };
+    await h.runtime.findIt({ request_id: 'r5', part: 'the moon' });
+    const failed = recorded.find(e => e.type === 'find_it_failed');
+    assert.deepEqual([failed.part, failed.code, failed.reason.fallback], ['the moon', 'no_locator', 'timeout']);
+    assert.ok(failed.reason.picture.bytes > 0 && failed.reason.ms >= 0, JSON.stringify(failed.reason));
+    assert.match(failed.message, /did not answer where the moon is/);
   } finally { await h.close(); }
 });
 
@@ -265,6 +274,8 @@ test('find_it on a chat whose underpainting placed the goal: found on the goal, 
     h.runtime.bridge.call = async (operation, params, ...rest) => { if (operation === 'trace_reference') traced.push(params.sha256); return call1(operation, params, ...rest); };
     const goal = h.runtime.study.references.find(r => r.role === 'reference');
     Object.assign(goal, { width: 384, height: 512 });
+    await writeFile(goal.path, encodeRgba({ width: 48, height: 64, data: new Uint8Array(48 * 64 * 4).fill(255) }));   // the goal, at its view's size
+    const recorded = []; h.runtime.diagnostics = { record: e => recorded.push(e) };
     const folder = join(h.runtime.study.directory, 'reference-paintings'); await mkdir(folder, { recursive: true });
     const job = { id: 'a'.repeat(32), recipe: { reference_id: goal.id, source: [0, 0, 384, 512], target: [0, 0, 768, 1024] }, canvas: { width: 768, height: 1024 }, completed: 5000, status: 'complete' };
     await writeFile(join(folder, job.id + '.json'), JSON.stringify(job));
@@ -272,9 +283,59 @@ test('find_it on a chat whose underpainting placed the goal: found on the goal, 
     await h.runtime.findIt({ request_id: 'g1', part: 'the sky' });
     const event = h.events.filter(e => e.type === 'found_area').at(-1);
     assert.equal(event.error, undefined); assert.equal(event.found_on, 'goal');
-    assert.deepEqual(traced, [createHash('sha256').update(await readFile(goal.path)).digest('hex')], 'the goal is segmented, not the canvas view');
+    assert.deepEqual(recorded.find(e => e.type === 'find_it').looked_at, [48, 64], 'the goal is segmented, not the canvas view');
+    assert.deepEqual(traced, [], 'read in the companion, not by Krita');
     assert.deepEqual(event.bounds, [0, 0, 768, 256]);
     h.runtime.goal.reference_jobs = { [job.id]: [1] }; h.runtime.goal.moves = [{ number: 1, status: 'undone' }];
     assert.equal(await h.runtime.placedGoal(), null, 'an undone underpainting places nothing: the canvas again');
+  } finally { await h.close(); }
+});
+
+// LIVE rehearsal 2 (Toska, 2026-10-24): with a goal sharpened 4x (5792 x 4344, 38 MB) Find it decoded it on Krita's GUI
+// thread (trace_reference, 4.7 s) and sent the decision model a 9.7 MB grid picture, which got no answer. A large goal is
+// looked at as a bounded copy made in the companion, and a sharpened one as the picture it was.
+test('find_it on a large placed goal: a bounded copy made in the companion, never decoded by Krita; a sharpened one as it was', { timeout: 30000 }, async () => {
+  const { h } = await agentChat(() => ({ content: 'Done.' }));
+  try {
+    fakeFinder(h);
+    // The shapes model's answer here: the top quarter of whatever picture it studied.
+    let studied = [0, 0];
+    Object.assign(h.runtime.shapes, { async study(_id, _data, width, height) { studied = [width, height]; return { ms: 1, load_ms: 0, peak_mb: 1, provider: 'cpu', studied: true, attempt: 1 }; },
+      async shape() {
+        const mask_path = join(h.output, 'fake-quarter.png');
+        await writeFile(mask_path, encodePlane({ width: 48, height: 16, data: new Uint8Array(48 * 16).fill(255) }));
+        return { bounds: [0, 0, studied[0], Math.round(studied[1] / 4)], score: 0.98, mask_path, model: 'fake', revision: 'r', ms: 3, peak_mb: 1, provider: 'cpu', cached: false };
+      } });
+    const traced = [], pictures = [];
+    const call1 = h.runtime.bridge.call.bind(h.runtime.bridge);
+    h.runtime.bridge.call = async (operation, params, ...rest) => { if (operation === 'trace_reference') traced.push(params.sha256); return call1(operation, params, ...rest); };
+    const decide = h.runtime.lunaClient.decide;
+    h.runtime.lunaClient.decide = async request => { pictures.push(pngSize(Buffer.from(request.parts[1].data, 'base64'))); return decide(request); };
+    // A goal of 2400 x 3200 (7.7 million pixels): the sky is its top quarter, white; below it, black.
+    const W = 2400, H = 3200, rgba = new Uint8Array(W * H * 4);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) rgba.set(y < H / 4 ? [255, 255, 255, 255] : [0, 0, 0, 255], (y * W + x) * 4);
+    const goal = h.runtime.study.references.find(r => r.role === 'reference');
+    const big = join(h.runtime.study.directory, 'goal-large.png'); await writeFile(big, encodeRgba({ width: W, height: H, data: rgba }));
+    Object.assign(goal, { path: big, width: W, height: H });
+    const folder = join(h.runtime.study.directory, 'reference-paintings'); await mkdir(folder, { recursive: true });
+    const job = { id: 'b'.repeat(32), recipe: { reference_id: goal.id, source: [0, 0, W, H], target: [0, 0, 768, 1024] }, canvas: { width: 768, height: 1024 }, completed: 5000, status: 'complete' };
+    await writeFile(join(folder, job.id + '.json'), JSON.stringify(job));
+    const recorded = []; h.runtime.diagnostics = { record: e => recorded.push(e) };
+    await h.runtime.findIt({ request_id: 'g1', part: 'the sky' });
+    const event = h.events.filter(e => e.type === 'found_area').at(-1);
+    assert.equal(event.error, undefined); assert.equal(event.found_on, 'goal');
+    assert.deepEqual(traced, [], 'Krita decoded nothing');
+    const seen = recorded.find(e => e.type === 'find_it').looked_at;
+    assert.ok(seen[0] * seen[1] <= 2_000_000 && seen[0] * seen[1] > 1_500_000, 'looked at a bounded copy: ' + seen);
+    assert.ok(pictures[0].width * pictures[0].height <= 1024 * 1024, 'the grid picture is bounded too');
+    assert.deepEqual(event.bounds, [0, 0, 768, 256], 'mapped through the placement as before');
+    // Sharpened: the picture it was (here 600 x 800, already small) is looked at, not the sharpened file.
+    const before = join(h.runtime.study.directory, 'goal-before.png'), small = new Uint8Array(600 * 800 * 4);
+    for (let y = 0; y < 800; y++) for (let x = 0; x < 600; x++) small.set(y < 200 ? [255, 255, 255, 255] : [0, 0, 0, 255], (y * 600 + x) * 4);
+    await writeFile(before, encodeRgba({ width: 600, height: 800, data: small }));
+    goal.sharpened = { from: { path: before, width: 600, height: 800, sha256: 'old' }, model: 'm', revision: 'r', scale: 4, full: big, at: 'x' };
+    await h.runtime.findIt({ request_id: 'g2', part: 'the moon' });
+    assert.deepEqual(recorded.filter(e => e.type === 'find_it').at(-1).looked_at, [600, 800]);
+    assert.deepEqual(traced, []);
   } finally { await h.close(); }
 });

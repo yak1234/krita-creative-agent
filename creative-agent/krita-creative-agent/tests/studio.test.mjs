@@ -3149,6 +3149,34 @@ test('a sharpened goal tells the painter its new pixel size and the scale for ol
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
 });
 
+// LIVE rehearsal 2 (Toska, 2026-10-24): after the goal was sharpened 4x (a 38 MB file) the layer-need check fell back at
+// once (service_or_response_error): it read the goal with imageContent, which takes 12 MB at most. It asks with the
+// model's copy (the picture it was), as the painter's references go.
+test('a sharpened goal past 12 MB still reaches the layer-need check and view_reference, as the picture it was',{timeout:20000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}));
+ const root=await projectFolder();
+ try {
+  await h.start('ask','Hello'); await h.runtime.openFolder({path:root});
+  const goal=h.runtime.study.references.find(r=>r.role==='reference');
+  const sharp=join(h.runtime.study.directory,'sharp.png'); await writeFile(sharp,Buffer.concat([png,Buffer.alloc(13*1024*1024)]));
+  Object.assign(goal,{path:sharp,width:4,height:4,sharpened:{from:{path:goal.path,width:1,height:1,sha256:'old'},model:'m',revision:'r',scale:4,full:sharp,at:'x'}});
+  h.runtime.study.references=[goal,...h.runtime.study.references.filter(r=>r!==goal)];
+  const luna=fakeLuna(()=>({answers:{need:{type:'choice',choice:'texture',confidence:0.8}}}));
+  h.runtime.lunaClient=luna; await h.runtime.setExecutionSettings({routing:'guide'});
+  const view=join(h.runtime.study.directory,'view-need.png'); await writeFile(view,png);
+  await h.runtime.checkLayerNeed('The sky.',{image_path:view,width:1,height:1});
+  const entry=h.runtime.goal.layer_needs.at(-1);
+  assert.deepEqual([entry.fallback,entry.need],[undefined,'texture'],'asked, not fallen back');
+  const parts=luna.requests.at(-1).parts.filter(p=>typeof p==='object').map(p=>p.data);
+  assert.ok(parts.includes(png.toString('base64')),'the goal as it was before sharpening');
+  // view_reference too: the painter sees the picture it was, with the sharpened size its rects are in.
+  const { paintingTools } = await import('../src/tools.mjs');
+  const viewed=await paintingTools(h.runtime).find(t=>t.name==='view_reference').execute('v1',{id:goal.id});
+  assert.equal(viewed.content[1].data,png.toString('base64'));
+  assert.deepEqual([JSON.parse(viewed.content[0].text).width,JSON.parse(viewed.content[0].text).height],[4,4]);
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
 test('a folder goal much smaller than the canvas is offered for sharpening beside the chat; the Folder card shows it',{timeout:20000},async()=>{
  const h=await harness(()=>({content:'Hello.'}));
  const root=await projectFolder();
@@ -3984,6 +4012,29 @@ test('34deca0e replay: the underpainting move closes when its transfer completes
   assert.equal(h.runtime.goal.moves[4].departure,undefined);
   assert.equal(h.calls.filter(c=>c.operation==='review_pass').length,2,'back to the reference: a batch that leaves it is undone again');
   assert.deepEqual(classified(),['Underpainting from the goal image.','Soften the foreground into readable masses.'],'Luna only for messages the phrases do not decide, never while a departure holds');
+ } finally {await h.close();}
+});
+
+// LIVE rehearsal 2 (Toska, 2026-10-24): every goal likeness read sent the goal sharpened 4x (25 million pixels) for the
+// plugin to decode on Krita's GUI thread. A large goal goes as a bounded copy of what the plugin decodes, still listed.
+test('the goal\'s likeness grid is asked with a bounded copy of a large goal, its crop in the listed pixels',{timeout:30000},async()=>{
+ const asked=[];
+ const h=await harness(()=>({content:'Hello.'}),async(op,params)=>{
+  if(op!=='likeness_grid') return undefined;
+  asked.push(params); return {status:'ok',grid:params.grid,ms:1,lab_base64:Buffer.alloc(params.grid[0]*params.grid[1]*12).toString('base64')};
+ });
+ try {
+  const { encodeRgba } = await import('../src/shapes/png.ts');
+  const { pngSize } = await import('../src/png-rgba.ts');
+  const { WORKING_PIXELS } = await import('../src/reference-limits.ts');
+  const goalPath=join(h.output,'goal.png'); await writeFile(goalPath,encodeRgba({width:2600,height:1950,data:new Uint8Array(2600*1950*4).fill(90)}));
+  await h.start('ask','Hello',{references:[{path:goalPath,purpose:'composition'}]});
+  const goal=h.runtime.study.references[0];
+  await h.runtime.likenessGrid(goal.path,{source:[100,100,1300,975],size:[2600,1950],grid:[8,6]});
+  const sent=Buffer.from(asked[0].image_base64,'base64'), size=pngSize(sent);
+  assert.ok(size.width*size.height<=WORKING_PIXELS && size.width<2600, JSON.stringify(size));
+  assert.deepEqual([asked[0].size,asked[0].source],[[2600,1950],[100,100,1300,975]]);
+  assert.equal(asked[0].sha256,createHash('sha256').update(sent).digest('hex'));
  } finally {await h.close();}
 });
 

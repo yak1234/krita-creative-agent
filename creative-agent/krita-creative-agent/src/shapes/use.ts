@@ -158,11 +158,11 @@ export async function pruneShapes(directory: string, keep = CANVAS_SHAPES): Prom
 
 /** A canvas view file's pixels, decoded by the plugin (the view is decoded as it is, about 1024 px) and kept for the next
  * call on the same view; `expected` is the view's own size when the observation gives it. */
-export async function viewPixels(host: Pick<CanvasHost, 'callNative' | 'canvasPixels'>, path: string, expected?: number[]): Promise<{ sha: string; pixels: Rgba }> {
+export async function viewPixels(host: Pick<CanvasHost, 'callNative' | 'canvasPixels'>, path: string, expected?: number[], maxSide = CANVAS_SIDE): Promise<{ sha: string; pixels: Rgba }> {
   const file = await readFile(path), sha = createHash('sha256').update(file).digest('hex');
   let pixels = host.canvasPixels?.sha === sha ? host.canvasPixels.pixels : null;
   if (!pixels) {
-    const decoded = await host.callNative('trace_reference', { image_base64: file.toString('base64'), sha256: sha, max_side: CANVAS_SIDE });
+    const decoded = await host.callNative('trace_reference', { image_base64: file.toString('base64'), sha256: sha, max_side: maxSide });
     if (decoded?.sha256 !== sha) throw new Error('Decoded canvas identity differs.');
     if (expected?.length === 2 && expected.every(n => n > 0) && (decoded.width !== expected[0] || decoded.height !== expected[1]))
       throw new Error(`The canvas view decoded at ${decoded.width} x ${decoded.height}, not its ${expected[0]} x ${expected[1]}: look at the canvas again.`);

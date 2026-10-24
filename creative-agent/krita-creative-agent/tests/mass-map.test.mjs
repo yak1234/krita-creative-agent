@@ -145,3 +145,35 @@ test('the cache is versioned: a mass map of another version counts as missing', 
     assert.ok((await readdir(join(folder, '.masses'))).every(name => name.includes(`.v${MASS_MAP_VERSION}.`)));
   } finally { await rm(folder, { recursive: true, force: true }); }
 });
+
+// LIVE rehearsal 2 (Toska, 2026-10-24): a goal sharpened 4x is 25 million pixels; the plugin decoded all of it on Krita's
+// GUI thread for a 720-pixel copy. A large goal goes to it as a bounded copy (bounded-image.ts), its size still listed.
+test('a large goal goes to the plugin as a bounded copy, listed at its own size; the record is kept by the goal\'s content', async () => {
+  const { encodeRgba } = await import('../src/shapes/png.ts');
+  const { pngSize } = await import('../src/png-rgba.ts');
+  const { WORKING_PIXELS } = await import('../src/reference-limits.ts');
+  const { createHash } = await import('node:crypto');
+  const folder = await mkdtemp(join(tmpdir(), 'mass-map-'));
+  try {
+    const W = 2600, H = 1950, file = encodeRgba({ width: W, height: H, data: new Uint8Array(W * H * 4).fill(200) });   // 5 million pixels
+    await writeFile(join(folder, 'goal.png'), file);
+    const sent = [];
+    const host = {
+      study: { directory: folder, references: [{ id: 'goal', role: 'reference', purpose: 'general', path: join(folder, 'goal.png'), width: W, height: H }] },
+      decisionObservation: { width: W, height: H },
+      async callNative(operation, params) {
+        sent.push({ operation, size: params.size, picture: pngSize(Buffer.from(params.image_base64, 'base64')),
+          hashed: createHash('sha256').update(Buffer.from(params.image_base64, 'base64')).digest('hex') === params.sha256 });
+        const { w, h, data } = night();
+        return { status: 'ok', width: w, height: h, source: [0, 0, W, H], sha256: params.sha256, ms: 3, rgba_base64: Buffer.from(data).toString('base64') };
+      } };
+    await ensureMassMaps(host, () => {});
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0].size, [W, H], 'listed at the goal\'s own size');
+    assert.ok(sent[0].picture.width * sent[0].picture.height <= WORKING_PIXELS, JSON.stringify(sent[0].picture));
+    assert.equal(sent[0].hashed, true, 'the copy goes with its own hash');
+    assert.ok(host.study.references[0].mass_map);
+    const sha = createHash('sha256').update(file).digest('hex');
+    assert.ok((await readdir(join(folder, '.masses'))).includes(`${sha}.v${MASS_MAP_VERSION}.json`), 'kept by the goal\'s content');
+  } finally { await rm(folder, { recursive: true, force: true }); }
+});

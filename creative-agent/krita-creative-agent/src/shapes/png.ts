@@ -74,7 +74,14 @@ export function encodeRgb({ width, height, data }: Plane): Buffer {
   return encodeRows(width, height, 3, data);
 }
 
-function encodeRows(width: number, height: number, channels: 1 | 3, data: Uint8Array): Buffer {
+/** An RGBA 8-bit PNG (four bytes a pixel, not premultiplied), every row filter 0: a bounded copy of a picture
+ * (bounded-image.ts). */
+export function encodeRgba({ width, height, data }: Plane): Buffer {
+  if (data.length !== width * height * 4 || !width || !height) throw new Error('An RGBA picture needs width x height x 4 bytes.');
+  return encodeRows(width, height, 4, data);
+}
+
+function encodeRows(width: number, height: number, channels: 1 | 3 | 4, data: Uint8Array): Buffer {
   const stride = width * channels, raw = Buffer.alloc(height * (stride + 1));
   for (let y = 0; y < height; y++) raw.set(data.subarray(y * stride, (y + 1) * stride), y * (stride + 1) + 1);
   const chunk = (kind: string, body: Buffer) => {
@@ -82,6 +89,6 @@ function encodeRows(width: number, height: number, channels: 1 | 3, data: Uint8A
     const tail = Buffer.alloc(4); tail.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), body])), 0);
     return Buffer.concat([head, body, tail]);
   };
-  const header = Buffer.alloc(13); header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = channels === 3 ? 2 : 0;
+  const header = Buffer.alloc(13); header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = channels === 4 ? 6 : channels === 3 ? 2 : 0;
   return Buffer.concat([SIGNATURE, chunk('IHDR', header), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
 }

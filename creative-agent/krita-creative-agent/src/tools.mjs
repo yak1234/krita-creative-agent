@@ -313,7 +313,11 @@ export function paintingTools(runtime) {
         signal?.throwIfAborted();
         const reference = runtime.study.references.find(item => item.id === id);
         if (!reference) throw new Error('Unknown reference ID. Use the attachment list in the study context.');
-        const image = await imageContent(runtime.study.directory, reference.path);
+        // A sharpened goal (a 38 MB file, past imageContent's 12 MB) is shown as the model's copy (studio modelImage: the
+        // picture it was), with the sharpened size its source rects are in.
+        const shown = reference.sharpened && runtime.modelImage ? await runtime.modelImage(reference) : null;
+        const image = shown ? { info: { mimeType: shown.mimeType, width: reference.width, height: reference.height }, content: shown }
+          : await imageContent(runtime.study.directory, reference.path);
         return { content: [{ type: 'text', text: JSON.stringify({ id, role: reference.role, ...image.info }) }, image.content], details: { id } };
       },
     },

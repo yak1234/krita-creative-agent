@@ -30,7 +30,8 @@ export type FallbackReason = 'not_connected' | 'text_only_model' | 'images_unver
   | 'cancelled' | 'service_or_response_error';
 export type DecisionAnswered = { answers: Answers; model: string; elapsed_ms: number; usage: DecisionUsage;
   fallback?: undefined; status?: undefined };
-export type DecisionFallback = { fallback: FallbackReason; elapsed_ms: number; status?: number;
+/** error: the failed request's error name and system code ("TypeError ECONNRESET"), never a message or a body. */
+export type DecisionFallback = { fallback: FallbackReason; elapsed_ms: number; status?: number; error?: string;
   answers?: undefined; model?: undefined; usage?: undefined };
 /** What decide() returns: handle `fallback` first, then `answers` is there. */
 export type DecisionResult = DecisionAnswered | DecisionFallback;

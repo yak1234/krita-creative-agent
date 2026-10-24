@@ -9,6 +9,10 @@ export const REFERENCE_PIXELS = 26_000_000;
 export const REFERENCE_MB = REFERENCE_BYTES / (1024 * 1024);
 /** Above this many pixels a plain PNG reference is decoded in the companion (png-rgba.ts), not on Krita's GUI thread. */
 export const PLUGIN_DECODE_PIXELS = 4_000_000;
+/** The most pixels the plugin's reduced readers decode (creative_reference.py TRACE_PIXELS: masses, likeness grid, accents).
+ * A larger reference goes to them as a bounded copy of this size made in the companion (bounded-image.ts): the same
+ * pixels they would have decoded, without decoding the whole file on Krita's GUI thread. */
+export const WORKING_PIXELS = 4_000_000;
 /** Recipe sizes in source pixels, 4x their bounds for a 1500-pixel goal: a goal sharpened 4x needs four times the source
  * pixels for the same stroke on the canvas (a 24-pixel step on the original is a 96-pixel one on the sharpened goal). */
 export const STEP_MAX = 256, EDGE_SPACING_MAX = 64, SURFACE_SPACING_MAX = 128, SURFACE_LENGTH_MAX = 800;

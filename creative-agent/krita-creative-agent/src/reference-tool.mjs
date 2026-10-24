@@ -1,5 +1,6 @@
 // @ts-check
-import { PLUGIN_DECODE_PIXELS, REFERENCE_MB, STEP_MAX } from './reference-limits.ts';
+import { PLUGIN_DECODE_PIXELS, REFERENCE_MB, STEP_MAX, WORKING_PIXELS } from './reference-limits.ts';
+import { boundedImage } from './bounded-image.ts';
 import { decodeRgba, pngSize } from './png-rgba.ts';
 import { goalSourceFile, staleGoalSource } from './goal-sharpen.ts';
 import { isPaintingMode } from './modes.mjs';
@@ -168,14 +169,18 @@ export function groundStops(pixels,source){
 async function reference(runtime,id,jobHash){const ref=runtime.study.references.find(r=>r.id===id);if(!ref)throw new Error('Use an attached reference ID.');const file=await containedFile(runtime.study.directory,goalSourceFile(ref,jobHash)),limit=REFERENCE_MB;if((await stat(file)).size>limit*1024*1024)throw new Error('Use a reference smaller than '+limit+' MB for native reconstruction.');const data=await readFile(file);return {data,sha256:hash(data)};}
 // The largest reference the plugin's finders take (find_accents): a full-size goal image.
 export const TRACE_REFERENCE_MB=REFERENCE_MB;
-// paint_accents' finder (accents-tool.ts): the plugin's find_accents reads the file as it is (same size limit as tracing)
-// and sends back only the accents, in its listed pixels.
+// paint_accents' finder (accents-tool.ts): the plugin's find_accents reads the reference at most WORKING_PIXELS (same size
+// limit as tracing) and sends back only the accents, in its listed pixels (`size`). A larger one goes as a bounded copy of
+// that size made here (bounded-image.ts), the pixels the plugin would decode: a goal sharpened 4x is not decoded whole on
+// Krita's GUI thread for every accents call.
 export async function findReferenceAccents(runtime,{reference_id,...request}){
  const ref=runtime.study.references.find(r=>r.id===reference_id);if(!ref)throw new Error('Use an attached reference ID.');
  const file=await containedFile(runtime.study.directory,ref.path);
  if((await stat(file)).size>TRACE_REFERENCE_MB*1024*1024)throw new Error(`This reference is too large to find accents in (over ${TRACE_REFERENCE_MB} MB). Attach a smaller copy.`);
- const data=await readFile(file);
- return runtime.callNative('find_accents',{image_base64:data.toString('base64'),sha256:hash(data),...request});
+ let data,sha256;
+ if(request.size)({data,sha256}=await boundedImage(runtime.study.directory,file,WORKING_PIXELS));
+ else{data=await readFile(file);sha256=hash(data);}
+ return runtime.callNative('find_accents',{image_base64:data.toString('base64'),sha256,...request});
 }
 export function referenceTools(runtime,executePass,fillRegion){
  const folder=()=>join(runtime.study.directory,'reference-paintings');

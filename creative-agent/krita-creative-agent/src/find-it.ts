@@ -27,9 +27,13 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { findShape, type Found, type ShapeHost } from './shapes/use.ts';
 import { decodePlane, encodePlane } from './shapes/png.ts';
 import { SHAPES_MODEL } from './shapes/model.ts';
-import { cellRect, type Cells, type PartLocator, type Rgba } from './find-it-locate.ts';
+import { cellRect, unanswered, type Cells, type PartLocator, type Rgba, type Unanswered } from './find-it-locate.ts';
 
 export const FINDER_VERSION = 2;                         // 2: a named part is found on the goal when it is placed (goal())
+/** The goal is looked at as a copy of at most this many pixels (the studio's host.pixels, bounded-image.ts): the shapes
+ * model works at 1024 a side and the locator's grid at LOCATE_PIXELS, so a goal sharpened 4x (25 million pixels) is
+ * never decoded whole for Find it (LIVE rehearsal 2, 2026-10-24: 4.7 s of trace_reference on Krita's GUI thread). */
+export const FIND_PIXELS = 2_000_000;
 /** A cell at or above this probability is the part; at or below NEGATIVE it is not (a negative point). */
 export const POSITIVE = 0.6, NEGATIVE = 0.15;
 /** A cell's mask is dropped when more than this share of it lies in "not" cells: it leaked into another object. */
@@ -49,7 +53,9 @@ export type FindTiming = { view: number; locate: number; shapes: number; total: 
 export type FoundArea = { part: string | null; mask_path: string; bounds: Rect; canvas: [number, number]; share: number; score: number;
   prompts: number; kept: number; cached: boolean; ms: FindTiming; revision: string | null; note?: string; located_by?: string;
   /** Where the outline was found: the canvas view, or the goal image mapped onto the canvas through its placement. */
-  found_on: 'canvas' | 'goal' };
+  found_on: 'canvas' | 'goal';
+  /** The picture the outline was found on (the view, or the goal's bounded copy), and the grid picture the locator sent. */
+  looked_at?: [number, number]; locate_picture?: { width: number; height: number; bytes: number } };
 /** The goal image as a whole-picture transfer placed it: `source` [x,y,w,h] of the goal's pixels lies on `target` of the canvas. */
 export type PlacedGoal = { path: string; width: number; height: number; placement: { source: Rect; target: Rect } };
 export type FindHost = ShapeHost & {
@@ -67,8 +73,15 @@ export type FindHost = ShapeHost & {
 export type FindErrorCode = 'invalid' | 'no_locator' | 'not_found';
 export class FindError extends Error {
   readonly code: FindErrorCode;
-  constructor(code: FindErrorCode, message: string) { super(message); this.name = 'FindError'; this.code = code; }
+  /** Why the decision model gave no answer, for the diagnostics (never shown as it is). */
+  readonly reason?: Unanswered;
+  constructor(code: FindErrorCode, message: string, reason?: Unanswered) {
+    super(message); this.name = 'FindError'; this.code = code; if (reason) this.reason = reason;
+  }
 }
+/** What the panel says when a part could not be found by name: Find it takes names only, and the artist can always draw
+ * the area with Freehand themselves (the canvas click was removed, review 2026-10-24). */
+export const FREEHAND = 'Try again, or select it with the Freehand tool.';
 
 /** Whether `path` is a found area of the chat folder `directory`: <directory>/.shapes/found-<24 hex>.png. */
 export const foundPath = (directory: string, path: unknown): path is string =>
@@ -86,7 +99,7 @@ export function checkRequest(request: FindRequest, canvas: { width: number; heig
     return { points: points.map(([x = 0, y = 0, label]) => [Math.round(x), Math.round(y), label === 1 ? 1 : 0]) };
   }
   const part = String(request.part ?? '').trim().replace(/\s+/g, ' ').slice(0, NAME_LIMIT);
-  if (!part) throw new FindError('invalid', 'Say what to find (“the sky”), or click it on the canvas.');
+  if (!part) throw new FindError('invalid', 'Say what to find (“the sky”).');
   return { part: part.toLowerCase() };
 }
 
@@ -237,13 +250,15 @@ export async function findArea(host: FindHost, request: FindRequest): Promise<Fo
   let prompts: Point[][], negatives: number[] = [], cells: Cells | null = null, locateMs = 0;
   if ('points' in checked) prompts = [checked.points.map(([x = 0, y = 0, label = 1]) => [Math.min(view_w, x * kx), Math.min(view_h, y * ky), label] as Point)];
   else {
-    if (!host.locate) throw new FindError('no_locator', `Finding ${part} by name needs a decision model that reads images (Settings › Decisions). Click it on the canvas instead.`);
+    if (!host.locate) throw new FindError('no_locator', `Finding ${part} by name needs a decision model that reads images (Settings › Decisions). Select it with the Freehand tool instead.`);
     const locating = performance.now();
-    cells = await host.locate(checked.part, { width: view_w, height: view_h, data }, host.signal);
+    const located = await host.locate(checked.part, { width: view_w, height: view_h, data }, host.signal);
     locateMs = elapsed(locating);
-    if (!cells) throw new FindError('no_locator', `The decision model did not answer where ${part} is. Click it on the canvas instead.`);
+    if (unanswered(located)) throw new FindError('no_locator', `The decision model did not answer where ${part} is. ${FREEHAND}`,
+      located ?? { fallback: 'no_answer', ms: locateMs });
+    cells = located;
     ({ prompts, negatives } = promptsFromCells(cells, view_w, view_h));
-    if (!prompts.length) throw new FindError('not_found', `I could not see ${part} on the painting. Click it on the canvas instead.`);
+    if (!prompts.length) throw new FindError('not_found', `I could not see ${part} on the painting. Try another name for it, or select it with the Freehand tool.`);
   }
   const shaping = performance.now(), union = new Uint8Array(view_w * view_h), scores: number[] = [];
   const studyKey = `${goal ? 'goal' : 'canvas'}:${sha.slice(0, 24)}`;   // canvasShape's key for the view: one study per picture
@@ -265,13 +280,14 @@ export async function findArea(host: FindHost, request: FindRequest): Promise<Fo
   const shapesMs = elapsed(shaping);
   const merged = goal ? mapToCanvas(union, { width: view_w, height: view_h }, view, goalMapping(goal, { width: view_w, height: view_h }), goal.placement.target)
     : toCanvas(union, { width: view_w, height: view_h }, view);
-  if (!merged) throw new FindError('not_found', part ? `No outline of ${part} was found. Click it on the canvas instead.` : 'No shape was found there. Click on the part itself.');
+  if (!merged) throw new FindError('not_found', part ? `No outline of ${part} was found. ${FREEHAND}` : 'No shape was found there. Click on the part itself.');
   await mkdir(folder, { recursive: true });
   await writeFile(mask_path, encodePlane({ width: merged.bounds[2], height: merged.bounds[3], data: merged.data }));
   const score = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length * 100) / 100;
   const result: Omit<FoundArea, 'part' | 'mask_path' | 'cached' | 'ms'> = { bounds: merged.bounds, canvas: [view.width, view.height],
     share: Math.round(merged.inside / (view.width * view.height) * 10000) / 10000, score, prompts: prompts.length, kept: scores.length,
     revision: view.revision ?? null, found_on: goal ? 'goal' : 'canvas', ...(cells?.model ? { located_by: cells.model } : {}),
+    looked_at: [view_w, view_h], ...(cells?.picture ? { locate_picture: cells.picture } : {}),
     ...(!cells && score < UNSURE ? { note: `The outline is uncertain (score ${score}): adjust it with Freehand (Shift adds, Alt subtracts), or click again.` } : {}) };
   const temporary = record + '.' + process.pid;
   await writeFile(temporary, JSON.stringify(result)); await rename(temporary, record);

@@ -75,8 +75,12 @@ export class DecisionClient implements DecisionMaker {
       const usage = body.usage ?? {};
       return { answers, model: String(body.model ?? body.metadata?.model ?? this.model), elapsed_ms: elapsed(),
         usage: { input_tokens: Number(usage.input_tokens) || 0, output_tokens: Number(usage.output_tokens) || 0, cost: Number(usage.cost) || 0 } };
-    } catch {
-      return { fallback: signal?.aborted ? 'cancelled' : deadline.aborted ? 'timeout' : 'service_or_response_error', elapsed_ms: elapsed() };
+    } catch (error) {
+      const fallback = signal?.aborted ? 'cancelled' : deadline.aborted ? 'timeout' : 'service_or_response_error';
+      // The error's name and system code only (a message can echo the request): what failed, for the diagnostics.
+      const cause = (error as { cause?: { code?: unknown } })?.cause?.code, name = (error as Error)?.name;
+      const detail = [typeof name === 'string' ? name : '', typeof cause === 'string' ? cause : ''].filter(Boolean).join(' ').slice(0, 80);
+      return { fallback, elapsed_ms: elapsed(), ...(fallback === 'service_or_response_error' && detail ? { error: detail } : {}) };
     } finally { clearTimeout(clock); }
   }
 }

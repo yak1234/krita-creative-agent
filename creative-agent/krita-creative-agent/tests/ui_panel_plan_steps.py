@@ -17,7 +17,7 @@ import importlib.util
 
 PLUGIN = Path(__file__).resolve().parents[2] / 'krita-mcp/krita-plugin/kritamcp'
 package = types.ModuleType('panel_steps_test'); package.__path__ = [str(PLUGIN)]; sys.modules['panel_steps_test'] = package
-from panel_steps_test.qt_compat import QApplication, QDockWidget, QStandardPaths, QPushButton, QLineEdit, QColor
+from panel_steps_test.qt_compat import QApplication, QDockWidget, QStandardPaths, QPushButton, QLineEdit, QColor, QAbstractScrollArea
 from panel_steps_test import plan_steps
 QStandardPaths.setTestModeEnabled(True)
 
@@ -85,6 +85,8 @@ class PlanStepsRules(unittest.TestCase):
             for role in ('met', 'redo'):
                 self.assertGreaterEqual(contrast(palette[role + 'Text'], palette[role]), 4.5, (role, dark))
                 self.assertGreaterEqual(contrast(palette[role + 'Label'], colors['surface']), 4.5, (role, 'label', dark))
+            for ground in ('surface', 'raised'):             # the Now painting caption, on the card and the highlighted row
+                self.assertGreaterEqual(contrast(palette['paintingLabel'], colors[ground]), 4.5, ('painting', ground, dark))
 
 
 class PanelPlanSteps(unittest.TestCase):
@@ -108,6 +110,7 @@ class PanelPlanSteps(unittest.TestCase):
         if self.panel.busy != busy: self.panel.handle_event({'type': 'busy', 'busy': busy})
         self.panel.handle_event({'type': 'goal', 'goal': dict({'status': status, 'brief': BRIEF, 'current_step': 0}, **extra),
                                  'mode': 'agent', 'references': [], 'plan_steps': rows})
+        self.panel.tabs.setCurrentIndex(self.panel.plan_tab)   # the list is on the Plan tab; the painting step on the card
         app.processEvents()
 
     def buttons(self, index):
@@ -245,6 +248,199 @@ class PanelPlanSteps(unittest.TestCase):
                         self.panel.plan_bar.grab().save(os.path.join(shots, 'plan-steps-%s-%s.png' % (name, label)))
                 finally:
                     module.QApplication.palette = original
+
+
+TITLES = ['Underpainting from the goal image', 'Moonlit sky', 'Historic buildings', 'Domed church', 'Kremlin towers', 'Modern skyline',
+          'Arched bridge', 'River reflections', 'Snowy street with pedestrians and cars', 'Lamps and trees', 'Snowy railing',
+          'Woman back view', 'Vintage convertible']
+BIG_BRIEF = dict(BRIEF, title='Moscow winter night', steps=[{'title': t, 'done_when': 'd'} for t in TITLES])
+
+
+def painting_step_five():
+    """Step 5 of 13 painting: steps 1, 3 and 4 met, 2 and 9 skipped (the artist's New Moscow chat)."""
+    states = ['met', 'skipped', 'met', 'met', 'painting'] + ['open'] * 8; states[8] = 'skipped'
+    rows = []
+    for i, (title, state) in enumerate(zip(TITLES, states)):
+        row = {'index': i, 'key': 'k%d' % i, 'title': title, 'state': state}
+        if i: row['source'] = 'assets/%02d-%s.png' % (i, title.lower().replace(' ', '-'))
+        if state == 'painting': row['batches'] = 3
+        rows.append(row)
+    return rows
+
+
+class PanelNowPainting(unittest.TestCase):
+    """The artist's layout B: a progress strip, a Now painting card above the tabs, and Chat · Plan · Folder tabs, each
+    with one scroll area at most."""
+    def setUp(self):
+        self.commands = []
+        self.panel = module.CreativeAgentDocker(); self.panel.resize(360, 900); self.panel.show()
+        self.panel.process = types.SimpleNamespace(state=lambda: QProcess.ProcessState.Running,
+                                                   write=lambda data: self.commands.append(json.loads(data)))
+        self.panel.handle_event({'type': 'ready', 'models': [{'provider': 'openrouter', 'id': 'm', 'name': 'M', 'configured': True}],
+                                 'bridge': {}, 'build': {'version': '1', 'build_id': 'b'}})
+        self.commands.clear()
+
+    tearDown = PanelPlanSteps.tearDown
+
+    def paint(self, rows=None, status='active', busy=True, **goal):
+        if self.panel.busy != busy: self.panel.handle_event({'type': 'busy', 'busy': busy})
+        self.panel.handle_event({'type': 'goal', 'goal': dict({'status': status, 'brief': BIG_BRIEF, 'current_step': 0, 'done_steps': [0, 2, 3]}, **goal),
+                                 'mode': 'agent', 'references': [], 'plan_steps': rows or painting_step_five()})
+        for _ in range(3): app.processEvents()
+
+    def shown(self, widget):
+        """On screen: visible, and not scrolled or clipped out of the panel."""
+        return widget.isVisible() and not widget.visibleRegion().isEmpty()
+
+    def test_the_now_painting_card_shows_the_step_its_source_and_its_buttons(self):
+        self.paint()
+        now = self.panel.plan_steps.now
+        self.assertTrue(self.shown(now))
+        text = ' '.join(label.text() for label in now.findChildren(module.QLabel) if label.isVisible())
+        self.assertIn('step 5 of 13', text.lower()); self.assertIn('Kremlin towers', text)
+        self.assertIn('04-kremlin-towers.png', text); self.assertNotIn('assets/', text, 'the file name, not its folder')
+        self.assertIn('batch 3', text)
+        good = next(b for b in now.findChildren(QPushButton) if b.text().startswith('✓ Good enough'))
+        self.assertTrue(self.shown(good), 'Good enough is on screen whatever the list shows')
+        stop = next(b for b in now.findChildren(QPushButton) if b.text() == 'Stop')
+        self.assertTrue(stop.isEnabled()); self.assertTrue(stop.accessibleName())
+        for tab in range(self.panel.tabs.count()):           # pinned above the tabs: every tab shows it
+            if self.panel.tabs.isTabVisible(tab):
+                self.panel.tabs.setCurrentIndex(tab); app.processEvents()
+                self.assertTrue(self.shown(good), self.panel.tabs.tabText(tab))
+
+    def test_finished_step_offers_met_and_redo_on_the_card(self):
+        rows = painting_step_five(); rows[4]['state'] = 'finished'
+        self.paint(rows, status='move_ready', busy=False)
+        now = self.panel.plan_steps.now
+        self.assertEqual(sorted(b.text() for b in now.findChildren(QPushButton) if b.isVisible()), ['↺ Redo', '✓ Met'])
+
+    def test_the_header_agrees_with_the_steps(self):
+        self.paint()
+        header = self.panel.plan_summary.text()
+        self.assertNotIn('Step 1 of', header, 'the goal current_step (0) must not contradict the step painting')
+        self.assertNotIn('done', header, 'one count, in the list summary')
+        self.assertIn('Moscow winter night', header)
+        self.assertEqual(self.panel.plan_steps.summary.text(), '3 of 13 met · 2 skipped')
+        self.assertEqual(self.panel.tabs.tabText(self.panel.plan_tab), 'Plan · 13')
+
+    def test_the_progress_strip_has_a_segment_per_step(self):
+        self.paint()
+        strip = self.panel.plan_steps.strip
+        self.assertTrue(strip.isVisible())
+        self.assertEqual([s['state'] for s in strip.segments][:5], ['met', 'skipped', 'met', 'met', 'painting'])
+        self.assertEqual(len(strip.segments), 13)
+        self.assertIn('Step 5 of 13 · Kremlin towers · painting', strip.tip_at(strip.segment_rect(4).center()))
+        self.assertIn('3 of 13 met', strip.accessibleName()); self.assertIn('step 5 painting', strip.accessibleName())
+        from panel_steps_test.panel_theme import TOSKA_NIGHT, TOSKA_DAY, DARK, LIGHT
+        for colors, dark in ((TOSKA_NIGHT, True), (TOSKA_DAY, False), (DARK, True), (LIGHT, False)):
+            palette = plan_steps.step_colors(colors, dark)
+            for state in ('met', 'painting'):                # graphics: 3:1 against the panel (WCAG 1.4.11)
+                self.assertGreaterEqual(contrast(palette['segment_' + state], colors['bg']), 3, (state, dark))
+        self.panel.handle_event({'type': 'goal', 'goal': {'status': 'draft', 'brief': None}, 'mode': 'ask', 'references': [], 'plan_steps': []})
+        self.assertFalse(strip.isVisible(), 'no plan, no strip')
+        self.assertFalse(self.panel.tabs.isTabVisible(self.panel.plan_tab))
+
+    def test_done_steps_fold_into_a_summary_that_expands(self):
+        self.paint()
+        self.panel.tabs.setCurrentIndex(self.panel.plan_tab); app.processEvents()
+        fold = self.panel.plan_steps.fold
+        self.assertTrue(fold.isVisible()); self.assertIn('3 met · 1 skipped', fold.text())
+        done = [self.panel.plan_steps.list_rows[i] for i in range(4)]
+        self.assertFalse(any(row.isVisible() for row in done), 'folded')
+        fold.click(); app.processEvents()
+        self.assertTrue(all(row.isVisible() for row in done))
+        later = self.panel.plan_steps.rows[8]['widget']
+        self.assertTrue(later.isVisible(), 'a later skipped step stays in the list, with Restore')
+        self.assertEqual([b.text() for b in self.buttons(8)], ['Restore'])
+
+    def buttons(self, index):
+        return [b for b in self.panel.plan_steps.rows[index]['widget'].findChildren(QPushButton) if b.isVisible()]
+
+    def test_the_current_step_is_highlighted_and_scrolled_into_view(self):
+        self.panel.resize(360, 560)
+        self.paint()
+        self.panel.plan_steps.fold.click()                   # the done steps open above it
+        self.panel.tabs.setCurrentIndex(self.panel.plan_tab)
+        for _ in range(4): app.processEvents()
+        current = self.panel.plan_steps.list_rows[4]
+        self.assertEqual(current.objectName(), 'planStepCurrent')
+        self.assertTrue(self.shown(current), 'the plan tab shows the step that paints')
+
+    def test_no_nested_scrollbars(self):
+        self.paint()
+        self.panel.handle_event({'type': 'folder', 'index': {'root': '/f', 'name': 'f', 'goal': {'name': 'final_goal.png'},
+                                 'elements': [{'name': 'e%d.png' % i, 'guess': 'E%d' % i, 'number': i} for i in range(12)], 'others': [], 'skipped': []},
+                                 'references': {}})
+        def scrolls(area):
+            bars = (area.verticalScrollBar(), area.horizontalScrollBar())
+            return any(bar.isVisible() and bar.maximum() > 0 for bar in bars)
+        for tab in range(self.panel.tabs.count()):
+            if not self.panel.tabs.isTabVisible(tab): continue
+            self.panel.tabs.setCurrentIndex(tab)
+            for _ in range(3): app.processEvents()
+            for area in self.panel.findChildren(QAbstractScrollArea):
+                if not area.isVisible() or not scrolls(area): continue
+                parent = area.parentWidget()
+                while parent is not None and not isinstance(parent, QAbstractScrollArea): parent = parent.parentWidget()
+                self.assertIsNone(parent, '%s scrolls inside %s (%s tab)' % (area.objectName() or type(area).__name__,
+                                                                             parent and (parent.objectName() or type(parent).__name__), self.panel.tabs.tabText(tab)))
+        self.assertEqual(self.panel.plan_steps.widget.findChildren(QAbstractScrollArea), [])
+
+    def test_start_painting_and_resume_are_on_the_card_from_every_tab(self):
+        rows = [dict(r, state='open') for r in painting_step_five()]
+        self.paint(rows, status='ready', busy=False)
+        start = self.panel.card_start
+        for tab in range(self.panel.tabs.count()):
+            if not self.panel.tabs.isTabVisible(tab): continue
+            self.panel.tabs.setCurrentIndex(tab); app.processEvents()
+            self.assertTrue(self.shown(start), self.panel.tabs.tabText(tab)); self.assertEqual(start.text(), 'Start painting')
+        self.assertEqual(start.isEnabled(), self.panel.execute_button.isEnabled(), 'the Plan tab\'s own rule')
+        started = []; self.panel.start_plan = lambda: started.append(True)
+        start.click(); self.assertEqual(started, [True])
+        self.paint(rows, status='paused', busy=False)
+        self.assertEqual(start.text(), 'Resume')
+        self.paint()                                         # a step paints: Stop, not Start
+        self.assertFalse(start.isVisible())
+        self.paint(rows, status='ready', busy=False, question={'id': 'q', 'question': '?', 'options': []})
+        self.assertFalse(start.isVisible(), 'an open question comes first')
+
+    def test_the_plan_tab_keeps_its_scroll_until_another_step_paints(self):
+        self.panel.resize(360, 560)
+        self.paint(); self.panel.plan_steps.fold.click()
+        self.panel.tabs.setCurrentIndex(self.panel.plan_tab)
+        for _ in range(4): app.processEvents()
+        bar = self.panel.plan_scroll.verticalScrollBar(); self.assertGreater(bar.maximum(), 0, 'the list scrolls here')
+        bar.setValue(bar.maximum()); app.processEvents()
+        builds = self.panel.plan_steps.builds
+        rows = painting_step_five(); rows[4]['batches'] = 4
+        self.paint(rows)
+        for _ in range(4): app.processEvents()
+        self.assertEqual(bar.value(), bar.maximum(), 'a new batch does not jump the list back')
+        self.assertEqual(self.panel.plan_steps.builds, builds, 'a batch count is updated in place')
+        text = ' '.join(l.text() for l in self.panel.plan_steps.now.findChildren(module.QLabel) if l.isVisible())
+        self.assertIn('batch 4', text)
+        rows = painting_step_five(); rows[4]['state'] = 'met'; rows[5]['state'] = 'painting'
+        bar.setValue(bar.maximum()); self.paint(rows)
+        for _ in range(4): app.processEvents()
+        self.assertTrue(self.shown(self.panel.plan_steps.list_rows[5]), 'the next step paints: shown')
+
+    def test_titles_are_text_in_tooltips_and_rows_without_an_index(self):
+        rows = painting_step_five(); rows[4]['title'] = '<b>Kremlin</b> towers'; rows[4]['source'] = 'assets/<i>x</i>.png'
+        rows[6]['index'] = None
+        self.paint(rows)
+        strip = self.panel.plan_steps.strip
+        self.assertIn('&lt;b&gt;Kremlin', strip.tip_at(strip.segment_rect(4).center()))
+        tips = [l.toolTip() for l in self.panel.plan_steps.now.findChildren(module.QLabel) if l.toolTip()]
+        self.assertTrue(tips and all('&lt;i&gt;' in t for t in tips), tips)
+
+    def test_no_duplicate_titles(self):
+        self.paint()
+        self.panel.transcript.add_message('Creative Agent', 'A reply.')
+        app.processEvents()
+        texts = [l.text() for l in self.panel.findChildren(module.QLabel) if l.isVisible()]
+        self.assertFalse(any(t == 'Creative Agent' for t in texts), texts)
+        self.assertIn(module.product_name(), texts)
 
 
 if __name__ == '__main__':

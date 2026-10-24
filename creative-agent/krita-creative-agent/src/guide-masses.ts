@@ -261,5 +261,34 @@ export function describeMasses(masses: Mass[], most = 8): string {
   return `${masses.length} masses, largest first: ${parts.join('; ')}`;
 }
 
+const hex = ([r, g, b]: Rgb) => '#' + [r, g, b].map(c => Math.max(0, Math.min(255, Math.round(c))).toString(16).padStart(2, '0')).join('');
+/** The masses' own colours for the artist's colour bar: the largest few, largest first, each with its part of the bar
+ * (the masses' areas overlap where one lies inside another, so the parts are their areas over the shown masses' sum). */
+export function massColours(masses: Mass[], most = 8): { colour: string; share: number }[] {
+  const shown = [...masses].sort((a, b) => b.share - a.share).slice(0, most), total = shown.reduce((n, mass) => n + mass.share, 0);
+  return total > 0 ? shown.map(mass => ({ colour: hex(mass.fill), share: Math.round(mass.share / total * 1000) / 1000 })) : [];
+}
+
+const where = (centre: Point) => {
+  const at = place(centre);
+  return at === 'centre' ? 'in the centre' : at === 'left' || at === 'right' ? `on the ${at}` : `at the ${at}`;
+};
+const plainColour = (fill: Rgb) => colourWords(fill).replace(/^mid /, '').replace(/ (warm|cool) (grey)$/, ' $2');
+/** The masses in one plain sentence for the artist (no numbers or coordinates): the two largest, then the lights.
+ * "Mostly dark grey at the bottom and cool blue at the top, with a light warm yellow spot at the top right." */
+export function describeMassesForArtist(masses: Mass[]): string {
+  if (!masses.length) return 'No clear big shapes.';
+  const big = masses.filter(mass => !mass.light).sort((a, b) => b.share - a.share).slice(0, 2);
+  const lights = masses.filter(mass => mass.light).sort((a, b) => b.share - a.share);
+  const parts = big.map(mass => `${plainColour(mass.fill)} ${where(mass.centre)}`);
+  let text = parts.length ? 'Mostly ' + parts.join(' and ') : '';
+  if (lights.length) {
+    const first = lights[0]!, spot = `${plainColour(first.fill)} ${lights.length > 1 ? 'spots' : 'spot'}`;
+    const light = `${/^[aeiou]/.test(spot) && lights.length === 1 ? 'an' : lights.length === 1 ? 'a' : 'bright'} ${spot} ${where(first.centre)}`;
+    text = text ? `${text}, with ${light}` : light.charAt(0).toUpperCase() + light.slice(1);
+  }
+  return text + '.';
+}
+
 /** The plugin's smoothed copy of a reference (mass-map.ts, creative_masses.py): its pixels and the crop it shows. */
 export type MassPixels = Pixels & { source?: number[]; ms?: number };

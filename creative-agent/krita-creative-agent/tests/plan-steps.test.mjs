@@ -103,6 +103,19 @@ test('the panel\'s view of each step: open, skipped, painting, finishing, finish
   assert.deepEqual(planStepView({ brief: null }, { mode: 'agent', busy: false }), []);
 });
 
+test('the panel\'s Now painting card: a step\'s element image and its batches', () => {
+  const folderSteps = [{ title: 'Underpainting', scope: 'whole composition' }, { title: 'Kremlin towers', scope: 'assets/04-kremlin-towers.PNG' },
+    { title: 'Sky', scope: 'the top third' }];
+  const folderKeys = stepIdentities(folderSteps, true);
+  const goal = { brief: { steps: folderSteps }, status: 'active', step_marks: {}, step_batches: { [folderKeys[1]]: 3 }, moves: [] };
+  const view = planStepView(goal, { mode: 'agent', busy: true, folder: true, currentMove: { number: 1, status: 'painting', step: 1, step_key: folderKeys[1] } });
+  assert.equal(view[1].state, 'painting');
+  assert.equal(view[1].source, 'assets/04-kremlin-towers.PNG', 'an image file scope is the step\'s source');
+  assert.equal(view[1].batches, 3);
+  assert.equal(view[0].source, undefined, 'a scope in words is no image'); assert.equal(view[2].source, undefined);
+  assert.equal(view[0].batches, undefined, 'no batches: nothing to say');
+});
+
 test('the painter is told which steps the artist skipped or marked met', () => {
   assert.deepEqual(stepMarksContext(steps, { [keys[1]]: { skipped: true }, [keys[3]]: { met: 'artist' }, 'title:gone#0': { skipped: true } }),
     { note: 'The artist skipped some plan steps and marked others met. Never paint a skipped step, never add it back to a plan, and paint nothing more for a met step.',

@@ -34,7 +34,10 @@ export type Goal = { brief: { steps: PlanStep[] } | null; status?: string; curre
   step_marks?: StepMarks; step_batches?: Record<string, number>; moves?: Move[]; reference_jobs?: Record<string, number[]>;
   pace_history?: { step: number; progress?: number | null; action?: string }[]; reviews?: { verdict?: string }[] };
 export type StepState = 'open' | 'skipped' | 'painting' | 'finishing' | 'finished' | 'met' | 'good_enough' | 'done';
-export type StepView = { index: number; key: string; title: string; state: StepState; redone?: number };
+/** source: the step's element image (its scope, when that is an image file, relative to the project folder);
+ * batches: how many batches it has painted. The panel's Now painting card shows both. */
+export type StepView = { index: number; key: string; title: string; state: StepState; redone?: number; source?: string; batches?: number };
+const IMAGE_SCOPE = /\.(png|jpe?g|gif|webp)$/i;
 type ViewOptions = { mode: string; busy: boolean; currentMove?: Move; folder?: boolean; pending?: string | null };
 type Call = { id?: string; tool?: string; args?: Record<string, unknown> };
 
@@ -154,7 +157,9 @@ export function planStepView(goal: Goal | null, { mode, busy, currentMove, folde
     const key = keys[index], mark = markOf(marks, key);
     const state: StepState = index === painting ? (pending === key ? 'finishing' : 'painting') : mark?.skipped ? 'skipped'
       : index === finished ? 'finished' : mark?.met === 'artist' ? 'met' : mark?.met === 'good_enough' ? 'good_enough' : done.has(index) ? 'done' : 'open';
-    return { index, key, title: layerName(step.title), state, ...(mark?.redone ? { redone: mark.redone } : {}) };
+    const batches = goal.step_batches?.[key] ?? 0, scope = step.scope?.trim() ?? '';
+    return { index, key, title: layerName(step.title), state, ...(mark?.redone ? { redone: mark.redone } : {}),
+      ...(IMAGE_SCOPE.test(scope) ? { source: scope } : {}), ...(batches > 0 ? { batches } : {}) };
   });
 }
 

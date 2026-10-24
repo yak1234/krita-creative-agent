@@ -123,7 +123,7 @@ goal = {'version':1,'status':'ready','mode':'plan','revision':1,'brief':{
     'question':{'id':'texture','question':'How matte should it look?','options':['Whisper-light tooth','Visibly chalky']}}
 panel.handle_event({'type':'goal','goal':goal,'mode':'plan','references':[]})
 panel.handle_event({'type':'question',**goal['question']})
-assert panel.mode_selector.currentData() == 'plan' and panel.plan_bar.isVisible()
+assert panel.mode_selector.currentData() == 'plan' and panel.tabs.isTabVisible(panel.plan_tab) and not panel.plan_bar.isHidden()
 panel.question_controls[-1].click()
 assert commands[-1]['text'] == 'You decide' and commands[-1]['chat_mode'] == 'plan'
 dialog = module.PlanDialog(panel, goal)
@@ -146,7 +146,7 @@ panel.ai_images_selector.setCurrentIndex(panel.ai_images_selector.findData(1))
 assert commands[-1] == {'type':'set_limits','limits':{'minutes':20,'passes':30,'ai_images':1}}, commands[-1]
 agent_goal = dict(goal, brief=None, question=None, limits={'minutes':0,'passes':0,'ai_images':3}, ai_images_used=1)
 panel.handle_event({'type':'goal','goal':agent_goal,'mode':'agent','references':[]})
-assert not panel.plan_bar.isVisible() and panel.ai_images_selector.isVisible(), 'an Agent chat with no plan still shows it'
+assert not panel.tabs.isTabVisible(panel.plan_tab) and panel.ai_images_selector.isVisible(), 'an Agent chat with no plan still shows it'
 assert panel.ai_images_selector.currentData() == 3 and panel.ai_images_used.text() == '1 used'
 panel.ai_images_selector.setCurrentIndex(panel.ai_images_selector.findData(-1))
 assert commands[-1]['type'] == 'set_limits' and commands[-1]['limits']['ai_images'] is None, 'no limit is sent as null'
@@ -207,7 +207,7 @@ module.Krita = before_edit_krita
 unlimited = module.PlanDialog(panel, dict(goal, limits={'minutes':20,'passes':30,'ai_images':None}))
 assert unlimited.ai_images.value() == -1 and unlimited.ai_images.text() == 'No AI image limit'; unlimited.close()
 panel.handle_event({'type':'goal','goal':goal,'mode':'plan','references':[]})
-assert not panel.execute_button.isVisible(), 'answer required before starting a pending plan'
+assert panel.execute_button.isHidden(), 'answer required before starting a pending plan'
 goal['question'] = None
 panel.handle_event({'type':'goal','goal':goal,'mode':'plan','references':[]})
 panel.execute_button.click(); assert commands[-1]['start_plan'] is True
@@ -375,7 +375,7 @@ panel.handle_event({'type':'goal','goal':goal,'mode':'plan','references':[]})
 assert not panel.lesson_button.isVisible() and not lesson_window.isVisible()
 goal['target_needs_review'] = True
 panel.handle_event({'type':'goal','goal':goal,'mode':'plan','references':[]})
-assert not panel.execute_button.isVisible() and 'review plan' in panel.plan_summary.text()
+assert panel.execute_button.isHidden() and 'review plan' in panel.plan_summary.text()
 goal['target_needs_review'] = False
 panel.attached_references=[]; panel.apply_theme(True); panel.resize(440,820)
 # Reference purposes are editable directly and remain immutable in sent receipts.
@@ -708,7 +708,7 @@ assert focus_calls==[('show',view_only_clone),('activate',None)]
 panel.painting_target={'document_id':'missing','filename':'/nonexistent/missing-painting.kra','missing':True}
 panel.render_target(); panel.update_controls(); focus_calls.clear()
 assert panel.return_button.text()=='Locate painting'
-assert not panel.execute_button.isVisible(), 'a moved target must be relinked before Agent can resume'
+assert panel.execute_button.isHidden(), 'a moved target must be relinked before Agent can resume'
 assert not panel.return_to_painting(restored=True) and not focus_calls
 assert panel.recovery_button.text()=='Locate painting'
 for dark in (True,False):

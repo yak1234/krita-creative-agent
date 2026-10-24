@@ -5,7 +5,7 @@
 // and the draw_guide option end to end with a fake plugin. Images are made in memory; writes no files.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSvgMasses, traceMasses, describeMasses, MASS_LINES, MASS_OPTIONS } from '../src/guide-masses.ts';
+import { parseSvgMasses, traceMasses, describeMasses, describeMassesForArtist, massColours, MASS_LINES, MASS_OPTIONS } from '../src/guide-masses.ts';
 import { GUIDE_POINTS } from '../src/guide-tool.ts';
 import { paintingTools } from '../src/tools.mjs';
 import { mapReferencePoint } from '../src/reference-generator.mjs';
@@ -90,6 +90,20 @@ test('the painter’s summary names each big mass by share, place, colour and va
   assert.match(text, /light .*moon|light/, text);
   assert.match(text, /green.* bottom/, text);
   assert.ok(text.split(/\s+/).length <= 90, `${text.split(/\s+/).length} words`);
+});
+
+test('the artist reads the masses as one plain sentence and a bar of their own colours', async () => {
+  const { masses } = await traceMasses(night());
+  const text = describeMassesForArtist(masses);
+  assert.match(text, /^Mostly [a-z ]*blue at the top and [a-z ]*green at the bottom/, text);
+  assert.match(text, /with an? [a-z ]+ spot at the top right\.$/, 'the moon, as a light spot');
+  assert.doesNotMatch(text, /[%\[\]\d]|\bmid\b/, 'no numbers, coordinates or "mid"');
+  assert.equal(describeMassesForArtist([]), 'No clear big shapes.');
+  const colours = massColours(masses);
+  assert.ok(colours.length >= 3 && colours.length <= 8);
+  assert.ok(colours.every(c => /^#[0-9a-f]{6}$/.test(c.colour)));
+  const sky = colours[0];                                   // the largest: the dark blue sky
+  assert.ok(parseInt(sky.colour.slice(5, 7), 16) > parseInt(sky.colour.slice(1, 3), 16), sky.colour);
 });
 
 test('no guides by default: the painter\u2019s guidance starts from the underpainting; masses are an option of draw_guide', async () => {

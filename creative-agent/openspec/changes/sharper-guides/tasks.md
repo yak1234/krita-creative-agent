@@ -4,6 +4,10 @@ Amended by crisp-accents (2026-10-23): the visible guide lines of sections 1 and
 move draws the masses by default") are REMOVED; the tracer and the mass map remain as analysis (accents' line finder,
 masses summary, thumbnail). Section 3 is parked.
 
+Amended by the panel tidy (2026-10-23, the artist's panel layout B): the panel's outline thumbnail is REMOVED (it looked like
+the tracing the artist removed); the mass map now carries the masses' colours and shares, shown as a flat colour bar, and
+one plain sentence for the artist (mass map version 2). The painter's summary is unchanged.
+
 ## 1. Full-resolution tracing and outlines by shape (goals 2, 3) — branch agent/sharper-trace
 - [x] 1.1 Plugin: OpenCV edge trace of a reference crop at full resolution (bounded by TRACE_PIXELS): edge-preserving smoothing, Canny, contours, simplification in canvas terms; thin tall parts kept
 - [x] 1.2 Line/point caps grow with the element's size on the canvas

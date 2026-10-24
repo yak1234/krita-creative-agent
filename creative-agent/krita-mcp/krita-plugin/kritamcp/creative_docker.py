@@ -9,7 +9,7 @@ import uuid
 from .qt_compat import sip, enum_value
 from .product_name import product_name
 from .panel_theme import panel_colors
-from .plan_steps import PlanStepsList, plan_steps_stylesheet
+from .plan_steps import PlanStepsList, plan_steps_stylesheet, thumbnail
 from krita import DockWidget, DockWidgetFactory, DockWidgetFactoryBase, Krita, Selection
 from .creative_document_identity import document_id, open_documents
 from . import node_runtime
@@ -456,6 +456,43 @@ class ProtectionDialog(QDialog):
         super().closeEvent(event)
 
 
+class MassBar(QWidget):
+    """A whole-picture reference's big masses as a flat bar of their own colours, each as wide as its part of the
+    picture (mass-map.ts: mass_map.colours), with the companion's plain sentence (mass_map.overview) as its tooltip.
+    Flat colours only: outlines over the reference looked like the tracing the artist removed."""
+
+    def __init__(self, height=10):
+        super().__init__()
+        self.setObjectName('massMap'); self.colours = []
+        self.setFixedHeight(height); self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def sizeHint(self):
+        return QSize(120, self.height())
+
+    def set_mass_map(self, found, name=''):
+        """Show a mass map ({'colours': [{'colour', 'share'}], 'overview'}); False (and nothing shown) without colours."""
+        colours = [c for c in (found or {}).get('colours') or [] if isinstance(c, dict) and QColor(str(c.get('colour'))).isValid() and float(c.get('share') or 0) > 0]
+        self.colours = [(QColor(str(c['colour'])), float(c['share'])) for c in colours]
+        overview = str((found or {}).get('overview') or '').strip()
+        self.setToolTip(CreativeAgentDocker.text_tip(['Big colour masses' + (' of ' + name if name else '') + (': ' + overview if overview else '')]) if self.colours else '')
+        self.setAccessibleName(('Colour masses of ' + (name or 'the reference')) if self.colours else '')
+        self.setAccessibleDescription(overview if self.colours else '')
+        self.update()
+        return bool(self.colours)
+
+    def clear(self):
+        self.set_mass_map(None)
+
+    def paintEvent(self, _event):
+        if not self.colours: return
+        painter = QPainter(self); total = sum(share for _, share in self.colours) or 1; x = 0.0
+        for color, share in self.colours:
+            width = self.width() * share / total
+            painter.fillRect(QRectF(x, 0, width + 0.5, self.height()), color); x += width
+        painter.end()
+
+
 class FeaturesSection(QFrame):
     """The panel's Protected section (krita-fork 6.6): the painting's features, protected first and by name, each with a
     box the artist ticks to protect it. Every widget of the section is made here, so a restyle touches this class only.
@@ -774,6 +811,9 @@ class PlanDialog(QDialog):
         super().accept()
 
 
+ASSISTANT = 'Creative Agent'                                     # the role of the agent's own messages
+
+
 class ChatTranscript(QScrollArea):
     followChanged = pyqtSignal(bool)
     previewRequested = pyqtSignal(dict)
@@ -875,7 +915,7 @@ class ChatTranscript(QScrollArea):
             toggle.toggled.connect(body.setVisible)
             toggle.toggled.connect(lambda checked: toggle.setText(('⌄  ' if checked else '›  ') + text.split('\n')[0][:90]))
             layout.addWidget(toggle)
-        else:
+        elif role != ASSISTANT:                                  # the agent's replies need no name over each one
             layout.addWidget(label)
         layout.addWidget(body)
         item = {'role': role, 'text': text, 'label': body, 'card': card, 'layout': layout, 'id': message_id, 'action': action}
@@ -1225,8 +1265,9 @@ class CreativeAgentDocker(DockWidget):
         self.setMinimumWidth(320)
         self.setMinimumHeight(440)
         header = QHBoxLayout(); header.setSpacing(3)
-        title = QLabel('Creative Agent'); title.setObjectName('chatTitle')
-        header.addWidget(title, 1)
+        # The app's own name, once (the dock's title bar is Krita's): Toska in the fork, Krita in stock.
+        self.title = QLabel(product_name()); self.title.setObjectName('chatTitle')
+        header.addWidget(self.title, 1)
         self.end_button = QPushButton('＋'); self.end_button.setObjectName('headerAction')
         self.end_button.setAccessibleName('New chat')
         self.end_button.setToolTip('New chat · your painting stays open')
@@ -1254,6 +1295,41 @@ class CreativeAgentDocker(DockWidget):
         self.use_canvas_button.setToolTip('Keep this conversation and plan, and work on the attached painting. Nothing paints until you Resume.')
         self.use_canvas_button.clicked.connect(lambda: self.send({'type': 'use_attached_canvas'}))
         self.use_canvas_button.hide(); layout.addWidget(self.use_canvas_button)
+        # The artist's layout B (2026-10-23): under the header, the plan's progress strip and the Now painting card (and the
+        # move card and activity line), pinned above the tabs so what paints is always on screen; then Chat · Plan · Folder.
+        # The panel itself never scrolls: each tab has one scroll area (Chat its transcript, Plan and Folder their page).
+        self.plan_steps = PlanStepsList(self.send_plan_step, self.request_stop)
+        layout.addWidget(self.plan_steps.strip); layout.addWidget(self.plan_steps.now)
+        # Start painting / Resume on the card when nothing paints, so it is reachable from every tab (the Plan tab's rule).
+        self.card_start = QPushButton('Start painting'); self.card_start.setObjectName('primaryAction')
+        self.card_start.setAccessibleName('Start painting the plan'); self.card_start.clicked.connect(lambda: self.start_plan())
+        self.card_start.hide(); self.plan_steps.caption_row.addWidget(self.card_start, 0, Qt.AlignmentFlag.AlignTop)
+        self.revealed_step = None
+        top_area = QVBoxLayout(); top_area.setContentsMargins(0, 0, 0, 0); top_area.setSpacing(6); layout.addLayout(top_area)
+        self.tabs = QTabWidget(); self.tabs.setObjectName('panelTabs'); self.tabs.setDocumentMode(True); self.tabs.setUsesScrollButtons(False)
+        self.tabs.tabBar().setDrawBase(False); self.tabs.tabBar().setExpanding(False)
+        self.tabs.setAccessibleName('Chat, plan and project folder')
+        chat_page = QWidget(); chat_page.setObjectName('creativeChat'); chat_layout = QVBoxLayout(chat_page)
+        chat_layout.setContentsMargins(0, 6, 0, 0); chat_layout.setSpacing(8)
+        def scrolled_page(name):
+            page = QWidget(); page.setObjectName('creativeChat'); page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(0, 8, 2, 8); page_layout.setSpacing(8)
+            scroll = QScrollArea(); scroll.setObjectName(name); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff); scroll.setWidget(page)
+            return scroll, page_layout
+        self.plan_scroll, plan_page = scrolled_page('planPage')
+        self.folder_scroll, folder_page = scrolled_page('folderPage')
+        self.chat_tab = self.tabs.addTab(chat_page, 'Chat'); self.plan_tab = self.tabs.addTab(self.plan_scroll, 'Plan')
+        self.folder_tab = self.tabs.addTab(self.folder_scroll, 'Folder')
+        self.tabs.setTabVisible(self.plan_tab, False); self.tabs.setTabVisible(self.folder_tab, False)
+        self.tabs.setTabToolTip(self.plan_tab, 'The plan, one step per element: skip, restore, keep or redo a step')
+        self.tabs.setTabToolTip(self.folder_tab, 'The project folder: its goal image, element images and big colour masses')
+        layout.addWidget(self.tabs, 1)
+        # The current step is scrolled into view once Qt has laid the list out: a timer the panel owns, so it dies with it.
+        self.reveal_timer = QTimer(self); self.reveal_timer.setSingleShot(True); self.reveal_timer.setInterval(0)
+        self.reveal_timer.timeout.connect(self.reveal_current_step)
+        self.tabs.currentChanged.connect(self.tab_changed)
+        layout = chat_layout                                  # what follows goes into the Chat tab unless placed elsewhere
 
         self.model = ModelComboBox(); self.model.setMinimumWidth(70)
         self.model.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
@@ -1396,35 +1472,49 @@ class CreativeAgentDocker(DockWidget):
         layout.addLayout(jump_row)
         # Project folder: the folder the agent works from, its goal image and element images (the artist renames a guess in place).
         self.folder_card = QFrame(); self.folder_card.setObjectName('planBar')
-        folder_layout = QVBoxLayout(self.folder_card); folder_layout.setContentsMargins(10, 9, 10, 9); folder_layout.setSpacing(4)
+        folder_layout = QVBoxLayout(self.folder_card); folder_layout.setContentsMargins(10, 9, 10, 10); folder_layout.setSpacing(6)
+        folder_top = QHBoxLayout(); folder_top.setSpacing(10)
+        self.folder_picture = QLabel(); self.folder_picture.setObjectName('folderGoal'); self.folder_picture.setFixedSize(96, 72)
+        self.folder_picture.setAlignment(Qt.AlignmentFlag.AlignCenter); self.folder_picture.hide(); folder_top.addWidget(self.folder_picture, 0, Qt.AlignmentFlag.AlignTop)
+        folder_words = QVBoxLayout(); folder_words.setSpacing(3)
         self.folder_title = QLabel(''); self.folder_title.setObjectName('planSummary'); self.folder_title.setWordWrap(True)
-        folder_layout.addWidget(self.folder_title)
+        self.folder_title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred); folder_words.addWidget(self.folder_title)
         self.folder_goal = QLabel(''); self.folder_goal.setObjectName('muted'); self.folder_goal.setWordWrap(True)
-        self.folder_goal.setTextFormat(Qt.TextFormat.PlainText); folder_layout.addWidget(self.folder_goal)   # file names are text
-        # The goal image's mass map (the companion's mass-map.ts), once it is found.
-        self.folder_masses = QLabel(); self.folder_masses.setObjectName('massMap'); self.folder_masses.hide()
-        folder_layout.addWidget(self.folder_masses)
-        self.folder_elements = QListWidget(); self.folder_elements.setObjectName('folderElements'); self.folder_elements.setMaximumHeight(150)
-        self.folder_elements.setAccessibleName('Elements of the project folder')
-        self.folder_elements.setToolTip('The elements, painted in this order. Double-click a name to correct it.')
-        self.folder_elements.itemChanged.connect(self.folder_guess_changed); folder_layout.addWidget(self.folder_elements)
+        self.folder_goal.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.folder_goal.setTextFormat(Qt.TextFormat.PlainText); folder_words.addWidget(self.folder_goal)   # file names are text
         self.folder_footer = QLabel(''); self.folder_footer.setObjectName('muted'); self.folder_footer.setWordWrap(True)
-        self.folder_footer.setTextFormat(Qt.TextFormat.PlainText); folder_layout.addWidget(self.folder_footer)
-        layout.addWidget(self.folder_card); self.folder_card.hide()
+        self.folder_footer.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.folder_footer.setTextFormat(Qt.TextFormat.PlainText); folder_words.addWidget(self.folder_footer)
+        folder_top.addLayout(folder_words, 1); folder_layout.addLayout(folder_top)
+        # The goal image's big masses (mass-map.ts), once found: a flat bar of their colours and one plain sentence.
+        self.folder_masses = MassBar(12); self.folder_masses.hide(); folder_layout.addWidget(self.folder_masses)
+        self.folder_mass_text = QLabel(''); self.folder_mass_text.setObjectName('muted'); self.folder_mass_text.setWordWrap(True)
+        self.folder_mass_text.setTextFormat(Qt.TextFormat.PlainText); self.folder_mass_text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.folder_mass_text.hide(); folder_layout.addWidget(self.folder_mass_text)
+        # The element images, named as guessed, until the plan lists them (then the Plan tab shows them, once). Its rows
+        # all show: it never scrolls inside the Folder tab.
+        self.folder_elements = QListWidget(); self.folder_elements.setObjectName('folderElements')
+        self.folder_elements.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.folder_elements.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.folder_elements.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.folder_elements.setAccessibleName('Element images of the project folder')
+        self.folder_elements.setToolTip('The element images, painted in this order. Double-click a name to correct it.')
+        self.folder_elements.itemChanged.connect(self.folder_guess_changed); folder_layout.addWidget(self.folder_elements)
+        folder_page.addWidget(self.folder_card); folder_page.addStretch(1)
         self.folder_guesses = {}
         self.plan_bar = QFrame(); self.plan_bar.setObjectName('planBar')
         plan_layout = QVBoxLayout(self.plan_bar); plan_layout.setContentsMargins(10, 9, 10, 9); plan_layout.setSpacing(6)
         self.plan_summary = QLabel(''); self.plan_summary.setWordWrap(True); self.plan_summary.setObjectName('planSummary')
         self.plan_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred); plan_layout.addWidget(self.plan_summary)
         # Plan step controls (plan_steps.py): Skip / Restore, Good enough → next step, Met / Redo, per step.
-        self.plan_steps = PlanStepsList(self.send_plan_step); plan_layout.addWidget(self.plan_steps.widget)
+        plan_layout.addWidget(self.plan_steps.widget)
         plan_actions = QHBoxLayout(); plan_actions.setSpacing(5)
         self.plan_button = QPushButton('View plan'); self.plan_button.clicked.connect(self.edit_plan); plan_actions.addWidget(self.plan_button)
         self.compare_button = QPushButton('Review changes'); self.compare_button.clicked.connect(self.show_passes); plan_actions.addWidget(self.compare_button)
         plan_actions.addStretch()
         self.execute_button = QPushButton('Start painting'); self.execute_button.setObjectName('primaryAction')
         self.execute_button.clicked.connect(self.start_plan); plan_actions.addWidget(self.execute_button)
-        plan_layout.addLayout(plan_actions); layout.addWidget(self.plan_bar); self.plan_bar.hide()
+        plan_layout.addLayout(plan_actions); plan_page.addWidget(self.plan_bar); plan_page.addStretch(1); self.plan_bar.hide()
         # Agent mode: the painted move, to keep, undo or refine (refining is just the next message).
         self.move_bar = QFrame(); self.move_bar.setObjectName('planBar')
         move_layout = QVBoxLayout(self.move_bar); move_layout.setContentsMargins(10, 9, 10, 9); move_layout.setSpacing(6)
@@ -1436,7 +1526,7 @@ class CreativeAgentDocker(DockWidget):
         move_actions.addStretch()
         self.move_keep = QPushButton('Keep'); self.move_keep.setObjectName('primaryAction'); self.move_keep.setToolTip('Keep this move and paint the next one')
         self.move_keep.clicked.connect(lambda: self.move_command('keep')); move_actions.addWidget(self.move_keep)
-        move_layout.addLayout(move_actions); layout.addWidget(self.move_bar); self.move_bar.hide(); self.current_move = None
+        move_layout.addLayout(move_actions); top_area.addWidget(self.move_bar); self.move_bar.hide(); self.current_move = None
         # Protected: the painting's features, each with a box the artist ticks to protect it (our Krita only).
         self.feature_changing = False
         self.features_section = FeaturesSection(self.toggle_feature); self.features_section.hide(); layout.addWidget(self.features_section)
@@ -1456,7 +1546,7 @@ class CreativeAgentDocker(DockWidget):
                                         'It stops when the run pauses or ends. Turn it off in Settings: Screen.' % product_name())
         self.awake_indicator.hide(); activity.addWidget(self.awake_indicator)
         self.elapsed = QLabel(''); self.elapsed.setObjectName('muted'); self.elapsed.setAccessibleDescription('Activity elapsed time'); activity.addWidget(self.elapsed)
-        layout.addLayout(activity)
+        top_area.addLayout(activity)
         self.composer = QFrame(); self.composer.setObjectName('composer')
         compose = QVBoxLayout(self.composer); compose.setContentsMargins(10, 9, 10, 8); compose.setSpacing(7)
         self.canvas_row = QWidget(); canvas_layout = QHBoxLayout(self.canvas_row); canvas_layout.setContentsMargins(0, 0, 0, 0); canvas_layout.setSpacing(3)
@@ -1607,6 +1697,7 @@ class CreativeAgentDocker(DockWidget):
         else:
             c, dark = panel_colors('dark' if dark else 'light')
         self.theme_colors = c
+        self.plan_steps.set_colors(c, dark)
         c['chevron'] = os.path.join(os.path.dirname(__file__), 'icons', 'chevron-dark.svg' if dark else 'chevron-light.svg').replace('\\', '\\\\').replace('"', '\\"')
         palette = QPalette(self.palette())
         for role, color in [(QPalette.ColorRole.Window, c['bg']), (QPalette.ColorRole.Base, c['surface']), (QPalette.ColorRole.Button, c['raised']),
@@ -1673,6 +1764,10 @@ class CreativeAgentDocker(DockWidget):
             QListWidget { background: %(surface)s; color: %(text)s; border: none; }
             QListWidget::item { padding: 12px; border-bottom: 1px solid %(border)s; }
             QListWidget::item:selected { background: %(raised)s; }
+            QListWidget#folderElements::item { padding: 5px 6px; }
+            QLabel#folderGoal { background: %(raised)s; border-radius: 4px; }
+            QTabWidget#panelTabs::pane { border: none; border-top: 1px solid %(border)s; }
+            QTabWidget#panelTabs QTabBar::tab { padding: 7px 12px; font-size: 12px; }
             QTabWidget::pane { border: 1px solid %(border)s; border-radius: 5px; }
             QTabBar::tab { background: %(bg)s; color: %(muted)s; padding: 9px 10px; border: none; font-size: 11px; }
             QTabBar::tab:selected { color: %(text)s; background: %(surface)s; border-bottom: 2px solid %(accent)s; }
@@ -1688,6 +1783,7 @@ class CreativeAgentDocker(DockWidget):
         self.transcript.body_text_size = round(14 * self.text_scale)
         for item in self.transcript.messages:
             item['label'].set_rendered(self.transcript.render(item['text']))
+        if hasattr(self, 'folder_elements'): self.fit_folder_elements()   # the rows' heights follow the font size
 
     def event(self, event):
         # Qt hands ApplicationPaletteChange to event(), never to changeEvent(); the panel sets its own palette, so it gets
@@ -1841,7 +1937,8 @@ class CreativeAgentDocker(DockWidget):
         if target and (target.get('bound') or ready_plan):
             name = os.path.basename(target.get('filename') or '') or target.get('name') or 'New painting'
             prefix = 'Painting target · ' if target.get('filename') or target.get('bound') else 'Target on start · '
-            self.workspace_label.setText(self.fontMetrics().elidedText(prefix + name, Qt.TextElideMode.ElideMiddle, max(100, self.width() - self.return_button.sizeHint().width() - 34)))
+            room = max(60, self.width() - self.return_button.sizeHint().width() - 34 - self.workspace_label.fontMetrics().horizontalAdvance(prefix))
+            self.workspace_label.setText(prefix + self.workspace_label.fontMetrics().elidedText(name, Qt.TextElideMode.ElideMiddle, room))   # the name, not the prefix, is cut
             details = target.get('filename') or name
             if not target.get('bound'): details += '\nThe conversation is not currently painting. Start Agent explicitly to work on this target.'
             if target.get('document_id') and canvas.get('document_id') != target['document_id']:
@@ -2204,7 +2301,8 @@ class CreativeAgentDocker(DockWidget):
     def show_folder(self, event):
         index = event.get('index') or {}
         self.folder_root = index.get('root', '')
-        self.folder_title.setText('<b>Project folder</b> · %s' % html.escape(index.get('name') or os.path.basename(self.folder_root)))
+        self.folder_title.setText('<b>%s</b>' % html.escape(index.get('name') or os.path.basename(self.folder_root)))
+        self.folder_title.setToolTip(self.text_tip([self.folder_root]) if self.folder_root else '')
         goal = index.get('goal')
         self.folder_goal.setText('Goal image: %s' % goal['name'] if goal else 'No goal image found: name it final_goal.png to set the layout.')
         self.clear_folder_masses(); self.show_folder_masses()          # never another folder's goal
@@ -2217,17 +2315,24 @@ class CreativeAgentDocker(DockWidget):
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
             item.setToolTip(self.text_tip([element['name']] + ([element['prompt']] if element.get('prompt') else [])))
             self.folder_elements.addItem(item)
-        self.folder_elements.blockSignals(False); self.folder_elements.setVisible(bool(elements))
+        self.folder_elements.blockSignals(False); self.fit_folder_elements()
         others, skipped = index.get('others') or [], index.get('skipped') or []
         plural = lambda n, word: '%d %s%s' % (n, word, '' if n == 1 else 's')
         limit = event.get('plan_limit')
         over = ' (the plan takes the first %d)' % limit if limit and len(elements) > limit else ''
-        parts = [plural(len(elements), 'element') + over] + ([plural(len(others), 'other image')] if others else []) + (['%d skipped' % len(skipped)] if skipped else [])
+        parts = [plural(len(elements), 'element image') + over] + ([plural(len(others), 'other image')] if others else []) + (['%d skipped' % len(skipped)] if skipped else [])
         self.folder_footer.setText(' · '.join(parts))
         tip = (['Other images (listed, not attached): ' + ', '.join(o['name'] for o in others)] if others else []) \
             + (['Skipped:'] + ['%s: %s' % (s['name'], s['reason']) for s in skipped] if skipped else [])
         self.folder_footer.setToolTip(self.text_tip(tip) if tip else '')
-        self.folder_card.show()
+        self.folder_card.show(); self.tabs.setTabVisible(self.folder_tab, True)
+
+    def fit_folder_elements(self):
+        """The element list shows every row (it never scrolls inside the Folder tab), and only until the plan lists them."""
+        count = self.folder_elements.count()
+        rows = sum(self.folder_elements.sizeHintForRow(i) for i in range(count))
+        self.folder_elements.setFixedHeight(rows + 2 * self.folder_elements.frameWidth() + 2 if count else 0)
+        self.folder_elements.setVisible(bool(count) and not (self.goal or {}).get('brief'))
 
     @staticmethod
     def text_tip(lines):
@@ -2267,7 +2372,7 @@ class CreativeAgentDocker(DockWidget):
             remove.setEnabled(not self.busy)
             remove.clicked.connect(lambda _checked=False, entry=ref: self.remove_reference(entry)); image_layout.addWidget(remove, 0, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
             self.reference_remove_buttons.append(remove); column.addWidget(thumbnail)
-            masses = self.mass_map_label(ref, 72, 42)
+            masses = self.mass_map_label(ref, 72)
             if masses: column.addWidget(masses)
             purpose = QPushButton(REFERENCE_CAPTIONS.get(ref.get('purpose') or 'general', 'General'))
             purpose.setObjectName('referencePurpose'); purpose.setFixedWidth(72)
@@ -2278,29 +2383,37 @@ class CreativeAgentDocker(DockWidget):
         self.attachment_row.addStretch()
         self.attachments.setVisible(bool(references))
 
-    def mass_map_label(self, reference, width, height, label=None):
-        """The reference's mass map (its big masses' boundaries, found by the companion) as a small picture with the
-        summary the painter reads as its tooltip, or None when it has none (yet)."""
-        found = reference.get('mass_map') or {}
-        picture = QPixmap(found.get('thumbnail') or '')
-        if picture.isNull():
+    def mass_map_label(self, reference, width, height=6, bar=None):
+        """The reference's big masses (found by the companion) as a flat bar of their colours, its tooltip the artist's
+        sentence, or None when it has none (yet). The painter's own summary is not shown: it is coordinates for the model."""
+        bar = bar or MassBar(height)
+        if not bar.set_mass_map(reference.get('mass_map'), reference.get('name') or ''):
             return None
-        label = label or QLabel()
-        label.setObjectName('massMap'); label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setPixmap(picture.scaled(width, height, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-        label.setToolTip(self.text_tip(['Mass map: the big masses the agent blocks in', found.get('summary') or '']))
-        label.setAccessibleName('Mass map of ' + (reference.get('name') or 'the reference'))
-        return label
+        if width: bar.setFixedWidth(width)
+        return bar
+
+    def folder_goal_reference(self):
+        return next((r for r in self.attached_references if r.get('source') == 'folder' and r.get('role') == 'reference'), None)
 
     def show_folder_masses(self):
-        goal = next((r for r in self.attached_references if r.get('source') == 'folder' and r.get('role') == 'reference'), None)
-        shown = goal is not None and self.mass_map_label(goal, 160, 90, self.folder_masses) is not None
+        goal = self.folder_goal_reference()
+        shown = goal is not None and self.mass_map_label(goal, 0, bar=self.folder_masses) is not None
         if not shown:
             self.clear_folder_masses()
         self.folder_masses.setVisible(shown)
+        overview = str(((goal or {}).get('mass_map') or {}).get('overview') or '') if shown else ''
+        self.folder_mass_text.setText(('Big colour masses: ' + overview) if overview else ''); self.folder_mass_text.setVisible(bool(overview))
+        path = (goal or {}).get('path') or ''
+        if path != getattr(self, 'folder_picture_path', None):
+            self.folder_picture_path = path
+            picture = thumbnail(path, self.folder_picture.size(), self.devicePixelRatioF()) if path else QPixmap()
+            self.folder_picture.setPixmap(picture); self.folder_picture.setVisible(not picture.isNull())
+            self.folder_picture.setAccessibleName('Goal image ' + (goal or {}).get('name', '') if not picture.isNull() else '')
 
     def clear_folder_masses(self):
-        self.folder_masses.clear(); self.folder_masses.setToolTip(''); self.folder_masses.hide()
+        self.folder_masses.clear(); self.folder_masses.hide()
+        self.folder_mass_text.setText(''); self.folder_mass_text.hide()
+        self.folder_picture.clear(); self.folder_picture.hide(); self.folder_picture_path = None
 
     def edit_reference(self, reference):
         dialog = ReferencePreview(self, reference, readonly=self.busy)
@@ -2418,6 +2531,8 @@ class CreativeAgentDocker(DockWidget):
         self.transcript.clear()
         self.current_reply = None; self.reply_open = False
         self.folder_card.hide(); self.folder_guesses = {}; self.folder_elements.clear(); self.clear_folder_masses()
+        self.plan_steps.show_steps([]); self.tabs.setTabVisible(self.plan_tab, False); self.tabs.setTabVisible(self.folder_tab, False)
+        self.tabs.setCurrentIndex(self.chat_tab)
         self.goal = None; self.plan_bar.hide(); self.move_bar.hide(); self.current_move = None; self.question_id = None; self.question_controls = []; self.closeup_question_id = None; self.closeup_controls = []
         self.pending_references = []; self.attached_references = []; self.show_references()
         self.empty_state.show()
@@ -2453,7 +2568,16 @@ class CreativeAgentDocker(DockWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, 'canvas_button'): self.render_context()
-        if getattr(self, 'plan_steps', None) is not None and self.plan_steps.rows: self.plan_steps.fit_height()   # wrapped titles: a new height
+
+    def tab_changed(self, index):
+        if index == self.plan_tab: self.reveal_timer.start()
+        if index == self.folder_tab: self.fit_folder_elements()   # its rows' heights are known once it shows
+
+    def reveal_current_step(self):
+        """The Plan tab scrolled to the step that paints (QScrollArea.ensureWidgetVisible), once it is laid out."""
+        row = self.plan_steps.current_list_row()
+        if row is not None and not sip.isdeleted(row) and self.tabs.currentIndex() == self.plan_tab:
+            self.plan_scroll.ensureWidgetVisible(row, 0, 40)
 
 
     def app_data(self):
@@ -2795,7 +2919,15 @@ class CreativeAgentDocker(DockWidget):
             brief = self.goal.get('brief')
             self.render_ai_images()
             self.plan_bar.setVisible(bool(brief))
-            self.plan_steps.show_steps(event.get('plan_steps') if brief else [], self.busy)
+            step_rows = (event.get('plan_steps') or []) if brief else []
+            goal_reference = self.folder_goal_reference()
+            self.plan_steps.show_steps(step_rows, self.busy, root=getattr(self, 'folder_root', ''), goal_image=(goal_reference or {}).get('path'))
+            self.tabs.setTabVisible(self.plan_tab, bool(brief))
+            self.tabs.setTabText(self.plan_tab, 'Plan · %d' % len(brief['steps']) if brief and brief.get('steps') else 'Plan')
+            current_step = self.plan_steps.current_index()
+            if current_step is not None and current_step != self.revealed_step: self.reveal_timer.start()   # only when another step paints
+            self.revealed_step = current_step
+            self.fit_folder_elements()                         # the plan lists the elements from now on
             if self.current_move:                               # the card goes once its move is kept or undone, not before
                 shown = next((m for m in self.goal.get('moves') or [] if m.get('number') == self.current_move.get('number')), None)
                 if shown is not None and shown.get('status') != 'ready': self.move_bar.hide(); self.current_move = None
@@ -2808,10 +2940,12 @@ class CreativeAgentDocker(DockWidget):
                 # A project folder's plan: the step's element file (its scope) and how many steps are ticked.
                 source = current.get('scope', '') if re.search(r'\.(png|jpe?g|gif)$', current.get('scope', ''), re.I) else ''
                 done = len(self.goal.get('done_steps') or [])
-                self.plan_summary.setText(label + ' · ' + brief['title'] + ('\nStep %d of %d · %s' % (step + 1, len(brief['steps']), current['title']) if brief['steps'] else '')
-                                          + (' · from %s' % os.path.basename(source) if source else '') + (' · %d of %d done' % (done, len(brief['steps'])) if done else ''))
-                self.plan_summary.setToolTip('Step %d/%d: %s\n%d painting passes · %d tokens used' %
-                    (step + 1, len(brief['steps']), brief['steps'][step]['title'], self.goal.get('passes', 0), self.goal.get('tokens', 0)))
+                if step_rows:                                   # the steps say which step paints and how many are met
+                    self.plan_summary.setText(label + ' · ' + brief['title'])
+                else:
+                    self.plan_summary.setText(label + ' · ' + brief['title'] + ('\nStep %d of %d · %s' % (step + 1, len(brief['steps']), current['title']) if brief['steps'] else '')
+                                              + (' · from %s' % os.path.basename(source) if source else '') + (' · %d of %d done' % (done, len(brief['steps'])) if done else ''))
+                self.plan_summary.setToolTip('%d painting passes · %d tokens used' % (self.goal.get('passes', 0), self.goal.get('tokens', 0)))
             if not self.goal.get('question'):
                 for button in self.question_controls: button.setEnabled(False)
             self.update_controls()
@@ -3423,6 +3557,9 @@ class CreativeAgentDocker(DockWidget):
         self.execute_button.setVisible(can_start and not self.busy)
         self.execute_button.setEnabled(running and can_start and not self.busy and getattr(self, 'bridge_compatible', True))
         self.execute_button.setText('Resume' if self.goal and self.goal.get('status') == 'paused' else 'Start painting')
+        self.card_start.setVisible(can_start and not self.busy and self.plan_steps.current_index() is None)
+        self.card_start.setEnabled(self.execute_button.isEnabled()); self.card_start.setText(self.execute_button.text())
+        self.card_start.setAccessibleName('Resume painting the plan' if self.execute_button.text() == 'Resume' else 'Start painting the plan')
         self.compare_button.setVisible(bool(self.goal and self.goal.get('passes', 0)))
         placeholders = {'ask': 'Ask about your painting…', 'plan': 'Describe the result and what to preserve…', 'agent': 'Describe the next move, or type a correction to refine the last one…', 'autopilot': 'Give a direction for the next painting step…'}
         self.prompt.setPlaceholderText('Answer here, or choose an option above…' if self.goal and self.goal.get('question') else

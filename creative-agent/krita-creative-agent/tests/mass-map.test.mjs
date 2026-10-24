@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The mass map on attach (mass-map.ts): which references get one (the whole picture only), computed once per content
-// and kept on disk in the chat folder, its thumbnail for the panel and its summary for the painter. A fake plugin; the
+// and kept on disk in the chat folder, its colours and sentence for the artist (the panel) and its summary for the painter. A fake plugin; the
 // chat folder is a temporary one, removed after each test.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { wantsMassMap, ensureMassMaps, massContext, MASS_THUMB, MASS_MAP_VERSION } from '../src/mass-map.ts';
+import { wantsMassMap, ensureMassMaps, massContext, MASS_MAP_VERSION } from '../src/mass-map.ts';
 
 const canvas = { width: 1600, height: 1200 };
 const night = () => {
@@ -36,7 +36,7 @@ test('only the whole picture gets a mass map: the goal of a project folder, or a
   assert.equal(wantsMassMap(ref({ source: 'folder', role: 'asset' }), canvas), false, 'a folder element');
 });
 
-test('computed once per content, kept in the chat folder, read back by a resumed chat; summary and thumbnail', async () => {
+test('computed once per content, kept in the chat folder, read back by a resumed chat; summary, colours and sentence', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'mass-map-'));
   try {
     await writeFile(join(folder, 'goal.png'), 'goal image bytes');
@@ -61,9 +61,13 @@ test('computed once per content, kept in the chat folder, read back by a resumed
     assert.equal(changed, 1, 'the panel is told');
     assert.match(map.summary, /^\d+ masses/);
     assert.ok(map.masses >= 3 && map.ms >= 0 && map.peak_mb > 0);
-    const png = await readFile(map.thumbnail);
-    assert.deepEqual([...png.subarray(1, 4)].map(c => String.fromCharCode(c)).join(''), 'PNG');
-    assert.ok(Math.max(png.readUInt32BE(16), png.readUInt32BE(20)) <= MASS_THUMB, 'a small thumbnail');
+    assert.equal(map.thumbnail, undefined, 'no outline picture: it looked like a tracing');
+    assert.ok(map.colours.length >= 3 && map.colours.every(c => /^#[0-9a-f]{6}$/.test(c.colour) && c.share > 0 && c.share <= 1));
+    assert.ok(map.colours.every((c, i) => !i || c.share <= map.colours[i - 1].share), 'largest first');
+    assert.ok(Math.abs(map.colours.reduce((n, c) => n + c.share, 0) - 1) < 0.01, 'the bar\u2019s proportions');
+    assert.match(map.overview, /^Mostly [a-z ]+ (at the|on the|in the) [a-z ]+/, 'one plain sentence for the artist');
+    assert.doesNotMatch(map.overview, /[%\[\]\d]/, 'no numbers or coordinates');
+    assert.equal(map.version, MASS_MAP_VERSION);
     await ensureMassMaps(first, () => { changed++; });
     assert.equal(calls.length, 1, 'not again for the same reference');
     const resumed = host();
@@ -137,7 +141,7 @@ test('the cache is versioned: a mass map of another version counts as missing', 
     assert.equal(calls, 1, 'recomputed');
     const map = study.references[0].mass_map;
     assert.equal(map.version, MASS_MAP_VERSION);
-    assert.ok(map.thumbnail.endsWith(`.v${MASS_MAP_VERSION}.png`), map.thumbnail);
+    assert.ok(map.colours.length && map.overview, 'with the artist\u2019s colours and sentence');
     assert.ok((await readdir(join(folder, '.masses'))).every(name => name.includes(`.v${MASS_MAP_VERSION}.`)));
   } finally { await rm(folder, { recursive: true, force: true }); }
 });

@@ -238,13 +238,13 @@ test('no goal, an error, a look or a layer setting: nothing measured, never a fa
   assert.equal(look.calls.record.length, 0);
 });
 
-test('measure only, with the reason: no kept whole transfer to protect, a folder element step, an unclassified message', async () => {
+test('measure only, with the reason: no kept whole transfer to protect, the studio\u2019s reason (Reference colours off, an unclassified message)', async () => {
   const unprotected = setup({ frameOf: { goal, target: frame, protect: false } });
   assert.match(noteOf(await unprotected.result()).note, /kept because this chat has no kept whole-picture transfer of the goal/);
   assert.equal(unprotected.calls.undo.length, 0); assert.equal(unprotected.calls.record[0].status, 'worse_kept');
-  const element = setup({ active: 'measure', why: 'this move paints a folder element from its own image' });
-  assert.match(noteOf(await element.result()).note, /kept because this move paints a folder element from its own image/);
-  assert.equal(element.calls.undo.length, 0);
+  const unclassified = setup({ active: 'measure', why: 'the artist\u2019s message could not be classified' });
+  assert.match(noteOf(await unclassified.result()).note, /kept because the artist\u2019s message could not be classified/);
+  assert.equal(unclassified.calls.undo.length, 0);
   const layer = setup();
   await layer.result('paint_batch', { actions: [{ tool: 'paint_pass', arguments: {} }, { tool: 'set_layer', arguments: {} }] });
   assert.equal(layer.calls.undo.length, 0); assert.equal(layer.calls.record[0].exempt, 'layer_settings');

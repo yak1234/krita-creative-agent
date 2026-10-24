@@ -3,9 +3,10 @@
 // clearly less like the goal is undone through the pass review, as Luna's undo, and the painter is told what got worse
 // and where. The cap is per move and shared with Luna review (UNDO_CAP undos in all), then the move stops for the artist.
 // Measured, never undone: accents, colour transfers, layer settings, a departure the artist asked for; and every batch
-// when the studio says measure only (Reference colours off, a folder element step, a message Luna could not classify)
-// or the goal has no kept whole-picture transfer to protect (frame.protect). Runs before Luna review, which skips a
-// batch this undid or capped (host_undone).
+// when the studio says measure only (Reference colours off, a message Luna could not classify) or the goal has no kept
+// whole-picture transfer to protect (frame.protect). A project folder's element step is judged like any other batch once
+// its goal is underpainted (the artist, 2026-10-23). Runs before Luna review, which skips a batch this undid or capped
+// (host_undone).
 // A shipped Pi extension registered inline (src/extensions.mjs). It knows the studio only through LikenessHost.
 import type { ExtensionAPI, ToolResultEvent, ToolResultEventResult } from '@earendil-works/pi-coding-agent';
 import type { BatchPass, Undone } from './luna-review.ts';

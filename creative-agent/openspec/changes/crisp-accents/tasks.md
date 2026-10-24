@@ -28,5 +28,11 @@ phrases decide first (additions, recolouring, "make it ...", atmosphere, grade, 
 classifies the message (any language); with Luna off or unanswered the move is measured only. About 10-25 ms a batch
 (one plugin call of about 5-9 ms when the view before is cached).
 
+## 2b. Plan shape and typed-stroke cap (approved 2026-10-23, decisions 9-11) — branch agent/plan-shape
+- [x] 2b.1 Default folder plan: underpainting, accents, then ask the artist; element steps only when asked (by name adds the step)
+- [x] 2b.2 Folder element steps judged against the goal (undone when clearly worse once the goal is underpainted)
+- [x] 2b.3 Typed strokes capped after a kept whole underpainting (12 marks, 2% of the long side) unless the artist asks for hand-painted work; prompt and skills
+- [ ] 2b.4 Live check on a copy of the New Moscow folder
+
 ## 3. Release
 - [ ] 3.1 Reviews, merge, CI, publish, package, install; live check on a copy of the New Moscow folder

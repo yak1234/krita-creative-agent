@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, truncate, symlink, readdir, readFile, stat, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scanFolder, FOLDER_LIMITS, elementGuess } from '../src/project-folder.ts';
+import { scanFolder, FOLDER_LIMITS, elementGuess, defaultFolderSteps, elementStep, folderStepKind, elementsNamed } from '../src/project-folder.ts';
 
 /** A PNG signature and IHDR: enough for imageInfo (files.mjs) to read the size. */
 function tinyPng(width = 4, height = 3) {
@@ -215,4 +215,36 @@ test('a subfolder that cannot be read is listed as skipped, the scan goes on', a
     assert.deepEqual(index.elements.map(e => e.name), ['01-sky.png']);
     assert.match(index.skipped.find(s => s.name === 'locked')?.reason ?? '', /could not be read/);
   } finally { await chmod(locked, 0o755).catch(() => {}); await rm(root, { recursive: true, force: true }); }
+});
+
+// Plan shape (the artist, 2026-10-23): underpainting, accents, then the artist says what to refine; element steps only on request.
+test('the default folder plan is the underpainting, then accents on the whole picture; no element steps', () => {
+  const steps = defaultFolderSteps();
+  assert.deepEqual(steps.map(s => [s.title, s.scope]), [['Underpainting from the goal image', 'whole composition'], ['Accents', 'whole composition']]);
+  assert.match(steps[1].done_when, /lights/i); assert.match(steps[1].done_when, /darks/i);
+  assert.deepEqual(steps.map(folderStepKind), ['underpainting', 'accents']);
+  const towers = elementStep('assets/04-kremlin-towers.png', 'Kremlin towers');
+  assert.deepEqual([towers.title, towers.scope, folderStepKind(towers)], ['Kremlin towers', 'assets/04-kremlin-towers.png', 'element']);
+  assert.equal(folderStepKind({ title: 'Soften the sky', scope: 'whole composition' }), 'whole', 'an artist\u2019s own whole-picture step is neither');
+  assert.equal(folderStepKind({ title: 'Block-in of the whole composition' }), 'underpainting');
+  assert.equal(folderStepKind({ title: 'Lights and accents', scope: 'whole composition' }), 'accents');
+});
+
+test('elementsNamed: the elements an artist\u2019s message names, by name, file or head word, in the folder\u2019s order', () => {
+  const elements = [{ name: 'assets/01-moonlit-sky.png', guess: 'Moonlit sky' }, { name: 'assets/02-historic-buildings.png', guess: 'Historic buildings' },
+    { name: 'assets/04-kremlin-towers.png', guess: 'Kremlin towers' }];
+  assert.deepEqual(elementsNamed('Now refine the Kremlin towers, please.', elements), ['assets/04-kremlin-towers.png']);
+  assert.deepEqual(elementsNamed('the towers and the sky need more', elements), ['assets/01-moonlit-sky.png', 'assets/04-kremlin-towers.png']);
+  assert.deepEqual(elementsNamed('Paint 02-historic-buildings.png next', elements), ['assets/02-historic-buildings.png']);
+  assert.deepEqual(elementsNamed('the tower on the left', elements), ['assets/04-kremlin-towers.png'], 'singular of the head word');
+  assert.deepEqual(elementsNamed('Looks great, keep going.', elements), []);
+  assert.deepEqual(elementsNamed('skyline', elements), [], 'whole words only');
+  assert.deepEqual(elementsNamed('', elements), []);
+  // Review B1: a negated or passing mention names nothing.
+  const more = [...elements, { name: 'assets/05-street-light.png', guess: 'Street light' }, { name: 'assets/06-buildings-left.png', guess: 'Buildings on the left' }];
+  for (const text of ['don\u2019t paint the sky', 'leave the towers alone', 'the light is too harsh', 'the left side is too dark', 'Do not touch the Kremlin towers.'])
+    assert.deepEqual(elementsNamed(text, more), [], text);
+  assert.deepEqual(elementsNamed('work on the Kremlin towers', more), ['assets/04-kremlin-towers.png']);
+  assert.deepEqual(elementsNamed('the sky looks too cold', more), ['assets/01-moonlit-sky.png']);
+  assert.deepEqual(elementsNamed('leave the sky alone, refine the street light', more), ['assets/05-street-light.png'], 'each mention decides in its own clause');
 });

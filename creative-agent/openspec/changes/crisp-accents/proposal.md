@@ -102,6 +102,34 @@ tracing; accents go on their own layer.
    reference's pixels is placed on the canvas. Each call is one reversible pass: one Accents group of baked layers in
    the move's group (no live filter masks, so nothing recomputes on refresh). Material stamping stays its own tool.
 
+## Decided by the artist after a live New Moscow chat (2026-10-23)
+
+After an excellent underpainting, the folder plan's element steps made the painter repaint each element by hand (typed
+`paint_batch` strokes, `stamp_material`): blobs, "hard graphic", "mechanical stripes". The goal likeness got worse
+(ΔE 0.6 → 0.7) and was never undone, because element steps were measure-only. The artist approved three changes:
+
+9. **The default folder plan is underpainting, then accents, then the artist decides.** Step 1 is the whole-picture
+   underpainting from the goal image, step 2 is `paint_accents` on the whole picture (lights, darks, detail), and then
+   the host asks the artist what to refine next, naming the elements not yet done. An element's step is added only when
+   the artist asks for it, by name (the host adds the step and paints it, since the artist asked) or by adding the step.
+   The element images stay attached as references.
+10. **Element steps are judged against the goal.** The "folder element steps are measure-only" exemption is gone. Once a
+    kept whole underpainting of the goal exists, an element step's batch that makes the canvas clearly less like the goal
+    is undone like any other. Departures the artist asked for and accents stay exempt. With no goal underpainting yet,
+    an element step is measured only.
+11. **Typed strokes are capped after the underpainting.** Once the canvas has a kept whole-picture transfer, an Agent
+    move's typed-coordinate call (`paint_batch` summed over its actions, `paint_pass`, `painting_toolbox` strokes and
+    shapes, `paint_contours`, `stamp_material` dabs) is refused before it paints if it has more than **12 marks** or a
+    mark wider than **2% of the canvas's long side**. `paint_recipe` and toolbox flood fills, clears and gradients
+    (broad coverage) are refused too. The cap lifts while the artist's latest typed message asks for hand-painted work
+    ("hand-paint", "by hand", "freehand", "your own strokes"); Keep, retry and plan steps inherit that answer. The
+    refusal points to `paint_accents` or to asking the artist.
+
+    Why these caps: 12 marks is a handful of corrections (a glint, a post, a window edge), well below the 4-8 action
+    batches of 20-256 strokes that repainted elements. 2% is a detail brush (120 px on 6000 px, 20 px on 1024 px). The
+    blobs and stripes came from brushes several times wider. Fills, filters, layers, transfers and accents are not
+    typed strokes, and the goal-likeness check still judges them.
+
 ## My calls (the artist can overrule)
 
 - **Kept**: hand-placed guide lines and perspective in `draw_guide` (no reference tracing), only when the artist asks,

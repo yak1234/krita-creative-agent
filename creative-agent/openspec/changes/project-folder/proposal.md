@@ -31,7 +31,8 @@ and finish.
    guide when that element is done.
 2. **Project folder.** The artist chooses a folder in the panel; the agent reads it and shows what it found.
 3. **Plan, then paint, in Agent mode.** The agent proposes an ordered plan of moves, one element per move; the artist
-   approves, edits or trims it; only then does painting start.
+   approves, edits or trims it; only then does painting start. (Amended 2026-10-23, crisp-accents decision 9: the plan
+   is now the underpainting, then accents, then the artist decides; element steps come only when the artist asks.)
 4. **Resume.** The plan and a short log live in the folder as Markdown, so the work continues another day.
 
 ## Non-goals

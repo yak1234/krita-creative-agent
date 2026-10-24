@@ -256,7 +256,7 @@ export function briefFromPlan(plan: Pick<Plan, 'title' | 'steps'>, brief?: Brief
       ...(scope ? { scope } : {}), ...(mine?.checks?.length ? { checks: mine.checks } : {}) };
   });
   return { title: (brief?.title ?? plan.title ?? 'Project folder plan').slice(0, 200),
-    objective: brief?.objective ?? 'Paint the folder’s elements one move each, as PLAN.md lists them.',
+    objective: brief?.objective ?? 'Paint the folder’s plan one move per step, as PLAN.md lists it.',
     requirements: brief?.requirements ?? [], freedom: brief?.freedom ?? [],
     completion: brief?.completion?.length ? brief.completion : ['Every step of PLAN.md is painted and ticked.'], steps };
 }

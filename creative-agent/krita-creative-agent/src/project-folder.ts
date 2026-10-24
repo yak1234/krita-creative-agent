@@ -224,3 +224,64 @@ export async function readFolderText(root: string, name: string, max = 4000): Pr
   const text = (await readHead(path, Math.min(FOLDER_LIMITS.textBytes, max * 4))).toString('utf8');
   return text.slice(0, max);
 }
+
+// Plan shape (the artist, 2026-10-23, after a live New Moscow chat): after an excellent underpainting, one step per
+// element made the painter repaint each element by hand (typed strokes, stamps), which read as blobs, "hard graphic" and
+// "mechanical stripes" and moved the canvas away from the goal. So a folder plan is the whole-picture underpainting,
+// then accents on the whole picture, and then the artist says what to refine. An element's step is added only when the
+// artist asks for it (by name, or by adding the step); the element images stay attached as references.
+export type FolderStep = { title: string; done_when: string; scope: string };
+export type FolderStepKind = 'underpainting' | 'accents' | 'element' | 'whole';
+export const UNDERPAINTING_STEP = 'Underpainting from the goal image';
+export const ACCENTS_STEP = 'Accents';
+const WHOLE = 'whole composition';
+
+/** The plan a folder starts with: the underpainting from the goal image, then accents on the whole picture. */
+export function defaultFolderSteps(): FolderStep[] {
+  return [
+    { title: UNDERPAINTING_STEP, done_when: 'The goal image’s colours and light are laid over the whole canvas, every element where the goal image has it.', scope: WHOLE },
+    { title: ACCENTS_STEP, done_when: 'The lights, darks and fine detail the goal image shows are crisp on the whole picture, in the underpainting’s own paint.', scope: WHOLE },
+  ];
+}
+
+/** An element's step, added when the artist asks for that element: its scope is the element's file. */
+export function elementStep(name: string, guess: string): FolderStep {
+  return { title: guess.slice(0, 200), done_when: `${guess} is refined in its place as the goal image shows it, its look from ${basename(name)}.`, scope: name };
+}
+
+/** What a folder plan step paints: an element (its scope is an image), accents, the underpainting, or another whole step. */
+export function folderStepKind(step: { title: string; scope?: string }): FolderStepKind {
+  if (step.scope && IMAGE_TYPES.has(extname(step.scope.trim()).toLowerCase())) return 'element';
+  if (/\baccents?\b/i.test(step.title)) return 'accents';
+  if (/\bunderpaint|\bblock[- ]?in\b/i.test(step.title)) return 'underpainting';
+  return 'whole';
+}
+
+const fold = (text: string) => text.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[‘’]/g, "'");
+const words = (text: string) => fold(text).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Last words too general to name an element alone ("the light is too harsh" is not "Street light"). */
+const GENERIC = new Set(['light', 'lights', 'left', 'right', 'top', 'bottom', 'side', 'sides', 'area', 'areas', 'part', 'parts', 'thing', 'things',
+  'front', 'back', 'middle', 'centre', 'center', 'background', 'foreground', 'detail', 'details', 'colour', 'color', 'shadow', 'shadows']);
+/** A mention whose clause says not to work on it: "don't paint the sky", "leave the towers alone", "not the moon". */
+const NEGATED = /\b(?:no|not|don'?t|do not|never|without|stop|avoid|leave|skip|except|apart from|ignore)\b/;
+/** The elements a message names, in the folder's order: its name (the artist's or the guess), its file or file stem, or
+ * the name's last word (singular or plural, three letters or more, not a general word like "light" or "left": "the
+ * towers" names "Kremlin towers"). A mention counts only when its clause does not negate it (review B1). */
+export function elementsNamed(text: string, elements: readonly { name: string; guess: string }[]): string[] {
+  const said = fold(String(text ?? ''));
+  const asked = (phrase: string) => {
+    const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${phrase}(?![\\p{L}\\p{N}])`, 'gu');
+    for (const match of said.matchAll(pattern)) {
+      const before = said.slice(0, match.index), clause = before.slice(Math.max(...[...'.!?;,\n'].map(c => before.lastIndexOf(c))) + 1);
+      if (!NEGATED.test(clause)) return true;
+    }
+    return false;
+  };
+  return elements.filter(({ name, guess }) => {
+    const phrase = words(guess), head = phrase.at(-1);
+    const phrases = [phrase.map(escape).join('[^\\p{L}\\p{N}]+'), escape(fold(basename(name))), escape(fold(basename(name, extname(name))))];
+    if (head && head.length >= 3 && !/^\d+$/.test(head) && !GENERIC.has(head)) phrases.push(escape(head.replace(/s$/, '')) + 's?');
+    return phrases.some(p => p && asked(p));
+  }).map(e => e.name);
+}

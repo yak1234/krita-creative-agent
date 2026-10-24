@@ -20,7 +20,8 @@ them. With a goal reference the work goes:
 2. **When asked, a guides move (nothing painted):** what the artist named: the eye level, vanishing points, a few
    lines that place the big shapes. Then `finish_move`.
 3. **Your own strokes, one element per move:** with a guide, tighten it (`replace: true`), paint the element following
-   it, then `finish_guide` and `finish_move`. Make it crisp with `paint_accents` on its area.
+   it, then `finish_guide` and `finish_move`. Make it crisp with `paint_accents` on its area. After a whole-picture
+   underpainting the host allows at most 12 small marks a call unless the artist asks for hand-painted work.
 
 With no goal reference, guides give placement and your own strokes the colour, from the element reference or
 the artist's description.

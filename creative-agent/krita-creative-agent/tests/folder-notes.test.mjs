@@ -202,11 +202,18 @@ test('marks written by hand anywhere in a step line are read, and met or unmet b
   assert.deepEqual(planDifference(brief, edited, [1], { [keys[1]]: { met: 'artist' } }), ['Unmarked met: Moonlit sky', 'Marked met: Kremlin towers']);
 });
 
-test('PLAN.md names the painting its ticks belong to, and reads it back', () => {
+test('PLAN.md names the painting its ticks belong to, in its intent block, and reads it back', () => {
   const brief = { title: 'T', objective: 'o', requirements: [], freedom: [], completion: ['c'], steps: [{ title: 'Sky', done_when: 'd' }] };
-  const text = planText(brief, [0], { painting: { id: 'doc-42', name: 'Creative painting 18.kra' } });
-  assert.match(text, /^Painting: Creative painting 18\.kra · doc-42$/m);
-  assert.deepEqual(parsePlan(text).painting, { id: 'doc-42', name: 'Creative painting 18.kra' });
+  const painting = { id: 'canvas-42', name: 'Creative painting 18.kra', path: '/Users/a/My Paintings/Creative painting 18.kra' };
+  const text = planText(brief, [0], { painting });
+  assert.match(text, /^Painting: Creative painting 18\.kra$/m);
+  assert.match(text, /^Painting file: \/Users\/a\/My Paintings\/Creative painting 18\.kra$/m);
+  assert.match(text, /^Painting id: canvas-42$/m);
+  assert.ok(text.indexOf('Painting file:') < text.indexOf('## Moves'), 'in the intent block');
+  assert.deepEqual(parsePlan(text).painting, painting);
   assert.equal(parsePlan(planText(brief, [0])).painting, null, 'an older PLAN.md names none');
+  const unsaved = planText(brief, [], { painting: { id: 'canvas-7', name: 'Unnamed', path: null } });
+  assert.deepEqual(parsePlan(unsaved).painting, { id: 'canvas-7', name: 'Unnamed', path: null });
+  const later = text.replace('## Moves\n', '## Moves\n\nPainting file: /elsewhere.kra\n');
+  assert.equal(parsePlan(later).painting.path, painting.path, 'only the intent block names it');
 });
-

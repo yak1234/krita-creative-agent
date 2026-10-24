@@ -16,11 +16,13 @@ export type Brief = { title: string; objective: string; requirements: string[]; 
 export type StepMark = { skipped?: boolean; met?: 'artist' | 'good_enough'; redone?: number };
 export type StepMarks = Record<string, StepMark>;
 export type PlanStep = { title: string; file?: string; layer?: string; done: boolean; mark?: StepMark };
-/** painting: the painting its ticks and met marks belong to ("Painting: <name> · <document id>"), null in an older file. */
-export type PaintingIdentity = { id: string; name: string };
+/** painting: the painting its ticks and met marks belong to, from the intent block ("Painting:", "Painting file:" when it is
+ * saved, "Painting id:" its live id), null in an older file. A saved painting is known by its file across restarts; the
+ * live id (per Krita process) only tells an unsaved canvas. */
+export type PaintingIdentity = { id: string | null; name: string; path: string | null };
 export type Plan = { title: string | null; text: string; lines: string[]; steps: PlanStep[]; ticked: number[]; marks: StepMarks;
   painting: PaintingIdentity | null };
-const PAINTING_LINE = /^Painting: (.*) · ([A-Za-z0-9_.:-]{1,128})\s*$/m;
+const PAINTING_FIELD = /^Painting( file| id)?: (.+?)\s*$/;
 
 export const PLAN_FILE = 'PLAN.md';
 export const NOTES_FILE = 'NOTES.md';
@@ -82,7 +84,8 @@ function stepLine(step: Step, index: number, done: boolean, mark?: StepMark): st
 export function planText(brief: Brief, ticked: readonly number[], { goal, marks = {}, painting }: { goal?: string | null; marks?: StepMarks;
   painting?: PaintingIdentity | null } = {}): string {
   const intent = [plainLine(brief.objective), ...(goal ? [`Goal image: ${oneLine(goal)} (it decides the layout).`] : []),
-    ...(painting?.id ? [`Painting: ${oneLine(painting.name || 'painting').replace(/ · /g, ' - ')} · ${painting.id}`] : []),
+    ...(painting && (painting.id || painting.path) ? [`Painting: ${oneLine(painting.name || 'painting')}`,
+      ...(painting.path ? [`Painting file: ${oneLine(painting.path)}`] : []), ...(painting.id ? [`Painting id: ${oneLine(painting.id)}`] : [])] : []),
     ...brief.requirements.map(r => `- ${plainLine(r)}`)];
   const keys = stepKeys(brief.steps);
   return [`# Plan · ${oneLine(brief.title)}`, '', ...intent, '', '## Moves', '',
@@ -203,9 +206,15 @@ export function parsePlan(text: string): Plan {
   const title = /^#\s+(?:Plan\s*·\s*)?(.+)$/m.exec(text)?.[1]?.trim() ?? null;
   const keys = stepKeys(steps), marks: StepMarks = {};
   steps.forEach((step, i) => { if (step.mark) marks[keys[i]] = step.mark; });
-  const named = PAINTING_LINE.exec(text);
-  return { title, text, lines, steps, ticked: steps.flatMap((s, i) => s.done ? [i] : []), marks,
-    painting: named ? { id: named[2]!, name: named[1]!.trim() } : null };
+  // The painting's fields, from the intent block only (before "## Moves"): a step can never name it.
+  const fields: Record<string, string> = {};
+  for (const line of lines) {
+    if (/^#{2}\s/.test(line)) break;
+    const found = PAINTING_FIELD.exec(line);
+    if (found) fields[(found[1] ?? '').trim() || 'name'] = found[2]!;
+  }
+  const painting = fields.file || fields.id ? { id: fields.id ?? null, name: fields.name ?? 'painting', path: fields.file ?? null } : null;
+  return { title, text, lines, steps, ticked: steps.flatMap((s, i) => s.done ? [i] : []), marks, painting };
 }
 
 /** What changed between the agent's plan (and its ticks) and PLAN.md's lines, in words for the artist. */

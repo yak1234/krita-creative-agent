@@ -2476,7 +2476,8 @@ class CreativeAgentDocker(DockWidget):
 
     def hideEvent(self, event):
         QToolTip.hideText()                                    # no tooltip or command list outlives the hidden panel
-        if hasattr(self, 'slash_menu'): self.slash_menu.hide()
+        menu = getattr(self, 'slash_menu', None)
+        if menu is not None and not sip.isdeleted(menu): menu.hide()
         super().hideEvent(event)
 
     def update_elapsed(self):

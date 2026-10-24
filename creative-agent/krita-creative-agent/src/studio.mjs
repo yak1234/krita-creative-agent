@@ -42,7 +42,7 @@ import { scanFolder, readFolderText } from './project-folder.ts';
 import { ensureMassMaps } from './mass-map.ts';
 import { writePlan, appendNote, readPlan, parsePlan, planDifference, briefFromPlan, remapTicks, stepFile, stepKeys, layerName } from './folder-notes.ts';
 import { planStepControls, stepMarksContext, withStepIds, STEP_ID } from './plan-steps.ts';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, realpathSync } from 'node:fs';
 import { open as openFile } from 'node:fs/promises';
 
 const object = fields => Type.Object(fields, { additionalProperties: false });
@@ -1621,13 +1621,27 @@ export class StudioRuntime extends PaintingRuntime {
     const step = this.goal?.brief?.steps?.[this.goal.current_step ?? 0], file = step ? stepFile(step) : undefined;
     return references.filter(r => !(r.source === 'folder' && r.role === 'asset') || r.folder_name === file);
   }
-  /** The painting a folder plan's ticks belong to: the chat's target, else the canvas it looks at; null when unknown. */
+  /** The painting a folder plan's ticks belong to: the chat's target, else the canvas it looks at; null when none is known
+   * yet. Its saved file (real path) names it across restarts; its live id only for an unsaved canvas. */
   folderPainting() {
     const canvas = this.canvasContext?.canvas;
-    const id = this.study?.target_document_id ?? this.goal?.plan_target?.document_id ?? canvas?.document_id;
-    if (!id) return null;
-    const name = (canvas?.document_id === id ? (canvas.filename ? basename(canvas.filename) : canvas.name) : null) || this.study?.name || 'painting';
-    return {id:String(id), name:String(name)};
+    const id = this.study?.target_document_id ?? this.goal?.plan_target?.document_id ?? canvas?.document_id ?? null;
+    const own = canvas && (!id || canvas.document_id === id) ? canvas : null;
+    const file = (this.study ? this.store.resolvePainting(this.study) : null) || own?.filename || null;
+    if (!id && !file) return null;
+    let path = null;
+    if (file) { try { path = realpathSync(file); } catch { path = resolve(file); } }
+    return {id:id ? String(id) : null, name:String((file ? basename(file) : own?.name) || this.study?.name || 'painting'), path};
+  }
+  /** Whether PLAN.md's ticks are this painting's: the same file, or the same live id; an older PLAN.md naming none is
+   * trusted on a saved painting (the artist's own work) and not on a new, unsaved canvas. Null: no painting yet. */
+  folderPlanIsHere(plan) {
+    const here = this.folderPainting();
+    if (!here) return null;
+    if (!plan.painting) return !!here.path;
+    let theirs = plan.painting.path;
+    if (theirs) { try { theirs = realpathSync(theirs); } catch { /* moved or gone: compared as written */ } }
+    return !!((theirs && here.path && theirs === here.path) || (plan.painting.id && here.id && plan.painting.id === here.id));
   }
   /** On opening or resuming a folder: a new chat takes PLAN.md as its plan; a PLAN.md edited by hand is shown and asked about.
    * Its ticks and met marks count only on the painting PLAN.md names: on another (or an older file naming none) the plan
@@ -1643,7 +1657,7 @@ export class StudioRuntime extends PaintingRuntime {
       if (!Value.Check(briefSchema, brief)) return;
       this.goal.revisions ??= []; this.goal.revisions.push({revision:this.goal.revision,brief:null,at:stamp(),source:'folder'});
       this.goal.brief = brief; this.goal.locked_requirements = [...brief.requirements]; this.goal.revision++; this.goal.approved_revision = null;
-      const here = this.folderPainting(), same = !!(plan.painting && here && plan.painting.id === here.id);
+      const verdict = this.folderPlanIsHere(plan), same = verdict !== false;   // no painting yet: kept, decided when it is bound
       const progress = plan.ticked.length || Object.values(plan.marks).some(mark => mark.met || mark.redone);
       this.goal.status = 'ready';
       this.goal.done_steps = same ? plan.ticked.filter(i => i < brief.steps.length) : [];
@@ -1651,7 +1665,8 @@ export class StudioRuntime extends PaintingRuntime {
       this.goal.current_step = Math.min(this.firstOpenStep(), brief.steps.length - 1);
       this.goal.folder_plan_root = folder.root;                   // plan_text stays what this chat writes: the artist's file is backed up first
       if (!same && progress) {
-        this.emit({type:'action', seconds:0, message:`PLAN.md's ticks belong to another painting${plan.painting ? ` (${plan.painting.name})` : ''}: this painting starts at step 1. The old PLAN.md is kept as a backup.`});
+        this.emit({type:'action', seconds:0, message:plan.painting ? `PLAN.md's ticks belong to another painting (${plan.painting.name}): this painting starts at step 1. The old PLAN.md is kept as a backup.`
+          : 'PLAN.md\'s ticks are not for a new canvas: this painting starts at step 1. The old PLAN.md is kept as a backup.'});
         await this.syncFolderPlan();                              // rewritten without them; the old file backed up first
       } else { await this.persist(); this.publish(); }
     } else if (typeof folder.plan_text === 'string' && plan.text !== folder.plan_text) {

@@ -349,6 +349,21 @@ class OnnxRuntimeReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'shape worker'):
                 build_release.validate_shape_worker(pathlib.Path(shutil.which('node')), companion)
 
+    @unittest.skipUnless(shutil.which('node') and (REPO / 'creative-agent/krita-creative-agent/node_modules/.bin/esbuild').exists(),
+                         'needs node and npm ci in krita-creative-agent')
+    def test_the_bundled_sharpening_worker_loads_onnx_runtime_from_the_release_layout(self):
+        build_release = load_build_release()
+        root = REPO / 'creative-agent' / 'krita-creative-agent'
+        with tempfile.TemporaryDirectory(prefix='krita-agent-test-') as temp:
+            companion = pathlib.Path(temp) / 'companion'; (companion / 'src').mkdir(parents=True)
+            arch = 'arm64' if os.uname().machine == 'arm64' else 'x64'
+            build_release.bundle_shape_worker(root, companion, root / 'node_modules/.bin/esbuild', root / 'node_modules', arch)
+            build_release.bundle_upscale_worker(root, companion, root / 'node_modules/.bin/esbuild')
+            build_release.validate_upscale_worker(pathlib.Path(shutil.which('node')), companion)       # passes
+            next(companion.glob('node_modules/onnxruntime-node/bin/napi-*/darwin/*/onnxruntime_binding.node')).unlink()
+            with self.assertRaisesRegex(ValueError, 'sharpening worker'):
+                build_release.validate_upscale_worker(pathlib.Path(shutil.which('node')), companion)
+
     def test_the_release_names_the_architecture_its_node_reported(self):
         text = (REPO / 'creative-agent' / 'krita-creative-agent' / 'scripts' / 'build-release.py').read_text()
         self.assertNotIn("'architecture': 'any'", text)
@@ -359,6 +374,8 @@ class OnnxRuntimeReleaseTests(unittest.TestCase):
         text = (REPO / 'creative-agent' / 'krita-creative-agent' / 'scripts' / 'build-release.py').read_text()
         self.assertIn("src/shapes/worker.ts", text)
         self.assertIn("src/shapes-worker.mjs", text)
+        self.assertIn("src/upscale/worker.ts", text)
+        self.assertIn("src/upscale-worker.mjs", text)
         self.assertIn('--external:onnxruntime-node', text)
 
 
@@ -1167,6 +1184,17 @@ class DerivedNoticeTests(unittest.TestCase):
             self.assertEqual(found, [('@visioncortex/vtracer', '1.0.0-alpha.4', 'MIT OR Apache-2.0', 'https://github.com/visioncortex/vtracer'),
                                      ('pyodide', '1.2.3', 'MPL-2.0', 'github:pyodide/pyodide')])
         self.assertEqual(notices.companion_package_notices(pathlib.Path('/nonexistent')), [])
+
+    def test_models_downloaded_on_first_use_are_listed_from_the_release_with_their_licences(self):
+        with tempfile.TemporaryDirectory(prefix='krita-agent-test-') as root:
+            (pathlib.Path(root) / 'src').mkdir()
+            shutil.copy2(REPO / 'creative-agent/krita-creative-agent/src/downloaded-models.json', pathlib.Path(root) / 'src/downloaded-models.json')
+            text = '\n'.join(notices.downloaded_model_notices(pathlib.Path(root)))
+            self.assertIn('not inside the app', text)
+            self.assertIn('Real-ESRGAN x4plus (Sharpen goal): BSD-3-Clause, Copyright (c) 2021, Xintao Wang (https://github.com/xinntao/Real-ESRGAN)', text)
+            self.assertIn('SAM 2.1 base-plus (element shapes): Apache-2.0', text)
+            self.assertIn('pinned by SHA-256', text)
+        self.assertEqual(notices.downloaded_model_notices(pathlib.Path('/nonexistent')), [])
 
     def test_the_qt_notice_states_the_right_to_replace_and_the_recipe(self):
         with tempfile.TemporaryDirectory(prefix='krita-agent-test-') as root:

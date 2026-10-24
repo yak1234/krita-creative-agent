@@ -17,8 +17,13 @@ export const FOLDER_LIMITS: Readonly<FolderLimits> = Object.freeze({ images: 40,
 export type FolderImage = { name: string; path: string; width: number; height: number; mimeType: string;
   role: 'goal' | 'element' | 'other'; guess: string; number?: number; prompt?: string };
 export type FolderText = { name: string; path: string; kind: 'brief' | 'readme' | 'plan' | 'notes' | 'other'; chars: number };
-export type FolderIndex = { root: string; goal: FolderImage | null; elements: FolderImage[]; others: FolderImage[];
+/** goal_source: 'chosen' when the goal is the image the artist picked (the panel's Goal image list, a typed request, or
+ * PLAN.md's "Goal image:" line), 'name' when it is found by its name (final_goal.png, goal.jpg), none without a goal. */
+export type FolderIndex = { root: string; goal: FolderImage | null; goal_source?: 'chosen' | 'name'; elements: FolderImage[]; others: FolderImage[];
   texts: FolderText[]; prompts: Record<string, string>; skipped: { name: string; reason: string }[] };
+/** goal: the folder-relative name of the image the artist chose as the goal. One that is not an image of the folder (gone,
+ * renamed, or outside it) is ignored, and the goal is found by its name as before. */
+export type ScanOptions = { goal?: string | null };
 
 const IMAGE_TYPES = new Set(['.png', '.jpg', '.jpeg', '.gif']);
 const TEXT_TYPES = new Set(['.md', '.txt']);
@@ -125,7 +130,7 @@ type Candidate = { name: string; path: string; size: number };
  * file. Only regular files in `dir` and its direct subfolders are considered, and each must resolve inside `dir`.
  * Names are relative to the folder ('moscow-painting-assets/01-moonlit-sky.png'); paths are absolute and real.
  */
-export async function scanFolder(dir: string, limits: FolderLimits = FOLDER_LIMITS): Promise<FolderIndex> {
+export async function scanFolder(dir: string, limits: FolderLimits = FOLDER_LIMITS, { goal: chosen }: ScanOptions = {}): Promise<FolderIndex> {
   let root: string;
   try {
     root = await realpath(dir);
@@ -184,7 +189,8 @@ export async function scanFolder(dir: string, limits: FolderLimits = FOLDER_LIMI
     catch { skipped.push({ name: file.name, reason: 'a prompts file that is not valid JSON' }); }
   }
   const number = (name: string) => { const match = NUMBERED.exec(basename(name)); return match ? Number(match[1]) : null; };
-  const isGoal = (name: string) => GOAL.test(basename(name, extname(name)));
+  const picked = typeof chosen === 'string' && images.some(c => c.name === chosen) ? chosen : null;
+  const isGoal = (name: string) => picked ? name === picked : GOAL.test(basename(name, extname(name)));
   // Read order decides what the image cap keeps: the goal, then elements by number, then other images.
   const rank = (c: Candidate) => isGoal(c.name) ? -1 : number(c.name) ?? Number.MAX_SAFE_INTEGER;
   images.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
@@ -214,7 +220,39 @@ export async function scanFolder(dir: string, limits: FolderLimits = FOLDER_LIMI
     folderTexts.push({ name: text.name, path: text.path, kind: textKind(text.name), chars });
   }
   const promptsByName: Record<string, string> = Object.fromEntries([...promptText].map(([stem, prompt]) => [stem, promptSubject(prompt)]));
-  return { root, goal, elements, others, texts: folderTexts, prompts: promptsByName, skipped };
+  return { root, goal, ...(goal ? { goal_source: picked ? 'chosen' as const : 'name' as const } : {}), elements, others, texts: folderTexts, prompts: promptsByName, skipped };
+}
+
+/** The images the artist may choose as the goal, by folder-relative name: the goal, the elements in order, the others. */
+export function goalChoices(index: Pick<FolderIndex, 'goal' | 'elements' | 'others'>): string[] {
+  return [...(index.goal ? [index.goal.name] : []), ...index.elements.map(e => e.name), ...index.others.map(o => o.name)];
+}
+
+/** "use 05-modern-skyline.png as the goal", "make skies.png the goal image", "set the goal to …": the one folder image (by
+ * its name, file name or stem) a typed message makes the goal, or null. It needs a verb that chooses (use, choose, pick,
+ * take, make; set, switch, change … to) and the goal words closing the clause, so a painting instruction that only
+ * mentions the goal ("paint 03-tower.png as the goal shows it") chooses nothing; so does a negated request, or a slot that
+ * names no image or two. */
+export function goalNamed(text: string, images: readonly string[]): string | null {
+  const said = fold(String(text ?? ''));
+  const goal = '(?:the\\s+|my\\s+|our\\s+)?(?:new\\s+)?(?:goal|target)(?:\\s+(?:image|picture))?';
+  const end = '\\s*(?=[!?;,]|\\.(?:\\s|$)|$)';             // the clause ends there (a full stop inside a file name does not end it)
+  const forms = [
+    new RegExp(`\\b(?:use|choose|pick|take)\\s+(.+?)\\s+as\\s+${goal}${end}`, 'u'),
+    new RegExp(`\\bmake\\s+(.+?)\\s+(?:as\\s+)?${goal}${end}`, 'u'),
+    new RegExp(`\\b(?:set|switch|change)\\s+${goal}\\s+to\\s+(.+?)${end}`, 'u'),
+  ];
+  for (const form of forms) {
+    const found = form.exec(said);
+    if (!found) continue;
+    const before = said.slice(0, found.index), clause = before.slice(Math.max(-1, ...[...before.matchAll(/[.!?;,](?=\s|$)|\n/g)].map(m => m.index)) + 1);
+    if (NEGATED.test(clause)) return null;
+    const slot = found[1] ?? '';
+    const named = images.filter(name => [fold(name), fold(basename(name)), fold(basename(name, extname(name)))].filter(f => f.length >= 3)
+      .some(f => new RegExp(`(?<![\\p{L}\\p{N}._/-])${escape(f)}(?![\\p{L}\\p{N}_-]|\\.[\\p{L}])`, 'u').test(slot)));
+    return named.length === 1 ? named[0]! : null;
+  }
+  return null;
 }
 
 /** A text file of the folder (a brief, PLAN.md), read only if it resolves inside the folder; at most `max` characters. */

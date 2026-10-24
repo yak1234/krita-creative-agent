@@ -155,6 +155,18 @@ test('the goal maps onto the canvas as the whole transfer mapped it, else whole 
     'a transfer of an asset is not the goal');
 });
 
+test('a transfer made from the goal before it was sharpened maps onto the sharpened goal (the same picture, larger)', () => {
+  const canvas = { width: 6000, height: 4500 };
+  const sharpened = { id: 'goal', role: 'reference', purpose: 'composition', source: 'folder', width: 2309, height: 1732,
+    sharpened: { from: { sha256: 'old', width: 1448, height: 1086 } } };
+  const old = { reference_hash: 'old', recipe: { reference_id: 'goal', source: [10, 0, 1400, 1086], target: [0, 0, 6000, 4500] } };
+  const mapped = goalMapping({ references: [sharpened], transfers: [old], canvas });
+  assert.equal(mapped.from, 'transfer'); assert.deepEqual(mapped.target, [0, 0, 6000, 4500]);
+  assert.deepEqual(mapped.source, [16, 0, 2232, 1732], 'its source rect in the sharpened goal\u2019s pixels');
+  const fresh = { reference_hash: 'new', recipe: { reference_id: 'goal', source: [0, 0, 2309, 1732], target: [0, 0, 6000, 4500] } };
+  assert.deepEqual(goalMapping({ references: [sharpened], transfers: [fresh], canvas }).source, [0, 0, 2309, 1732], 'a transfer of the sharpened goal as it is');
+});
+
 test('the move line: likeness before and after, and what was undone', () => {
   assert.equal(likenessLine({ batches: 3, before: 6.04, after: 5.71, undone: 0, kept_worse: 0 }), 'Goal likeness: ΔE 6.0 → 5.7 over 3 batches');
   assert.equal(likenessLine({ batches: 7, before: 5.9, after: 6.1, undone: 2, kept_worse: 1, last_undone: 'darker than the goal, lower left' }),

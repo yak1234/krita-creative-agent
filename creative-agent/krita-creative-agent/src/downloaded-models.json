@@ -1,0 +1,11 @@
+{
+  "note": "The models the companion downloads on first use, after the artist agrees (never shipped in the app). Kept in step with shapes/model.ts SHAPES_MODEL and upscale/model.ts UPSCALE_MODEL by tests/upscale-model.test.mjs; the app's THIRD-PARTY-NOTICES.txt lists them from here.",
+  "models": [
+    { "name": "sam2.1-hiera-base-plus", "title": "SAM 2.1 base-plus (element shapes)", "licence": "Apache-2.0",
+      "copyright": "Copyright Meta Platforms, Inc. and affiliates", "source": "https://github.com/facebookresearch/sam2",
+      "download": "https://huggingface.co/onnx-community/sam2.1-hiera-base-plus-ONNX (ONNX export, revision bab18593f44e652f04cf18b60b3690f60e8996b0)" },
+    { "name": "real-esrgan-x4plus", "title": "Real-ESRGAN x4plus (Sharpen goal)", "licence": "BSD-3-Clause",
+      "copyright": "Copyright (c) 2021, Xintao Wang", "source": "https://github.com/xinntao/Real-ESRGAN",
+      "download": "Qualcomm AI Hub's ONNX export (https://huggingface.co/qualcomm/Real-ESRGAN-x4plus, release v0.65.0, real_esrgan_x4plus-onnx-float.zip)" }
+  ]
+}

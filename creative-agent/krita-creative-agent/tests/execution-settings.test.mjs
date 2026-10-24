@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { executionSettings, thinkingLevel } from '../src/execution-settings.mjs';
 import { StudioRuntime } from '../src/studio.mjs';
 test('execution defaults preserve one painter and capability-aware reasoning',()=>{
- assert.deepEqual(executionSettings(),{concurrency:1,reasoning:'auto',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,guides:true,reference_first:true,assets:'codex',ai_images:0,keep_screen_awake:false,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
+ assert.deepEqual(executionSettings(),{concurrency:1,reasoning:'auto',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,guides:true,reference_first:true,assets:'codex',ai_images:0,keep_screen_awake:false,sharpen_goal:'ask',decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
  assert.equal(thinkingLevel(executionSettings(),{reasoning:true}),'low');
  assert.equal(thinkingLevel(executionSettings({reasoning:'high'}),{reasoning:true}),'high');
  assert.equal(thinkingLevel(executionSettings({reasoning:'high'}),{reasoning:false}),'off');
@@ -27,7 +27,7 @@ test('settings are declared once: validation, defaults and the panel schema come
   if (setting.panel==='generic') assert.ok(setting.label && setting.accessible && setting.options.length>=2,setting.key+' can be built by the panel');
  }
  const schema=panelSchema();
- assert.deepEqual(schema.map(f=>f.key),['concurrency','move_size','merge_kept','guides','reference_first','assets','ai_images','keep_screen_awake','routing'],'reasoning is custom and native_craft hidden');
+ assert.deepEqual(schema.map(f=>f.key),['concurrency','move_size','merge_kept','guides','reference_first','assets','ai_images','keep_screen_awake','sharpen_goal','routing'],'reasoning is custom and native_craft hidden');
  assert.deepEqual(schema.find(f=>f.key==='merge_kept').options,[{value:true,label:'Merge kept passes'},{value:false,label:'Keep every pass'}]);
  assert.deepEqual(Object.keys(schema[0]).sort(),['accessible','control','key','label','note','options','tooltip']);
  assert.equal(schema.find(f=>f.key==='keep_screen_awake').control,'checkbox');assert.equal(schema[0].control,'combo');
@@ -59,4 +59,15 @@ test('Auto reasons at medium for the plan and the review and at low while painti
   session:{thinkingLevel:'low',setThinkingLevel(level){set.push(level);this.thinkingLevel=level;}}};
  for(const phase of ['agent','plan','plan','agent','ask'])StudioRuntime.prototype.applyPhaseReasoning.call(studio,phase);
  assert.deepEqual(set,['medium','low']);
+});
+
+test('Sharpen small goal images: Ask by default, Always or Never; one schema entry the panel builds from',async()=>{
+ const { panelSchema } = await import('../src/settings-schema.mjs');
+ assert.equal(executionSettings().sharpen_goal,'ask');
+ assert.equal(executionSettings({sharpen_goal:'never'}).sharpen_goal,'never');
+ assert.throws(()=>executionSettings({sharpen_goal:'sometimes'}),/Sharpen small goal images: choose Ask, Always or Never/);
+ const field=panelSchema().find(f=>f.key==='sharpen_goal');
+ assert.equal(field.label,'Sharpen small goal images');
+ assert.deepEqual(field.options.map(o=>o.value),['ask','always','never']);
+ assert.match(field.tooltip,/nothing is uploaded/i);
 });

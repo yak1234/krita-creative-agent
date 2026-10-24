@@ -9,6 +9,7 @@
 // rect on the goal lies inside it samples the close-up instead: the rect is mapped through the alignment into
 // close-up pixels, so the enlargement drops by the close-up's sharpness. The painter's context lists which areas have one.
 // Mechanism only: the studio gives the chat, the native call and the question (CloseupHost); this module imports no .mjs.
+import { REFERENCE_BYTES, REFERENCE_PIXELS, STEP_MAX, EDGE_SPACING_MAX, SURFACE_SPACING_MAX, SURFACE_LENGTH_MAX } from './reference-limits.ts';
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
@@ -48,12 +49,12 @@ export const MAX_ROTATION = 5;             // degrees: a turned close-up would p
 const ASPECT_TOLERANCE = 0.03;             // as the reference tools: the canvas's proportions make the whole picture
 const EDGE = 1;                            // close-up pixels a mapped corner may fall outside it
 const STRETCH = 0.03;                      // the mapped source's proportions may differ from the target's this much
-// What the transfer path reads (reference-tool.mjs): a reference of at most 5 MB, decoded at most four million pixels
-// (the plugin's decode_reference), rects of at most 8192 a side (the schemas). A close-up past these is not used.
-export const TRANSFER_BYTES = 5 * 1024 * 1024, TRANSFER_PIXELS = 4_000_000, TRANSFER_SIDE = 8192;
+// What the transfer path reads (reference-tool.mjs): a reference of at most REFERENCE_BYTES, decoded at most REFERENCE_PIXELS
+// (reference-limits.ts, the plugin's decode_reference), rects of at most 8192 a side (the schemas). A close-up past these is not used.
+export const TRANSFER_BYTES = REFERENCE_BYTES, TRANSFER_PIXELS = REFERENCE_PIXELS, TRANSFER_SIDE = 8192;
 // Recipe sizes in source pixels, with their schema ranges: they follow the source into the close-up.
-const SOURCE_SIZES: Record<string, [number, number]> = { spacing: [0.75, 16], length: [2, 200] };
-const SURFACE_SPACING: [number, number] = [1, 32];
+const SOURCE_SIZES: Record<string, [number, number]> = { spacing: [0.75, EDGE_SPACING_MAX], length: [2, SURFACE_LENGTH_MAX] };
+const SURFACE_SPACING: [number, number] = [1, SURFACE_SPACING_MAX];
 
 const aspect = (w = 0, h = 1) => w / h;
 const sameShape = (a: { width?: number; height?: number }, b: { width: number; height: number }) =>
@@ -147,7 +148,7 @@ function moveRecipe<T extends Record<string, unknown>>(recipe: T, source: Rect, 
   }
   if (Array.isArray(recipe.steps)) {
     const steps = (recipe.steps as number[]).map(v => round(v * k, 2));
-    if (steps.some(v => v > 64) || !(steps[0]! > steps[1]! && steps[1]! > steps[2]!)) return null;
+    if (steps.some(v => v > STEP_MAX) || !(steps[0]! > steps[1]! && steps[1]! > steps[2]!)) return null;
     out.steps = steps;
   }
   for (const [name, [low, high]] of Object.entries({ ...SOURCE_SIZES, ...(recipe.mode === 'surface' ? { spacing: SURFACE_SPACING } : {}) })) {

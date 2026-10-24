@@ -51,17 +51,34 @@ class TraceReferenceTests(unittest.TestCase):
         self.assertIn('max_side', out[2]['error'])
         self.assertIn('decode', out[3]['error'])
 
-    def test_the_reference_tools_decode_is_unchanged(self):
+    def test_the_reference_tools_decode_takes_a_goal_sharpened_4x_and_refuses_more_from_the_header(self):
         out = run('''
-data = png(2100, 2000)
-try:
-    r.decode_reference({'image_base64': base64.b64encode(data).decode(), 'sha256': hashlib.sha256(data).hexdigest()})
-    print(json.dumps('decoded'))
-except ValueError as error:
-    print(json.dumps(str(error)))
+import struct, zlib
+def header_only(w, h):     # a PNG that declares w x h and holds nothing: refused before any decode
+    body = struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)
+    return b'\\x89PNG\\r\\n\\x1a\\n' + struct.pack('>I', 13) + b'IHDR' + body + struct.pack('>I', zlib.crc32(b'IHDR' + body))
+out = []
+for data in (png(2100, 2000), header_only(6000, 5000)):
+    try:
+        got = r.decode_reference({'image_base64': base64.b64encode(data).decode(), 'sha256': hashlib.sha256(data).hexdigest()})
+        out.append([got['width'], got['height']])
+    except ValueError as error:
+        out.append(str(error))
+print(json.dumps(out))
 ''')
-        self.assertIn('four million pixels', out, 'its own limit stays')
+        self.assertEqual(out[0], [2100, 2000], 'over the old four million pixels: a sharpened goal is read whole')
+        self.assertIn('at most 26 million pixels', out[1], 'more than REFERENCE_PIXELS is refused from its header')
 
+    def test_every_reference_path_takes_the_same_file_size_and_the_bridge_carries_it(self):
+        import re
+        out = run('''
+print(json.dumps([r.REFERENCE_FILE_BYTES, r.REFERENCE_ENCODED]))
+''')
+        self.assertEqual(out[0], 64 * 1024 * 1024)
+        align = int(eval(re.search(r'^MAX_FILE = (.+?)\s+#', (PLUGIN / 'closeup_align.py').read_text(), re.M).group(1)))
+        self.assertEqual(align, out[0], 'close-up alignment reads the same goal')
+        body = int(eval(re.search(r'^MAX_BODY_BYTES = (.+?)\s+#', (PLUGIN / '__init__.py').read_text(), re.M).group(1)))
+        self.assertGreater(body, out[1] + 1024 * 1024, 'a whole reference in base64 fits one bridge request')
 
 if __name__ == '__main__':
     unittest.main()

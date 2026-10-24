@@ -1,4 +1,7 @@
 // @ts-check
+import { PLUGIN_DECODE_PIXELS, REFERENCE_MB, STEP_MAX } from './reference-limits.ts';
+import { decodeRgba, pngSize } from './png-rgba.ts';
+import { goalSourceFile, staleGoalSource } from './goal-sharpen.ts';
 import { isPaintingMode } from './modes.mjs';
 import {createHash} from 'node:crypto';
 import {mkdir,readFile,writeFile,rename,readdir,stat} from 'node:fs/promises';
@@ -7,7 +10,7 @@ import { defineTool } from '@earendil-works/pi-coding-agent';
 import {Type} from 'typebox';
 import {containedFile,imageContent} from './files.mjs';
 import {scopePlan,loadAreaMask,scopedShare,chipLine} from './paint-only-here.ts';
-import {referenceSchema,edgeSchema,surfaceSchema,generateReferencePlan,generateEdgePlan,generateSurfacePlan,estimateReferenceStrokes,DEFAULT_STEPS,REFERENCE_GENERATOR_VERSION} from './reference-generator.mjs';
+import {referenceSchema,edgeSchema,surfaceSchema,generateReferencePlan,generateEdgePlan,generateSurfacePlan,analysisCopy,estimateReferenceStrokes,DEFAULT_STEPS,REFERENCE_GENERATOR_VERSION} from './reference-generator.mjs';
 // Strokes per native call. Each call re-reads the canvas and journals its receipt; at 128 that
 // overhead was ~80% of a 157k-stroke job. The plugin accepts up to 1024 per pass.
 export const REFERENCE_BATCH=1024;
@@ -94,8 +97,8 @@ export const AGENT_MOVE_STROKES=40000;
 export function fitStepsToBudget(recipe,budget){
  const from=recipe.steps??DEFAULT_STEPS,strokes=estimateReferenceStrokes({...recipe,steps:from});
  if(strokes<=budget)return null;
- const k=Math.sqrt(strokes/budget),steps=from.map(s=>Math.min(64,Math.round(s*k*100)/100));
- for(let i=1;i<steps.length;i++)if(steps[i]>=steps[i-1])steps[i]=Math.round(steps[i-1]*50)/100;   // still coarse to fine at the 64 px cap
+ const k=Math.sqrt(strokes/budget),steps=from.map(s=>Math.min(STEP_MAX,Math.round(s*k*100)/100));
+ for(let i=1;i<steps.length;i++)if(steps[i]>=steps[i-1])steps[i]=Math.round(steps[i-1]*50)/100;   // still coarse to fine at the STEP_MAX cap
  return {recipe:{...recipe,steps},from,strokes,budget:Math.round(budget)};
 }
 // The first transfer on a fresh canvas is the underpainting of the whole picture. A traced Great Wave
@@ -133,9 +136,10 @@ export function groundStops(pixels,source){
  return [{offset:0,color:bands[0]},...bands.map((color,b)=>({offset:Math.round((b+.5)/GROUND_BANDS*1000)/1000,color})),{offset:1,color:bands.at(-1)}];
 }
 // A part keeps its original's size, mostly transparent: it may be as large as any attached reference (12 MB).
-async function reference(runtime,id){const ref=runtime.study.references.find(r=>r.id===id);if(!ref)throw new Error('Use an attached reference ID.');const file=await containedFile(runtime.study.directory,ref.path),limit=ref.part_kind==='part'?12:5;if((await stat(file)).size>limit*1024*1024)throw new Error('Use a reference smaller than '+limit+' MB for native reconstruction.');const data=await readFile(file);return {data,sha256:hash(data)};}
+// jobHash: a job begun on the goal before it was sharpened resumes on that picture (goal-sharpen.ts goalSourceFile).
+async function reference(runtime,id,jobHash){const ref=runtime.study.references.find(r=>r.id===id);if(!ref)throw new Error('Use an attached reference ID.');const file=await containedFile(runtime.study.directory,goalSourceFile(ref,jobHash)),limit=REFERENCE_MB;if((await stat(file)).size>limit*1024*1024)throw new Error('Use a reference smaller than '+limit+' MB for native reconstruction.');const data=await readFile(file);return {data,sha256:hash(data)};}
 // The largest reference the plugin's finders take (find_accents): a full-size goal image.
-export const TRACE_REFERENCE_MB=12;
+export const TRACE_REFERENCE_MB=REFERENCE_MB;
 // paint_accents' finder (accents-tool.ts): the plugin's find_accents reads the file as it is (same size limit as tracing)
 // and sends back only the accents, in its listed pixels.
 export async function findReferenceAccents(runtime,{reference_id,...request}){
@@ -158,6 +162,9 @@ export function referenceTools(runtime,executePass,fillRegion){
  // The stroke plan is never stored: it follows from the recipe, the reference pixels and the canvas
  // size, so a resume rebuilds it and checks it against plan_hash. Stored plans were 25-37 MB a job.
  async function decode(source){
+  // A large plain PNG (a goal sharpened 4x) is read here: the plugin would hold it on Krita's GUI thread and send it back as base64.
+  const declared=pngSize(source.data);
+  if(declared&&declared.width*declared.height>PLUGIN_DECODE_PIXELS){const own=decodeRgba(source.data);if(own)return own;}
   const decoded=await runtime.callNative('decode_reference',{image_base64:source.data.toString('base64'),sha256:source.sha256});
   if(decoded.sha256!==source.sha256)throw new Error('Decoded reference identity differs.');
   return {width:decoded.width,height:decoded.height,data:Buffer.from(decoded.rgba_base64,'base64')};
@@ -165,7 +172,8 @@ export function referenceTools(runtime,executePass,fillRegion){
  // A job inside a Paint only here area keeps only the dabs centred inside it, read from the job's own area: a resume
  // rebuilds the same plan whatever the chat's area is now.
  const buildPlan=async(recipe,pixels,canvas,inside)=>{
-  const plan=({edges:generateEdgePlan,surface:generateSurfacePlan}[recipe.mode]??generateReferencePlan)(recipe,pixels,{width:canvas.width,height:canvas.height});
+  const analysed=analysisCopy(recipe,pixels);   // edges and surface: a very large crop is read reduced (reference-generator.mjs)
+  const plan=({edges:generateEdgePlan,surface:generateSurfacePlan}[recipe.mode]??generateReferencePlan)(analysed.recipe,analysed.image,{width:canvas.width,height:canvas.height});
   return inside?scopePlan(plan,await loadAreaMask(inside,runtime.study.directory)):plan;
  };
  async function start(id,recipe,signal){
@@ -175,6 +183,10 @@ export function referenceTools(runtime,executePass,fillRegion){
   // confirmed one, it samples the goal and the close-up is shown to them beside the run.
   const asked=recipe,routed=await runtime.closeups?.route(recipe);
   if(routed)recipe=routed.recipe;
+  // A source rect in the goal's pixels from before it was sharpened (the whole old picture, or one an earlier transfer
+  // used) is scaled to the sharpened pixels; the job records what was asked.
+  {const goalRef=runtime.study.references.find(r=>r.id===recipe.reference_id),scaled=goalRef?.sharpened?staleGoalSource(recipe.source,goalRef,await jobs()):null;
+   if(scaled)recipe={...recipe,source:scaled};}
   const source=await reference(runtime,recipe.reference_id);
   const observation=await runtime.callNative('observe');runtime.decisionObservation=observation;
   const pixels=await decode(source);
@@ -207,7 +219,7 @@ export function referenceTools(runtime,executePass,fillRegion){
   allowed(runtime);
   if(job.version!==REFERENCE_GENERATOR_VERSION)throw new Error('This reference job uses a different generator version. Keep its existing artwork and start a new job.');
   if(!sameScope(job,runtime))throw new Error('The plan changed. Reference jobs must finish within their original plan.');
-  const source=await reference(runtime,job.recipe.reference_id);if(source.sha256!==job.reference_hash)throw new Error('The reference changed; this job cannot be resumed.');
+  const source=await reference(runtime,job.recipe.reference_id,job.reference_hash);if(source.sha256!==job.reference_hash)throw new Error('The reference changed; this job cannot be resumed.');
   const save=()=>atomic(path(job.id),job);
   const accept=(result,pending)=>{if(result.error||result.status==='partial'||!result.revision||!result.layer_id)throw new Error('This chunk has an uncertain outcome. Inspect and recover it; do not repeat its strokes.');job.layer_id=result.layer_id;job.last_revision=result.revision;job.offset+=pending.count;job.completed+=pending.count;job.pending=null;};
   // Query the native journal before considering a dispatched-but-unacknowledged chunk.

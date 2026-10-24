@@ -1129,6 +1129,9 @@ WHAT IS INSIDE (THIRD-PARTY-NOTICES.txt has every component and its licence)
         if shipped:
             lines.append('  npm packages shipped beside the bundle (companion/node_modules), from their package.json:')
             lines += ['    %s %s: %s%s' % (name, version, licence, ', ' + source if source else '') for name, version, licence, source in shipped]
+        models = notices.downloaded_model_notices(packager.resources / 'creative-agent-bundle' / 'companion')
+        if models:
+            lines += [''] + models
     lines += ['', 'Libraries Krita ships (upstream\'s list, krita/data/aboutdata/libraries.txt: name, project address, licence):']
     libraries_txt = ROOT / 'krita' / 'data' / 'aboutdata' / 'libraries.txt'
     lines += ['  ' + line for line in (libraries_txt.read_text().splitlines() if libraries_txt.exists() else [])]

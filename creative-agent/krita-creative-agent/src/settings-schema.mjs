@@ -39,6 +39,11 @@ export const SETTINGS = Object.freeze([
   { key: 'keep_screen_awake', type: 'boolean', default: false, panel: 'generic', control: 'checkbox', label: 'Screen', accessible: 'Keep the screen awake while painting',
     error: 'keep_screen_awake must be true or false.', options: [[false, 'Let the screen sleep'], [true, 'Keep the screen awake while painting']],
     tooltip: 'Krita can only paint while its window is active, so Autopilot pauses when the screen sleeps. With this on, the screen stays awake only while a run is painting, and the panel shows it.' },
+  // Sharpen goal (goal-sharpen.ts): a project folder's goal image enlarged more than 2x onto the canvas is offered a local 4x
+  // sharpening (Real-ESRGAN, on this computer). Ask by default: the artist sees the result before it is used.
+  { key: 'sharpen_goal', type: 'choice', default: 'ask', panel: 'generic', label: 'Sharpen small goal images', accessible: 'Sharpen small goal images',
+    error: 'Sharpen small goal images: choose Ask, Always or Never.', options: [['ask', 'Ask'], ['always', 'Always: sharpen and use it'], ['never', 'Never']],
+    tooltip: 'When a project folder\'s goal image is more than 2x smaller than the canvas, detail blurs. Toska can sharpen it 4x on this computer with Real-ESRGAN (nothing is uploaded; a one-time 62 MB model download). Ask shows the result side by side before it is used.' },
   { key: 'routing', type: 'choice', default: 'off', panel: 'generic', label: 'Decision checks', accessible: 'Decision checks',
     error: 'Unknown decisions mode.', options: [['off', 'Off'], ['evaluate', 'Evaluate only'], ['guide', 'Guide agent']],
     note: 'Fast typed decisions: request routing, artifacts a pass introduced, progress between reviews and run pacing. When on, the canvas, pass images and your direction go to the decision endpoint below. Evaluate only records results; Guide agent also acts on them. The painter still decides and edits the image.' },

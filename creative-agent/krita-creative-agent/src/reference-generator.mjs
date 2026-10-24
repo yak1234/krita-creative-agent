@@ -1,4 +1,6 @@
 // @ts-check
+import { resizeBilinear } from './shapes/image.ts';
+import { REFERENCE_PIXELS, PLUGIN_DECODE_PIXELS, STEP_MAX, EDGE_SPACING_MAX, SURFACE_SPACING_MAX, SURFACE_LENGTH_MAX } from './reference-limits.ts';
 import {Type} from 'typebox';
 import {Value} from 'typebox/value';
 /** @template {import('typebox').TProperties} T @param {T} p */
@@ -13,7 +15,7 @@ export const PATCH_FEATHER=.15;
 export const referenceSchema=object({
  name:Type.String({minLength:1,maxLength:100}),reference_id:Type.String({minLength:1}),preset:Type.String({minLength:1,maxLength:200}),
  source:rect(),target:rect(),focal_regions:Type.Optional(Type.Array(rect(),{maxItems:12})),
- steps:Type.Optional(Type.Array(Type.Number({minimum:.75,maximum:64}),{minItems:3,maxItems:3,description:'Source-pixel sampling steps: coarse, fine, focal. Default [6,2.5,1.2]. Must decrease.'})),
+ steps:Type.Optional(Type.Array(Type.Number({minimum:.75,maximum:STEP_MAX}),{minItems:3,maxItems:3,description:'Source-pixel sampling steps: coarse, fine, focal. Default [6,2.5,1.2]. Must decrease.'})),
  seed:Type.Optional(Type.Integer({minimum:0,maximum:4294967295})),
 });
 export const DEFAULT_STEPS=[6,2.5,1.2];
@@ -41,7 +43,7 @@ function random(seed){let a=seed>>>0;return()=>{a+=0x6D2B79F5;let t=a;t=Math.imu
 export function generateReferencePlan(recipe,image,canvas){
  if(!Value.Check(referenceSchema,recipe))throw new Error('Invalid reference recipe. Use source/target rectangles and three decreasing sampling steps.');
  if(!canvas||!Number.isInteger(canvas.width)||!Number.isInteger(canvas.height)||!rectInside(recipe.target,canvas.width,canvas.height))throw new Error('Target must fit the observed canvas.');
- if(!Number.isInteger(image.width)||!Number.isInteger(image.height)||image.width*image.height>4_000_000||image.data.length!==image.width*image.height*4)throw new Error('Invalid decoded reference.');
+ if(!Number.isInteger(image.width)||!Number.isInteger(image.height)||image.width*image.height>REFERENCE_PIXELS||image.data.length!==image.width*image.height*4)throw new Error('Invalid decoded reference.');
  if(!rectInside(recipe.source,image.width,image.height))throw new Error('Source crop must fit the reference.');
  const [sx,sy,sw,sh]=recipe.source,[tx,ty,tw,th]=recipe.target,scale=tw/sw;
  if(!sameAspect(sw,sh,tw,th))throw new Error('Source and target must have matching aspect ratios; crop instead of stretching.');
@@ -90,7 +92,7 @@ export function generateReferencePlan(recipe,image,canvas){
 export const edgeSchema=object({
  name:Type.String({minLength:1,maxLength:100}),reference_id:Type.String({minLength:1}),preset:Type.String({minLength:1,maxLength:200}),
  source:rect(),target:rect(),
- spacing:Type.Optional(Type.Number({minimum:.75,maximum:16,description:'Source pixels between neighbouring edge strokes, and each stroke’s width. Default 1.5.'})),
+ spacing:Type.Optional(Type.Number({minimum:.75,maximum:EDGE_SPACING_MAX,description:'Source pixels between neighbouring edge strokes, and each stroke’s width. Default 1.5.'})),
  min_contrast:Type.Optional(Type.Number({minimum:.02,maximum:1,description:'Weakest edge to paint, as a share of full black-to-white contrast. Default 0.1; raise it for fewer, stronger edges.'})),
  max_length:Type.Optional(Type.Integer({minimum:2,maximum:60,description:'Longest stroke, in steps of spacing. Default 16.'})),
  seed:Type.Optional(Type.Integer({minimum:0,maximum:4294967295})),
@@ -99,7 +101,7 @@ export const EDGE_LIMIT=60000;
 // The crop of a source/target recipe: its luminance (0-1, transparent counts as dark) and Sobel gradient.
 function cropGradient(recipe,image,canvas){
  if(!canvas||!Number.isInteger(canvas.width)||!Number.isInteger(canvas.height)||!rectInside(recipe.target,canvas.width,canvas.height))throw new Error('Target must fit the observed canvas.');
- if(!Number.isInteger(image.width)||!Number.isInteger(image.height)||image.width*image.height>4_000_000||image.data.length!==image.width*image.height*4)throw new Error('Invalid decoded reference.');
+ if(!Number.isInteger(image.width)||!Number.isInteger(image.height)||image.width*image.height>REFERENCE_PIXELS||image.data.length!==image.width*image.height*4)throw new Error('Invalid decoded reference.');
  if(!rectInside(recipe.source,image.width,image.height))throw new Error('Source crop must fit the reference.');
  const [sx,sy,sw,sh]=recipe.source,[tx,ty,tw,th]=recipe.target,scale=tw/sw;
  if(!sameAspect(sw,sh,tw,th))throw new Error('Source and target must have matching aspect ratios; crop instead of stretching.');
@@ -170,8 +172,8 @@ export function generateEdgePlan(recipe,image,canvas){
 export const surfaceSchema=object({
  name:Type.String({minLength:1,maxLength:100}),reference_id:Type.String({minLength:1}),preset:Type.String({minLength:1,maxLength:200}),
  source:rect(),target:rect(),
- spacing:Type.Optional(Type.Number({minimum:1,maximum:32,description:'Source pixels between neighbouring strokes; the brush is twice as wide. Default 3, or 3 canvas pixels when the canvas is smaller than the reference.'})),
- length:Type.Optional(Type.Number({minimum:2,maximum:200,description:'Longest stroke, in source pixels. Default 12.'})),
+ spacing:Type.Optional(Type.Number({minimum:1,maximum:SURFACE_SPACING_MAX,description:'Source pixels between neighbouring strokes; the brush is twice as wide. Default 3, or 3 canvas pixels when the canvas is smaller than the reference.'})),
+ length:Type.Optional(Type.Number({minimum:2,maximum:SURFACE_LENGTH_MAX,description:'Longest stroke, in source pixels. Default 12.'})),
  strength:Type.Optional(Type.Number({minimum:.1,maximum:1,description:'How far a stroke carries paint: 1 drags its first colour the whole way, 0.3 barely mixes. Default 0.5.'})),
  edge_contrast:Type.Optional(Type.Number({minimum:.02,maximum:1,description:'Edges at least this strong stop a stroke and are repainted crisp afterwards (same scale as min_contrast). Default 0.3.'})),
  max_detail:Type.Optional(Type.Number({minimum:.02,maximum:1,description:'Areas busier than this are left alone. Measured: sky 0.04, clouds and hair 0.07, windows, reflections and fur 0.11, wet road 0.17. Default 0.07.'})),
@@ -199,7 +201,7 @@ export function generateSurfacePlan(recipe,image,canvas){
  if(mode!=='surface'||!Value.Check(surfaceSchema,fields))throw new Error('Invalid surface recipe. Use source/target rectangles and optional spacing, length, strength, edge_contrast, max_detail, smoothing, edges and edge_preset.');
  const {sw,sh,scale,GX,GY,M,at,pixel,point}=cropGradient(recipe,image,canvas);
  // Default spacing: 3 source px, but never closer than 3 canvas px when the canvas is smaller than the reference.
- const s=recipe.spacing??Math.min(32,Math.max(3,3/scale)),edge=recipe.edge_contrast??.3,maxLength=recipe.length??12,r=recipe.smoothing??3,busy=recipe.max_detail??.07;
+ const s=recipe.spacing??Math.min(SURFACE_SPACING_MAX,Math.max(3,3/scale)),edge=recipe.edge_contrast??.3,maxLength=recipe.length??12,r=recipe.smoothing??3,busy=recipe.max_detail??.07;
  // Structure tensor: the averaged gradient orientation, whose perpendicular is the form's flow.
  const XX=new Float32Array(sw*sh),XY=new Float32Array(sw*sh),YY=new Float32Array(sw*sh);
  for(let k=0;k<M.length;k++){XX[k]=GX[k]*GX[k];XY[k]=GX[k]*GY[k];YY[k]=GY[k]*GY[k];}
@@ -251,4 +253,23 @@ function surfaceEdges(recipe,image,canvas,edge,spacing){
    return [{...plan.passes[0],preset}];}
   catch(error){if(/^No edges/.test(error.message))return [];if(!/^More than/.test(error.message)||contrast>=1)throw error;}
  }
+}
+
+// Edges and surface read every source pixel of the crop (gradients, a flow field): on a goal sharpened 4x that was 2 s and
+// 10 s, and 0.5-0.75 GB more, against 0.25-0.36 s on the original. A crop of more than ANALYSIS_PIXELS is analysed from a
+// copy reduced to that many, its spacing and length scaled with it, so the strokes on the canvas keep their size and the
+// target is unchanged. The dab transfer (generateReferencePlan) samples the crop sparsely and reads it whole.
+export const ANALYSIS_PIXELS=PLUGIN_DECODE_PIXELS;
+export function analysisCopy(recipe,image,maxPixels=ANALYSIS_PIXELS){
+ const [sx,sy,sw,sh]=recipe.source??[];
+ if(!['edges','surface'].includes(recipe.mode)||!(sw*sh>maxPixels)||!rectInside(recipe.source,image.width,image.height))return {recipe,image};
+ const f=Math.sqrt(maxPixels/(sw*sh)),w=Math.max(1,Math.floor(sw*f)),h=Math.max(1,Math.floor(sh*f)),k=w/sw;
+ const crop=Buffer.alloc(sw*sh*4);
+ for(let y=0;y<sh;y++)image.data.copy(crop,y*sw*4,((sy+y)*image.width+sx)*4,((sy+y)*image.width+sx+sw)*4);
+ const small={width:w,height:h,data:Buffer.from(resizeBilinear(crop,sw,sh,4,w,h))};
+ const scale=recipe.target[2]/sw,round=v=>Math.round(v*100)/100;
+ const spacing=recipe.mode==='edges'?recipe.spacing??1.5:recipe.spacing??Math.min(SURFACE_SPACING_MAX,Math.max(3,3/scale));
+ const out={...recipe,source:[0,0,w,h],spacing:Math.max(recipe.mode==='edges'?.75:1,round(spacing*k))};
+ if(recipe.mode==='surface')out.length=Math.max(2,round((recipe.length??12)*k));
+ return {recipe:out,image:small};
 }

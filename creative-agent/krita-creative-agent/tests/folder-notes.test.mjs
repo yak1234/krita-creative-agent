@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, readFile, readdir, symlink, link } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writePlan, appendNote, readPlan, planDifference, editMarkdown, planText, remapTicks, briefFromPlan, stepKeys, parsePlan, layerName } from '../src/folder-notes.ts';
+import { writePlan, appendNote, readPlan, planDifference, editMarkdown, planText, remapTicks, briefFromPlan, stepKeys, parsePlan, layerName, writePlanGoal } from '../src/folder-notes.ts';
 
 const brief = { title: 'New Moscow', objective: 'A snowy night in Moscow, painted one element per move.', requirements: ['Keep the warm windows.'],
   freedom: [], completion: ['Every element is painted.'], steps: [
@@ -217,3 +217,34 @@ test('PLAN.md names the painting its ticks belong to, in its intent block, and r
   const later = text.replace('## Moves\n', '## Moves\n\nPainting file: /elsewhere.kra\n');
   assert.equal(parsePlan(later).painting.path, painting.path, 'only the intent block names it');
 });
+
+// Goal picker: the artist's goal image is remembered in PLAN.md's intent block ("Goal image: …"), read back on reopening.
+test('PLAN.md\u2019s goal image is read back from its intent block only', () => {
+  const text = planText(brief, [], { goal: 'assets/05-modern-skyline.png' });
+  assert.equal(parsePlan(text).goal, 'assets/05-modern-skyline.png');
+  assert.equal(parsePlan(planText(brief, [])).goal, null);
+  assert.equal(parsePlan('# Plan · X\n\n## Moves\n\n- [ ] 1. Goal image: x.png (it decides the layout).\n').goal, null, 'a step line never names it');
+  assert.equal(parsePlan('# Plan\n\nGoal image: my goal (2).png\n').goal, 'my goal (2).png', 'written by hand without the note');
+});
+
+test('writePlanGoal: a chat with no plan records the goal in a PLAN.md with no steps; the artist\u2019s PLAN.md keeps its words and is backed up', () => folder(async root => {
+  const first = await writePlanGoal(root, 'skies.png', { title: 'New Moscow' });
+  assert.equal(first.backup, undefined);
+  const written = await readFile(join(root, 'PLAN.md'), 'utf8');
+  assert.equal(written, first.text);
+  assert.deepEqual([parsePlan(written).goal, parsePlan(written).steps.length], ['skies.png', 0]);
+  const again = await writePlanGoal(root, 'final_goal.png', { expected: first.text });
+  assert.equal(again.backup, undefined, 'its own file is changed in place');
+  assert.equal(parsePlan(again.text).goal, 'final_goal.png');
+  const own = '# My plan\n\nA note of mine.\n\n## Moves\n\n- [x] 1. Sky · layer "Sky"\n';
+  await writeFile(join(root, 'PLAN.md'), own);
+  const edited = await writePlanGoal(root, 'skies.png', { expected: again.text });
+  assert.match(edited.backup ?? '', new RegExp('^PLAN\\.backup-' + today));
+  assert.equal(await readFile(join(root, edited.backup), 'utf8'), own);
+  const plan = parsePlan(await readFile(join(root, 'PLAN.md'), 'utf8'));
+  assert.deepEqual([plan.goal, plan.ticked, plan.steps.map(s => s.title)], ['skies.png', [0], ['Sky']], 'the steps and ticks stay');
+  assert.match(plan.text, /A note of mine\./);
+  const twice = await writePlanGoal(root, 'skies.png', { expected: plan.text });
+  assert.equal(twice.text, plan.text, 'the same goal again changes nothing');
+  await assert.rejects(writePlanGoal(root, 'bad\nname.png'), /one line/);
+}));

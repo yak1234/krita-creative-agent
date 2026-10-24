@@ -82,7 +82,7 @@ class PanelFolder(unittest.TestCase):
         self.panel.tabs.setCurrentIndex(self.panel.folder_tab)
         self.assertTrue(self.panel.folder_card.isVisible())
         self.assertIn('new_moscow', self.panel.folder_title.text())
-        self.assertIn('final_goal.png', self.panel.folder_goal.text())
+        self.assertEqual(self.panel.folder_goal_choice.currentText(), 'final_goal.png')
         items = [self.panel.folder_elements.item(i) for i in range(self.panel.folder_elements.count())]
         self.assertEqual([item.text() for item in items], ['Moonlit sky', 'Historic buildings', 'Lamps and trees'])
         self.assertIn('assets/01-moonlit-sky.png', items[0].toolTip())
@@ -138,7 +138,7 @@ class PanelFolder(unittest.TestCase):
                      skipped=[{'name': '<img src=x>.kra', 'reason': 'a Krita document'}])
         self.panel.handle_event({'type': 'folder', 'index': index, 'references': {}, 'plan_limit': 15})
         self.assertEqual(self.panel.folder_goal.textFormat(), Qt.TextFormat.PlainText)
-        self.assertIn('<b>goal</b>.png', self.panel.folder_goal.text())
+        self.assertEqual(self.panel.folder_goal_choice.currentText(), '<b>goal</b>.png', 'a list item is text')
         self.assertIn('&lt;img src=x&gt;.kra', self.panel.folder_footer.toolTip(), 'tooltips escape file names')
         self.assertIn('&lt;i&gt;', self.panel.folder_elements.item(0).toolTip())
         self.assertIn('the plan takes the first 15', self.panel.folder_footer.text())
@@ -215,6 +215,88 @@ class PanelFolder(unittest.TestCase):
         self.assertFalse(self.panel.folder_masses.isVisible())
         self.assertEqual(self.panel.folder_masses.colours, [])
         self.assertEqual(self.panel.folder_masses.toolTip(), '')
+
+    # Goal picker and Sharpen goal (goal-image change, 2026-10-24).
+    def test_the_goal_list_holds_every_folder_image_and_choosing_one_sends_folder_goal(self):
+        index = dict(INDEX, goal_choices=['final_goal.png'] + [e['name'] for e in INDEX['elements']] + ['finished_review.png', 'skies.png'])
+        self.panel.handle_event({'type': 'folder', 'index': index, 'references': {}})
+        self.panel.tabs.setCurrentIndex(self.panel.folder_tab)
+        choice = self.panel.folder_goal_choice
+        self.assertTrue(choice.isVisible()); self.assertTrue(choice.isEnabled())
+        self.assertEqual([choice.itemText(i) for i in range(choice.count())], index['goal_choices'])
+        self.assertEqual(choice.currentText(), 'final_goal.png')
+        self.assertEqual(self.commands, [], 'filling the list sends nothing')
+        choice.setCurrentIndex(choice.findData('assets/02-historic-buildings.png'))
+        self.assertEqual(self.commands, [{'type': 'folder_goal', 'name': 'assets/02-historic-buildings.png'}])
+        self.panel.handle_event({'type': 'busy', 'busy': True})
+        self.assertFalse(choice.isEnabled(), 'not while the painter reads it')
+        self.panel.handle_event({'type': 'busy', 'busy': False})
+        self.assertTrue(choice.isEnabled())
+        older = dict(INDEX); older.pop('goal_choices', None)            # an older companion: built from the index
+        self.panel.handle_event({'type': 'folder', 'index': older, 'references': {}})
+        self.assertEqual(choice.count(), 1 + 3 + 2)
+        none = dict(INDEX, goal=None)
+        self.panel.handle_event({'type': 'folder', 'index': none, 'references': {}})
+        self.assertEqual(choice.currentIndex(), -1); self.assertIn('No goal image found', self.panel.folder_goal.text())
+
+    def test_the_folder_card_says_what_happened_to_a_small_goal(self):
+        self.panel.handle_event({'type': 'folder', 'index': INDEX, 'references': {}, 'goal_sharpen': {'state': 'offered', 'factor': 4.1}})
+        self.panel.tabs.setCurrentIndex(self.panel.folder_tab)
+        self.assertIn('4.1x smaller than the canvas: sharpening is offered', self.panel.folder_goal.text())
+        self.panel.handle_event({'type': 'folder', 'index': INDEX, 'references': {},
+                                 'goal_sharpen': {'state': 'used', 'sharpened': {'width': 2309, 'height': 1732, 'full': [5792, 4344]}}})
+        self.assertIn('Sharpened 4x on this computer (5792 x 4344); the painter reads it at 2309 x 1732', self.panel.folder_goal.text())
+        self.panel.handle_event({'type': 'folder', 'index': INDEX, 'references': {}})
+        self.assertFalse(self.panel.folder_goal.isVisible(), 'nothing to say')
+
+    def test_the_sharpen_offer_and_the_side_by_side_are_cards_whose_buttons_answer_once(self):
+        self.panel.handle_event({'type': 'goal_sharpen_offer', 'id': 'o1', 'options': ['Sharpen', 'Use as is'],
+                                 'message': 'Your goal image is 4.1x smaller than the canvas, so detail will blur. Sharpen it 4x on this Mac (about 15 s, nothing uploaded)?'})
+        offer = list(self.panel.sharpen_controls)
+        self.assertEqual([b.text() for b in offer], ['Sharpen', 'Use as is'])
+        offer[0].click()
+        self.assertEqual(self.commands, [{'type': 'goal_sharpen', 'id': 'o1', 'action': 'sharpen'}])
+        self.assertFalse(any(b.isEnabled() for b in offer), 'answered once')
+        path = self.goal_image()
+        self.panel.handle_event({'type': 'goal_sharpen_review', 'id': 'o1', 'image_path': path, 'options': ['Use sharpened', 'Keep original'],
+                                 'question': 'Sharpened 4x. Left: your goal image enlarged; right: sharpened. Use the sharpened goal?'})
+        review = list(self.panel.sharpen_controls)
+        self.assertEqual([b.text() for b in review], ['Use sharpened', 'Keep original'])
+        pictures = [label for label in self.panel.transcript.findChildren(module.QLabel, 'questionImage') if label.pixmap() is not None and not label.pixmap().isNull()]
+        self.assertTrue(pictures, 'the side by side is shown on the card')
+        review[1].click()
+        self.assertEqual(self.commands[-1], {'type': 'goal_sharpen', 'id': 'o1', 'action': 'keep'})
+
+    def test_sharpening_shows_on_the_now_card_with_cancel_and_goes_when_it_ends(self):
+        self.assertFalse(self.panel.plan_steps.now.isVisible())
+        self.panel.handle_event({'type': 'goal_sharpen_progress', 'id': 'o1', 'done': 77, 'total': 154, 'message': 'Sharpening the goal image: 50%…'})
+        app.processEvents()
+        self.assertTrue(self.panel.plan_steps.now.isVisible(), 'the Now card shows it even with no plan yet')
+        self.assertTrue(self.panel.sharpen_row.isVisible())
+        self.assertEqual(self.panel.sharpen_bar.value(), 500)
+        self.assertEqual(self.panel.sharpen_text.text(), 'Sharpening the goal image: 50%…')
+        self.panel.sharpen_cancel.click()
+        self.assertEqual(self.commands, [{'type': 'goal_sharpen', 'action': 'cancel'}])
+        self.assertFalse(self.panel.sharpen_cancel.isEnabled())
+        self.panel.handle_event({'type': 'goal_sharpen_progress', 'id': 'o1', 'done': 0, 'total': 0, 'finished': True, 'message': ''})
+        self.assertFalse(self.panel.sharpen_row.isVisible()); self.assertFalse(self.panel.plan_steps.now.isVisible())
+        self.panel.handle_event({'type': 'goal_sharpen_progress', 'id': 'o2', 'done': 1, 'total': 10, 'message': 'Downloading the sharpening model: 10% of 62 MB…'})
+        self.assertTrue(self.panel.sharpen_cancel.isEnabled(), 'a new run can be cancelled again')
+        self.panel.new_chat()
+        self.assertFalse(self.panel.sharpen_row.isVisible())
+
+    def test_a_sharpened_goal_s_thumbnails_come_from_its_picture_before(self):
+        self.assertEqual(module.CreativeAgentDocker.picture_path({'path': '/c/x4.png', 'sharpened': {'from': {'path': '/c/goal.png'}}}), '/c/goal.png')
+        self.assertEqual(module.CreativeAgentDocker.picture_path({'path': '/c/goal.png'}), '/c/goal.png')
+        self.assertEqual(module.CreativeAgentDocker.picture_path(None), '')
+        self.panel.handle_event({'type': 'folder', 'index': INDEX, 'references': {'final_goal.png': 'reference-1'}})
+        path = self.goal_image()
+        goal = {'id': 'reference-1', 'path': '/nonexistent/x4.png', 'name': 'final_goal.png', 'role': 'reference', 'source': 'folder',
+                'folder_name': 'final_goal.png', 'sharpened': {'from': {'path': path}}}
+        self.panel.handle_event({'type': 'goal', 'goal': {'status': 'draft', 'brief': None}, 'mode': 'ask', 'references': [goal]})
+        self.panel.tabs.setCurrentIndex(self.panel.folder_tab)
+        self.assertEqual(self.panel.folder_picture_path, path)
+        self.assertFalse(self.panel.folder_picture.pixmap().isNull())
 
 if __name__ == '__main__':
     unittest.main()

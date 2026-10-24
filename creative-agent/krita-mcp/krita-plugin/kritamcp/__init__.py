@@ -46,7 +46,7 @@ CANVAS_OUTPUT_DIR = output_dir(os.environ, QCoreApplication.organizationName())
 # Default empty = open localhost-only endpoint (matches upstream behavior).
 AUTH_TOKEN = os.environ.get("KRITA_MCP_TOKEN", "").strip()
 
-MAX_BODY_BYTES = 24 * 1024 * 1024    # a 12 MB reference sent to model_image is ~16 MB as base64
+MAX_BODY_BYTES = 96 * 1024 * 1024    # a 64 MB reference (a goal sharpened 4x, creative_reference.REFERENCE_FILE_BYTES) is ~86 MB as base64
 
 
 # Global command queue

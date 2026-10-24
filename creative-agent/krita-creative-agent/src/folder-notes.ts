@@ -8,7 +8,7 @@
 // " · redone 2 times"), keyed by the step's identity (stepKeys), so a resumed or new chat restores them.
 import { constants } from 'node:fs';
 import { copyFile, lstat, open, realpath } from 'node:fs/promises';
-import { basename, extname, join } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 
 export type Step = { title: string; done_when: string; scope?: string; checks?: string[] };
 export type Brief = { title: string; objective: string; requirements: string[]; freedom: string[]; completion: string[]; steps: Step[] };
@@ -20,9 +20,12 @@ export type PlanStep = { title: string; file?: string; layer?: string; done: boo
  * saved, "Painting id:" its live id), null in an older file. A saved painting is known by its file across restarts; the
  * live id (per Krita process) only tells an unsaved canvas. */
 export type PaintingIdentity = { id: string | null; name: string; path: string | null };
+/** goal: the goal image the intent block names ("Goal image: …"), the artist's choice in the panel or a typed one. */
 export type Plan = { title: string | null; text: string; lines: string[]; steps: PlanStep[]; ticked: number[]; marks: StepMarks;
-  painting: PaintingIdentity | null };
+  painting: PaintingIdentity | null; goal: string | null };
 const PAINTING_FIELD = /^Painting( file| id)?: (.+?)\s*$/;
+const GOAL_FIELD = /^Goal image: (.+?)(?: \(it decides the layout\)\.?)?\s*$/;
+const goalLine = (goal: string) => `Goal image: ${oneLine(goal)} (it decides the layout).`;
 
 export const PLAN_FILE = 'PLAN.md';
 export const NOTES_FILE = 'NOTES.md';
@@ -83,7 +86,7 @@ function stepLine(step: Step, index: number, done: boolean, mark?: StepMark): st
 /** PLAN.md's text: a few lines of intent, then the checklist. */
 export function planText(brief: Brief, ticked: readonly number[], { goal, marks = {}, painting }: { goal?: string | null; marks?: StepMarks;
   painting?: PaintingIdentity | null } = {}): string {
-  const intent = [plainLine(brief.objective), ...(goal ? [`Goal image: ${oneLine(goal)} (it decides the layout).`] : []),
+  const intent = [plainLine(brief.objective), ...(goal ? [goalLine(goal)] : []),
     ...(painting && (painting.id || painting.path) ? [`Painting: ${oneLine(painting.name || 'painting')}`,
       ...(painting.path ? [`Painting file: ${oneLine(painting.path)}`] : []), ...(painting.id ? [`Painting id: ${oneLine(painting.id)}`] : [])] : []),
     ...brief.requirements.map(r => `- ${plainLine(r)}`)];
@@ -164,6 +167,32 @@ export async function writePlan(root: string, brief: Brief, ticked: readonly num
   return saved ? { text, backup: saved } : { text };
 }
 
+/**
+ * Record the artist's goal image in PLAN.md when the chat has no plan to write (writePlan records it with the plan): the
+ * intent block's "Goal image:" line is replaced or added, and nothing else changes. With no PLAN.md, one with no steps is
+ * written. A file that differs from `expected` (what this chat last wrote) is backed up first, as writePlan does.
+ */
+export async function writePlanGoal(root: string, goal: string, { expected, title }: { expected?: string | null; title?: string } = {}): Promise<{ text: string; backup?: string }> {
+  if (typeof goal !== 'string' || !goal.trim() || /[\u0000-\u001f\u007f]/.test(goal)) throw new Error('The goal image\u2019s name must be one line.');
+  const path = await markdownPath(root, PLAN_FILE), before = await existing(path);
+  let text: string;
+  if (before?.text == null) text = [`# Plan · ${oneLine(title || basename(dirname(path)))}`, '', goalLine(goal), '', '## Moves', ''].join('\n');
+  else {
+    const lines = before.text.split('\n'), end = lines.findIndex(line => /^#{2}\s/.test(line)), stop = end < 0 ? lines.length : end;
+    const at = lines.slice(0, stop).findIndex(line => GOAL_FIELD.test(line));
+    if (at >= 0) lines[at] = goalLine(goal);
+    else {
+      const head = lines.findIndex(line => /^#\s/.test(line));
+      lines.splice(head >= 0 && head < stop ? head + 1 : 0, 0, ...(head >= 0 && head < stop ? ['', goalLine(goal)] : [goalLine(goal), '']));
+    }
+    text = lines.join('\n');
+    if (text === before.text) return { text };
+  }
+  const saved = before !== null && (before.text === null || before.text !== expected) ? await backup(path) : undefined;
+  await writeNoFollow(path, text, constants.O_CREAT, true);
+  return saved ? { text, backup: saved } : { text };
+}
+
 /** One dated line at the end of NOTES.md (created when missing); what is there is never changed. */
 export async function appendNote(root: string, line: string): Promise<void> {
   const path = await markdownPath(root, NOTES_FILE);
@@ -208,13 +237,15 @@ export function parsePlan(text: string): Plan {
   steps.forEach((step, i) => { if (step.mark) marks[keys[i]] = step.mark; });
   // The painting's fields, from the intent block only (before "## Moves"): a step can never name it.
   const fields: Record<string, string> = {};
+  let goal: string | null = null;
   for (const line of lines) {
     if (/^#{2}\s/.test(line)) break;
     const found = PAINTING_FIELD.exec(line);
     if (found) fields[(found[1] ?? '').trim() || 'name'] = found[2]!;
+    goal ??= GOAL_FIELD.exec(line)?.[1] ?? null;
   }
   const painting = fields.file || fields.id ? { id: fields.id ?? null, name: fields.name ?? 'painting', path: fields.file ?? null } : null;
-  return { title, text, lines, steps, ticked: steps.flatMap((s, i) => s.done ? [i] : []), marks, painting };
+  return { title, text, lines, steps, ticked: steps.flatMap((s, i) => s.done ? [i] : []), marks, painting, goal };
 }
 
 /** What changed between the agent's plan (and its ticks) and PLAN.md's lines, in words for the artist. */

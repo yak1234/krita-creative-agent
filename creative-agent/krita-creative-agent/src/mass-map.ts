@@ -7,6 +7,7 @@
 // own colours and shares, drawn as a flat colour bar, with one plain sentence. No outline picture: outlines over the
 // reference looked like the tracing the artist removed. Style, colour and close-up references get none. A failure only
 // means no mass map: it never stops a chat.
+import { REFERENCE_BYTES } from './reference-limits.ts';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -27,7 +28,7 @@ export type MassHost = {
 /** The mass map's version: a record or file of another version counts as missing (the tracing or smoothing changed). */
 export const MASS_MAP_VERSION = 2;          // 2: colours and overview for the panel, no outline thumbnail
 const ASPECT_TOLERANCE = 0.03;              // reference-tool.mjs: the canvas's proportions, within this
-const MAX_BYTES = 12 * 1024 * 1024;         // reference-tool.mjs TRACE_REFERENCE_MB
+const MAX_BYTES = REFERENCE_BYTES;           // reference-limits.ts (reference-tool.mjs TRACE_REFERENCE_MB)
 
 /** Whether a reference is the whole picture: the project folder's goal image, or a general or composition reference
  * with the canvas's proportions (an element, a colour, style or close-up reference is not). */

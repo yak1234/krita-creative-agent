@@ -244,7 +244,7 @@ class PlanStepsList:
         top.addWidget(self.stop_button, 0, Qt.AlignmentFlag.AlignTop); card.addLayout(top)
         self.caption_row = top                                  # the panel adds its Start painting / Resume here
         self.now_layout = card; self.now_body = None
-        self.now.hide()
+        self.now.hide(); self.has_card = False; self.side_task = False
         # The Plan tab's list: a header, the folded steps, then the others.
         self.widget = QFrame(); self.widget.setObjectName('planSteps')
         self.widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -264,6 +264,11 @@ class PlanStepsList:
 
     def isVisible(self):
         return self.widget.isVisible()
+
+    def set_side_task(self, on):
+        """Something the companion does beside the steps (sharpening the goal image) shows on the Now card while it runs."""
+        self.side_task = bool(on)
+        self.now.setVisible(self.has_card or self.side_task)
 
     def set_colors(self, colors, dark):
         self.strip.set_colors(dict(colors, **step_colors(colors, dark)))
@@ -314,7 +319,8 @@ class PlanStepsList:
         self.caption.setText('%s · step %d of %d' % (CAPTION.get(rows[current]['state'], ''), current + 1, len(rows)) if current is not None
                              else '%s · step %d of %d' % (CAPTION['open'], upcoming + 1, len(rows)) if upcoming is not None else '')
         self.stop_button.setVisible(current is not None and rows[current].get('state') in ('painting', 'finishing'))
-        self.now.setVisible(current is not None or upcoming is not None)
+        self.has_card = current is not None or upcoming is not None
+        self.now.setVisible(self.has_card or self.side_task)
         counts = {}
         for entry in rows: counts[entry.get('state')] = counts.get(entry.get('state'), 0) + 1
         met = sum(counts.get(s, 0) for s in DONE)

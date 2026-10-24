@@ -187,8 +187,10 @@ export function exemption(tool: string, args: Args = {}, { departure = null }: {
   return departure ? 'departure' : null;
 }
 
-export type Reference = { id: string; role?: string; purpose?: string; part_kind?: string; source?: string; width?: number; height?: number };
-export type Transfer = { recipe?: { reference_id?: string; source?: number[]; target?: number[] } };
+/** sharpened: the goal reference became a sharpened copy of itself (goal-sharpen.ts); `from` is the picture it was. */
+export type Reference = { id: string; role?: string; purpose?: string; part_kind?: string; source?: string; width?: number; height?: number;
+  sharpened?: { from: { sha256: string; width: number; height: number } } };
+export type Transfer = { reference_hash?: string; recipe?: { reference_id?: string; source?: number[]; target?: number[] } };
 const ASPECT_TOLERANCE = 0.03;      // as reference-tool.mjs: a reference with the canvas's proportions is the picture
 const goalLike = (r: Reference) => (r.role ?? 'reference') === 'reference' && !r.part_kind && ['general', 'composition'].includes(r.purpose ?? 'general');
 const rect = (v: unknown): v is Rect => Array.isArray(v) && v.length === 4 && v.every(Number.isFinite);
@@ -199,8 +201,12 @@ const rect = (v: unknown): v is Rect => Array.isArray(v) && v.length === 4 && v.
 export function goalMapping({ references, transfers, canvas }: { references: Reference[]; transfers: Transfer[]; canvas: { width: number; height: number } }): Mapping | null {
   const goals = (references ?? []).filter(goalLike);
   for (const job of transfers ?? []) {
-    const r = job.recipe;
-    if (r && goals.some(g => g.id === r.reference_id) && rect(r.source) && rect(r.target)) return { reference_id: r.reference_id as string, source: r.source, target: r.target, from: 'transfer' };
+    const r = job.recipe, goal = goals.find(g => g.id === r?.reference_id);
+    if (!r || !goal || !rect(r.source) || !rect(r.target)) continue;
+    // A transfer of the picture the goal was before it was sharpened: its source in the sharpened goal's pixels.
+    const was = goal.sharpened?.from, k = was && job.reference_hash === was.sha256 && goal.width ? goal.width / was.width : 1;
+    const source = (k === 1 ? r.source : r.source.map(v => Math.round(v * k))) as Rect;
+    return { reference_id: goal.id, source, target: r.target, from: 'transfer' };
   }
   const goal = [...goals].sort((a, b) => Number(b.source === 'folder') - Number(a.source === 'folder'))
     .find(g => g.width && g.height && Math.abs(g.width / g.height / (canvas.width / canvas.height) - 1) <= ASPECT_TOLERANCE);

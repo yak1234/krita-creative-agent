@@ -34,7 +34,7 @@ from .qt_compat import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
                             QCheckBox, QGroupBox, QFrame, QScrollArea, QSizePolicy, QLayout,
                             QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu,
                             QApplication, QShortcut, QListWidget, QListWidgetItem, QSlider, QToolButton, QSplitter, QStylePainter, QStyleOptionComboBox, QStyle, QStyledItemDelegate, QGridLayout,
-                            QMessageBox)
+                            QMessageBox, QProgressBar)
 
 
 def disconnect_companion_callbacks(process):
@@ -1318,6 +1318,20 @@ class CreativeAgentDocker(DockWidget):
         self.card_reason = QLabel(''); self.card_reason.setObjectName('muted'); self.card_reason.setWordWrap(True)
         self.card_reason.setTextFormat(Qt.TextFormat.PlainText); self.card_reason.hide(); self.plan_steps.now_layout.addWidget(self.card_reason)
         self.plan_steps.strip.tapped.connect(self.show_step)
+        # Sharpen goal (goal-sharpen.ts): its progress on the Now card while it runs, with Cancel.
+        self.sharpen_row = QWidget(); sharpen_layout = QVBoxLayout(self.sharpen_row); sharpen_layout.setContentsMargins(0, 0, 0, 0); sharpen_layout.setSpacing(3)
+        sharpen_top = QHBoxLayout(); sharpen_top.setSpacing(6)
+        self.sharpen_text = QLabel(''); self.sharpen_text.setObjectName('muted'); self.sharpen_text.setWordWrap(True)
+        self.sharpen_text.setTextFormat(Qt.TextFormat.PlainText); self.sharpen_text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        sharpen_top.addWidget(self.sharpen_text, 1)
+        self.sharpen_cancel = QPushButton('Cancel'); self.sharpen_cancel.setObjectName('stepStop'); self.sharpen_cancel.setAccessibleName('Stop sharpening the goal image')
+        self.sharpen_cancel.setToolTip('Stop sharpening: the original goal image is used.')
+        self.sharpen_cancel.clicked.connect(lambda: (self.sharpen_cancel.setEnabled(False), self.send({'type': 'goal_sharpen', 'action': 'cancel'})))
+        sharpen_top.addWidget(self.sharpen_cancel, 0, Qt.AlignmentFlag.AlignTop); sharpen_layout.addLayout(sharpen_top)
+        self.sharpen_bar = QProgressBar(); self.sharpen_bar.setRange(0, 1000); self.sharpen_bar.setTextVisible(False); self.sharpen_bar.setFixedHeight(6)
+        self.sharpen_bar.setAccessibleName('Sharpening progress'); sharpen_layout.addWidget(self.sharpen_bar)
+        self.sharpen_row.hide(); self.plan_steps.now_layout.addWidget(self.sharpen_row)
+        self.sharpen_controls = []
         top_area = QVBoxLayout(); top_area.setContentsMargins(0, 0, 0, 0); top_area.setSpacing(6); layout.addLayout(top_area)
         self.tabs = QTabWidget(); self.tabs.setObjectName('panelTabs'); self.tabs.setDocumentMode(True); self.tabs.setUsesScrollButtons(False)
         self.tabs.tabBar().setDrawBase(False); self.tabs.tabBar().setExpanding(False)
@@ -1492,6 +1506,14 @@ class CreativeAgentDocker(DockWidget):
         folder_words = QVBoxLayout(); folder_words.setSpacing(3)
         self.folder_title = QLabel(''); self.folder_title.setObjectName('planSummary'); self.folder_title.setWordWrap(True)
         self.folder_title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred); folder_words.addWidget(self.folder_title)
+        # Goal picker: which folder image is the goal (the companion's goal reference); the default is final_goal.png.
+        goal_row = QHBoxLayout(); goal_row.setSpacing(6)
+        goal_caption = QLabel('Goal image:'); goal_caption.setObjectName('muted'); goal_row.addWidget(goal_caption)
+        self.folder_goal_choice = QComboBox(); self.folder_goal_choice.setAccessibleName('Goal image')
+        self.folder_goal_choice.setToolTip('The image the painting follows: its layout, colours and light. Any image of the folder can be the goal.')
+        self.folder_goal_choice.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon); self.folder_goal_choice.setMinimumContentsLength(8)
+        self.folder_goal_choice.currentIndexChanged.connect(self.folder_goal_chosen); goal_row.addWidget(self.folder_goal_choice, 1)
+        folder_words.addLayout(goal_row)
         self.folder_goal = QLabel(''); self.folder_goal.setObjectName('muted'); self.folder_goal.setWordWrap(True)
         self.folder_goal.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.folder_goal.setTextFormat(Qt.TextFormat.PlainText); folder_words.addWidget(self.folder_goal)   # file names are text
@@ -2322,7 +2344,13 @@ class CreativeAgentDocker(DockWidget):
         self.folder_title.setText('<b>%s</b>' % html.escape(index.get('name') or os.path.basename(self.folder_root)))
         self.folder_title.setToolTip(self.text_tip([self.folder_root]) if self.folder_root else '')
         goal = index.get('goal')
-        self.folder_goal.setText('Goal image: %s' % goal['name'] if goal else 'No goal image found: name it final_goal.png to set the layout.')
+        choices = index.get('goal_choices') or ([goal['name']] if goal else []) + [e['name'] for e in index.get('elements') or []] + [o['name'] for o in index.get('others') or []]
+        self.folder_goal_choice.blockSignals(True); self.folder_goal_choice.clear()
+        for name in choices: self.folder_goal_choice.addItem(name, name)
+        self.folder_goal_choice.setCurrentIndex(self.folder_goal_choice.findData(goal['name']) if goal else -1)
+        self.folder_goal_choice.blockSignals(False); self.folder_goal_choice.setEnabled(bool(choices) and not self.busy)
+        self.folder_goal.setText(self.goal_sharpen_words(event.get('goal_sharpen')) if goal else 'No goal image found: choose one above, or name it final_goal.png.')
+        self.folder_goal.setVisible(bool(self.folder_goal.text()))
         self.clear_folder_masses(); self.show_folder_masses()          # never another folder's goal
         elements = index.get('elements') or []
         self.folder_guesses = {element['name']: element.get('guess') or element['name'] for element in elements}
@@ -2344,6 +2372,53 @@ class CreativeAgentDocker(DockWidget):
             + (['Skipped:'] + ['%s: %s' % (s['name'], s['reason']) for s in skipped] if skipped else [])
         self.folder_footer.setToolTip(self.text_tip(tip) if tip else '')
         self.folder_card.show(); self.tabs.setTabVisible(self.folder_tab, True)
+
+    def folder_goal_chosen(self, _index=None):
+        name = self.folder_goal_choice.currentData()
+        if name: self.send({'type': 'folder_goal', 'name': name})
+
+    @staticmethod
+    def goal_sharpen_words(state):
+        """The Folder card's line about sharpening the goal (goal-sharpen.ts status), or ''."""
+        state = state or {}
+        sharpened = state.get('sharpened')
+        if state.get('state') == 'used' and sharpened:
+            full = sharpened.get('full') or [0, 0]
+            return 'Sharpened 4x on this computer (%d x %d); the painter reads it at %d x %d.' % (full[0], full[1], sharpened.get('width', 0), sharpened.get('height', 0))
+        factor = state.get('factor')
+        words = {'offered': 'is %.1fx smaller than the canvas: sharpening is offered in the chat.', 'running': 'is %.1fx smaller than the canvas: sharpening it…',
+                 'review': 'is %.1fx smaller than the canvas: the sharpened copy waits for your answer in the chat.',
+                 'kept': 'is %.1fx smaller than the canvas: used as it is.', 'failed': 'is %.1fx smaller than the canvas: sharpening failed, used as it is.',
+                 'cancelled': 'is %.1fx smaller than the canvas: sharpening was stopped.'}.get(state.get('state'))
+        return ('The goal image ' + words % factor) if words and factor else ''
+
+    def choice_card(self, title, text, choices, answer, image_path=None):
+        """A card in the chat with a picture (optional) and one button per (label, value): answered once, then disabled."""
+        self.flush_stream(); self.reply_open = False; self.empty_state.hide()
+        item = self.transcript.add_message(title, text, True)
+        pixmap = QPixmap(image_path) if image_path else QPixmap()
+        if not pixmap.isNull():
+            picture = QLabel(); picture.setObjectName('questionImage')
+            picture.setPixmap(pixmap.scaled(QSize(400, 300), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            item['layout'].addWidget(picture)
+        buttons = []
+        for label, value in choices:
+            button = QPushButton(label); button.setObjectName('questionChoice')
+            button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            button.clicked.connect(lambda _checked=False, chosen=value: ([b.setEnabled(False) for b in buttons], answer(chosen)))
+            item['layout'].addWidget(button); buttons.append(button)
+        return buttons
+
+    def show_sharpen_progress(self, event):
+        """The Now card's sharpening row: shown while it runs, hidden when it ends."""
+        running = not event.get('finished')
+        total = max(1, int(event.get('total') or 1))
+        if running:
+            self.sharpen_bar.setValue(int(1000 * min(1.0, float(event.get('done') or 0) / total)))
+            self.sharpen_text.setText(event.get('message') or 'Sharpening the goal image…')
+            if not self.sharpen_row.isVisible(): self.sharpen_cancel.setEnabled(True)
+            self.status.setText(self.sharpen_text.text())
+        self.sharpen_row.setVisible(running); self.plan_steps.set_side_task(running)
 
     def fit_folder_elements(self):
         """The element list shows every row (it never scrolls inside the Folder tab), and only until the plan lists them."""
@@ -2410,6 +2485,13 @@ class CreativeAgentDocker(DockWidget):
         if width: bar.setFixedWidth(width)
         return bar
 
+    @staticmethod
+    def picture_path(reference):
+        """The file a reference's thumbnail is read from: a sharpened goal's own picture from before (goal-sharpen.ts), the
+        same picture and small, so its tens of millions of pixels are never decoded on Krita's GUI thread for a thumbnail."""
+        reference = reference or {}
+        return ((reference.get('sharpened') or {}).get('from') or {}).get('path') or reference.get('path') or ''
+
     def folder_goal_reference(self):
         return next((r for r in self.attached_references if r.get('source') == 'folder' and r.get('role') == 'reference'), None)
 
@@ -2421,7 +2503,7 @@ class CreativeAgentDocker(DockWidget):
         self.folder_masses.setVisible(shown)
         overview = str(((goal or {}).get('mass_map') or {}).get('overview') or '') if shown else ''
         self.folder_mass_text.setText(('Big colour masses: ' + overview) if overview else ''); self.folder_mass_text.setVisible(bool(overview))
-        path = (goal or {}).get('path') or ''
+        path = self.picture_path(goal)
         if path != getattr(self, 'folder_picture_path', None):
             self.folder_picture_path = path
             picture = thumbnail(path, self.folder_picture.size(), self.devicePixelRatioF()) if path else QPixmap()
@@ -2565,6 +2647,7 @@ class CreativeAgentDocker(DockWidget):
         self.plan_steps.show_steps([]); self.tabs.setTabVisible(self.plan_tab, False); self.tabs.setTabVisible(self.folder_tab, False)
         self.tabs.setCurrentIndex(self.chat_tab)
         self.goal = None; self.plan_bar.hide(); self.move_bar.hide(); self.current_move = None; self.question_id = None; self.question_controls = []; self.closeup_question_id = None; self.closeup_controls = []
+        self.sharpen_controls = []; self.sharpen_row.hide(); self.plan_steps.set_side_task(False)
         self.pending_references = []; self.attached_references = []; self.show_references()
         self.paint_only.chat_ended()
         self.empty_state.show()
@@ -2923,6 +3006,7 @@ class CreativeAgentDocker(DockWidget):
         elif kind == 'busy':
             self.busy = event['busy']
             self.plan_steps.set_busy(self.busy)
+            self.folder_goal_choice.setEnabled(not self.busy and self.folder_goal_choice.count() > 0)
             if not self.busy: stop_requested.clear()      # the stopped run has ended
             self.run_started = time.monotonic() if self.busy else None
             self.activity_dot.setText('●' if self.busy else '')
@@ -2996,7 +3080,7 @@ class CreativeAgentDocker(DockWidget):
             self.plan_bar.setVisible(bool(brief))
             step_rows = (event.get('plan_steps') or []) if brief else []
             goal_reference = self.folder_goal_reference()
-            self.plan_steps.show_steps(step_rows, self.busy, root=getattr(self, 'folder_root', ''), goal_image=(goal_reference or {}).get('path'))
+            self.plan_steps.show_steps(step_rows, self.busy, root=getattr(self, 'folder_root', ''), goal_image=self.picture_path(goal_reference))
             self.tabs.setTabVisible(self.plan_tab, bool(brief))
             self.tabs.setTabText(self.plan_tab, 'Plan · %d' % len(brief['steps']) if brief and brief.get('steps') else 'Plan')
             current_step = self.plan_steps.current_index()
@@ -3075,6 +3159,20 @@ class CreativeAgentDocker(DockWidget):
                 button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
                 button.clicked.connect(lambda _checked=False, value=choice, where=item: self.answer_shapes_model(value, where))
                 item['layout'].addWidget(button); self.shapes_model_controls.append(button)
+        elif kind == 'goal_sharpen_offer':
+            # Sharpen goal (goal-sharpen.ts): offered beside the chat, never a question the run waits for.
+            question_id = event['id']
+            answers = dict(zip(event.get('options') or ['Sharpen', 'Use as is'], ('sharpen', 'original')))
+            self.sharpen_controls = self.choice_card('Goal image', event.get('message') or '', list(answers.items()),
+                                                     lambda value, question_id=question_id: self.send({'type': 'goal_sharpen', 'id': question_id, 'action': value}))
+        elif kind == 'goal_sharpen_review':
+            question_id = event['id']
+            answers = dict(zip(event.get('options') or ['Use sharpened', 'Keep original'], ('use', 'keep')))
+            self.sharpen_controls = self.choice_card('Goal image', event.get('question') or '', list(answers.items()),
+                                                     lambda value, question_id=question_id: self.send({'type': 'goal_sharpen', 'id': question_id, 'action': value}),
+                                                     event.get('image_path'))
+        elif kind == 'goal_sharpen_progress':
+            self.show_sharpen_progress(event)
         elif kind == 'shapes_model_ready':
             for button in self.shapes_model_controls: button.setEnabled(False)
             self.status.setText('The shape model is ready.')

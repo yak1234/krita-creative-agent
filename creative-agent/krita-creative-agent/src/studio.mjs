@@ -39,9 +39,10 @@ import { skillCommand } from './skill-commands.ts';
 import { fillNudge, massGuidance, hasGoalReference, paintedTransfers, referenceColourPassMade, referenceFirstContext } from './reference-first.ts';
 import { transferRefusal, existingPainting } from './reference-tool.mjs';
 import { typedStrokeRefusal, handPaintingRequested } from './typed-strokes.ts';
-import { scanFolder, readFolderText, defaultFolderSteps, elementStep, folderStepKind, elementsNamed } from './project-folder.ts';
+import { scanFolder, readFolderText, defaultFolderSteps, elementStep, folderStepKind, elementsNamed, goalChoices, goalNamed, FOLDER_LIMITS } from './project-folder.ts';
+import { goalSharpener, sharpenedContext } from './goal-sharpen.ts';
 import { ensureMassMaps } from './mass-map.ts';
-import { writePlan, appendNote, readPlan, parsePlan, planDifference, briefFromPlan, remapTicks, stepFile, stepKeys, layerName } from './folder-notes.ts';
+import { writePlan, writePlanGoal, appendNote, readPlan, parsePlan, planDifference, briefFromPlan, remapTicks, stepFile, stepKeys, layerName } from './folder-notes.ts';
 import { planStepControls, stepMarksContext, withStepIds, STEP_ID } from './plan-steps.ts';
 import { applyPaintOnlyCommand, areaContext, adoptArea, askForArea, chipLine } from './paint-only-here.ts';
 import { findArea, timingLine, FindError } from './find-it.ts';
@@ -265,6 +266,8 @@ export class StudioRuntime extends PaintingRuntime {
     this.closeups = options.closeups ?? chatCloseups(this.closeupHost());
     // Plan step controls (plan-steps.ts): Skip / Restore, Good enough → next step, Met / Redo on the panel's plan list.
     this.planSteps = planStepControls(this.planStepHost());
+    // Sharpen goal (goal-sharpen.ts): a folder goal enlarged more than 2x is offered a local 4x sharpening.
+    this.goalSharpen = options.goalSharpen ?? goalSharpener(this.sharpenHost());
   }
   async importJournals() {
     const chats = await this.store.chatsWithJsonJournal();
@@ -823,7 +826,7 @@ export class StudioRuntime extends PaintingRuntime {
     if (!reference) return null;
     this.likenessCanvas={width:canvas.width, height:canvas.height};
     // An attached reference never changes (the chat keeps its own copy), so the goal is read once for its crop.
-    const key=[reference.id,mapping.source,mapping.target].join(':');
+    const key=[reference.id,reference.path,mapping.source,mapping.target].join(':');
     if (this.likenessGoal?.study !== this.study || this.likenessGoal.key !== key) {
       const cells=gridSize(mapping.target);
       const {grid}=await this.likenessGrid(reference.path,{source:mapping.source,size:[reference.width,reference.height],grid:cells});
@@ -1594,11 +1597,13 @@ export class StudioRuntime extends PaintingRuntime {
   async openFolder({path} = {}) {
     if (this.busy) throw new Error('Pause before opening a project folder.');
     if (typeof path !== 'string' || !path.trim()) throw new Error('Choose a project folder.');
-    const index = await scanFolder(path);
     const current = this.folderState();
+    // The goal the artist chose: this chat's, else the one PLAN.md names (a scan ignores a name that is not a folder image).
+    const known = current && await realpath(path).catch(() => null) === current.root ? current.goal : undefined;
+    const index = await scanFolder(path, FOLDER_LIMITS, {goal:known ?? (await readPlan(path).catch(() => null))?.goal});
     if (this.study?.folder && current.root !== index.root) throw new Error('This chat already works from the folder '+basename(current.root)+'. Start a new chat for another folder.');
     if (!this.study) {
-      this.pendingFolder = {root:index.root, guesses:current?.root === index.root ? current.guesses ?? {} : {}};
+      this.pendingFolder = {root:index.root, guesses:current?.root === index.root ? current.guesses ?? {} : {}, ...(index.goal_source === 'chosen' ? {goal:index.goal.name} : {})};
       await this.readFolder(index); this.emitFolder(); return;
     }
     await this.attachFolder(index);
@@ -1638,6 +1643,7 @@ export class StudioRuntime extends PaintingRuntime {
   async attachFolder(index) {
     const previous = this.study.folder;
     this.study.folder = {...(previous?.root === index.root ? previous : {}), root:index.root, guesses:previous?.root === index.root ? previous.guesses ?? {} : {}};
+    if (index.goal_source === 'chosen') this.study.folder.goal = index.goal.name; else delete this.study.folder.goal;
     await this.readFolder(index);
     if (index.goal) {
       try { await this.addReferences([{path:index.goal.path, role:'reference', purpose:'composition', name:basename(index.goal.name), folder:index.goal.name, notes:'The goal image of the project folder: it decides the layout.'}]); }
@@ -1651,6 +1657,58 @@ export class StudioRuntime extends PaintingRuntime {
     if (this.goal.brief && this.goal.folder_plan_root !== index.root) this.goal.approved_revision = null;
     this.emitFolder();
     await this.checkFolderPlan();
+    void this.goalSharpen.check().then(() => this.emitFolder());
+  }
+  /** Goal picker: the artist makes another image of the folder the goal (the Folder tab's Goal image list, or typed: "use
+   * 05-modern-skyline.png as the goal"). The chat's goal reference becomes that image (the composition reference the
+   * underpainting, mass map, likeness check and close-ups use); an element that becomes the goal is no longer an element,
+   * and the old goal is listed among the other images. Remembered in the chat and in PLAN.md's "Goal image:" line. */
+  async setFolderGoal({name} = {}, {typed = false} = {}) {
+    const state = this.folderState(), index = this.folderIndex;
+    if (!state || !index) throw new Error('Open a project folder first.');
+    if (this.busy && !typed) throw new Error('Pause before changing the goal image: the painter reads it.');
+    if (typeof name !== 'string' || !goalChoices(index).includes(name)) throw new Error('That image is not in the project folder.');
+    if (index.goal?.name === name) { this.emitFolder(); return; }
+    const next = await scanFolder(state.root, FOLDER_LIMITS, {goal:name});
+    state.goal = name;
+    this.goalSharpen.goalChanged();                               // nothing sharpened from the old goal lands on the new one
+    if (this.study?.folder) {
+      // The old goal and the new goal's element copy leave the chat; attachFolder attaches the new goal (and the old one if it is an element).
+      this.study.references = this.study.references.filter(r => !(r.source === 'folder' && (r.role === 'reference' || r.folder_name === name)));
+      this.likenessGoal = null;
+      await this.attachFolder(next);
+    } else { await this.readFolder(next); this.emitFolder(); }
+    await this.recordFolderGoal(name);
+    this.emit({type:'action', seconds:0, message:`The goal image is now ${name}: it decides the layout.`});
+  }
+  /** The goal in PLAN.md: with this chat's folder plan, the plan is rewritten (it names the goal); otherwise only its
+   * "Goal image:" line is written (folder-notes.ts writePlanGoal: the artist's own PLAN.md is backed up first). */
+  async recordFolderGoal(name) {
+    const folder = this.folderState();
+    if (!folder) return;
+    if (this.study?.folder && this.goal?.brief && this.goal.folder_plan_root === folder.root) { await this.syncFolderPlan(); return; }
+    try {
+      const result = await writePlanGoal(folder.root, name, {expected:folder.plan_text, title:basename(folder.root)});
+      folder.plan_text = result.text;
+      if (result.backup) this.emit({type:'action', seconds:0, message:`PLAN.md had changes made outside this chat: saved as ${result.backup} before writing the goal image.`});
+    } catch (error) { this.emit({type:'action', seconds:0, message:'PLAN.md was not written: '+this.redact(error.message)}); }
+    if (this.study) await this.persist();
+  }
+  /** What the sharpening needs of the studio (goal-sharpen.ts). */
+  sharpenHost() {
+    const studio = this;
+    return {
+      get study() { return studio.study; },
+      canvas: () => this.decisionObservation ?? this.canvasContext?.canvas ?? this.lastObservation ?? null,
+      setting: () => this.executionSettings?.sharpen_goal ?? 'ask',
+      busy: () => !!this.busy,
+      dataDir: () => this.config?.data_dir ?? this.config?.output,
+      emit: event => this.emit(event),
+      persist: () => this.persist(),
+      publish: () => this.publish(),
+      callNative: (operation, params) => this.callNative(operation, params),
+      goalChanged: () => { this.likenessGoal = null; this.startMassMaps(); this.emitFolder(); },
+    };
   }
   async folderGuess({name, guess} = {}) {
     const state = this.folderState(), element = this.folderIndex?.elements.find(e => e.name === name);
@@ -1670,14 +1728,16 @@ export class StudioRuntime extends PaintingRuntime {
     const references = Object.fromEntries((this.study?.references ?? []).filter(r => r.folder_name).map(r => [r.folder_name, r.id]));
     this.emit({type:'folder', index:{root:index.root, name:basename(index.root), goal:index.goal ? strip(index.goal) : null,
       elements:index.elements.map(e => ({...strip(e), guess:this.folderGuessOf(e)})), others:index.others.map(strip),
-      texts:index.texts.map(strip), skipped:index.skipped}, references, plan_limit:FOLDER_PLAN_ELEMENTS});
+      texts:index.texts.map(strip), skipped:index.skipped, goal_choices:goalChoices(index), goal_source:index.goal_source ?? null},
+      references, plan_limit:FOLDER_PLAN_ELEMENTS, goal_sharpen:this.goalSharpen?.status() ?? null});
   }
   /** What the painter knows of the folder: the goal, the elements with the artist's names, the texts and the brief. */
   folderContext() {
     const index = this.folderIndex;
     if (!this.study?.folder || !index) return undefined;
     const id = name => this.study.references.find(r => r.folder_name === name)?.id ?? null;
-    return {name:basename(index.root), goal:index.goal ? {name:index.goal.name, reference_id:id(index.goal.name)} : null,
+    const goalRef = index.goal ? this.study.references.find(r => r.folder_name === index.goal.name) : null, sharpened = goalRef ? sharpenedContext(goalRef) : undefined;
+    return {name:basename(index.root), goal:index.goal ? {name:index.goal.name, reference_id:id(index.goal.name), ...(sharpened ? {sharpened} : {})} : null,
       elements:index.elements.map(e => ({name:e.name, guess:this.folderGuessOf(e), reference_id:id(e.name), ...(e.prompt ? {prompt:e.prompt} : {})})),
       texts:index.texts.map(({name, kind, chars}) => ({name, kind, chars})), other_images:index.others.length,
       ...(this.goal?.brief ? {plan_done_steps:(this.goal.done_steps ?? []).map(i => i + 1), plan_approved:this.folderPlanApproved()} : {}),
@@ -2081,7 +2141,7 @@ export class StudioRuntime extends PaintingRuntime {
       await this.addReferences(p.references);
       if (this.pendingFolder) {
         const pending = this.pendingFolder; this.pendingFolder = null;
-        this.study.folder = pending; await this.attachFolder(await scanFolder(pending.root));
+        this.study.folder = pending; await this.attachFolder(await scanFolder(pending.root, FOLDER_LIMITS, {goal:pending.goal}));
       }
       await this.openSession(model); this.selectTools();
       const text=p.prompt?.trim() || (this.study.references.length ? 'Help me work from these reference images.':'Help me develop a painting idea.');
@@ -2201,6 +2261,9 @@ export class StudioRuntime extends PaintingRuntime {
       if (this.mode !== 'autopilot') await this.clearAutoArea('the area Autopilot found ended with its run');   // e.g. left by a crash
       this.goal.canvas_selection = this.canvasSelection; this.goal.region_selection=this.regionSelection;
       const message = await this.remember('user', text,command.message_id);
+      // "use 05-modern-skyline.png as the goal": the goal picker, typed. It changes the goal and paints nothing.
+      const typedGoal = !command.start_plan && this.study?.folder && this.folderIndex ? goalNamed(text, goalChoices(this.folderIndex)) : null;
+      if (typedGoal) { await this.setFolderGoal({name:typedGoal}, {typed:true}); this.setActivity('idle', `The goal image is now ${typedGoal}.`); return; }
       this.goal.review_start_index=this.goal.reviews.length;
       const images = await this.prepareContext(message,contextRequest);
       this.routingStageKey=null;
@@ -2285,6 +2348,7 @@ export class StudioRuntime extends PaintingRuntime {
       this.sleepGuard.stop();
       await this.persist(); this.publish();
       this.busy = false; this.emit({ type:'busy', busy:false });
+      await this.goalSharpen?.settle().catch(() => {});   // a sharpened goal approved while it painted; a goal the canvas now shows small
       await this.planSteps.afterRun().catch(error => this.setActivity('error', this.redact(error.message)));   // a "good enough" move: kept, next step
       const next = this.pendingText.splice(0);
       if (next.length) await this.prompt(next.map(p => p.text).join('\n\n'), next.at(-1).command);
@@ -2294,7 +2358,9 @@ export class StudioRuntime extends PaintingRuntime {
   // so an 8 MB original only added upload time and chat-log size. Krita does the resize (no image
   // library here); the copy is kept once per reference as an image variant in the records database.
   async modelImage(ref) {
-    const original = await imageContent(this.study.directory, ref.path);
+    // A sharpened goal (goal-sharpen.ts) is shown to the model as the picture it was: the same picture, already about the
+    // model's size, so its tens of MB never go to Krita to be shrunk, nor to the model when Krita is away.
+    const original = await imageContent(this.study.directory, ref.sharpened?.from?.path ?? ref.path);
     const data = Buffer.from(original.content.data, 'base64'), sha256 = createHash('sha256').update(data).digest('hex');
     const images = this.store.sessions, kind = 'model-' + MODEL_IMAGE_SIDE;
     const known = images?.variant(sha256, kind);
@@ -3278,7 +3344,7 @@ export class StudioRuntime extends PaintingRuntime {
       this.emit({type:'history',messages:this.goal.messages});
       this.selectTools(this.mode==='autopilot'?'plan':this.mode);
       if (this.study.folder) {
-        try { await this.attachFolder(await scanFolder(this.study.folder.root)); }
+        try { await this.attachFolder(await scanFolder(this.study.folder.root, FOLDER_LIMITS, {goal:this.study.folder.goal})); }
         catch (error) { this.emit({type:'action',seconds:0,message:'The project folder could not be read: '+this.redact(error.message)}); }
       }
       await this.canvas({action:'refresh'}).catch(()=>{});
@@ -3323,6 +3389,7 @@ export class StudioRuntime extends PaintingRuntime {
       prunePreviews(directory,{extraText:this.store.recordText(id)}).then(async()=>removeRebuildable(directory,{files:await this.store.removableFiles(id)})).catch(()=>{}); }   // background; see previews.mjs
     this.untrace?.(); this.untrace = undefined;
     await this.shapes?.close().catch(() => {});        // the shape worker and what it studied belong to the chat
+    this.goalSharpen?.stop();                            // a sharpening in progress belongs to the chat too
     this.shapeStudies = undefined; this.canvasPixels = null;   // use.ts's studies and canvas decode, with them
     this.folderIndex = undefined; this.folderBrief = undefined; this.pendingFolder = null;
     await this.tracing?.endSession(this.study?.id,{metadata:{goal_status:this.goal?.status,goal_revision:this.goal?.revision}});

@@ -239,8 +239,8 @@ test('under a time allowance a transfer widens its steps to fit; without one, or
  const [a,b,c]=fit.recipe.steps;assert.ok(a>b&&b>c&&c>2.5,'still coarse to fine, every step wider');
  assert.equal(fitStepsToTime(starry,10*3600),null,'ten hours is enough');
  assert.ok(estimateReferenceStrokes(fitStepsToTime(starry,left,40).recipe)>estimateReferenceStrokes(fit.recipe),'a faster measured rate keeps finer steps');
- const capped=fitStepsToTime({...starry,steps:[40,20,10]},5).recipe.steps;
- assert.ok(capped[0]<=64&&capped[0]>capped[1]&&capped[1]>capped[2],'the 64 px cap keeps the order');
+ const capped=fitStepsToTime({...starry,steps:[160,80,40]},5).recipe.steps;
+ assert.ok(capped[0]<=256&&capped[0]>capped[1]&&capped[1]>capped[2],'the STEP_MAX cap (256, for a goal sharpened 4x) keeps the order');
 });
 test('a job sized to the time left records what was asked, tells the painter, and replays under the same ID',async()=>{
  const h=await harness();try{
@@ -348,12 +348,15 @@ test('the painter is told what a reference part and a crop are',async()=>{
  assert.match(PAINTING_INSTRUCTIONS,/A part reference \(part_of\) is see-through outside the one area to follow; a transfer from it paints only that area, in the place it has in the original\. A crop is a close-up of bounds of the original\./);
 });
 
-test('a reference part may be larger than 5 MB, up to the 12 MB a reference may be; others stay at 5 MB',async()=>{
+test('a reference of up to 64 MB transfers (a goal sharpened 4x), a part or a whole picture; a larger one is refused',async()=>{
  const h=await harness();try{
   const big=join(h.runtime.study.directory,'big.png');await writeFile(big,Buffer.alloc(6*1024*1024));
   h.runtime.study.references.push({id:'part',path:big,part_kind:'part',bounds:[0,0,24,24]},{id:'plain',path:big});
   assert.equal((await h.tools[0].execute('part',{...recipe,reference_id:'part'})).details.status,'complete');
-  await assert.rejects(h.tools[0].execute('plain',{...recipe,reference_id:'plain'}),/smaller than 5 MB/);
+  assert.equal((await h.tools[0].execute('plain',{...recipe,reference_id:'plain'})).details.status,'complete','over the old 5 MB');
+  const huge=join(h.runtime.study.directory,'huge.png');await writeFile(huge,Buffer.alloc(65*1024*1024));
+  h.runtime.study.references.push({id:'huge',path:huge});
+  await assert.rejects(h.tools[0].execute('huge',{...recipe,reference_id:'huge'}),/smaller than 64 MB/);
  }finally{await h.close();}
 });
 test('the painter protects what the artist says to leave alone, by name, before painting',async()=>{
@@ -427,4 +430,39 @@ test('the stretch limit counts painted jobs of this plan revision, as the transf
   h.runtime.goal={...h.runtime.goal,revision:2};
   assert.equal((await h.tools.find(t=>t.name==='paint_reference_edges').execute('two',{...edges,name:'Rim 2'})).details.status,'complete','a job of an earlier plan revision');
  }finally{await h.close();}
+});
+
+// A goal sharpened 4x (goal-sharpen.ts): read whole, decoded in the companion, and a rect in its old pixels scaled.
+test('a large plain PNG reference is decoded in the companion, not on Krita’s GUI thread; a stale rect of the old goal is scaled',async()=>{
+ const {encodeRgb}=await import('../src/upscale/png.ts');
+ const h=await harness();try{
+  const W=2400,H=2000,rgb=new Uint8Array(W*H*3);for(let i=0;i<W*H;i++){rgb[i*3]=(i%W)<W/2?200:10;rgb[i*3+1]=20;rgb[i*3+2]=(i%W)<W/2?10:200;}
+  await writeFile(h.ref,encodeRgb(W,H,rgb));
+  const asked=[],native=h.runtime.callNative;h.runtime.callNative=async(op,p)=>{asked.push(op);return native(op,p);};
+  const goal=h.runtime.study.references[0];Object.assign(goal,{width:W,height:H,sharpened:{from:{sha256:'old',width:600,height:500,path:h.ref}}});
+  const done=await h.tools[0].execute('big',{...recipe,focal_regions:undefined,source:[0,0,600,600],target:[2,2,48,48],steps:[48,24,12]});
+  assert.equal(done.details.status,'complete');
+  assert.ok(!asked.includes('decode_reference'),'5 MP: not sent to Krita');
+  const {readdir}=await import('node:fs/promises'),folder=join(h.runtime.study.directory,'reference-paintings');
+  const jobs=async()=>Promise.all((await readdir(folder)).filter(n=>n.endsWith('.json')).map(async n=>JSON.parse(await readFile(join(folder,n),'utf8'))));
+  assert.deepEqual((await jobs())[0].recipe.source,[0,0,600,600],'a new rect is taken as written');
+  const stale=await h.tools[0].execute('stale',{...recipe,focal_regions:undefined,source:[0,0,600,500],target:[2,2,48,40],steps:[48,24,12]});
+  assert.equal(stale.details.status,'complete');
+  const scaled=(await jobs()).find(j=>j.requested?.source?.[2]===600&&j.requested.source[3]===500);
+  assert.deepEqual(scaled?.recipe.source,[0,0,2400,2000],'the old picture’s whole rect, in the sharpened pixels');
+ }finally{await h.close();}
+});
+
+test('edges and surface analyse a very large crop from a reduced copy, spacing and length scaled with it; the target is unchanged',async()=>{
+ const {analysisCopy}=await import('../src/reference-generator.mjs');
+ const big={width:3000,height:2000,data:Buffer.alloc(3000*2000*4,128)};
+ const edges={name:'E',reference_id:'ref',preset:'Basic',mode:'edges',source:[0,0,3000,2000],target:[0,0,3000,2000]};
+ const a=analysisCopy(edges,big,1_500_000);
+ assert.deepEqual([a.image.width,a.image.height],[1500,1000]);
+ assert.deepEqual(a.recipe.source,[0,0,1500,1000]); assert.deepEqual(a.recipe.target,[0,0,3000,2000]);
+ assert.equal(a.recipe.spacing,.75,'the default 1.5 source pixels, halved');
+ const surface=analysisCopy({...edges,mode:'surface',spacing:8,length:40},big,1_500_000);
+ assert.deepEqual([surface.recipe.spacing,surface.recipe.length],[4,20]);
+ assert.equal(analysisCopy({...edges,source:[0,0,1000,1000]},big,1_500_000).image,big,'a crop within the limit is read as it is');
+ assert.equal(analysisCopy({...edges,mode:undefined},big,1_500_000).image,big,'the dab transfer reads it whole');
 });

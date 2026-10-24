@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile, truncate, symlink, readdir, readFile, stat, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { scanFolder, FOLDER_LIMITS, elementGuess, defaultFolderSteps, elementStep, folderStepKind, elementsNamed } from '../src/project-folder.ts';
+import { scanFolder, FOLDER_LIMITS, elementGuess, defaultFolderSteps, elementStep, folderStepKind, elementsNamed, goalNamed, goalChoices } from '../src/project-folder.ts';
 
 /** A PNG signature and IHDR: enough for imageInfo (files.mjs) to read the size. */
 function tinyPng(width = 4, height = 3) {
@@ -247,4 +247,48 @@ test('elementsNamed: the elements an artist\u2019s message names, by name, file 
   assert.deepEqual(elementsNamed('work on the Kremlin towers', more), ['assets/04-kremlin-towers.png']);
   assert.deepEqual(elementsNamed('the sky looks too cold', more), ['assets/01-moonlit-sky.png']);
   assert.deepEqual(elementsNamed('leave the sky alone, refine the street light', more), ['assets/05-street-light.png'], 'each mention decides in its own clause');
+});
+
+// Goal picker (goal-image change): the artist chooses which folder image is the goal; without a choice, today's rule.
+test('the goal is the artist\u2019s choice when one is given: a numbered image leaves the elements, final_goal.png becomes another image', async () => {
+  const root = await cleanFolder();
+  try {
+    const plain = await scanFolder(root);
+    assert.equal(plain.goal?.name, 'final_goal.png'); assert.equal(plain.goal_source, 'name');
+    const chosen = await scanFolder(root, FOLDER_LIMITS, { goal: '05-modern-skyline.png' });
+    assert.deepEqual([chosen.goal?.name, chosen.goal?.role, chosen.goal?.guess, chosen.goal_source], ['05-modern-skyline.png', 'goal', 'Goal image', 'chosen']);
+    assert.ok(!chosen.elements.some(e => e.name === '05-modern-skyline.png'), 'the goal is not also an element');
+    assert.equal(chosen.elements.length, 11);
+    assert.deepEqual(chosen.others.map(o => o.name), ['final_goal.png'], 'the old goal is listed among the other images');
+    const missing = await scanFolder(root, FOLDER_LIMITS, { goal: 'gone.png' });
+    assert.deepEqual([missing.goal?.name, missing.goal_source], ['final_goal.png', 'name'], 'a choice no longer in the folder falls back to the rule');
+    const none = await scanFolder(root, FOLDER_LIMITS, { goal: '../outside.png' });
+    assert.equal(none.goal?.name, 'final_goal.png', 'a name outside the folder is never a choice');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('goalChoices: every image of the folder, the goal first, then the elements in order, then the other images', async () => {
+  const root = await artistFolder();
+  try {
+    const index = await scanFolder(root);
+    const choices = goalChoices(index);
+    assert.equal(choices[0], 'final_goal.png');
+    assert.deepEqual(choices.slice(1, 3), ['moscow-painting-assets/01-moonlit-sky.png', 'moscow-painting-assets/02-historic-buildings.png']);
+    assert.deepEqual(choices.slice(-3), ['finished_review.png', 'skies.png', 'two_skies.png']);
+    assert.equal(choices.length, 1 + 12 + 3);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('goalNamed: a typed message that makes a folder image the goal, by file name or stem; anything else names none', () => {
+  const images = ['final_goal.png', 'assets/05-modern-skyline.png', 'assets/04-kremlin-towers.png', 'skies.png'];
+  assert.equal(goalNamed('use 05-modern-skyline.png as the goal', images), 'assets/05-modern-skyline.png');
+  assert.equal(goalNamed('Use 05-modern-skyline as the goal image.', images), 'assets/05-modern-skyline.png');
+  assert.equal(goalNamed('make skies.png the goal', images), 'skies.png');
+  assert.equal(goalNamed('Set the goal image to assets/04-kremlin-towers.png please', images), 'assets/04-kremlin-towers.png');
+  assert.equal(goalNamed('switch the goal to 04-kremlin-towers.png', images), 'assets/04-kremlin-towers.png');
+  for (const text of ['Paint 04-kremlin-towers.png as the goal shows it', 'Make the tower as the goal image has it, see 04-kremlin-towers.png',
+    'Keep 05-modern-skyline as the goal picture does', 'the goal is final_goal.png again', 'paint the modern skyline', 'refine 05-modern-skyline.png', 'don\u2019t use skies.png as the goal', 'use skies.png as a colour reference',
+    'the goal is a snowy night', 'use 99-nothing.png as the goal', ''])
+    assert.equal(goalNamed(text, images), null, text);
+  assert.equal(goalNamed('use final_goal.png or skies.png as the goal', images), null, 'two images named: not a choice');
 });

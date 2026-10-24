@@ -979,7 +979,7 @@ test('parallel preparation runs two isolated model requests beside one painter t
     assert.equal(peak,2);assert.equal(proposals,2);assert.equal(h.runtime.goal.status,'complete');
     assert.equal(h.calls.filter(c=>c.operation==='paint_pass').length,1);
     const id=h.runtime.study.id;await h.runtime.end();await h.runtime.resume(id);
-    assert.deepEqual(h.runtime.executionSettings,{concurrency:2,reasoning:'high',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,guides:true,reference_first:true,assets:'codex',ai_images:0,keep_screen_awake:false,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
+    assert.deepEqual(h.runtime.executionSettings,{concurrency:2,reasoning:'high',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,guides:true,reference_first:true,assets:'codex',ai_images:0,keep_screen_awake:false,sharpen_goal:'ask',decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
     assert.equal(h.runtime.session.thinkingLevel,'off');
     assert.equal(h.runtime.goal.status,'paused');
   } finally {await h.close();}
@@ -3088,6 +3088,80 @@ test('opening a folder attaches its images and tells the panel',{timeout:20000},
   assert.equal(await folderSnapshot(root),before,'opening writes nothing into the folder');
   await h.runtime.openFolder({path:root});
   assert.equal(h.runtime.study.references.length,refs.length,'opening it again attaches nothing twice');
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+// Goal picker: the artist chooses which folder image is the goal (Folder tab, or typed); PLAN.md remembers it.
+test('the goal picker: another folder image becomes the goal reference, the old goal leaves, PLAN.md remembers it',{timeout:20000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}));
+ const root=await projectFolder();
+ try {
+  await h.start('ask','Hello'); await h.runtime.openFolder({path:root});
+  const event=h.events.filter(e=>e.type==='folder').at(-1);
+  assert.deepEqual(event.index.goal_choices,['final_goal.png','assets/01-moonlit-sky.png','assets/02-historic-buildings.png','assets/04-kremlin-towers.png','finished_review.png']);
+  assert.equal(event.index.goal_source,'name');
+  await h.runtime.setFolderGoal({name:'assets/04-kremlin-towers.png'});
+  const refs=h.runtime.study.references, goals=refs.filter(r=>r.role==='reference');
+  assert.deepEqual(goals.map(r=>[r.folder_name,r.purpose,r.source]),[['assets/04-kremlin-towers.png','composition','folder']],'one goal reference: the chosen image');
+  assert.ok(!refs.some(r=>r.folder_name==='final_goal.png'),'the old goal is no longer attached');
+  assert.ok(!refs.some(r=>r.role==='asset' && r.folder_name==='assets/04-kremlin-towers.png'),'the goal is not also an element');
+  const after=h.events.filter(e=>e.type==='folder').at(-1);
+  assert.equal(after.index.goal.name,'assets/04-kremlin-towers.png'); assert.equal(after.index.goal_source,'chosen');
+  assert.ok(after.index.others.some(o=>o.name==='final_goal.png'));
+  const context=JSON.parse(h.runtime.context('agent').split('\n').find(line=>line.startsWith('{')));
+  assert.equal(context.folder.goal.name,'assets/04-kremlin-towers.png'); assert.equal(context.folder.goal.reference_id,goals[0].id);
+  assert.match(await readFile(join(root,'PLAN.md'),'utf8'),/^Goal image: assets\/04-kremlin-towers\.png \(it decides the layout\)\.$/m);
+  assert.match(h.events.filter(e=>e.type==='action').at(-1).message,/The goal image is now assets\/04-kremlin-towers\.png/);
+  await assert.rejects(h.runtime.setFolderGoal({name:'../elsewhere.png'}),/not in the project folder/);
+  // A new chat on the same folder starts from the goal PLAN.md names.
+  await h.runtime.end();
+  await h.start('ask','Again'); await h.runtime.openFolder({path:root});
+  assert.equal(h.runtime.study.references.find(r=>r.role==='reference').folder_name,'assets/04-kremlin-towers.png');
+  // Typed: "use final_goal.png as the goal" changes it back without a model turn.
+  const asked=h.requests.length;
+  await h.runtime.prompt('use final_goal.png as the goal');
+  assert.equal(h.requests.length,asked,'no model request for a goal change');
+  assert.equal(h.runtime.study.references.find(r=>r.role==='reference').folder_name,'final_goal.png');
+  assert.equal(h.runtime.study.references.filter(r=>r.role==='asset').length,3,'the towers are an element again');
+  assert.match(await readFile(join(root,'PLAN.md'),'utf8'),/^Goal image: final_goal\.png/m);
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('a sharpened goal tells the painter its new pixel size and the scale for older rects; a goal change stops the sharpening',{timeout:20000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}));
+ const root=await projectFolder();
+ try {
+  await h.start('ask','Hello'); await h.runtime.openFolder({path:root});
+  const goal=h.runtime.study.references.find(r=>r.role==='reference');
+  const sharp=join(h.runtime.study.directory,'sharp.png'); await writeFile(sharp,Buffer.concat([png,Buffer.from('sharpened')]));
+  Object.assign(goal,{path:sharp,width:4,height:4,sharpened:{from:{path:goal.path,width:1,height:1,sha256:'old'},model:'m',revision:'r',scale:4,full:sharp,at:'x'}});
+  const shown=await h.runtime.modelImage(goal);
+  assert.equal(shown.data,png.toString('base64'),'the model sees the picture it was, not the sharpened file');
+  const context=JSON.parse(h.runtime.context('agent').split('\n').find(line=>line.startsWith('{')));
+  assert.deepEqual([context.folder.goal.sharpened.width,context.folder.goal.sharpened.scale],[4,4]);
+  assert.match(context.folder.goal.sharpened.note,/multiply any earlier rect by 4/);
+  let changed=0; const real=h.runtime.goalSharpen.goalChanged; h.runtime.goalSharpen.goalChanged=()=>{changed++; real();};
+  await h.runtime.setFolderGoal({name:'assets/01-moonlit-sky.png'});
+  assert.equal(changed,1,'the goal picker stops and forgets what was sharpened for the old goal');
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('a folder goal much smaller than the canvas is offered for sharpening beside the chat; the Folder card shows it',{timeout:20000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}));
+ const root=await projectFolder();
+ try {
+  await h.start('ask','Hello'); await h.runtime.canvas({action:'refresh'}).catch(()=>{}); await h.runtime.openFolder({path:root});
+  await h.runtime.goalSharpen.check();
+  for (let i=0;i<50 && !h.events.some(e=>e.type==='goal_sharpen_offer');i++) await new Promise(resolve=>setTimeout(resolve,20));
+  const offer=h.events.find(e=>e.type==='goal_sharpen_offer');
+  assert.ok(offer,'offered');
+  assert.match(offer.message,/smaller than the canvas, so detail will blur\. Sharpen it 4x/);
+  assert.equal(h.runtime.goal.question,null,'beside the chat: nothing waits for the answer');
+  await h.runtime.goalSharpen.answer({id:offer.id,action:'original'});
+  h.runtime.emitFolder();
+  assert.equal(h.events.filter(e=>e.type==='folder').at(-1).goal_sharpen.state,'kept');
+  await h.runtime.setExecutionSettings({sharpen_goal:'never'});
+  assert.equal(h.runtime.executionSettings.sharpen_goal,'never');
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
 });
 

@@ -318,6 +318,23 @@ def companion_package_notices(companion):
     return found
 
 
+
+def downloaded_model_notices(companion):
+    """Lines for the models the companion downloads on first use, after the artist agrees (not shipped), read from the
+    release's companion/src/downloaded-models.json; none when it has no such file."""
+    import json
+    try:
+        models = json.loads((Path(companion) / 'src' / 'downloaded-models.json').read_text()).get('models') or []
+    except (OSError, ValueError):
+        return []
+    lines = []
+    for model in models:
+        lines.append('  %s: %s, %s (%s).' % (model.get('title', model.get('name', '?')), model.get('licence', 'see its source'),
+                                             model.get('copyright', ''), model.get('source', '')))
+        if model.get('download'):
+            lines.append('    downloaded from %s, pinned by SHA-256.' % model['download'])
+    return (['Models downloaded on first use, after the artist agrees (not inside the app; kept in the companion\'s data folder):'] + lines) if lines else []
+
 # What the libraries inside the wheels are (by file-name prefix), for the notice. Anything else: see the wheel's own licence file.
 WHEEL_LIBRARY_LICENCES = (
     ('libscipy_openblas', 'OpenBLAS: BSD-3-Clause'), ('libopenblas', 'OpenBLAS: BSD-3-Clause'),

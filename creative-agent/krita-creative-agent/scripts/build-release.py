@@ -145,6 +145,42 @@ def bundle_shape_worker(root, companion, esbuild, dependency_root, arch):
     copy_onnxruntime(dependency_root, companion, 'darwin', arch)
 
 
+def bundle_upscale_worker(root, companion, esbuild):
+    """The goal-sharpening worker runs as its own process too (src/upscale/worker.ts): bundled beside main.mjs as
+    src/upscale-worker.mjs, where src/upscale/index.ts looks for it in a release, using the same ONNX Runtime the shape
+    worker's bundle_shape_worker copies (call that first)."""
+    result = subprocess.run([str(esbuild), str(root / 'src/upscale/worker.ts'), '--bundle', '--platform=node', '--format=esm', '--target=node22',
+                             '--outfile=' + str(companion / 'src/upscale-worker.mjs'), '--external:onnxruntime-node', '--log-level=warning',
+                             '--legal-comments=none', '--banner:js=' + BANNER], cwd=root, text=True, capture_output=True)
+    if result.returncode or 'warning' in result.stderr.lower():
+        raise ValueError('Bundling the sharpening worker failed or warned: ' + (result.stderr or result.stdout)[-2000:])
+
+
+UPSCALE_CHECK = r'''
+const { fork } = require('node:child_process');
+const child = fork(process.argv[1], ['--model', process.argv[2]], { serialization: 'advanced', execArgv: [], stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+let stderr = ''; child.stderr.on('data', d => { stderr += d; });
+const timer = setTimeout(() => { console.log(JSON.stringify({ error: 'no answer', stderr })); child.kill(); process.exit(1); }, 30000);
+child.on('message', reply => { clearTimeout(timer); console.log(JSON.stringify(reply)); child.kill(); process.exit(0); });
+child.on('exit', code => { clearTimeout(timer); console.log(JSON.stringify({ error: 'exited ' + code, stderr })); process.exit(1); });
+child.send({ id: 1, op: 'upscale', rgba: new Uint8Array(0), width: 0, height: 0, outputs: {}, max_pixels: 1 });
+'''
+
+
+def validate_upscale_worker(node, companion):
+    """The bundled sharpening worker starts from the release layout and loads onnxruntime-node (it imports it on start):
+    asked to sharpen nothing, it must answer invalid, not fail to load."""
+    with tempfile.TemporaryDirectory(prefix='creative-validate-upscale-') as home:
+        result = subprocess.run([str(node), '-e', UPSCALE_CHECK, str(Path(companion) / 'src/upscale-worker.mjs'), str(Path(home) / 'no-model')],
+                                cwd=str(Path(companion) / 'src'), text=True, capture_output=True, timeout=60,
+                                env={'HOME': home, 'PATH': str(Path(node).parent) + ':/usr/bin:/bin'})
+    try: reply = json.loads(result.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError): reply = {}
+    error = reply.get('error')
+    if not isinstance(error, dict) or error.get('code') != 'invalid':
+        raise ValueError('The bundled sharpening worker did not start with onnxruntime-node: ' + (result.stdout + result.stderr)[-2000:])
+
+
 WORKER_CHECK = r'''
 const { fork } = require('node:child_process');
 const child = fork(process.argv[1], ['--model', process.argv[2], '--idle-ms', '20000'], { serialization: 'advanced', execArgv: [], stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
@@ -186,8 +222,10 @@ def bundle_companion(root, dependency_root, companion, lock, arch):
     bundle_image_resizing(dependency_root, companion, esbuild, root, pi_ai)
     copy_external_packages(dependency_root, companion)
     bundle_shape_worker(root, companion, esbuild, dependency_root, arch)
+    bundle_upscale_worker(root, companion, esbuild)
     shutil.copy2(root / 'src/visual-check-questions.json', companion / 'src/visual-check-questions.json')
     shutil.copy2(root / 'src/brush-catalog.json', companion / 'src/brush-catalog.json')
+    shutil.copy2(root / 'src/downloaded-models.json', companion / 'src/downloaded-models.json')   # the notices list them
     # Python for image assets: the sandbox runner beside main.mjs, Pyodide itself, the bundled skills
     # and the wheels the scripts import, fetched now so an artist's Mac never downloads them.
     shutil.copy2(root / 'src/pyodide-runner.mjs', companion / 'src/pyodide-runner.mjs')
@@ -291,6 +329,7 @@ def build(destination, node=None, root=ROOT, plugin=None, node_spec=None, depend
         # bundle missed, or an asset it cannot find, fails here instead of on an artist's Mac.
         validate_companion(node, companion)
         validate_shape_worker(node, companion)
+        validate_upscale_worker(node, companion)
         validate_external_packages(node, companion)
         # The digest covers physical payloads. Derived manifests are excluded
         # from their own digest and then separately covered by the file list.

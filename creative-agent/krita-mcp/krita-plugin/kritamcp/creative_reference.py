@@ -4,15 +4,22 @@ import math
 import hashlib
 from .creative_validation import fields
 
+# A reference may be a goal image sharpened 4x (the companion's goal-sharpen.ts: 5792 x 4344 for New Moscow): the transfer
+# reads it whole, the other tools decode it reduced while read. Files up to REFERENCE_FILE_BYTES (base64 up to
+# REFERENCE_ENCODED), at most REFERENCE_PIXELS, the size read from the header before anything is decoded.
+REFERENCE_FILE_BYTES = 64 * 1024 * 1024
+REFERENCE_ENCODED = REFERENCE_FILE_BYTES * 4 // 3 + 4
+REFERENCE_PIXELS = 26_000_000
+
 
 def decode_reference(params):
     fields(params, ('image_base64', 'sha256'), ('image_base64', 'sha256'))
     encoded = params['image_base64']
-    if not isinstance(encoded, str) or len(encoded) > 7 * 1024 * 1024:
-        raise ValueError('Reference must be at most 5 MB.')
+    if not isinstance(encoded, str) or len(encoded) > REFERENCE_ENCODED:
+        raise ValueError('Reference must be at most %d MB.' % (REFERENCE_FILE_BYTES // (1024 * 1024)))
     data = base64.b64decode(encoded, validate=True)
-    if len(data) > 5 * 1024 * 1024:
-        raise ValueError('Reference must be at most 5 MB.')
+    if len(data) > REFERENCE_FILE_BYTES:
+        raise ValueError('Reference must be at most %d MB.' % (REFERENCE_FILE_BYTES // (1024 * 1024)))
     if hashlib.sha256(data).hexdigest() != params['sha256']:
         raise ValueError('Reference content changed.')
     from .qt_compat import QByteArray, QBuffer, QIODevice
@@ -20,8 +27,8 @@ def decode_reference(params):
     buffer = QBuffer(); buffer.setData(QByteArray(data)); buffer.open(QIODevice.OpenModeFlag.ReadOnly)
     reader = QImageReader(buffer)
     size = reader.size()
-    if not size.isValid() or size.width() * size.height() > 4_000_000:
-        raise ValueError('Use a reference with at most four million pixels.')
+    if not size.isValid() or size.width() * size.height() > REFERENCE_PIXELS:
+        raise ValueError('Use a reference with at most %d million pixels.' % (REFERENCE_PIXELS // 1_000_000))
     image = reader.read()
     if image.isNull():
         raise ValueError('Could not decode the attached reference.')
@@ -43,8 +50,8 @@ def _trace_decode(params, side=None):
     """A reference's bytes checked against their hash and decoded reduced while read: at most `side` pixels on the long
     side (when given) and TRACE_PIXELS in all, never enlarged. Returns the RGBA8888 QImage and the original size."""
     encoded = params['image_base64']
-    if not isinstance(encoded, str) or len(encoded) > 17 * 1024 * 1024:
-        raise ValueError('A reference to trace must be at most 12 MB.')
+    if not isinstance(encoded, str) or len(encoded) > REFERENCE_ENCODED:
+        raise ValueError('A reference to trace must be at most %d MB.' % (REFERENCE_FILE_BYTES // (1024 * 1024)))
     data = base64.b64decode(encoded, validate=True)
     if hashlib.sha256(data).hexdigest() != params['sha256']:
         raise ValueError('Reference content changed.')
@@ -285,8 +292,8 @@ def model_image(params):
     """
     fields(params, ('image_base64', 'sha256', 'max_side'), ('image_base64', 'sha256', 'max_side'))
     encoded, side = params['image_base64'], params['max_side']
-    if not isinstance(encoded, str) or len(encoded) > 17 * 1024 * 1024:
-        raise ValueError('Reference must be at most 12 MB.')
+    if not isinstance(encoded, str) or len(encoded) > REFERENCE_ENCODED:
+        raise ValueError('Reference must be at most %d MB.' % (REFERENCE_FILE_BYTES // (1024 * 1024)))
     if isinstance(side, bool) or not isinstance(side, int) or not 256 <= side <= 4096:
         raise ValueError('max_side must be 256-4096 pixels')
     data = base64.b64decode(encoded, validate=True)
@@ -334,8 +341,8 @@ def jpeg_copy(params):
     """
     fields(params, ('image_base64', 'sha256', 'quality'), ('image_base64', 'sha256'))
     encoded, quality = params['image_base64'], params.get('quality', 90)
-    if not isinstance(encoded, str) or len(encoded) > 17 * 1024 * 1024:
-        raise ValueError('Image must be at most 12 MB.')
+    if not isinstance(encoded, str) or len(encoded) > REFERENCE_ENCODED:
+        raise ValueError('Image must be at most %d MB.' % (REFERENCE_FILE_BYTES // (1024 * 1024)))
     if isinstance(quality, bool) or not isinstance(quality, int) or not 50 <= quality <= 100:
         raise ValueError('quality must be 50-100')
     data = base64.b64decode(encoded, validate=True)

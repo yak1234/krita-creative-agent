@@ -40,7 +40,7 @@ finishes make it move eventually to the final. Right now we just have a very cri
 - [x] 2.4 Companion: paint_accents in an area from the placed goal compares at full size; goal likeness measures the move's area at full size before and after each batch (reported, never used to undo)
 - [x] 2.5 Refine to the goal (goal 8): refine_to_goal, the host's loop; default folder plan step "Refine to the goal" between Finish and Accents; a refine request without an area after the whole-picture Finish runs it
 - [x] 2.6 Tests (Python under PyQt5 and PyQt6, companion unit), offline timings on the church files and the whole New Moscow canvas export
-- [ ] 2.7 Live in Toska on a copy (lead)
+- [x] 2.7 Live in Toska on a copy (lead, 2026-10-24, build c8e5851a, 6000x4500, Luna on Guide): plan underpainting -> Finish -> Refine to the goal -> Accents; sharpen 12 s; underpainting 4.5 min (ΔE 61.9 -> 0.3); Finish 72 s; Refine to the goal 6 min, 161 regions, whole-canvas difference to the sharpened goal (blur 4 px) 1.62; accents 1 min, 118. Not verified live: Undo/Stop of a refine move, fine Finish with Paint only here, the refine note, full-size area numbers on the move line. Find it (find-small) live: Domed church 5.8 s, the bridge 3.0 s, the sky 1.7 s
 
 Builder's notes (section 2): **Fine Finish.** `finish_pass.DETAILS` lists only what differs from the default: fine is strokes
 2-4 px wide, 6-18 long, a seed every 2 px, colour stop 20, guided filter r 4 (the lead's try-out); finer is 1.5-2 px wide, 4-10

@@ -74,3 +74,41 @@ test('each test chat is made fresh, so an install between chats is picked up (ma
     assert.equal(made, 2);
   } finally { await driver.close(); await rm(root, { recursive: true, force: true }); }
 });
+
+test('a folder or references for a test chat, test assets resolved to their fixture, and panel commands with refusals as 400', async () => {
+  const root = await mkdtemp(join(process.platform === 'win32' ? tmpdir() : '/tmp', 'test-driver-'));
+  const { mkdir, writeFile, readdir } = await import('node:fs/promises');
+  const { TestAssets } = await import('../src/test-fixtures.ts');
+  const { panelCommand } = await import('../src/test-commands.ts');
+  const source = join(root, 'new_moscow', 'moscow-painting-assets');
+  await mkdir(source, { recursive: true });
+  await writeFile(join(source, 'final_goal.png'), 'goal'); await writeFile(join(source, 'PLAN.md'), 'plan');
+  const log = [];
+  const companion = () => ({ ...fakeCompanion(log), command: async (type, params) => {
+    const planned = panelCommand(type, params, { testFolder: root, planSteps: [], question: null, closeupQuestion: null, foundAreas: [], folderElements: [] });
+    log.push(['command', planned.command.type]); return { status: 'ok', type };
+  } });
+  const driver = await serveDriver({ directory: root, make: companion, canvas: () => ({ width: 10, height: 10 }),
+    assets: new TestAssets(join(root, 'driver', 'test-assets')), assetsSource: source });
+  try {
+    assert.equal((await call(driver.socket, 'POST', '/start', { prompt: 'x', folder: 'relative' })).status, 400);
+    assert.equal((await call(driver.socket, 'POST', '/start', { prompt: 'x', references: ['a.png', 7] })).status, 400);
+    const missing = await call(driver.socket, 'POST', '/start', { prompt: 'x', folder: 'test-assets:moscow-painting-assets' });
+    assert.equal(missing.status, 400); assert.match(missing.body.error, /prepare/);
+    assert.deepEqual((await call(driver.socket, 'POST', '/assets', { action: 'list' })).body, { status: 'ok', assets: [] });
+    const prepared = await call(driver.socket, 'POST', '/assets', { action: 'prepare' });
+    assert.equal(prepared.body.folder, 'test-assets:moscow-painting-assets');
+    assert.deepEqual(await readdir(source), ['PLAN.md', 'final_goal.png'], 'the source is only read');
+    assert.equal((await call(driver.socket, 'POST', '/assets', { action: 'wipe' })).status, 400);
+    const started = await call(driver.socket, 'POST', '/start', { prompt: 'Plan it.', folder: 'test-assets:moscow-painting-assets', references: [join(source, 'final_goal.png')] });
+    assert.equal(started.status, 200);
+    const options = log.find(([kind]) => kind === 'start')[1];
+    assert.equal(options.folder, join(root, 'driver', 'test-assets', 'moscow-painting-assets'), 'the fixture, which the test chat copies again');
+    assert.deepEqual(options.references, [join(source, 'final_goal.png')]);
+    const refused = await call(driver.socket, 'POST', '/command', { type: 'shutdown', params: {} });
+    assert.equal(refused.status, 400); assert.match(refused.body.error, /not a test command/);
+    assert.deepEqual((await call(driver.socket, 'POST', '/command', { type: 'stop' })).body, { status: 'ok', type: 'stop' });
+    assert.equal((await call(driver.socket, 'POST', '/end')).status, 200);
+    assert.deepEqual((await call(driver.socket, 'POST', '/assets', { action: 'remove', name: 'moscow-painting-assets' })).body, { status: 'ok', removed: 'moscow-painting-assets' });
+  } finally { await driver.close(); await rm(root, { recursive: true, force: true }); }
+});

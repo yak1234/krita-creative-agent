@@ -30,10 +30,22 @@ function fakeCompanion(commands) {
         emit({ type: 'goal', goal: { moves: [{ number: command.move, status: 'undone', title: 'Move ' + command.move }] } });
       if (command.type === 'move' || command.type === 'prompt') paint();
       if (command.type === 'shutdown') setImmediate(() => child.emit('exit', 0));
+      folderEvents(command, emit);
     }
   });
   setImmediate(() => emit({ type: 'ready' }));
   return child;
+}
+
+/** The project folder, Find it and Paint only here, as the companion answers them (studio.mjs). */
+let chatFolder = '/nowhere';
+function folderEvents(command, emit) {
+  if (command.type === 'open_folder') emit({ type: 'folder', index: { root: command.path, name: 'moscow-painting-assets', goal: { name: 'final_goal.png' },
+    elements: [{ name: '01-moonlit-sky.png', guess: 'moonlit sky' }], others: [], texts: [], skipped: [] }, references: {} });
+  if (command.type === 'find_it') emit({ type: 'found_area', request_id: command.request_id, part: command.part,
+    mask_path: join(chatFolder, 'data', 'chat', '.shapes', 'found-0123456789abcdef01234567.png'), bounds: [0, 0, 8, 4], canvas: [8, 8], share: 0.5 });
+  if (command.type === 'paint_only_here') emit({ type: 'goal', goal: { moves: [], paint_only_here: command.action === 'set' ? { name: command.name, bounds: command.bounds,
+    mask_path: join(chatFolder, 'data', 'chat', '.shapes', 'paint-only-0123456789abcdef01234567.png'), share: 0.5, set_at: new Date().toISOString() + Math.random() } : null } });
 }
 
 async function setup() {
@@ -230,5 +242,91 @@ test('element shapes in a test chat: the artist’s downloaded model is shared, 
     await new Promise(resolve => setTimeout(resolve, 50));
     assert.match(s.companion.state().shapes_model_needed, /Download it now/);
     await s.companion.end();
+  } finally { await s.cleanup(); }
+});
+
+test('a test chat on a copy of a project folder and of reference images: the panel’s open folder, never the artist’s files, all deleted at the end', async () => {
+  const s = await setup();
+  try {
+    chatFolder = s.companion.folder;
+    const artist = join(s.root, 'artist', 'moscow-painting-assets');
+    await mkdir(artist, { recursive: true });
+    await writeFile(join(artist, 'final_goal.png'), 'goal'); await writeFile(join(artist, '01-moonlit-sky.png'), 'sky'); await writeFile(join(artist, 'PLAN.md'), 'plan');
+    await writeFile(join(s.root, 'artist', 'ref.png'), 'ref');
+    const { readdir } = await import('node:fs/promises');
+    const before = (await readdir(join(s.root, 'artist'), { recursive: true })).sort();
+    const opened = await s.companion.start({ prompt: 'Plan the New Moscow painting.', folder: artist, references: [join(s.root, 'artist', 'ref.png')] });
+    const copy = join(s.companion.folder, 'project', 'moscow-painting-assets');
+    assert.equal(opened.project_folder, copy);
+    assert.match(opened.krita, /copy of the project folder/);
+    assert.equal(await readFile(join(copy, 'final_goal.png'), 'utf8'), 'goal');
+    const types = s.commands.map(c => c.type);
+    assert.ok(types.indexOf('open_folder') >= 0 && types.indexOf('open_folder') < types.indexOf('start'), 'the folder opens before the chat starts, as in the panel');
+    assert.equal(s.commands.find(c => c.type === 'open_folder').path, copy, 'the test chat only sees the copy');
+    const start = s.commands.find(c => c.type === 'start');
+    assert.deepEqual(start.references.map(r => [r.path, r.name, r.role]), [[join(s.companion.folder, 'references', '1-ref.png'), 'ref.png', 'reference']]);
+    const state = await s.companion.waitIdle(5000);
+    assert.equal(state.project_folder.root, copy);
+    assert.deepEqual(state.project_folder.elements, [{ name: '01-moonlit-sky.png', guess: 'moonlit sky' }]);
+    await s.companion.end();
+    await assert.rejects(access(copy), 'the folder copy is deleted');
+    await assert.rejects(access(join(s.companion.folder, 'references')), 'the reference copies are deleted');
+    assert.deepEqual((await readdir(join(s.root, 'artist'), { recursive: true })).sort(), before, 'nothing written into the artist’s folder');
+  } finally { await s.cleanup(); }
+});
+
+test('panel commands drive the rehearsal: the plan and Now card in the state, Find it, Paint only here protected on the test copy only', async () => {
+  const s = await setup();
+  try {
+    chatFolder = s.companion.folder;
+    const protects = [];
+    let documents = [];
+    const companion = new TestCompanion(s.companion.base, s.companion.folder, { quietMs: 20, spawn: () => fakeCompanion(s.commands), bridge: async (action, params = {}) => {
+      if (params.operation === 'health') return { build: { build_id: 'build-1' }, session_active: false };
+      if (params.operation === 'context') return { documents };
+      if (params.operation === 'paint_only_here') { protects.push(params.params); return { status: 'ok' }; }
+      if (params.operation === 'close_benchmark_copy') return { status: 'ok', closed: true };
+      return { status: 'ok' };
+    } });
+    await companion.start({ prompt: 'Plan it.', width: 8, height: 8 });
+    await companion.waitIdle(5000);
+    await assert.rejects(companion.command('shutdown', {}), /not a test command/);
+    await assert.rejects(companion.command('start_plan', {}), /no plan yet/);
+    const emit = event => companion.child.stdout.write(JSON.stringify(event) + '\n');
+    emit({ type: 'goal', mode: 'agent', goal: { moves: [], brief: { title: 'New Moscow', steps: [{ title: 'Underpainting' }, { title: 'Accents' }] }, question: null },
+      plan_steps: [{ index: 0, key: 'underpainting', title: 'Underpainting', state: 'met' }, { index: 1, key: 'accents', title: 'Accents', state: 'painting', batches: 2 }] });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    let state = companion.state();
+    assert.deepEqual(state.plan, { title: 'New Moscow', status: null, steps: ['Underpainting', 'Accents'] });
+    assert.deepEqual(state.now, { caption: 'Now painting', index: 1, key: 'accents', title: 'Accents', state: 'painting', batches: 2 });
+    assert.equal((await companion.command('plan_step', { action: 'good_enough', step_key: 'accents' })).status, 'ok');
+    assert.equal(s.commands.at(-1).type, 'plan_step');
+    const find = await companion.command('find_it', { part: 'the sky' });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(companion.state().found_areas.at(-1).request_id, find.request_id);
+    documents = [{ document_id: 'artist', filename: '/art/new_moscow_finished.kra' }];
+    const unprotected = await companion.command('paint_only_here', { action: 'set' });
+    assert.match(unprotected.krita, /not protected/);
+    assert.deepEqual(protects, [], 'never a document outside the test chat’s folder');
+    documents.push({ document_id: 'test-doc', filename: join(s.companion.folder, 'Test chat.kra') });
+    const set = await companion.command('paint_only_here', { action: 'set', name: 'Sky' });
+    assert.match(set.krita, /protected/);
+    const sent = s.commands.filter(c => c.type === 'paint_only_here').at(-1);
+    assert.equal(sent.mask_path, join(s.companion.folder, 'data', 'chat', '.shapes', 'found-0123456789abcdef01234567.png'));
+    assert.deepEqual(protects.at(-1), { action: 'set', bounds: [0, 0, 8, 4], mask_path: join(s.companion.folder, 'data', 'chat', '.shapes', 'paint-only-0123456789abcdef01234567.png'),
+      name: 'Sky', document_id: 'test-doc' });
+    state = companion.state();
+    assert.equal(state.paint_only_here.name, 'Sky');
+    await companion.command('paint_only_here', { action: 'clear' });
+    assert.deepEqual(protects.at(-1), { action: 'clear', document_id: 'test-doc' });
+    assert.equal(companion.state().paint_only_here, null);
+    emit({ type: 'goal', mode: 'agent', goal: { moves: [], question: { id: 'q1', question: 'Is this the sky?', options: ['Use this', 'Paint everywhere'],
+      select_area: { part: 'the sky', proposal: { mask_path: join(s.companion.folder, 'data', 'chat', '.shapes', 'found-0123456789abcdef01234567.png'), bounds: [0, 0, 8, 4], canvas: [8, 8] } } } } });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    await companion.command('answer', { text: 'Use this', area: 'proposal' });
+    const last = s.commands.slice(-2);
+    assert.deepEqual(last.map(c => c.type), ['paint_only_here', 'prompt'], 'the area is taken and protected before the answer goes');
+    assert.equal(last[1].text, 'Use this');
+    await companion.end();
   } finally { await s.cleanup(); }
 });

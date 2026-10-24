@@ -17,7 +17,8 @@ FAKE_DRIVER = """
 import {serveDriver} from './src/test-driver-server.ts';
 const state={chat_id:'chat-1',busy:false,moves:[{number:1,status:'ready'}],canvas:'/c.png',copy:null,errors:[]};
 const driver=await serveDriver({directory:process.argv[1],endpoint:process.argv[2],canvas:()=>({width:100,height:100}),make:()=>({
-  start:async o=>({copy:null,krita:'Krita: a new painting will be created by the test chat'}),prompt(){},move(){},protect:async n=>({status:'ok',kept:1,name:n}),
+  start:async o=>({copy:null,krita:'Krita: a new painting will be created by the test chat',options:o}),prompt(){},move(){},protect:async n=>({status:'ok',kept:1,name:n}),
+  command:async(type,params)=>{const {panelCommand}=await import('./src/test-commands.ts');panelCommand(type,params,{testFolder:'/t',planSteps:[],question:null,closeupQuestion:null,foundAreas:[],folderElements:[]});return {status:'ok',type};},
   waitIdle:async()=>state,state:()=>state,toolCalls:()=>[{tool:'split_by_color',args:{source:'visible'}}],end:async()=>({krita:'Krita: nothing to close'})})});
 console.log('ready');process.stdin.resume();process.stdin.on('end',async()=>{await driver.close();process.exit(0);});
 """
@@ -37,7 +38,8 @@ class TestDriverClientTest(unittest.TestCase):
         registry = Registry()
         client.register_test_tools(registry)
         self.assertEqual(set(registry.tools), {'creative_test_start', 'creative_test_prompt', 'creative_test_move',
-                                               'creative_test_state', 'creative_test_end', 'creative_test_protect'})
+                                               'creative_test_state', 'creative_test_end', 'creative_test_protect',
+                                               'creative_test_command', 'creative_test_assets'})
         with tempfile.TemporaryDirectory() as directory:
             endpoint = os.path.join(directory, 'test-driver.json')
             process = subprocess.Popen(['node', '--input-type=module', '-e', FAKE_DRIVER, directory, endpoint], cwd=ROOT,
@@ -56,7 +58,14 @@ class TestDriverClientTest(unittest.TestCase):
                 state = registry.tools['creative_test_state'](wait_seconds=5)
                 self.assertEqual(state['tool_calls'], [{'tool': 'split_by_color', 'methods': ['split']}])
                 self.assertIn('error', registry.tools['creative_test_state'](wait_seconds=600))
+                self.assertEqual(registry.tools['creative_test_command']('stop'), {'status': 'ok', 'type': 'stop'})
+                self.assertIn('not a test command', registry.tools['creative_test_command']('shutdown', {})['error'])
+                self.assertIn('no test assets', registry.tools['creative_test_assets']('list')['error'])
                 self.assertIn('nothing to close', registry.tools['creative_test_end']()['krita'])
+                folder = registry.tools['creative_test_start']('Plan it.', folder='/art/moscow', references=['/art/ref.png'])
+                self.assertEqual(folder['options']['folder'], '/art/moscow')
+                self.assertEqual(folder['options']['references'], ['/art/ref.png'])
+                registry.tools['creative_test_end']()
             finally:
                 if previous is None:
                     os.environ.pop('TEST_DRIVER_ENDPOINT', None)

@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 output/
 .local-config.json
 __pycache__/

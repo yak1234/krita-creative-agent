@@ -181,7 +181,7 @@ const LAYER_SETTINGS = ['adjust_layer', 'set_layer'];
 export function exemption(tool: string, args: Args = {}, { departure = null }: { departure?: string | null } = {}): Exemption | null {
   const actions = tool === 'paint_batch' && Array.isArray(args.actions) ? args.actions : null;
   if (tool === 'paint_accents' || (actions?.length && actions.every(a => a?.tool === 'paint_accents'))) return 'accents';
-  if (tool === 'paint_finish') return 'finish';
+  if (tool === 'paint_finish' || tool === 'refine_to_goal') return 'finish';   // refine_to_goal: fine finishes and accents (goal 8)
   if (tool === 'paint_from_reference' || tool === 'continue_reference_painting') return 'transfer';
   if (LAYER_SETTINGS.includes(tool) || actions?.some(a => LAYER_SETTINGS.includes(String(a?.tool)))) return 'layer_settings';
   return departure ? 'departure' : null;
@@ -217,15 +217,19 @@ export function goalMapping({ references, transfers, canvas }: { references: Ref
   return { reference_id: goal.id, source, target: [0, 0, canvas.width, canvas.height], from: 'proportions' };
 }
 
+/** An area measured at full size before and after a batch (area_compare.py area_likeness; finish-stage goal 7). */
+export type AreaFull = { rect: number[]; before: { colour: number; edges: number }; after: { colour: number; edges: number } };
 /** Luna's goal comparisons in a move (luna-goal-reviewer goal 1): batches compared, found further (of which undone), closer. */
 export type MoveComparisons = { compared: number; further: number; closer: number; undone: number; cost?: number; ms?: number };
-export type MoveLikeness = { batches: number; before: number; after: number; undone: number; kept_worse: number; last_undone?: string; luna?: MoveComparisons };
+export type MoveLikeness = { batches: number; before: number; after: number; undone: number; kept_worse: number; last_undone?: string; luna?: MoveComparisons;
+  area?: { before: number; after: number } };
 /** The move card's line: the whole canvas's distance to the goal before the move's first batch and after its last. */
-export function likenessLine({ batches, before, after, undone, kept_worse, last_undone, luna }: MoveLikeness): string {
+export function likenessLine({ batches, before, after, undone, kept_worse, last_undone, luna, area }: MoveLikeness): string {
   const compared = luna?.compared ? `; Luna compared ${luna.compared} with the goal: ` + (luna.further || luna.closer
     ? [luna.further ? `${luna.further} further${luna.undone ? luna.undone === luna.further ? ' (undone)' : ` (${luna.undone} undone)` : ''}` : '', luna.closer ? `${luna.closer} closer` : ''].filter(Boolean).join(', ')
     : 'none further') : '';
   return `Goal likeness: ΔE ${before.toFixed(1)} → ${after.toFixed(1)} over ${batches} batch${batches === 1 ? '' : 'es'}`
     + (undone ? `; undid ${undone}${last_undone ? ` (${last_undone})` : ''}` : '')
-    + (kept_worse ? `; ${kept_worse} less like the goal kept (accents, an asked-for change or free colours)` : '') + compared;
+    + (kept_worse ? `; ${kept_worse} less like the goal kept (accents, an asked-for change or free colours)` : '') + compared
+    + (area ? `; the area at full size ΔE ${area.before.toFixed(1)} → ${area.after.toFixed(1)}` : '');
 }

@@ -267,20 +267,24 @@ export async function readFolderText(root: string, name: string, max = 4000): Pr
 // element made the painter repaint each element by hand (typed strokes, stamps), which read as blobs, "hard graphic" and
 // "mechanical stripes" and moved the canvas away from the goal. So a folder plan is the whole-picture underpainting,
 // then the finish (finish-stage, approved 2026-10-24: soft areas blended, forms restroked from the goal), then accents on
-// the whole picture, and then the artist says what to refine. An element's step is added only when the artist asks for it
+// the whole picture, and then the artist says what to refine. Refine to the goal between the finish and the accents
+// (finish-stage goal 8, the artist 2026-10-24: "i want the end result where our accents and finishes make it move eventually
+// to the final"): the host's loop of fine finishes and accents on the regions still furthest from the goal (refine-goal.ts). An element's step is added only when the artist asks for it
 // (by name, or by adding the step); the element images stay attached as references.
 export type FolderStep = { title: string; done_when: string; scope: string };
-export type FolderStepKind = 'underpainting' | 'finish' | 'accents' | 'element' | 'whole';
+export type FolderStepKind = 'underpainting' | 'finish' | 'refine' | 'accents' | 'element' | 'whole';
 export const UNDERPAINTING_STEP = 'Underpainting from the goal image';
 export const FINISH_STEP = 'Finish';
+export const REFINE_STEP = 'Refine to the goal';
 export const ACCENTS_STEP = 'Accents';
 const WHOLE = 'whole composition';
 
-/** The plan a folder starts with: the underpainting from the goal image, the finish, then accents on the whole picture. */
+/** The plan a folder starts with: the underpainting from the goal image, the finish, refine to the goal, then accents on the whole picture. */
 export function defaultFolderSteps(): FolderStep[] {
   return [
     { title: UNDERPAINTING_STEP, done_when: 'The goal image’s colours and light are laid over the whole canvas, every element where the goal image has it.', scope: WHOLE },
     { title: FINISH_STEP, done_when: 'The soft areas (sky, mist, water) are blended smooth and the forms are painted in strokes that follow them, from the goal image, on the whole picture.', scope: WHOLE },
+    { title: REFINE_STEP, done_when: 'Every part of the picture is close to the goal image at full size: its forms, windows and edges as crisp as the goal shows them.', scope: WHOLE },
     { title: ACCENTS_STEP, done_when: 'The lights, darks and fine detail the goal image shows are crisp on the whole picture, in the underpainting’s own paint.', scope: WHOLE },
   ];
 }
@@ -297,6 +301,7 @@ export function folderStepKind(step: { title: string; scope?: string }): FolderS
   if (step.scope && IMAGE_TYPES.has(extname(step.scope.trim()).toLowerCase())) return 'element';
   if (/\baccents?\b/i.test(step.title)) return 'accents';
   if (step.title.trim().toLowerCase() === FINISH_STEP.toLowerCase()) return 'finish';
+  if (step.title.trim().toLowerCase() === REFINE_STEP.toLowerCase()) return 'refine';
   if (/\bunderpaint|\bblock[- ]?in\b/i.test(step.title)) return 'underpainting';
   return 'whole';
 }

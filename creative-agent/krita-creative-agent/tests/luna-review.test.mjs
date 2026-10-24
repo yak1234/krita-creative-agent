@@ -207,3 +207,13 @@ test('a batch the goal-likeness check undid releases its pass baseline', async (
   await result('paint_batch', { details: { image_path: 'undone.png', host_undone: 'goal_likeness' } });
   assert.deepEqual(released, ['call1']);
 });
+
+// Review finding (finish-stage goal 8): one finding must not undo a whole Refine to the goal run (many squares, minutes of
+// work); its findings are recorded and told, as goal likeness keeps it.
+test('guide: refine_to_goal is never undone by Luna review; its findings are recorded and told', async () => {
+  const { calls, result } = setup({ reviews: [{ findings: [moon] }] });
+  const changed = await result('refine_to_goal');
+  assert.equal(calls.undo.length, 0);
+  assert.equal(calls.record[0].status, 'warned'); assert.match(calls.record[0].reason, /refine_to_goal/);
+  assert.match(reviewOf(changed).note, /Luna found Moon covered[^]*kept/);
+});

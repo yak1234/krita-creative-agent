@@ -3274,7 +3274,8 @@ test('with a folder, Agent mode proposes the element plan and paints nothing bef
   assert.ok(planning.names.includes('propose_plan'),'the first turn proposes the plan');
   for (const name of PAINT_TOOLS) assert.ok(!planning.names.includes(name),name+' is not offered before approval');
   const draft=JSON.parse(planning.text.match(/folder_plan_draft: (\{.*\})/)[1]);
-  assert.deepEqual(draft.steps.map(s=>[s.title,s.scope]),[['Underpainting from the goal image','whole composition'],['Finish','whole composition'],['Accents','whole composition']],
+  assert.match(draft.objective,/the finish, refine to the goal, then accents/); assert.match(draft.completion[0],/refined to the goal at full size/);
+  assert.deepEqual(draft.steps.map(s=>[s.title,s.scope]),[['Underpainting from the goal image','whole composition'],['Finish','whole composition'],['Refine to the goal','whole composition'],['Accents','whole composition']],
    'the whole-picture underpainting, the finish, then accents on the whole picture: no element steps by default (the artist, 2026-10-23; the finish 2026-10-24)');
   assert.match(planning.text,/PROJECT FOLDER PLAN[^\n]*step 2 is the finish on the whole picture \(paint_finish/,'the finish between the underpainting and the accents');
   assert.doesNotMatch(JSON.stringify(draft.steps[0]),/guide/i,'no guides step unless the artist asks');
@@ -3299,7 +3300,7 @@ test('with a folder and a model that proposes nothing, the host proposes the ele
  try {
   await h.start('ask','Hello'); await h.runtime.openFolder({path:root}); await h.runtime.setMode('agent');
   await h.runtime.prompt('Paint it.');
-  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>[s.title,s.scope]),[['Underpainting from the goal image','whole composition'],['Finish','whole composition'],['Accents','whole composition']]);
+  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>[s.title,s.scope]),[['Underpainting from the goal image','whole composition'],['Finish','whole composition'],['Refine to the goal','whole composition'],['Accents','whole composition']]);
   assert.match(h.events.filter(e=>e.type==='status').at(-1).message,/Start painting/);
   assert.equal(h.runtime.study.references.filter(r=>r.source==='folder' && r.role==='asset').length,3,'the element images stay attached as references');
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
@@ -3381,7 +3382,7 @@ test('the default folder plan: underpainting, finish, accents, then the artist i
  try {
   await h.runtime.openFolder({path:root});
   await h.start('agent','Paint this folder.'); noSharpenCard(h);
-  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.title),['Underpainting from the goal image','Finish','Accents']);
+  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.title),['Underpainting from the goal image','Finish','Refine to the goal','Accents']);
   await h.runtime.prompt('',{start_plan:true});
   assert.match(latestUserText(painters[0].req),/PROJECT FOLDER MOVE[^\n]*paint_from_reference/);
   await h.runtime.moveAction({action:'keep',move:1});
@@ -3390,20 +3391,26 @@ test('the default folder plan: underpainting, finish, accents, then the artist i
   assert.match(finish,/PROJECT FOLDER MOVE[^\n]*paint_finish/,'the finish step is paint_finish on the whole picture');
   assert.doesNotMatch(finish,/PROJECT FOLDER MOVE[^\n]*(crisp accents|the underpainting of the whole picture)/,'neither accents nor a second underpainting');
   await h.runtime.moveAction({action:'keep',move:2});
-  const accents=latestUserText(painters[2].req);
-  assert.match(accents,/Paint step 3 of the plan: Accents/);
+  // Refine to the goal (finish-stage goal 8): the host's loop, one refine_to_goal call.
+  const refine=latestUserText(painters[2].req);
+  assert.match(refine,/Paint step 3 of the plan: Refine to the goal/);
+  assert.match(refine,/PROJECT FOLDER MOVE[^\n]*refine_to_goal/);
+  assert.ok(painters[2].req.tools.some(t=>t.function.name==='refine_to_goal'),'offered');
+  await h.runtime.moveAction({action:'keep',move:3});
+  const accents=latestUserText(painters[3].req);
+  assert.match(accents,/Paint step 4 of the plan: Accents/);
   assert.match(accents,/PROJECT FOLDER MOVE[^\n]*paint_accents/,'the accents step is paint_accents on the whole picture');
   assert.doesNotMatch(accents,/PROJECT FOLDER MOVE[^\n]*the underpainting of the whole picture/,'not a second underpainting');
-  await h.runtime.moveAction({action:'keep',move:3});
+  await h.runtime.moveAction({action:'keep',move:4});
   assert.equal(h.runtime.goal.status,'complete');
   const asked=h.events.filter(e=>e.type==='status').at(-1).message;
   assert.match(asked,/What should I refine next\?/); assert.match(asked,/Kremlin towers/); assert.match(asked,/Moonlit sky/);
   // The artist names an element: with Decision checks off the keywords find it and the card asks before its step is added
   // (luna-goal-reviewer goal 2: nothing irreversible without Luna); yes adds it to the plan (and PLAN.md), painted now.
   await h.runtime.prompt('Refine the Kremlin towers.');
-  assert.equal(h.runtime.goal.brief.steps.length,3,'not added before the yes');
+  assert.equal(h.runtime.goal.brief.steps.length,4,'not added before the yes');
   assert.deepEqual(h.events.filter(e=>e.type==='question').at(-1).options,['Add the step','Not now']);
-  assert.equal(painters.length,3,'nothing paints before the answer');
+  assert.equal(painters.length,4,'nothing paints before the answer');
   await h.runtime.prompt('Add the step');
   assert.deepEqual(h.runtime.goal.brief.steps.map(s=>[s.title,s.scope]).at(-1),['Kremlin towers','assets/04-kremlin-towers.png']);
   assert.equal(h.runtime.goal.approved_revision,h.runtime.goal.revision,'the artist asked for it: no second approval');
@@ -3411,18 +3418,18 @@ test('the default folder plan: underpainting, finish, accents, then the artist i
   const card=h.events.filter(e=>e.type==='question').at(-1);
   assert.deepEqual(card.options,['Find it for me','Select with Freehand','Use my selection','Paint everywhere'],'no shapes model here: the plain card');
   assert.deepEqual([card.select_area.part,card.select_area.request],['Kremlin towers','Refine the Kremlin towers.']);
-  assert.equal(painters.length,3,'the element step waits for the answer');
+  assert.equal(painters.length,4,'the element step waits for the answer');
   await h.runtime.prompt('Paint everywhere');
   const towers=h.runtime.goal.moves.at(-1);
-  assert.equal(towers.step,3);
-  const text=latestUserText(painters[3].req), reference=h.runtime.study.references.find(r=>r.folder_name==='assets/04-kremlin-towers.png');
+  assert.equal(towers.step,4);
+  const text=latestUserText(painters[4].req), reference=h.runtime.study.references.find(r=>r.folder_name==='assets/04-kremlin-towers.png');
   assert.ok(text.includes(reference.id),'the element step names its reference');
   assert.match(text,/PROJECT FOLDER MOVE[^\n]*paint_accents/,'an element is refined with accents, not repainted by hand');
   assert.match(text,/^Refine the Kremlin towers\.\n\n\(The artist answered "Select Kremlin towers: [^"]*": Paint everywhere\.\)/m,'the move paints what was asked before the card');
   assert.match(text,/chose to paint it without an area[^\n]*the host refuses them in an element step/);
-  assert.match(await readFile(join(root,'PLAN.md'),'utf8'),/^- \[ \] 4\. Kremlin towers \(assets\/04-kremlin-towers\.png\)/m);
+  assert.match(await readFile(join(root,'PLAN.md'),'utf8'),/^- \[ \] 5\. Kremlin towers \(assets\/04-kremlin-towers\.png\)/m);
   await h.runtime.prompt('Looks good, carry on with the lights.');
-  assert.equal(h.runtime.goal.brief.steps.length,4,'a message naming no element adds no step');
+  assert.equal(h.runtime.goal.brief.steps.length,5,'a message naming no element adds no step');
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
 });
 
@@ -3470,20 +3477,20 @@ test('naming an element while the underpainting is still open adds its step but 
   await h.start('agent','Paint this folder.');
   h.runtime.goal.approved_revision=h.runtime.goal.revision;
   await h.runtime.folderElementRequest('Don\u2019t paint the sky, leave the towers alone.');
-  assert.equal(h.runtime.goal.brief.steps.length,3,'negated mentions add no step');
+  assert.equal(h.runtime.goal.brief.steps.length,4,'negated mentions add no step');
   assert.equal(h.runtime.goal.question,null,'and ask nothing');
   // Decision checks off (luna-goal-reviewer goal 2): the keywords find the element, but the step waits for the artist's yes.
   assert.equal(await h.runtime.folderElementRequest('Refine the Kremlin towers.'),'asked');
-  assert.equal(h.runtime.goal.brief.steps.length,3,'no step added without Luna');
+  assert.equal(h.runtime.goal.brief.steps.length,4,'no step added without Luna');
   assert.deepEqual(h.runtime.goal.question.options,['Add the step','Not now']);
   assert.deepEqual(h.runtime.goal.question.add_elements,{names:['assets/04-kremlin-towers.png'],target:null,request:'Refine the Kremlin towers.'});
   h.runtime.goal.question=null;
   await h.runtime.folderElementRequest('Refine the Kremlin towers.',{approved:['assets/04-kremlin-towers.png']});
-  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.title),['Underpainting from the goal image','Finish','Accents','Kremlin towers']);
+  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.title),['Underpainting from the goal image','Finish','Refine to the goal','Accents','Kremlin towers']);
   assert.equal(h.runtime.goal.current_step,0,'the underpainting is still open: it comes first');
   h.runtime.goal.done_steps=[0];
   await h.runtime.folderElementRequest('Now the towers.');
-  assert.equal(h.runtime.goal.current_step,3,'once the underpainting is done, the named element is painted next');
+  assert.equal(h.runtime.goal.current_step,4,'once the underpainting is done, the named element is painted next');
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
 });
 
@@ -3510,7 +3517,7 @@ test('Luna reads the artist’s messages: negations add nothing, the towers in a
   h.runtime.lunaClient=luna; await h.runtime.setExecutionSettings({routing:'guide'});
   for (const text of ['Don’t paint the sky.','Leave the towers alone.','The light is too harsh.']) {
    await h.runtime.folderElementRequest(text);
-   assert.equal(h.runtime.goal.brief.steps.length,3,text); assert.equal(h.runtime.goal.question,null,text);
+   assert.equal(h.runtime.goal.brief.steps.length,4,text); assert.equal(h.runtime.goal.question,null,text);
   }
   for (const text of ['Work on the Kremlin towers.','Travaille sur les tours du Kremlin.','Arbeite an den Türmen des Kreml.']) {
    h.runtime.goal.current_step=0;
@@ -3855,7 +3862,7 @@ test('seventeen elements: the default plan is still the underpainting, the finis
  try {
   await h.start('ask','Hello'); await h.runtime.openFolder({path:root}); await h.runtime.setMode('agent');
   await h.runtime.prompt('Paint it.');
-  assert.equal(h.runtime.goal.brief.steps.length,3);
+  assert.equal(h.runtime.goal.brief.steps.length,4);
   const status=h.events.filter(e=>e.type==='status').at(-1).message;
   assert.doesNotMatch(status,/left out/); assert.match(status,/underpainting[^.]*accents/i); assert.match(status,/what to refine/i);
   assert.equal(h.events.filter(e=>e.type==='folder').at(-1).plan_limit,15);
@@ -4584,4 +4591,114 @@ test('a folder element step with its area set: the scoped transfer then accents,
   assert.match(refused,/Nothing was painted: split_by_color is not used in an element step \(Kremlin towers\)/);
   assert.equal(h.calls.filter(c=>c.operation==='split_by_color').length,0,'refused before the bridge');
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('after the whole-picture Finish a folder element step with its area set refines fine: paint_finish detail fine, then accents (finish-stage goal 6)',{timeout:60000},async()=>{
+ const painters=[];
+ let h;
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(names.includes('propose_plan')) return {content:'Here is the plan.'};
+  const move=h.runtime.currentMove;
+  if(!names.includes('paint_batch') || !move || move.finished) return {content:'Done.'};
+  painters.push({move:move.number,req});
+  return painters.filter(p=>p.move===move.number).length===1 ? call('split_by_color',{source:'visible',colors:6}) : {content:'I will use the transfer.'};
+ });
+ const root=await projectFolder();
+ try {
+  const { encodePlane } = await import('../src/shapes/png.ts');
+  await h.runtime.openFolder({path:root});
+  await h.start('agent','Paint this folder.');
+  h.runtime.goal.approved_revision=h.runtime.goal.revision; h.runtime.goal.done_steps=[0,1,2];
+  h.runtime.finishDone({whole:false}); assert.equal(h.runtime.goal.whole_finish,undefined,'an area finish is not the whole picture’s');
+  h.runtime.finishDone({whole:true});
+  // Luna on Guide adds and targets the towers' step (luna-goal-reviewer goal 2), as in the test above.
+  h.runtime.lunaClient=readingLuna({element:text=>/Kremlin/.test(text) ? 'Kremlin towers' : null}); await h.runtime.setExecutionSettings({routing:'guide'});
+  await h.runtime.prompt('Travaille sur les tours du Kremlin.');
+  assert.equal(painters.length,0,'the card first');
+  const mask=join(h.output,'panel-mask.png');
+  await writeFile(mask,encodePlane({width:200,height:300,data:new Uint8Array(200*300).fill(255)}));
+  await h.runtime.prompt('Use my selection',{paint_only_here:{action:'set',mask_path:mask,bounds:[300,100,200,300],canvas:[768,1024],name:'Kremlin towers'}});
+  assert.equal(h.runtime.goal.paint_only_here.name,'Kremlin towers');
+  const text=latestUserText(painters[0].req);
+  assert.match(text,/inside the Paint only here area \(Painting only inside your selection: Kremlin towers\)\. The whole picture is finished: refine the element[^]*1\. paint_finish with detail "fine"[^]*2\. paint_accents from the goal image/);
+  assert.doesNotMatch(text,/1\. paint_from_reference/);
+  assert.match(text,/more than 15% of the canvas[^\n]*refine_to_goal/);
+  const refused=JSON.stringify(painters[1].req.messages);
+  assert.match(refused,/Nothing was painted: split_by_color is not used in an element step \(Kremlin towers\)[^]*paint_finish with detail \\"fine\\"/);
+  assert.equal(h.calls.filter(c=>c.operation==='split_by_color').length,0,'refused before the bridge');
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+// Full size in an area (finish-stage goal 7): an Agent move's batch in the Paint only here area is measured there at full
+// canvas resolution before and after (area_compare.py area_likeness), and the move's line says so.
+test('in an Agent move with a Paint only here area each batch is also measured there at full size; the move line says so',{timeout:30000},async()=>{
+ const asked=[];
+ const h=await harness(()=>({content:'Hello.'}),async(op,params)=>{
+  if(op==='area_likeness'){asked.push(params);return {status:'ok',colour:asked.length===1?4.95:2.45,edges:asked.length===1?3.59:2.44,pixels:412500,rect:params.rect,ms:13};}
+  return undefined;
+ });
+ try {
+  await h.start('ask','Hello');
+  const goalPath=join(h.runtime.study.directory,'goal.png'); await writeFile(goalPath,png);
+  h.runtime.goalPlacement=async()=>({mapping:{source:[0,0,4,3],target:[0,0,768,576],from:'transfer'},reference:{id:'goal',path:goalPath,width:4,height:3}});
+  h.runtime.lastObservation={width:768,height:1024};
+  h.runtime.mode='agent'; h.runtime.goal.moves=[{number:1}]; h.runtime.currentMove=h.runtime.goal.moves[0];
+  await h.runtime.areaLikenessBefore({id:'c1',tool:'paint_finish',args:{}});
+  assert.equal(asked.length,0,'no area: nothing measured');
+  h.runtime.goal.paint_only_here={bounds:[100,50,300,200],mask_path:'x'};
+  await h.runtime.areaLikenessBefore({id:'c1',tool:'paint_finish',args:{}});
+  const full=await h.runtime.likenessHost().area('c1');
+  assert.deepEqual(asked.map(p=>p.rect),[[100,50,300,200],[100,50,300,200]]);
+  assert.equal(asked[0].goal.path,goalPath); assert.match(asked[0].goal.sha256,/^[0-9a-f]{64}$/);
+  assert.deepEqual(full,{rect:[100,50,300,200],before:{colour:4.95,edges:3.59},after:{colour:2.45,edges:2.44}});
+  h.runtime.recordLikeness({move:1,status:'kept',whole:{before:0.4,after:0.2},area_full:full});
+  assert.match(h.runtime.goal.moves[0].likeness_line,/the area at full size ΔE 5\.0 → 2\.5$/);
+ } finally {await h.close();}
+});
+
+// Review finding: "the whole picture is finished" follows the move that painted it (undone: unset) and, for a chat from
+// before, the pass history or the plan's Finish step.
+test('the whole picture is finished: the move that painted it, unset when undone; old chats from their passes or the plan',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}));
+ try {
+  await h.start('ask','Hello');
+  h.runtime.goal.moves=[{number:1,status:'kept'},{number:2,status:'painting'}]; h.runtime.currentMove=h.runtime.goal.moves[1];
+  assert.equal(h.runtime.wholeFinished(),false);
+  h.runtime.finishDone({whole:true});
+  assert.deepEqual(h.runtime.goal.whole_finish,{move:2});
+  assert.equal(h.runtime.wholeFinished(),true);
+  h.runtime.goal.moves[1].status='undone';
+  assert.equal(h.runtime.wholeFinished(),false,'its move was undone');
+  h.runtime.goal.whole_finish=null;
+  h.runtime.lastObservation={passes:[{id:'p1',kind:'finish',title:'Finish',finish_whole:true}]};
+  assert.equal(h.runtime.wholeFinished(),true,'a kept whole-picture Finish pass');
+  h.runtime.lastObservation.passes[0].rejected=true;
+  assert.equal(h.runtime.wholeFinished(),false);
+  h.runtime.lastObservation={passes:[{id:'p2',kind:'finish',title:'Finish',finish_whole:false}]};
+  assert.equal(h.runtime.wholeFinished(),false,'an area’s Finish');
+  h.runtime.lastObservation={passes:[{id:'p3',kind:'finish',title:'Finish'}]};
+  assert.equal(h.runtime.wholeFinished(),true,'a Finish pass from before the field: the whole picture');
+ } finally {await h.close();}
+});
+
+// Review findings: the area's before measure never outlives its batch; refine_to_goal over the whole picture is refused in an
+// element or Accents step without an area.
+test('the area measure before a batch is dropped when its batch is not measured; refine_to_goal is guarded in element and Accents steps',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}),async op=>op==='area_likeness' ? {status:'ok',colour:4,edges:3,rect:[0,0,10,10]} : undefined);
+ try {
+  await h.start('ask','Hello');
+  const goalPath=join(h.runtime.study.directory,'goal.png'); await writeFile(goalPath,png);
+  h.runtime.goalPlacement=async()=>({mapping:{source:[0,0,4,3],target:[0,0,768,576],from:'transfer'},reference:{id:'goal',path:goalPath,width:4,height:3}});
+  h.runtime.lastObservation={width:768,height:1024};
+  h.runtime.mode='agent'; h.runtime.goal.moves=[{number:1}]; h.runtime.currentMove=h.runtime.goal.moves[0];
+  h.runtime.goal.paint_only_here={bounds:[0,0,10,10],mask_path:'x'};
+  for (const id of ['a','b','c']) await h.runtime.areaLikenessBefore({id,tool:'paint_pass',args:{}});
+  assert.equal(h.runtime.areaBefore.size,1,'only the batch in progress');
+  h.runtime.goal.paint_only_here=null;
+  h.runtime.goal.brief={steps:[{title:'Underpainting from the goal image',scope:'whole composition'},{title:'Accents',scope:'whole composition'}]};
+  h.runtime.currentMove.step=1;
+  assert.throws(()=>h.runtime.refuseInElementStep({tool:'refine_to_goal',args:{}}),/Nothing was painted: refine_to_goal[^]*whole picture/);
+  assert.doesNotThrow(()=>h.runtime.refuseInElementStep({tool:'refine_to_goal',args:{area:{box:[0,0,100,100]}}}));
+ } finally {await h.close();}
 });

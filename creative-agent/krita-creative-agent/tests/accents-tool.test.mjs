@@ -9,7 +9,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { paintingTools } from '../src/tools.mjs';
-import { ASK_ABOVE, chooseAccents, ADJUSTS } from '../src/accents-tool.ts';
+import { ASK_ABOVE, chooseAccents, ADJUSTS, speckSize } from '../src/accents-tool.ts';
 import { encodePlane } from '../src/shapes/png.ts';
 
 const CANVAS = { width: 4000, height: 3000 };
@@ -226,4 +226,63 @@ test('a large goal goes to find_accents as a bounded copy, with its listed size 
   assert.ok(size.width * size.height <= WORKING_PIXELS && size.width < 2600, JSON.stringify(size));
   assert.deepEqual(params.size, [1000, 750], 'the listed size: source and accents stay in its pixels');
   assert.equal(params.sha256, createHash('sha256').update(sent).digest('hex'));
+});
+
+// Full-size checks (finish-stage goal 7, the artist 2026-10-24: "yess we need both"): on New Moscow, after Finish, every
+// refine in an area called paint_accents, which compared reduced views and found nothing while the church's 2-4 px windows
+// were still blobs at full size. In an area, the placed goal (sharpened when it is) is compared with the canvas there at
+// full canvas resolution by the plugin (area_compare.py area_accents); the whole picture keeps the reduced comparison.
+async function placedGoal(t, accents) {
+  const s = await setup(t);
+  const reference = s.runtime.study.references[0];
+  s.runtime.finishGoal = async () => ({ goal: { reference, source: [0, 0, 1000, 750], target: [0, 0, 4000, 3000], from: 'transfer' }, underpainted: true });
+  const native = s.runtime.callNative;
+  s.runtime.callNative = async (operation, params, id) => {
+    if (operation === 'area_accents') { s.calls.push({ operation, params, id }); return { status: 'ok', rect: params.rect, scale: 1, accents: structuredClone(accents), found: { lights: accents.length }, ms: 550 }; }
+    return native(operation, params, id);
+  };
+  return s;
+}
+
+test('in an area, the goal is compared with the canvas at full size there: accents in canvas pixels, at their real size', async t => {
+  const { tool, calls, passes, runtime } = await placedGoal(t, [light(1300, 900, 0.9, { size: 3 }), light(2000, 2000, 0.8)]);
+  const result = await tool.execute('a1', { reference_id: 'goal', kinds: ['lights'], area: { box: [1150, 750, 550, 750] } });
+  const asked = calls.find(c => c.operation === 'area_accents');
+  assert.ok(asked, 'the full-size comparison');
+  assert.equal(calls.filter(c => c.operation === 'find_accents').length, 0, 'not the reduced one');
+  assert.deepEqual(asked.params.rect, [1150, 750, 550, 750]);
+  assert.equal(asked.params.goal.path, join(runtime.study.directory, 'goal.png'), 'the goal file the plugin reads, as paint_finish does');
+  assert.match(asked.params.goal.sha256, /^[0-9a-f]{64}$/);
+  assert.deepEqual(asked.params.goal.target, [0, 0, 4000, 3000]);
+  assert.deepEqual(passes().map(p => [p.x, p.y, p.size]), [[1300, 900, 3]], 'canvas pixels as they are; outside the box skipped');
+  assert.match(text(result), /"full_size":\{"rect":\[1150,750,550,750\]/);
+});
+
+test('the whole picture, another reference, or a source given keep the reduced comparison', async t => {
+  const { tool, calls } = await placedGoal(t, [light(1300, 900, 0.9)]);
+  await tool.execute('a1', { reference_id: 'goal', kinds: ['lights'] });
+  await tool.execute('a2', { reference_id: 'goal', kinds: ['lights'], area: { box: [0, 0, 400, 400] }, source: [0, 0, 1000, 750], target: [0, 0, 4000, 3000] });
+  assert.equal(calls.filter(c => c.operation === 'area_accents').length, 0);
+  assert.equal(calls.filter(c => c.operation === 'find_accents').length, 2);
+});
+
+test('with a Paint only here area the full-size comparison is the default too', async t => {
+  const { tool, calls, runtime } = await placedGoal(t, [light(1300, 900, 0.9)]);
+  const mask = join(runtime.study.directory, '.shapes', 'paint-only-0123456789abcdef01234567.png');
+  await (await import('node:fs/promises')).mkdir(join(runtime.study.directory, '.shapes'), { recursive: true });
+  await writeFile(mask, encodePlane({ width: 550, height: 750, data: new Uint8Array(550 * 750).fill(255) }));
+  runtime.paintOnlyArea = () => ({ mask_path: mask, bounds: [1150, 750, 550, 750] });
+  await tool.execute('a1', { reference_id: 'goal', kinds: ['lights'] });
+  assert.deepEqual(calls.find(c => c.operation === 'area_accents').params.rect, [1150, 750, 550, 750]);
+});
+
+// Review finding: the speck rule was 9 canvas px on a 6000 px canvas whatever the comparison's resolution, so at full size
+// the church's 2-4 px window darks were dropped. It scales with the image the finder compared.
+test('at full size a 2-4 px dark survives the speck rule; a one-pixel one does not', async t => {
+  const { tool, passes } = await placedGoal(t, [dark(1300, 900, 0.5, { size: 3 }), dark(1400, 1000, 0.5, { size: 1 })]);
+  const result = await tool.execute('a1', { reference_id: 'goal', kinds: ['darks'], area: { box: [1150, 750, 550, 750] } });
+  assert.deepEqual(passes().map(p => [p.x, p.y]), [[1300, 900]]);
+  assert.match(text(result), /"small":1/);
+  assert.equal(speckSize(1568, 6000 / 1568).toFixed(1), '9.0', 'the whole picture keeps its 9 px on 6000');
+  assert.equal(speckSize(750, 1), 1.5);
 });

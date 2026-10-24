@@ -104,8 +104,10 @@ export function areaContext(area: PaintOnlyArea | null | undefined) {
     description: `The artist's own selection (${percent}% of the canvas), the pixels they drew around inside bounds [${area.bounds.join(', ')}].`,
     rules: 'Paint only inside it: Krita blocks every write outside it, and its edge is softened a few pixels. paint_from_reference, '
       + 'continue_reference_painting and the edges and surface tools paint only the dabs inside it, so transfer the whole reference over '
-      + 'the whole canvas (or the reference area that lies under it) and the area may be the first transfer; paint_accents works in it by '
-      + 'default. Do not paint elsewhere; to work outside it the artist clears it in the panel.',
+      + 'the whole canvas (or the reference area that lies under it) and the area may be the first transfer; paint_finish and paint_accents '
+      + 'work in it by default. To refine, sharpen or add detail here after the whole-picture finish: paint_finish with detail "fine" '
+      + '(2-4 px strokes from the goal, its real detail size), then paint_accents. Do not paint elsewhere; to work outside it the artist '
+      + 'clears it in the panel.',
     reply: chipLine(area) + '. Start your reply with this line.',
   };
 }

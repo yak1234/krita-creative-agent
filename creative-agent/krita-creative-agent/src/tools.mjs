@@ -9,6 +9,7 @@ import { mapReferencePoint } from './reference-generator.mjs';
 import { guideTools } from './guide-tool.ts';
 import { accentTools } from './accents-tool.ts';
 import { finishTools } from './finish-tool.ts';
+import { refineTools } from './refine-goal.ts';
 import { selectionTools } from './paint-only-here.ts';
 import { canvasShape, checkPassLimits, passShape, shapeReport, shapeSchema, shapeTimings } from './shapes/use.ts';
 import { recipeTool } from './recipe-tool.mjs';
@@ -337,8 +338,15 @@ export function paintingTools(runtime) {
   // Finish (finish-tool.ts): stage two, the underpainting's soft areas blended and its forms restroked from the goal it was made from.
   tools.push(...finishTools(runtime, { goal: canvas => runtime.finishGoal ? runtime.finishGoal(canvas) : Promise.resolve({ goal: null, underpainted: false }),
     sharpenFirst: goal => runtime.finishSharpenFirst ? runtime.finishSharpenFirst(goal) : Promise.resolve(null), finish: nativeExecute(runtime, 'finish') }));
+  // Refine to the goal (refine-goal.ts, finish-stage goal 8): the host's loop of fine finishes and accents on the regions
+  // still furthest from the goal at full size.
+  tools.push(...refineTools(runtime, { goal: canvas => runtime.finishGoal ? runtime.finishGoal(canvas) : Promise.resolve({ goal: null, underpainted: false }),
+    sharpenFirst: goal => runtime.finishSharpenFirst ? runtime.finishSharpenFirst(goal) : Promise.resolve(null),
+    native: (operation, id, params, signal) => nativeExecute(runtime, operation)(id, params, signal) }));
   // Accents (accents-tool.ts): stage three, what the canvas lacks next to the reference, adjusted in its own paint by Krita's filters.
-  tools.push(...accentTools(runtime, { findAccents: request => findReferenceAccents(runtime, request), adjust: nativeExecute(runtime, 'accents') }));
+  // In an area from the placed goal, the full-size comparison (area_compare.py area_accents; finish-stage goal 7).
+  tools.push(...accentTools(runtime, { findAccents: request => findReferenceAccents(runtime, request), adjust: nativeExecute(runtime, 'accents'),
+    goal: async canvas => runtime.finishGoal ? (await runtime.finishGoal(canvas)).goal : null, findArea: request => runtime.callNative('area_accents', request) }));
   // A flat fill anywhere in a batch is nudged before anything paints (studio.mjs fillNudge), so the batch is refused whole.
   tools.push(batchTool(tools, name => runtime.toolOffered?.(name) ?? true,
     async actions => { if (actions.some(a => a.tool === 'fill_region')) await runtime.fillNudge?.({batch:true}); return prepareBatchShapes(runtime, actions); }));

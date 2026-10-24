@@ -96,6 +96,24 @@ class SizeTests(unittest.TestCase):
         self.assertGreaterEqual(small['width'][0], 1.5); self.assertGreaterEqual(small['spacing'], 2); self.assertGreaterEqual(small['step'], 1)
         self.assertEqual(finish.sizes(4500, 6000)['edge'], 40, 'the long side, either way round')
 
+    def test_fine_detail_is_the_church_try_outs_sizes_scaled_the_same_way(self):
+        # The lead's try-out (2026-10-24): strokes 2-4 px wide, 6-18 long, a seed every 2 px, colour stop 20, guided filter
+        # r 4 on the 6000 px canvas, where Finish's 5-9 px strokes were blobby beside the church's 2-4 px windows.
+        fine = finish.sizes(6000, 4500, 'fine')
+        self.assertEqual((fine['width'], fine['length'], fine['spacing'], fine['r'], fine['stop']), ((2, 4), (6, 18), 2, 4, 20))
+        self.assertEqual((fine['edge'], fine['step'], fine['tensor']), (40, 2, 3), 'the soft mask and the field as the default')
+        self.assertEqual(finish.sizes(6000, 4500)['stop'], 26, 'the default is unchanged')
+        self.assertEqual(finish.sizes(12000, 9000, 'fine')['width'], (4, 8))
+        with self.assertRaisesRegex(ValueError, 'detail'):
+            finish.sizes(6000, 4500, 'blurry')
+
+    def test_finer_detail_is_the_refine_rounds_second_level(self):
+        # Refine to the goal (goal 8), measured on the church after a fine Finish: colour 2.45 -> 1.27, edges 2.44 -> 1.48;
+        # repeating fine changed nothing (2.44, its strokes are the same strokes).
+        finer = finish.sizes(6000, 4500, 'finer')
+        self.assertEqual((finer['width'], finer['length'], finer['spacing'], finer['r'], finer['stop']), ((1.5, 2), (4, 10), 2, 2, 14))
+        self.assertEqual(finish.DETAIL_LEVELS, ('normal', 'fine', 'finer'))
+
     def test_the_work_is_the_squares_the_area_touches_inside_the_canvas(self):
         finish_tile = finish.TILE
         self.assertEqual(finish.tiles([0, 0, 6000, 4500], 6000, 4500)[-1], [5632, 4096, 368, 404])
@@ -234,6 +252,13 @@ class FinishOperationTests(SpikeScale, region_tests.RegionSetup, unittest.TestCa
         after = self.shown()
         self.assertGreater(float(np.abs(after - before)[..., :3].mean()), 2, 'the painting changed')
         self.assertTrue(len(self.h.doc.reads) == 1, 'one clean read of the canvas, before anything was written')
+        # Review finding: the companion tells a whole-picture Finish from the pass history (finish-stage goal 6).
+        self.assertTrue(result['finish']['whole'])
+        entry = next(p for p in self.h._creative_session['passes'] if p['id'] == 'f1')
+        self.assertTrue(entry['finish_whole'])
+        boxed = self.run_finish('boxed', box=[300, 0, 200, 400])
+        self.assertFalse(boxed['finish']['whole'])
+        self.assertFalse(next(p for p in self.h._creative_session['passes'] if p['id'] == 'boxed')['finish_whole'])
 
     def test_a_box_limits_the_finish_and_a_saved_selection_cuts_it(self):
         result = self.run_finish(box=[300, 0, 200, 400])
@@ -299,6 +324,42 @@ class FinishOperationTests(SpikeScale, region_tests.RegionSetup, unittest.TestCa
         def labels(node): return [node.label] + [label for child in node.childNodes() for label in labels(child)]
         self.assertNotIn('Finish', labels(self.h.doc.root), 'the empty Finish group is gone')
         self.assertTrue(np.array_equal(before, self.shown()))
+
+    def test_fine_detail_paints_an_area_and_refuses_more_than_its_share_of_the_canvas(self):
+        before = len(self.h.doc.root.childNodes())
+        with self.assertRaisesRegex(ValueError, r'fine detail paints at most 15%'):
+            self.run_finish('whole-fine', detail='fine')
+        with self.assertRaisesRegex(ValueError, 'detail is normal, fine or finer'):
+            self.run_finish('odd', detail='crisp', box=[300, 0, 60, 60])
+        self.assertEqual(len(self.h.doc.root.childNodes()), before, 'nothing painted when refused')
+        normal = self.run_finish('n', box=[320, 100, 150, 120])
+        fine = self.run_finish('f', box=[320, 100, 150, 120], detail='fine')
+        self.assertEqual(fine['status'], 'ok', fine.get('error'))
+        self.assertEqual((fine['finish']['detail'], normal['finish']['detail']), ('fine', 'normal'))
+        self.assertGreater(fine['finish']['strokes'], 2 * normal['finish']['strokes'], 'more, smaller strokes')
+        self.assertIn('ms', fine['finish'])
+        group = self.h._creative_node(self.h.doc, fine['layer_id'])
+        for layer in group.childNodes():
+            self.assertEqual(int(layer.data[:, :320, 3].max()) + int(layer.data[:, 470:, 3].max()), 0, layer.label + ': only the box')
+
+    def test_fine_detail_counts_a_selections_own_pixels_and_points_a_larger_area_to_refine_to_goal(self):
+        # Review finding: the share was the selection's bounding box; a thin diagonal part was refused, and the refusal left
+        # the painter stuck.
+        coverage = np.zeros((400, 600), np.uint8); coverage[150:250, 250:350] = 255           # 4% of the canvas
+        coverage[0:2, 0:600] = 255; coverage[398:400, 0:600] = 255                            # bounds: the whole canvas
+        class Sel:
+            def x(self): return 0
+            def y(self): return 0
+            def width(self): return 600
+            def height(self): return 400
+            def pixelData(self, x, y, w, h): return coverage[y:y + h, x:x + w].tobytes()
+        self.h._region_check_named = lambda doc, session, name: None
+        self.h._region_load = lambda session, name, doc=None: Sel()
+        result = self.run_finish('sel', selection='Church', detail='fine')
+        self.assertEqual(result['status'], 'ok', result.get('error'))
+        coverage[:, :] = 255
+        with self.assertRaisesRegex(ValueError, r'at most 15%.*refine_to_goal'):
+            self.run_finish('big', selection='Church', detail='fine')
 
     def test_a_layer_with_nothing_to_show_is_not_left_in_the_group(self):
         flat = np.full((200, 300, 3), (180, 150, 120), np.uint8)              # a goal with no structure: all soft

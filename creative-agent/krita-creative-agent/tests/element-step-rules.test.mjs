@@ -3,7 +3,7 @@
 // ones the painter sent in the live chat 385b4a4f ("Moonlit sky", 2026-10-24).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { callKinds, askedFor, elementStepRefusal } from '../src/element-step-rules.ts';
+import { callKinds, askedFor, elementStepRefusal, refineSequence } from '../src/element-step-rules.ts';
 
 const stroke = { start: [10, 10], segments: [[20, 20, 30, 30, 40, 40]], size: 8, opacity: 1, flow: 1, color: '#223344' };
 const wand = { tool: 'select', args: { name: 'Sky', steps: [{ seed: [400, 80], tolerance: 45 }, { seed: [900, 60], tolerance: 45, mode: 'add' }] } };
@@ -45,6 +45,26 @@ test('the refusal names what was refused and the sequence to use, with or withou
   assert.match(both, /ask the artist for its area \(ask_for_selection\)/);
   assert.equal(elementStepRefusal(wand, { part: 'Moonlit sky', area: true, request: 'Select the sky with the magic wand.' }), null);
   assert.equal(elementStepRefusal({ tool: 'apply_filter', args: {} }, { part: 'Moonlit sky', area: true, request: '' }), null);
+});
+
+// Fine Finish (finish-stage goal 6, the artist 2026-10-24): after the whole-picture Finish an element or refine step does not
+// underpaint the part again: it restrokes it fine at the goal's detail size, then accents. Typed strokes stay refused.
+test('after the whole-picture Finish the sequence is paint_finish detail fine in the area, then paint_accents', () => {
+  const refused = elementStepRefusal(wand, { part: 'Domed church', area: true, request: 'Refine the church.', finished: true });
+  assert.match(refused, /paint_finish with detail "fine" in the area[^]*then paint_accents/);
+  assert.doesNotMatch(refused, /paint_from_reference/);
+  const asking = elementStepRefusal(wand, { part: 'Domed church', area: false, request: 'Refine the church.', finished: true });
+  assert.match(asking, /ask_for_selection[^]*paint_finish with detail "fine"/);
+  assert.equal(refineSequence({ area: true, finished: false }).includes('paint_from_reference'), true, 'before the Finish: as before');
+  assert.match(refineSequence({ area: true, finished: true }), /more than 15% of the canvas[^]*refine_to_goal/, 'a large area is not a dead end');
+  const strokes = elementStepRefusal({ tool: 'paint_pass', args: { strokes: [stroke] } }, { part: 'Domed church', area: true, request: 'Refine the church.', finished: true });
+  assert.match(strokes, /typed strokes/);
+});
+
+test('refine_to_goal over the whole picture is refused in an element step without an area; with a box or the area it runs', () => {
+  assert.match(elementStepRefusal({ tool: 'refine_to_goal', args: {} }, { part: 'Domed church', area: false, request: 'Refine it.', finished: true }), /refine_to_goal over the whole picture/);
+  assert.equal(elementStepRefusal({ tool: 'refine_to_goal', args: {} }, { part: 'Domed church', area: true, request: 'Refine it.', finished: true }), null);
+  assert.equal(elementStepRefusal({ tool: 'refine_to_goal', args: { area: { box: [0, 0, 10, 10] } } }, { part: 'Domed church', area: false, request: '', finished: true }), null);
 });
 
 // Luna's reading of the artist's message (luna-goal-reviewer goal 2): when the studio knows whether the message asked for

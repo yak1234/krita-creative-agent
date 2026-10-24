@@ -291,6 +291,30 @@ test('past UNDO_CAP undos in a move the batch stays and the move stops for the a
   assert.equal(calls.stop.length, 1);
 });
 
+// Full size in an area (finish-stage goal 7, the artist 2026-10-24: "yess we need both"): on New Moscow a fine Finish of the
+// church moved the 64-cell grid 0.4 -> 0.2 while at full size it went from blobs to windows (colour ΔE 4.95 -> 2.45). In a
+// move with an area the host also measures the area at full size before and after each batch (area_compare.py
+// area_likeness); it is reported, never used to undo (the undo thresholds stay the grid's).
+test('in an area the batch is also measured at full size there: recorded, told to the painter, never undone by it', async () => {
+  const { host, calls, result } = setup({ grids: { 'before.png': under, 'after.png': under } });
+  const asked = [];
+  host.area = async id => { asked.push(id); return { rect: [1150, 750, 550, 750], before: { colour: 4.95, edges: 3.59 }, after: { colour: 2.45, edges: 2.44 } }; };
+  const changed = await result('paint_finish');
+  assert.deepEqual(asked, ['call1']);
+  assert.deepEqual(calls.record[0].area_full, { rect: [1150, 750, 550, 750], before: { colour: 4.95, edges: 3.59 }, after: { colour: 2.45, edges: 2.44 } });
+  assert.equal(calls.record[0].status, 'kept'); assert.equal(calls.undo.length, 0);
+  assert.match(noteOf(changed).area_full_size.note, /the area at full size: colour ΔE 4\.95 → 2\.45, edges 3\.59 → 2\.44/);
+  const failing = setup({ grids: { 'before.png': under, 'after.png': under } });
+  failing.host.area = async () => { throw new Error('no area'); };
+  assert.equal(await failing.result(), undefined, 'a failed full-size measure changes nothing');
+  assert.equal(failing.calls.record[0].area_full, undefined);
+});
+
+test('the move line adds the area at full size', () => {
+  assert.equal(likenessLine({ batches: 2, before: 0.4, after: 0.2, undone: 0, kept_worse: 0, area: { before: 4.95, after: 2.45 } }),
+    'Goal likeness: ΔE 0.4 → 0.2 over 2 batches; the area at full size ΔE 5.0 → 2.5');
+});
+
 // Luna's goal comparison (luna-goal-reviewer goal 1): "further" with good confidence counts as clearly worse beside the ΔE
 // rule, under the same exemptions and the same shared undo cap. Blobs in the right colours: the ΔE grid barely moves.
 const further = { verdict: 'further', confidence: 0.9, crops: 1, per_crop: [{ verdict: 'further', confidence: 0.9 }], elapsed_ms: 1100, cost: 0.0006, input_tokens: 2500, area: [600, 3000, 2400, 1200] };

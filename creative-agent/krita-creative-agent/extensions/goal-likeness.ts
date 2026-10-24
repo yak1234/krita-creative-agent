@@ -15,7 +15,7 @@
 // A shipped Pi extension registered inline (src/extensions.mjs). It knows the studio only through LikenessHost.
 import type { ExtensionAPI, ToolResultEvent, ToolResultEventResult } from '@earendil-works/pi-coding-agent';
 import type { BatchPass, Undone } from './luna-review.ts';
-import { measure, clearlyWorse, describeWorse, exemption, type Grid, type Measure, type Exemption, type Rect } from '../src/goal-likeness.ts';
+import { measure, clearlyWorse, describeWorse, exemption, type AreaFull, type Grid, type Measure, type Exemption, type Rect } from '../src/goal-likeness.ts';
 import { furtherFromGoal, describeFurther, type Comparison } from '../src/goal-comparison.ts';
 
 export type LikenessMode = 'off' | 'measure' | 'protect';
@@ -24,7 +24,7 @@ export type GoalFrame = { goal: Grid; target: Rect; protect: boolean };
 export type UndoCounter = { count(move: number): number; add(move: number): void };
 export type LikenessRecord = { move: number; call_id: string; tool: string; status: 'kept' | 'undone' | 'worse_kept' | 'fallback';
   exempt?: Exemption; whole?: Measure['whole']; area?: Measure['area']; worse?: Measure['worse']; ms: number;
-  undone_pass_ids?: string[]; partial?: boolean; reason?: string; summary?: string;
+  undone_pass_ids?: string[]; partial?: boolean; reason?: string; summary?: string; area_full?: AreaFull;
   luna?: Comparison; by?: 'delta_e' | 'luna' };       // Luna's goal comparison when it was asked; which check found it worse
 export type ComparisonInput = { before: string; after: string; passes: BatchPass[]; measure: Measure; target: Rect };
 /** What the studio provides (studio.mjs likenessHost). */
@@ -41,6 +41,9 @@ export interface LikenessHost {
   undo(passes: BatchPass[]): Promise<Undone | null>;
   record(entry: LikenessRecord): void;
   stop(message: string): void;          // end the move after this turn
+  /** In a move with an area: that area at full size before and after this batch (finish-stage goal 7), or null. Reported,
+   * never used to undo: the undo thresholds are the grid's. */
+  area?(toolCallId: string): Promise<AreaFull | null>;
   lunaMode?(): 'off' | 'evaluate' | 'guide';   // the Decision checks setting, read on every call
   compare?(input: ComparisonInput): Promise<Comparison | null>;      // Luna's goal comparison of this batch (goal-comparison.ts)
   compared?(entry: { move: number; call_id: string; luna: Comparison }): void;   // Evaluate's comparison, after the result
@@ -81,7 +84,12 @@ export default function goalLikeness(host: LikenessHost): (pi: ExtensionAPI) => 
         host.record({ ...base, status: 'fallback', ms: Date.now() - started, reason: error instanceof Error ? error.message : String(error) });
         return undefined;
       }
-      const measured = { ...base, whole: m.whole, area: m.area, worse: m.worse, ms: Date.now() - started };
+      const full = await host.area?.(event.toolCallId).catch(() => null) ?? null;
+      const measured = { ...base, whole: m.whole, area: m.area, worse: m.worse, ms: Date.now() - started, ...(full ? { area_full: full } : {}) };
+      // A kept batch's result tells the painter the area's full-size change (finish-stage goal 7).
+      const told = full ? [line({ area_full_size: { ...full, note: `the area at full size: colour ΔE ${full.before.colour.toFixed(2)} → ${full.after.colour.toFixed(2)}, `
+        + `edges ${full.before.edges.toFixed(2)} → ${full.after.edges.toFixed(2)} (lower: closer to the goal)` } })] : [];
+      const keep = (): ToolResultEventResult | undefined => (told.length ? { content: [...event.content, ...told] } : undefined);
       const exempt = exemption(toolName, event.input as Record<string, any>, { departure: host.departure() }) ?? undefined;
       const why = exempt ? WHY[exempt] : mode === 'measure' ? host.why?.() ?? 'the artist\u2019s Reference colours setting is off' : !frame.protect ? UNPROTECTED : null;
       let what: string, by: 'delta_e' | 'luna', luna: Comparison | undefined;
@@ -91,14 +99,14 @@ export default function goalLikeness(host: LikenessHost): (pi: ExtensionAPI) => 
         const luna_mode = host.lunaMode?.() ?? 'off';
         const ask = (): Promise<Comparison> => Promise.resolve().then(() => host.compare!({ before: passes[0].before_path, after, passes, measure: m, target: frame!.target }))
           .then(c => c ?? FAILED).catch(() => FAILED);
-        if (why || !host.compare || luna_mode === 'off' || clearlyBetter(m)) { host.record({ ...measured, status: 'kept' }); return undefined; }
+        if (why || !host.compare || luna_mode === 'off' || clearlyBetter(m)) { host.record({ ...measured, status: 'kept' }); return keep(); }
         if (luna_mode === 'evaluate') {
           host.record({ ...measured, status: 'kept' });
           void ask().then(c => { if (c !== FAILED) host.compared?.({ move, call_id: event.toolCallId, luna: c }); });
-          return undefined;
+          return keep();
         }
         luna = await ask();
-        if (!furtherFromGoal(luna)) { host.record({ ...measured, status: 'kept', luna }); return undefined; }
+        if (!furtherFromGoal(luna)) { host.record({ ...measured, status: 'kept', luna }); return keep(); }
         what = describeFurther(luna); by = 'luna';
       }
       const found = { ...measured, by, ...(luna ? { luna } : {}) };

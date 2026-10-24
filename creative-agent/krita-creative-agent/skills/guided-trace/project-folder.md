@@ -14,7 +14,8 @@ When the artist works from a project folder, the approved plan has one move per 
 
 **An element step only when the artist asks for it** (by name, or by adding the step). The goal image decides where the
 element sits; its element reference (the numbered file the move names) decides its look. Refine it where the
-underpainting already has it: `paint_finish` and then `paint_accents` on its area, Krita's layers and filters for light and colour, and only a
+underpainting already has it: `paint_finish` with `detail: "fine"` (after the whole-picture Finish: 2-4 px strokes at the
+goal's real detail size) and then `paint_accents` on its area, Krita's layers and filters for light and colour, and only a
 few small typed marks. Never repaint an element by hand unless the artist asks for hand-painted work. Draw its guide
 first (named exactly as the move says) only when the artist asked for guides. Paint nothing else. The step is judged
 against the goal image like any other: a batch that makes the canvas clearly less like it is undone.

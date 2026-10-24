@@ -80,6 +80,7 @@ test('the painter\'s context carries the area: bounds, a short description, what
   assert.match(context.description, /21% of the canvas/);
   assert.match(context.rules, /Krita blocks every write outside it/);
   assert.match(context.rules, /paint_from_reference/);
+  assert.match(context.rules, /refine, sharpen or add detail[^]*paint_finish with detail "fine"[^]*then paint_accents/, 'finish-stage goal 6: the refine sequence in an area');
   assert.match(context.reply, /^Painting only inside your selection: the sky/);
   assert.equal(areaContext(null), undefined);
 });

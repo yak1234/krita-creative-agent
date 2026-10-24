@@ -221,10 +221,15 @@ test('a subfolder that cannot be read is listed as skipped, the scan goes on', a
 // request. The finish between the underpainting and the accents (finish-stage, approved 2026-10-24).
 test('the default folder plan is the underpainting, the finish, then accents on the whole picture; no element steps', () => {
   const steps = defaultFolderSteps();
-  assert.deepEqual(steps.map(s => [s.title, s.scope]), [['Underpainting from the goal image', 'whole composition'], ['Finish', 'whole composition'], ['Accents', 'whole composition']]);
+  // Refine to the goal between the finish and the accents (finish-stage goal 8, the artist 2026-10-24).
+  assert.deepEqual(steps.map(s => [s.title, s.scope]), [['Underpainting from the goal image', 'whole composition'], ['Finish', 'whole composition'],
+    ['Refine to the goal', 'whole composition'], ['Accents', 'whole composition']]);
   assert.match(steps[1].done_when, /blended/i); assert.match(steps[1].done_when, /strokes/i);
-  assert.match(steps[2].done_when, /lights/i); assert.match(steps[2].done_when, /darks/i);
-  assert.deepEqual(steps.map(folderStepKind), ['underpainting', 'finish', 'accents']);
+  assert.match(steps[2].done_when, /full size/i);
+  assert.match(steps[3].done_when, /lights/i); assert.match(steps[3].done_when, /darks/i);
+  assert.deepEqual(steps.map(folderStepKind), ['underpainting', 'finish', 'refine', 'accents']);
+  assert.equal(folderStepKind({ title: ' refine to the goal ', scope: 'whole composition' }), 'refine', 'its own title, exactly');
+  assert.equal(folderStepKind({ title: 'Refine the sky', scope: 'whole composition' }), 'whole');
   // Review finding: only the default step's own title is the finish; older PLAN.md titles keep their kinds.
   assert.equal(folderStepKind({ title: ' finish ', scope: 'whole composition' }), 'finish');
   assert.equal(folderStepKind({ title: 'Finishing touches on the sky', scope: 'whole composition' }), 'whole');

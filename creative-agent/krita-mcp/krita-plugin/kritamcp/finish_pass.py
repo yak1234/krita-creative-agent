@@ -36,7 +36,7 @@ import threading
 import time
 import numpy as np
 
-FIELDS = ('name', 'goal', 'box', 'selection', 'inside_shape', 'stage_id', 'region', 'expected_revision', 'panel')
+FIELDS = ('name', 'goal', 'box', 'selection', 'inside_shape', 'detail', 'stage_id', 'region', 'expected_revision', 'panel')
 GOAL_FIELDS = ('path', 'sha256', 'size', 'source', 'target')
 SCALE_SIDE = 6000                             # the spike's canvas: every size below is in its pixels
 EDGE_SIGMA = 40                               # how far "how much structure is here" looks
@@ -52,6 +52,19 @@ WIDTH = (5, 9)                                # its width, narrower for a short 
 STOP = 26                                     # Lab distance from the seed's colour that ends a stroke (L 0-100)
 OPACITY = (0.8, 0.95)
 SEED = 7                                      # fixed: the same call paints the same strokes
+# Fine detail (openspec finish-stage goal 6, the artist 2026-10-24: "yess we need both"): on New Moscow the whole-picture
+# Finish's 5-9 px strokes were blobby beside the domed church's 2-4 px windows and edges, and every check looked at reduced
+# views. The lead's try-out on the church (550 x 750 canvas px of the 6000 px canvas, sharpened goal): these sizes, 100k
+# strokes in 4.5 s, difference to the goal (blurred 4 px) 5.17 -> 2.14, windows and dome edges crisp. Only what differs
+# from the default is listed; the soft mask and the form field are the default's. For an area: at most FINE_SHARE of the
+# canvas (the whole 6000 x 4500 canvas fine would be about 6 M strokes, minutes on Krita's GUI thread).
+# finer: Refine to the goal's second level (goal 8, the artist 2026-10-24: "i want the end result where our accents and
+# finishes make it move eventually to the final"): fine repeated paints the same strokes again (church: 2.44 -> 2.44); finer
+# took the church from colour 2.45 / edges 2.44 to 1.27 / 1.48 (area_compare.py), windows of 1-2 px drawn.
+DETAILS = {'normal': {}, 'fine': {'width': (2, 4), 'length': (6, 18), 'spacing': 2, 'stop': 20, 'r': 4},
+           'finer': {'width': (1.5, 2), 'length': (4, 10), 'spacing': 2, 'stop': 14, 'r': 2}}
+DETAIL_LEVELS = ('normal', 'fine', 'finer')
+FINE_SHARE = 0.15                             # fine and finer: at most this share of the canvas a call
 TILE = 512                                    # work square: only the squares the area touches are read and written
 RESPONSIVE_SECONDS = 0.2                      # Krita's events run at least this often during a pass
 MAX_GOAL_BYTES = 64 * 1024 * 1024             # creative_reference.py REFERENCE_FILE_BYTES and REFERENCE_PIXELS
@@ -74,14 +87,19 @@ def blur(image, sigma):
     return cv2.GaussianBlur(image, (2 * radius + 1, 2 * radius + 1), sigma) if radius > 0 else image
 
 
-def sizes(width, height):
-    """The spike's sizes on this canvas: scaled by its long side against SCALE_SIDE, never below a pixel or two. `k` also
-    scales the gradient (a structure is as strong per picture, whatever the pixels)."""
+def sizes(width, height, detail='normal'):
+    """The spike's sizes on this canvas (or the fine try-out's, DETAILS): scaled by its long side against SCALE_SIDE, never
+    below a pixel or two. `k` also scales the gradient (a structure is as strong per picture, whatever the pixels)."""
+    if detail not in DETAILS:
+        raise ValueError('detail is normal, fine or finer.')
     k = max(width, height) / SCALE_SIDE
-    out = {'k': k, 'edge': max(2.0, EDGE_SIGMA * k), 'soft_blur': max(1.0, SOFT_BLUR * k), 'r': max(2, int(round(GUIDED_R * k))),
-           'tensor': max(1.0, TENSOR_SIGMA * k), 'colour': max(0.5, COLOUR_SIGMA * k), 'spacing': max(2.0, SPACING * k),
-           'step': max(1.0, STEP * k), 'length': (max(4.0, LENGTH[0] * k), max(6.0, LENGTH[1] * k)),
-           'width': (max(1.5, WIDTH[0] * k), max(2.0, WIDTH[1] * k))}
+    own = DETAILS[detail]
+    length, wide = own.get('length', LENGTH), own.get('width', WIDTH)
+    out = {'k': k, 'detail': detail, 'edge': max(2.0, EDGE_SIGMA * k), 'soft_blur': max(1.0, SOFT_BLUR * k),
+           'r': max(2, int(round(own.get('r', GUIDED_R) * k))), 'stop': own.get('stop', STOP),
+           'tensor': max(1.0, TENSOR_SIGMA * k), 'colour': max(0.5, COLOUR_SIGMA * k), 'spacing': max(2.0, own.get('spacing', SPACING) * k),
+           'step': max(1.0, STEP * k), 'length': (max(4.0, length[0] * k), max(6.0, length[1] * k)),
+           'width': (max(1.5, wide[0] * k), max(2.0, wide[1] * k))}
     out['steps'] = int(math.ceil(out['length'][1] / 2 / out['step']))
     # How far a stroke's pixels lie from its seed (its steps, half its widest width, anti-aliasing), and how far around
     # a point the goal is read for the soft mask and for a stroke's direction and colour.
@@ -213,7 +231,7 @@ def field(goal, size):
 
 def trace(x, y, longest, fx, fy, lab, origin, width, height, size):
     """Every seed's stroke at once: from the seed both ways along the field in size['step'] steps until half its length
-    (`longest`), off the canvas, or where the goal's Lab differs from the seed's by more than STOP. The field arrays
+    (`longest`), off the canvas, or where the goal's Lab differs from the seed's by more than size['stop']. The field arrays
     start at canvas `origin`. Returns points (n, 2 * steps + 1, 2) in canvas pixels and the first and last valid index."""
     steps, step = size['steps'], size['step']
     ox, oy = origin
@@ -244,7 +262,7 @@ def trace(x, y, longest, fx, fy, lab, origin, width, height, size):
             inside = (px[i] >= 0) & (py[i] >= 0) & (px[i] < width) & (py[i] < height)
             ok = inside.copy()
             j = i[inside]
-            ok[inside] = np.linalg.norm(lab[np.floor(py[j]).astype(int) - oy, np.floor(px[j]).astype(int) - ox] - c0[j], axis=1) <= STOP
+            ok[inside] = np.linalg.norm(lab[np.floor(py[j]).astype(int) - oy, np.floor(px[j]).astype(int) - ox] - c0[j], axis=1) <= size['stop']
             alive[i[~ok]] = False
             kept = i[ok]
             slot = steps + sign * (k + 1)
@@ -503,8 +521,20 @@ class FinishCraft:
             self._region_check_named(doc, session, text(params['selection'], 'selection', 2000))
         if params.get('inside_shape'):
             self._region_shape_selection(doc, session, params['inside_shape'])
-        if not self._finish_work(doc, session, params):
+        detail = params.get('detail', 'normal')
+        sizes(doc.width(), doc.height(), detail)
+        work = self._finish_work(doc, session, params)
+        if not work:
             raise ValueError('The area lies outside where the goal sits on the canvas: nothing to finish.')
+        if detail != 'normal':
+            # The area's own pixels, not its bounding box (review finding: a thin diagonal part was refused by its box).
+            coverage_of = self._finish_limit(doc, session, params)[0]
+            share = sum(float(coverage_of(*t).sum()) if coverage_of else t[2] * t[3] for t in work) / float(doc.width() * doc.height())
+            if share > FINE_SHARE:
+                raise ValueError('Nothing was painted: fine detail paints at most %d%% of the canvas a call (this area is %d%%). '
+                                 'For a larger area call refine_to_goal with it (the artist\u2019s Paint only here area by default, or a box): '
+                                 'it refines the area square by square, fine then finer, where it still differs from the goal.'
+                                 % (round(FINE_SHARE * 100), round(share * 100)))
         try:
             import cv2  # noqa: F401
         except Exception as error:
@@ -526,7 +556,7 @@ class FinishCraft:
         from . import canvas_projection
         started = time.monotonic()
         width, height = doc.width(), doc.height()
-        size = sizes(width, height)
+        size = sizes(width, height, params.get('detail', 'normal'))
         limit = self._finish_limit(doc, session, params)
         work = self._finish_work(doc, session, params, limit)
         coverage_of = limit[0]
@@ -603,7 +633,9 @@ class FinishCraft:
             if painted and not done[KEYS[label]]:
                 session['layers'].discard(layer.uniqueId().toString())
                 layer.remove()
-        out = dict(group, finish={'tiles': done['tiles'], 'of_tiles': len(work), 'blend_tiles': done['blend_tiles'],
+        # whole: the whole picture at the default detail (the companion's "the whole picture is finished", from the passes).
+        whole = size['detail'] == 'normal' and not any(params.get(k) for k in ('box', 'selection', 'inside_shape'))
+        out = dict(group, finish={'detail': size['detail'], 'whole': whole, 'tiles': done['tiles'], 'of_tiles': len(work), 'blend_tiles': done['blend_tiles'],
                                   'stroke_tiles': done['stroke_tiles'], 'strokes': done['strokes'],
                                   'soft_share': round(done['soft'] / area, 3), 'ms': int((time.monotonic() - started) * 1000)},
                    layers={label: layer.uniqueId().toString() for label, layer in layers.items()

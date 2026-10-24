@@ -24,6 +24,19 @@ atmosphere; crisp, form-following strokes on the subject; sharp highlights last.
    goal's resolution and the goal is not sharpened, the painter says the goal has no more detail there and offers
    Sharpen.
 
+## Goals 6-8 (approved by the artist 2026-10-24: "yess we need both"; goal 8 the same night)
+
+After underpainting -> Finish -> accents, refining the church, the skyline and the left buildings with Paint only here only
+called paint_accents, which found nothing; likeness stayed ΔE 0.4. At full size the canvas was blobby: Finish's strokes are
+5-9 px, the church's windows 2-4 px, and every check looked at reduced views.
+
+6. **Fine Finish for an area:** paint_finish detail fine (strokes 2-4 px, the lead's church try-out), for at most 15% of the
+   canvas; after the whole-picture Finish a refine or element step in an area is fine Finish, then accents.
+7. **Full-size checks for an area:** the accent finder and goal likeness compare the area at full canvas resolution against
+   the placed (sharpened) goal, so a fine Finish shows as 4.95 -> 2.45 instead of 0.4 -> 0.2.
+8. **Refine to the goal:** a host-driven loop ranks the whole canvas at full size and runs fine (then finer) Finish and
+   accents on the worst regions until they are close or a budget is spent; a default plan step between Finish and Accents.
+
 ## Spike (offline, 2026-10-24, scratchpad finish/finish.py)
 
 On a copy of the 6000x4500 canvas with the 4x-sharpened goal: soft mask from the goal's gradient magnitude blurred

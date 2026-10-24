@@ -9,6 +9,8 @@ import { panelSchema } from './settings-schema.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS } from './craft.mjs';
 import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension } from './extensions.mjs';
 import { transferJobId, underpaintingState, underpaintingRefusal, closedNote, UNDERPAINTING_MOVE_NOTE } from './underpainting-move.ts';
+import { goalSpec } from './goal-spec.ts';
+import { refineToGoalNote } from './refine-goal.ts';
 import { readMessage, messagePolicy } from './message-reading.ts';
 import { resolvedViewSide, resolvedCropSide, modelKey, VIEW_SIDE_TODAY } from './view-size.ts';
 import { comparisonArea, cropPlan, goalSource, compareWithGoal, withContext, CROP_SIDE } from './goal-comparison.ts';
@@ -240,13 +242,13 @@ function moveReviewLine({verdict,findings,undone_batches,batches}) {
 const LIKENESS_CACHE=8;
 const COMPARISON_DEADLINE_MS=6000;   // Luna's goal comparison, crops included: past this the batch is kept (review, 2026-10-24)
 // Tools whose calls an element step checks (element-step-rules.ts): colour splits and selections, typed strokes, and a batch of them.
-const ELEMENT_STEP_GUARDED=['select','split_by_color','paint_pass','paint_batch','painting_toolbox','paint_contours','paint_recipe','bucket_fill','enclose_and_fill','fill_region','apply_filter','create_layer'];
-const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer','painting_toolbox','stamp_material',...CRAFT_OPERATIONS,'letter','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_finish','paint_accents'];
+const ELEMENT_STEP_GUARDED=['refine_to_goal','select','split_by_color','paint_pass','paint_batch','painting_toolbox','paint_contours','paint_recipe','bucket_fill','enclose_and_fill','fill_region','apply_filter','create_layer'];
+const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer','painting_toolbox','stamp_material',...CRAFT_OPERATIONS,'letter','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_finish','refine_to_goal','paint_accents'];
 /** Agent mode's request for "Paint this plan": the plan's current step, one move at a time. */
 // Project folder (B3): with a folder, Agent mode plans first. Nothing paints before the artist approves with Start painting.
 // The plan's shape (the artist, 2026-10-23; the finish added 2026-10-24, finish-stage): underpainting, finish, accents,
 // then the artist says what to refine (project-folder.ts).
-const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist approves the plan with Start painting. Call propose_plan now, as in folder_plan_draft: step 1 is the underpainting of the whole composition from the goal image (a whole-picture reference transfer), step 2 is the finish on the whole picture (paint_finish: soft areas blended, forms restroked from the goal image; keep its title exactly "Finish"), step 3 is accents on the whole picture (paint_accents: lights, darks and detail from the goal image), and then the plan ends: the host asks the artist what to refine next. Add a step for an element (its scope is its file name, after the accents) only when the artist asks for that element by name or asks for element steps; never repaint the elements one by one by default. Improve titles, done_when and checks from the brief, the prompts and the images. Add a guides step only when the artist asks for guides. Then stop.\n';
+const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist approves the plan with Start painting. Call propose_plan now, as in folder_plan_draft: step 1 is the underpainting of the whole composition from the goal image (a whole-picture reference transfer), step 2 is the finish on the whole picture (paint_finish: soft areas blended, forms restroked from the goal image; keep its title exactly "Finish"), step 3 refines the whole picture to the goal (refine_to_goal: the host refines the regions still furthest from the goal at full size; keep its title exactly "Refine to the goal"), step 4 is accents on the whole picture (paint_accents: lights, darks and detail from the goal image), and then the plan ends: the host asks the artist what to refine next. Add a step for an element (its scope is its file name, after the accents) only when the artist asks for that element by name or asks for element steps; never repaint the elements one by one by default. Improve titles, done_when and checks from the brief, the prompts and the images. Add a guides step only when the artist asks for guides. Then stop.\n';
 // A plan step that names guides: the artist asked for them when approving it.
 const GUIDES_STEP = /\b(guides?|trac(e|ing)|block-in|construction lines?)\b/i;
 const FOLDER_ANSWERS = ['Follow the edited plan','Keep the current plan'];
@@ -633,6 +635,7 @@ export class StudioRuntime extends PaintingRuntime {
     const seen = this.decisionObservation ?? this.lastObservation;
     if (this.mode === 'agent' && this.currentMove && transferJobId(call.tool, call.id, call.args) && seen?.image_path && !seen.region) (this.transferBefore ??= new Map()).set(call.id, seen.unguided_path ?? seen.image_path);
     this.refuseExhaustedMethod(call);
+    await this.areaLikenessBefore(call);
     const unify = await this.unifyPass(call);
     try { this.planSteps.beforeBatch(call); }            // after the artist's "good enough": nothing more for that step
     catch (error) { this.batchStarts?.delete(call.id); throw error; }
@@ -818,7 +821,27 @@ export class StudioRuntime extends PaintingRuntime {
       lunaMode: () => this.lunaMode(),
       compare: input => this.goalComparison(input),
       compared: entry => this.noteComparison(entry.move, entry.luna, {call_id:entry.call_id, late:true}),
+      area: async id => { const before=await this.areaBefore?.get(id); this.areaBefore?.delete(id); if (!before) return null;
+        const after=await this.areaLikeness(before.rect); return after && {rect:before.rect, before:before.measure, after}; },
     };
+  }
+  /** Full size in an area (finish-stage goal 7): before an Agent move's batch in the Paint only here area (or a box the call
+   * names), the area's full-size difference to the placed goal (area_compare.py area_likeness). Never fails a call. */
+  async areaLikenessBefore(call) {
+    const rect=this.goal?.paint_only_here?.bounds ?? call.args?.area?.box;
+    if (this.mode!=='agent' || !this.currentMove || !Array.isArray(rect)) return;
+    const measure=await this.areaLikeness(rect);
+    this.areaBefore = new Map();                  // only the batch in progress: one never measured is not kept
+    if (measure) this.areaBefore.set(call.id, {rect, measure});
+  }
+  async areaLikeness(rect) {
+    try {
+      const canvas=this.decisionObservation ?? this.lastObservation, placed=canvas?.width ? await this.goalPlacement(canvas) : null;
+      if (!placed) return null;
+      const goal=await goalSpec({reference:placed.reference, source:placed.mapping.source, target:placed.mapping.target, from:placed.mapping.from});
+      const {colour, edges}=await super.callNative('area_likeness',{goal, rect});
+      return Number.isFinite(colour) ? {colour, edges} : null;
+    } catch { return null; }
   }
   /** Luna's goal comparison of one batch (luna-goal-reviewer goal 1): the batch's area (its passes', else the cells it
    * changed) cut from the goal and from the canvas views before and after it, at the views' scale and at most the crop
@@ -1029,6 +1052,7 @@ export class StudioRuntime extends PaintingRuntime {
     const move=(this.goal?.moves ?? []).find(m=>m.number===entry.move);
     if (!move || entry.status==='fallback') return;
     const likeness=move.likeness ?? {batches:0,before:entry.whole.before,after:entry.whole.before,undone:0,kept_worse:0};
+    if (entry.area_full && entry.status!=='undone') likeness.area={before:likeness.area?.before ?? entry.area_full.before.colour, after:entry.area_full.after.colour};
     likeness.batches++;
     if (entry.status==='undone') {
       likeness.undone++;
@@ -1299,7 +1323,7 @@ export class StudioRuntime extends PaintingRuntime {
     // Skills (read opens skill files only) and image assets, while planning and painting.
     if (vision && (phase === 'plan' || phase === 'agent')) names.push('read','make_asset','run_skill_script');
     if (phase === 'plan' && this.mode === 'autopilot' && this.goal?.brief) names.push('start_painting');
-    if (phase === 'agent') names.push('ask_for_selection','propose_protection','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_finish','paint_accents','list_brushes','paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer',...CRAFT_TOOLS,...GUIDE_TOOLS,'letter','finish_move','painting_toolbox','painting_tool_help','ask_question','record_progress','request_review');
+    if (phase === 'agent') names.push('ask_for_selection','propose_protection','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_finish','refine_to_goal','paint_accents','list_brushes','paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer',...CRAFT_TOOLS,...GUIDE_TOOLS,'letter','finish_move','painting_toolbox','painting_tool_help','ask_question','record_progress','request_review');
     // Agent (collaborative) paints one move per turn: no review or progress bookkeeping tools.
     // With Luna pacing, Autopilot's host tracks plan steps; request_review stays as a backstop.
     const hidden = phase !== 'agent' ? [] : this.mode === 'agent' ? ['record_progress','request_review','ask_question',...(this.executionSettings?.move_size === 'quick' ? ['finish_move'] : [])]
@@ -1356,6 +1380,16 @@ export class StudioRuntime extends PaintingRuntime {
       say:message=>this.emit({type:'action', seconds:0, message})}, command);
   }
   paintOnlyArea() { return this.goal?.paint_only_here ?? null; }
+  /** paint_finish painted (finish-tool.ts): after the whole picture's, element and refine steps refine fine (finish-stage goal 6). */
+  finishDone({whole}) { if (whole && this.goal) { this.goal.whole_finish = {move:this.currentMove?.number ?? null}; this.persist().catch(() => {}); } }
+  /** The whole picture has had its Finish: the move that painted it (goal.whole_finish) not undone; for a chat from before,
+   * a kept whole-picture Finish pass (finish_whole; a Finish pass recorded before the field existed counts: paint_finish then
+   * had no detail and was called on the whole picture unless the artist had set Paint only here). */
+  wholeFinished() {
+    const mark=this.goal?.whole_finish;
+    if (mark) { const move=(this.goal.moves ?? []).find(m=>m.number===mark.move); if (move?.status!=='undone') return true; }
+    return (this.lastObservation?.passes ?? []).some(p=>p.kind==='finish' && (p.finish_whole ?? true) && !p.rejected);
+  }
   /** Find it for me (find-it.ts): the outline of a named part or a clicked point on the painting as it is now. The view is
    * peeked (read only, without guide lines) from the chat's painting, or the active one before it is bound; the shapes model
    * asks once for its download when it is not allowed yet (chat.ts). */
@@ -1475,12 +1509,14 @@ export class StudioRuntime extends PaintingRuntime {
   /** Element steps (element-step-rules.ts): colour splits and colour selections, materials and typed strokes are refused
    * before they run unless the artist's latest message asks for them; the refusal points to the scoped transfer and accents. */
   refuseInElementStep(call) {
-    const part = this.elementStepPart();
+    // refine_to_goal over the whole picture is refused in the Accents step too (review finding).
+    const steps = this.goal?.brief?.steps ?? [], step = this.mode === 'agent' ? steps[this.currentMove?.step] : null;
+    const part = this.elementStepPart() ?? (call.tool === 'refine_to_goal' && step && folderStepKind(step) === 'accents' ? `step "${step.title}"` : null);
     if (!part) return;
     const request = String(this.goal?.messages?.findLast?.(m => m.role === 'user')?.text ?? '');
     // Hand painting as the artist's latest typed message asked it (Luna's reading or the phrases, noteHandPainting).
     const handPainting = this.goal && 'hand_painting' in this.goal ? !!this.goal.hand_painting : undefined;
-    const refusal = elementStepRefusal(call, {part, area:!!this.goal?.paint_only_here, request, handPainting});
+    const refusal = elementStepRefusal(call, {part, area:!!this.goal?.paint_only_here, request, handPainting, finished:this.wholeFinished()});
     if (!refusal) return;
     this.diagnostics?.record({type:'element_step_refused', tool:call.tool, part, move:this.currentMove?.number ?? null});
     throw new Error(refusal);
@@ -1940,7 +1976,7 @@ export class StudioRuntime extends PaintingRuntime {
     if (!this.study?.folder || !steps.length || !this.folderPlanApproved()) return null;
     const retry = this.planSteps.indexOf(command.plan_step_key);
     const kind = folderStepKind(steps[retry >= 0 ? retry : Math.min(this.goal.current_step ?? 0, steps.length - 1)]);
-    return ['underpainting', 'finish'].includes(kind) ? kind : null;
+    return ['underpainting', 'finish', 'refine'].includes(kind) ? kind : null;
   }
   /** Agent mode: the underpainting or the finish waits for the Sharpen goal card (goal-sharpen.ts gate); true when it is held. */
   async holdForSharpen(text, command) {
@@ -2002,8 +2038,8 @@ export class StudioRuntime extends PaintingRuntime {
   /** The plan the companion suggests: the underpainting from the goal image, the finish, then accents (project-folder.ts defaultFolderSteps). */
   folderPlanDraft() {
     const index = this.folderIndex, name = basename(index.root);
-    return normalizeBrief({title:name.slice(0,200), objective:`Paint ${name} from its goal image: the underpainting, the finish, then accents; then the artist says what to refine.`, requirements:[], freedom:[],
-      completion:['The whole picture is underpainted from the goal image, finished (soft areas blended, forms in strokes) and its accents are crisp.'], steps:defaultFolderSteps()});
+    return normalizeBrief({title:name.slice(0,200), objective:`Paint ${name} from its goal image: the underpainting, the finish, refine to the goal, then accents; then the artist says what to refine.`, requirements:[], freedom:[],
+      completion:['The whole picture is underpainted from the goal image, finished (soft areas blended, forms in strokes), refined to the goal at full size and its accents are crisp.'], steps:defaultFolderSteps()});
   }
   /** Agent mode with a folder and no approved plan: a planning turn (propose_plan, no painting tools). */
   async planFolder(text, images) {
@@ -2079,6 +2115,7 @@ export class StudioRuntime extends PaintingRuntime {
       if (guides) return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: the guides the step names (draw_guide, element "${name}") placed from ${goalText}. Paint only this step, then finish_move.\n`;
       const kind = folderStepKind(step);
       if (kind === 'finish') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: finish the underpainting on the whole picture with paint_finish (the soft areas blended in the underpainting's own paint, the forms restroked from ${goalText}). One call; then look at the canvas and finish_move. No typed strokes and no accents in this step.\n`;
+      if (kind === 'refine') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: refine the whole picture to ${goalText} with refine_to_goal (the host finds the regions still furthest from the goal at full size and refines each: a fine finish, then accents, finer where needed). One call; then look at the canvas and finish_move. No typed strokes and no other painting in this step.\n`;
       if (kind === 'accents') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: crisp accents on the whole picture with paint_accents from ${goalText} (lights, glints, darks and lines, in the underpainting's own paint). Paint only this step, with no typed strokes over the underpainting, then finish_move.\n`;
       if (kind === 'whole') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: ${String(step.done_when ?? '').trim()} Refine what the underpainting has rather than repainting it (paint_finish, paint_accents, Krita's layers and filters), then finish_move.\n`;
       return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: the underpainting of the whole picture from ${goalText} (paint_from_reference, all of it onto the whole canvas). Paint only this step. ${UNDERPAINTING_MOVE_NOTE}\n`;
@@ -2088,6 +2125,7 @@ export class StudioRuntime extends PaintingRuntime {
     // accents in the area (the artist, 2026-10-24); colour splits and selections, materials and typed strokes are refused
     // there unless the artist asks (element-step-rules.ts).
     const area = this.goal.paint_only_here, refused = 'No split_by_color, colour selections (magic wand, colour ranges), materials or typed strokes: the host refuses them in an element step unless the artist asks for them.';
+    if (area && this.wholeFinished()) return `\nPROJECT FOLDER MOVE: paint only step ${move.step + 1} of the approved plan, "${name}", the element the artist asked for, inside the Paint only here area (${chipLine(area)}). The whole picture is finished: refine the element to the goal's real detail size, never underpaint it again: 1. paint_finish with detail "fine" (2-4 px strokes from ${goalText}), which works in the area by default (an area of more than 15% of the canvas: refine_to_goal, which works in it by default); 2. paint_accents from ${goalText}, which works in the area by default. ${refused} Its look also comes from the element reference ${element.id} (${file}). Then finish_move.\n`;
     if (area) return `\nPROJECT FOLDER MOVE: paint only step ${move.step + 1} of the approved plan, "${name}", the element the artist asked for, inside the Paint only here area (${chipLine(area)}). The default sequence: 1. paint_from_reference of ${goalText}, the whole goal over the whole canvas with its default steps: the underpainting engine at full strength, and only the dabs inside the area are painted; 2. paint_finish, which works in the area by default (its soft parts blended, its forms restroked from the goal); 3. paint_accents from ${goalText}, which works in the area by default. ${refused} Its look also comes from the element reference ${element.id} (${file}). Then finish_move.\n`;
     return `\nPROJECT FOLDER MOVE: paint only step ${move.step + 1} of the approved plan, "${name}", the element the artist asked for, on a layer named "${name}". Its look comes from the element reference ${element.id} (${file}); ${goalText} decides where it sits. The artist chose to paint it without an area: refine it where the underpainting already has it with paint_accents on its area from ${goalText} (or the element's aligned close-up), Krita's layers and filters for its light and colour${guides ? `; over its guide (draw_guide with element "${name}") first` : '; draw a guide only when the artist asks for one'}. ${refused} Then finish_move. When it reads as finished you may propose protecting it (propose_protection).\n`;
   }
@@ -3096,12 +3134,16 @@ export class StudioRuntime extends PaintingRuntime {
       if (state && full) this.goal.reference_skills_shown = true;
       const folderMove = this.folderMoveInstructions(move);
       const underpaintingNote = state?.transfer && !folderMove ? '\n' + UNDERPAINTING_MOVE_NOTE + '\n' : '';
-      const detailNote = guidesOnly || command.move_kind ? '' : await this.goalDetailNote(String(command.display_text ?? text ?? ''), canvas);
+      const said = String(command.display_text ?? text ?? '');
+      const detailNote = guidesOnly || command.move_kind ? '' : await this.goalDetailNote(said, canvas);
       // Luna read the message as about one part of the picture that is no folder element (message-reading.ts): its area first.
-      const reading = this.messageReading?.text === String(command.display_text ?? text ?? '') ? this.messageReading.policy : null;
+      const reading = this.messageReading?.text === said ? this.messageReading.policy : null;
       const partNote = reading?.part && !this.goal.paint_only_here && !command.move_kind && !guidesOnly
         ? '\nTHE ARTIST\u2019S MESSAGE is about one part of the picture (Luna read it so) and no Paint only here area is set: call ask_for_selection for that part, named as the artist named it, before painting it.\n' : '';
-      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + underpaintingNote + folderMove + detailNote + partNote + (move.ask_next ? askWhenDoneNote(move.ask_next.reason, this.layerNeed.area, move.ask_next.elements) : '') + '\nArtist:\n' + text, images);
+      // Refine after the whole-picture Finish (refine-goal.ts): the whole picture runs refine_to_goal, a part is asked for and refined fine.
+      const refineNote = guidesOnly || command.move_kind || folderMove ? '' : refineToGoalNote({text:said, area:!!this.goal.paint_only_here,
+        finished:this.wholeFinished(), reading:this.messageReading?.text === said ? this.messageReading.reading : null});
+      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + underpaintingNote + folderMove + detailNote + partNote + (refineNote ? '\n' + refineNote + '\n' : '') + (move.ask_next ? askWhenDoneNote(move.ask_next.reason, this.layerNeed.area, move.ask_next.elements) : '') + '\nArtist:\n' + text, images);
     } finally {
       this.goal.used_ms += Date.now() - this.goalStartedAt; this.goalStartedAt = undefined;
       const guidesOnly = !move.actions && move.guides > 0;

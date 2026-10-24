@@ -33,6 +33,7 @@ from .feature_guard import EXPRESSION_LIMIT, FeatureCraft, PANEL_ONLY as FEATURE
 from .material_stamp import MaterialCraft, RESOURCE_PREFIX as STAMP_RESOURCE_PREFIX
 from .accent_adjust import AccentCraft
 from .finish_pass import FinishCraft
+from .area_compare import AreaCompare
 from .guide_craft import GuideCraft
 from .tool_craft import ToolCraft, OPERATIONS as TOOL_OPERATIONS, PASS_TITLES as TOOL_TITLES, tool_functions_available
 from .journal_store import Journal
@@ -121,7 +122,7 @@ def merge_pass_record_error(result, error):
             'error': result['error'] + ' (' + note + ')' if result.get('error') else note}
 
 
-class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, ProtectionCraft, FeatureCraft, NativeCraft, MaterialCraft, ToolCraft, GuideCraft, AccentCraft, FinishCraft):
+class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, ProtectionCraft, FeatureCraft, NativeCraft, MaterialCraft, ToolCraft, GuideCraft, AccentCraft, FinishCraft, AreaCompare):
     def cmd_creative(self, request):
         fields(request, ('operation', 'session_id', 'operation_id', 'params'), ('operation', 'params'))
         operation = request['operation']
@@ -544,6 +545,9 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             if session['seam_candidates']:
                 observation['seam_candidates'] = session['seam_candidates']
             return observation
+        if operation in ('area_likeness', 'area_accents', 'refine_map'):
+            # The full-size checks for an area (area_compare.py, finish-stage goals 7-8): read only, no pass or checkpoint.
+            return self._area_operation(doc, session, operation, params)
         if operation == 'features_list':
             # What the painting's features are called, and which the artist protected (read only).
             fields(params, ())
@@ -915,6 +919,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                              layer_type=result.get('layer_type'),
                              filter=result.get('filter'), filter_mode=result.get('mode'), target_id=result.get('target_id'),
                              comic=result.get('comic'), panel=params.get('panel'), merged_pass_ids=result.get('merged_pass_ids'),
+                             finish_whole=(result.get('finish') or {}).get('whole') if operation == 'finish' else None,
                              prior=prior, after=state, strength=state['opacity'] / 255,
                              visible=state['visible'], rejected=False)
                 if operation == 'draw_guide':

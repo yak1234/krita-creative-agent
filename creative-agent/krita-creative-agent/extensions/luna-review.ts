@@ -31,6 +31,9 @@ export interface ReviewHost {
 }
 /** Automatic undos per move: past this a finding is reported and the move stops, so Luna never undoes a move empty. */
 export const UNDO_CAP = 2;
+/** Batches Luna reviews and records but never undoes (finish-stage goal 8, review finding): a Refine to the goal run is many
+ * squares of fine finishes and accents, as goal likeness exempts it. */
+export const RECORD_ONLY = ['refine_to_goal'];
 
 const lost = (findings: MoveFinding[]): string => findings.map(f => f.location ? `${f.label} (${f.location})` : f.label).join('; ');
 const line = (review: Record<string, unknown>) => ({ type: 'text' as const, text: JSON.stringify({ luna_review: review }) });
@@ -70,6 +73,10 @@ export default function lunaReview(host: ReviewHost): (pi: ExtensionAPI) => void
       const verdict = await check(move, event.toolCallId, passes, after, scope, guidesNote);
       if (verdict.status !== 'warned') { host.record(verdict); return undefined; }
       const what = lost(verdict.findings);
+      if (RECORD_ONLY.includes(toolName)) {                // a whole refine run is never undone for one finding
+        host.record({ ...verdict, reason: `${toolName}: recorded, never undone` });
+        return { content: [...event.content, line({ note: `Luna found ${what}; it is kept: a Refine to the goal run is never undone for one finding. Tell the artist.`, findings: verdict.findings })] };
+      }
       if (undos().count(move) >= UNDO_CAP) {
         host.record(verdict);
         host.stop(`Luna undid ${UNDO_CAP} batches in this move; this one also has ${what}.`);

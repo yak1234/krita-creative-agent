@@ -14,6 +14,12 @@
 // - Skipped: in a protected area (by its bounds; Krita keeps the exact pixels anyway), outside the area, dark specks.
 // - More than ASK_ABOVE accents in one call: nothing changes until the artist has answered a question the host asks
 //   (askAccents); only their yes, for that move and at most that many, lets confirmed: true through, once.
+// - Full size in an area (finish-stage goal 7, the artist 2026-10-24: "yess we need both"): on New Moscow, after Finish,
+//   refining the church with Paint only here found nothing (the reduced views matched) while its 2-4 px windows were blobs
+//   at full size. When the call works in an area (Paint only here, a box, a selection, a shape) from the chat's placed goal
+//   and names no source, the plugin compares the goal (sharpened when it is) with the canvas there at full canvas
+//   resolution (area_compare.py area_accents, at most 4 MP) and answers in canvas pixels. The whole picture keeps the
+//   reduced comparison (its thresholds unchanged).
 // The studio's native calls come in as dependencies, so this module imports no .mjs.
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -22,6 +28,7 @@ import type { AgentToolResult, ToolDefinition } from '@earendil-works/pi-coding-
 import { canvasShape, shapeSchema, type CanvasHost } from './shapes/use.ts';
 import { decodePlane } from './shapes/png.ts';
 import { loadAreaMask } from './paint-only-here.ts';
+import { goalSpec, type GoalSpec, type PlacedGoal } from './goal-spec.ts';
 
 export const ACCENT_KINDS = ['lights', 'glints', 'darks', 'lines'] as const;
 export type AccentKind = typeof ACCENT_KINDS[number];
@@ -30,9 +37,13 @@ export const STRENGTHS = ['bold', 'medium', 'subtle'] as const;
 export const ASK_ABOVE = 150;
 export const MOST = 400;
 export const DEFAULT_COUNT = 40;
-/** A dark smaller than this on the canvas (share of its long side, at least MIN_DARK pixels) reads as a speck: dropped unless
+/** A dark smaller than this on the canvas (speckSize: a share of the compared image's long side) reads as a speck: dropped unless
  * very strong. */
-const SPECK = 0.0015, MIN_DARK = 4, STRONG_SPECK = 0.8;
+const SPECK = 0.0015, MIN_SPECK = 1.5, STRONG_SPECK = 0.8;
+/** The speck size in canvas pixels: SPECK of the long side of the image the finder compared (at least MIN_SPECK of its
+ * pixels), times the canvas pixels one of them covers. The reduced view of a 6000 px canvas gives 9 px as before; at full
+ * size (finish-stage goal 7; review finding: the church's 2-4 px window darks were dropped) 1.5 px. */
+export const speckSize = (compareSide: number, canvasPerPixel: number): number => Math.max(MIN_SPECK, SPECK * compareSide) * canvasPerPixel;
 const ASPECT_TOLERANCE = 0.03;
 /** What each finder kind becomes on the canvas: lights and glints are brightened, darks deepened, lines sharpened. */
 export const ADJUSTS = { lights: 'lights', glints: 'lights', darks: 'darks', lines: 'detail' } as const;
@@ -84,7 +95,13 @@ export type AccentsRuntime = CanvasHost & {
   /** The artist's Paint only here area (paint-only-here.ts), the default area while it is set. */
   paintOnlyArea?(): { mask_path: string; bounds: number[] } | null;
 };
+export type AreaRequest = { goal: GoalSpec; rect: Rect; kinds: AccentKind[]; strength: string; max_accents: number };
+export type AreaReply = { accents: Accent[]; found: Record<string, number>; ms: number; rect: Rect; scale: number };
 export type AccentsDependencies = {
+  /** The chat's placed goal (studio.mjs goalPlacement), for the full-size comparison in an area; null without one. */
+  goal?(canvas: { width: number; height: number }): Promise<PlacedGoal | null>;
+  /** The plugin's area_accents (area_compare.py): the goal and the canvas compared at full size in `rect`, canvas pixels. */
+  findArea?(request: AreaRequest): Promise<AreaReply>;
   /** The plugin's find_accents for an attached reference (reference-tool.mjs findReferenceAccents). */
   findAccents(request: FindRequest): Promise<FindReply>;
   /** The plugin's `accents` operation (accent_adjust.py) through the studio's native call: one reversible pass. */
@@ -173,6 +190,11 @@ export function accentTools(runtime: AccentsRuntime, dependencies: AccentsDepend
       const canvas = { width: Number(seen.width), height: Number(seen.height) };
       if (!(canvas.width > 0 && canvas.height > 0)) throw new Error('Open the painting first: there is no canvas to paint accents on.');
       let source = args.source as Rect | undefined, target = args.target as Rect | undefined;
+      // In an area, from the placed goal: the full-size comparison (goal 7). Its placement is the goal's on the canvas.
+      const scopedArea = args.area === undefined ? !!runtime.paintOnlyArea?.() : args.area !== 'whole';
+      const placed = scopedArea && !source && !target && dependencies.findArea ? await dependencies.goal?.(canvas) ?? null : null;
+      const full = placed && placed.reference.id === args.reference_id ? placed : null;
+      if (full) { source = full.source.map(Math.round) as Rect; target = full.target.map(Math.round) as Rect; }
       if (!source || !target) {
         const whole = wholeMapping(width, height, canvas);
         if (!source && !target && whole) ({ source, target } = whole);
@@ -180,10 +202,10 @@ export function accentTools(runtime: AccentsRuntime, dependencies: AccentsDepend
         else if (source && !target) target = [0, 0, canvas.width, canvas.height];
         else throw new Error('This reference has other proportions than the canvas: give source (the reference area) and target (where it sits on the canvas), same aspect ratio.');
       }
-      if (!(source[2] > 0 && source[3] > 0 && source[0] + source[2] <= width && source[1] + source[3] <= height)) throw new Error('Source crop must fit the reference.');
-      if (Math.abs(source[2] / source[3] / (target[2] / target[3]) - 1) > 0.02) throw new Error('Source and target must have matching aspect ratios; crop instead of stretching.');
-      const scale = target[2] / source[2];
-      const map = (x: number, y: number): Point => [target![0] + (x - source![0]) * scale, target![1] + (y - source![1]) * scale];
+      if (!full && !(source[2] > 0 && source[3] > 0 && source[0] + source[2] <= width && source[1] + source[3] <= height)) throw new Error('Source crop must fit the reference.');
+      if (!full && Math.abs(source[2] / source[3] / (target[2] / target[3]) - 1) > 0.02) throw new Error('Source and target must have matching aspect ratios; crop instead of stretching.');
+      let scale = target[2] / source[2];
+      let map = (x: number, y: number): Point => [target![0] + (x - source![0]) * scale, target![1] + (y - source![1]) * scale];
       // The area on the canvas, and the part of the reference under it.
       let bounds: number[] = target, limit: { selection?: string; inside_shape?: { mask_path: string; bounds: number[] } } = {}, mask: { data: Uint8Array; width: number; bounds: number[] } | null = null;
       const area = args.area ?? 'whole', scoped = args.area === undefined ? runtime.paintOnlyArea?.() ?? null : null;
@@ -206,6 +228,15 @@ export function accentTools(runtime: AccentsRuntime, dependencies: AccentsDepend
       const left = Math.max(bounds[0]!, target[0]), top = Math.max(bounds[1]!, target[1]);
       const right = Math.min(bounds[0]! + bounds[2]!, target[0] + target[2]), bottom = Math.min(bounds[1]! + bounds[3]!, target[1] + target[3]);
       if (right <= left || bottom <= top) throw new Error('That area lies outside where the reference sits on the canvas.');
+      const kinds = [...(args.kinds ?? ACCENT_KINDS)] as AccentKind[], count = args.count ?? DEFAULT_COUNT;
+      let reply: FindReply, fullSize: { rect: Rect; scale: number } | null = null;
+      if (full) {
+        const rect: Rect = [Math.max(0, Math.floor(left)), Math.max(0, Math.floor(top)), 0, 0];
+        rect[2] = Math.min(canvas.width, Math.ceil(right)) - rect[0]; rect[3] = Math.min(canvas.height, Math.ceil(bottom)) - rect[1];
+        const answer = await dependencies.findArea!({ goal: await goalSpec(full), rect, kinds, strength: args.strength ?? 'medium', max_accents: Math.min(1000, 3 * count + 20) });
+        reply = answer; fullSize = { rect: answer.rect ?? rect, scale: answer.scale };
+        scale = 1; map = (x: number, y: number): Point => [x, y];                    // canvas pixels as they are
+      } else {
       const sx = Math.max(source[0], Math.floor(source[0] + (left - target[0]) / scale)), sy = Math.max(source[1], Math.floor(source[1] + (top - target[1]) / scale));
       const crop: Rect = [sx, sy, Math.min(source[0] + source[2], Math.ceil(source[0] + (right - target[0]) / scale)) - sx,
         Math.min(source[1] + source[3], Math.ceil(source[1] + (bottom - target[1]) / scale)) - sy];
@@ -219,13 +250,14 @@ export function accentTools(runtime: AccentsRuntime, dependencies: AccentsDepend
       const tx = clamp(Math.floor(cx * k), 0, vw - 1), ty = clamp(Math.floor(cy * k), 0, vh - 1);
       const view: FindRequest['canvas'] = { image_base64: file.toString('base64'), sha256: createHash('sha256').update(file).digest('hex'),
         target: [tx, ty, Math.max(1, Math.min(vw - tx, Math.round(ex * k) - tx)), Math.max(1, Math.min(vh - ty, Math.round(ey * k) - ty))] };
-      const kinds = [...(args.kinds ?? ACCENT_KINDS)] as AccentKind[], count = args.count ?? DEFAULT_COUNT;
-      const reply = await dependencies.findAccents({ reference_id: args.reference_id, source: crop, size: [width, height], kinds,
+      reply = await dependencies.findAccents({ reference_id: args.reference_id, source: crop, size: [width, height], kinds,
         strength: args.strength ?? 'medium', max_accents: Math.min(1000, 3 * count + 20), canvas: view });
+      }
       signal?.throwIfAborted();
       // Skipped: outside the area, where the canvas changed, in a protected area.
       const skipped = { outside: 0, small: 0, protected: 0 };
-      const speck = Math.max(MIN_DARK, SPECK * Math.max(canvas.width, canvas.height));
+      const speck = fullSize ? speckSize(Math.max(fullSize.rect[2], fullSize.rect[3]) * fullSize.scale, 1 / fullSize.scale)
+        : speckSize(Math.max(Number(seen.image_width), Number(seen.image_height)), canvas.width / Number(seen.image_width));
       const protectedAreas = seen.protected_areas ?? [];
       const kept = reply.accents.filter(accent => {
         const [x, y] = map(accent.x, accent.y);
@@ -237,7 +269,7 @@ export function accentTools(runtime: AccentsRuntime, dependencies: AccentsDepend
       const chosen = chooseAccents(kept, kinds, count);
       const painted: Record<string, number> = {};
       for (const accent of chosen) painted[accent.kind] = (painted[accent.kind] ?? 0) + 1;
-      const report = { painted: chosen.length, kinds: painted, skipped, found: reply.found, find_ms: reply.ms };
+      const report = { painted: chosen.length, kinds: painted, skipped, found: reply.found, find_ms: reply.ms, ...(fullSize ? { full_size: fullSize } : {}) };
       if (!chosen.length) return { content: [json({ ...report, message: 'The canvas already has the accents of those kinds that the reference shows there (or every one was skipped): nothing changed.' })], details: report };
       // Many accents at once: the artist decides first. The host asks an actual question; only the artist's yes for this
       // move, for at most that many, lets confirmed through, and only once.

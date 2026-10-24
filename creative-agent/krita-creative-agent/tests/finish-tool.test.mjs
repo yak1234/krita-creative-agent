@@ -117,3 +117,36 @@ test('measured by goal likeness, never undone by it; the enlargement is the plac
   assert.equal(exemption('paint_finish'), 'finish');
   assert.equal(goalEnlargement({ source: [0, 0, 1448, 1086], target: [0, 0, 6000, 4500] }).toFixed(2), '4.14');
 });
+
+// Fine detail (finish-stage goal 6, the artist 2026-10-24: "yess we need both"): the default unless asked; the plugin decides
+// the share it allows (finish_pass.py FINE_SHARE) and its refusal reaches the painter as it is.
+test('detail fine goes to the plugin with the area; the default sends none; the report and the action line say fine', async t => {
+  const { tool, finishes, events, runtime } = await setup(t);
+  await tool.execute('f1', { area: { box: [1150, 750, 550, 750] } });
+  assert.equal('detail' in finishes()[0].params, false, 'the default is the plugin’s own');
+  const native = runtime.callNative;
+  runtime.callNative = async (operation, params, id) => operation === 'finish'
+    ? { ...(await native(operation, params, id)), finish: { detail: 'fine', tiles: 4, of_tiles: 4, strokes: 109183, soft_share: 0.1, ms: 2900 } } : native(operation, params, id);
+  const result = await tool.execute('f2', { area: { box: [1150, 750, 550, 750] }, detail: 'fine' });
+  assert.deepEqual(finishes()[1].params.box, [1150, 750, 550, 750]);
+  assert.equal(finishes()[1].params.detail, 'fine');
+  assert.match(text(result), /"detail":"fine"/);
+  assert.match(events.at(-1).message, /fine/i);
+  assert.match(tool.description, /detail fine/i, 'the painter is told when to use it');
+});
+
+test('the studio hears when the whole picture was finished (not an area, not fine, not stopped): element steps then refine fine', async t => {
+  const { tool, runtime } = await setup(t);
+  const heard = [];
+  runtime.finishDone = scope => heard.push(scope);
+  await tool.execute('f1', { area: { box: [0, 0, 100, 100] } });
+  await tool.execute('f2', {});
+  assert.deepEqual(heard, [{ whole: false }, { whole: true }]);
+  // Review finding: with the artist's Paint only here area set, a Finish with no area named is clipped to it: not whole.
+  const mask = join(runtime.study.directory, '.shapes', 'paint-only-0123456789abcdef01234567.png');
+  await (await import('node:fs/promises')).mkdir(join(runtime.study.directory, '.shapes'), { recursive: true });
+  await writeFile(mask, (await import('../src/shapes/png.ts')).encodePlane({ width: 10, height: 10, data: new Uint8Array(100).fill(255) }));
+  runtime.paintOnlyArea = () => ({ mask_path: mask, bounds: [0, 0, 10, 10] });
+  await tool.execute('f3', {});
+  assert.deepEqual(heard.at(-1), { whole: false });
+});

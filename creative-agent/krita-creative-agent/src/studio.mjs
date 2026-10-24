@@ -44,7 +44,9 @@ import { skillCommand } from './skill-commands.ts';
 import { fillNudge, massGuidance, hasGoalReference, paintedTransfers, referenceColourPassMade, referenceFirstContext } from './reference-first.ts';
 import { transferRefusal, existingPainting, WHOLE_SHARE } from './reference-tool.mjs';
 import { typedStrokeRefusal, handPaintingRequested } from './typed-strokes.ts';
-import { scanFolder, readFolderText, defaultFolderSteps, elementStep, folderStepKind, elementsNamed, goalChoices, goalNamed, FOLDER_LIMITS } from './project-folder.ts';
+import { scanFolder, readFolderText, elementStep, folderStepKind, elementsNamed, goalChoices, goalNamed, FOLDER_LIMITS, FOLDER_STEP_KINDS } from './project-folder.ts';
+import { stagePolicy, reviseStages, stagesNamed, orderStages, folderPlanSteps, shapePlan, nextStages, STAGE_CARD, stagesFromCard, PLAN_STAGES } from './plan-stages.ts';
+import { refineGroups, partsOf, unionFound } from './refine-parts.ts';
 import { goalSharpener, sharpenedContext, noMoreDetailNote, refineRequested, ENLARGEMENT } from './goal-sharpen.ts';
 import { sharpenFirstMessage } from './finish-tool.ts';
 import { ensureMassMaps } from './mass-map.ts';
@@ -77,6 +79,11 @@ const lines = Type.Array(line, { maxItems: 30 });
 export const briefSchema = object({ title: line, objective: line, requirements: lines, freedom: lines,
   characters:Type.Optional(Type.Array(object({name:line,requirements:lines}),{maxItems:30})),
   steps: Type.Array(object({ title: line, done_when: line, scope:Type.Optional(line),
+    // A project folder's step (plan-from-request): its kind, the tool it paints with (painting_tool_help lists them), the
+    // element files a refine step refines. The host checks them (plan-stages.ts shapePlan).
+    kind:Type.Optional(Type.Union(FOLDER_STEP_KINDS.map(k=>Type.Literal(k)),{description:'A project folder step\'s kind, as in folder_plan_draft.'})),
+    tool:Type.Optional(Type.String({minLength:1,maxLength:400,description:'The name of the painting tool this step uses, e.g. paint_finish (look it up with painting_tool_help).'})),
+    parts:Type.Optional(Type.Array(Type.String({minLength:1,maxLength:400}),{maxItems:24,description:'A refine step\'s element files, as in folder_plan_draft.'})),
     id:Type.Optional(Type.String({pattern:STEP_ID.source,description:'The step\'s id: keep it when revising that step; leave it out for a new step.'})),
     checks:Type.Optional(Type.Array(Type.String({minLength:1,maxLength:300}),{minItems:1,maxItems:5,description:'What the finished area visibly looks like, judged on the canvas. Describe the painted result, not the absence of a seam around the rectangle being repaired.'})),
     panels:Type.Optional(Type.Array(panelId,{minItems:1,maxItems:24})) }), { minItems: 1, maxItems: 16 }),   // 16: a folder's block-in and 15 elements
@@ -85,7 +92,8 @@ export const briefSchema = object({ title: line, objective: line, requirements: 
 // Saved plans may carry retired stage controls (stop_after, max_operations, region).
 export function normalizeBrief(brief) {
   if (!brief?.steps) return brief;
-  return {...brief,steps:brief.steps.map(({title,done_when,scope,checks,id})=>({title,done_when,...(scope ? {scope}:{}),...(checks?.length ? {checks}:{}),...(id ? {id}:{})}))};
+  return {...brief,steps:brief.steps.map(({title,done_when,scope,checks,id,kind,tool,parts})=>({title,done_when,...(scope ? {scope}:{}),...(checks?.length ? {checks}:{}),...(id ? {id}:{}),
+    ...(kind ? {kind}:{}),...(tool ? {tool}:{}),...(parts?.length ? {parts}:{})}))};
 }
 const RUN_QUESTION_LIMIT = 2;   // Autopilot questions per run; the rest the painter decides
 const questionSchema = object({ question: line, options: Type.Array(line, { maxItems: 4 }) });
@@ -229,6 +237,7 @@ function actionSucceeded(response, index, call) {
   return !['failed','stopped','paused','interrupted','partial','awaiting_review'].includes(details.status);
 }
 const listOr = items => items.length > 1 ? items.slice(0, -1).join(', ') + ' or ' + items.at(-1) : items.join('');
+const listAnd = items => items.length > 1 ? items.slice(0, -1).join(', ') + ' and ' + items.at(-1) : items.join('');
 const countStrokes = ({tool, args = {}}) => tool === 'paint_batch' ? (args.actions ?? []).reduce((sum, a) => sum + countStrokes({tool:a.tool, args:a.arguments}), 0)
   : Array.isArray(args.strokes) ? args.strokes.length : Number(args.stroke_count) || (Array.isArray(args.contours) ? args.contours.length : 0);
 const methodRefusal=methods=>`${methods.join(' and ')} ran twice on this step without moving its checks, so ${methods.length>1 ? 'they are' : 'it is'} off until the step changes. Repeating ${methods.length>1 ? 'them' : 'it'} re-rolls the same result. Paint the forms instead: paint_contours for silhouettes, paint_pass with small brushes and long directed strokes for edges, glints and fine detail, clipped create_layer for light and shadow.`;
@@ -248,7 +257,10 @@ const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','a
 // Project folder (B3): with a folder, Agent mode plans first. Nothing paints before the artist approves with Start painting.
 // The plan's shape (the artist, 2026-10-23; the finish added 2026-10-24, finish-stage): underpainting, finish, accents,
 // then the artist says what to refine (project-folder.ts).
-const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist approves the plan with Start painting. Call propose_plan now, as in folder_plan_draft: step 1 is the underpainting of the whole composition from the goal image (a whole-picture reference transfer), step 2 is the finish on the whole picture (paint_finish: soft areas blended, forms restroked from the goal image; keep its title exactly "Finish"), step 3 refines the whole picture to the goal (refine_to_goal: the host refines the regions still furthest from the goal at full size; keep its title exactly "Refine to the goal"), step 4 is accents on the whole picture (paint_accents: lights, darks and detail from the goal image), and then the plan ends: the host asks the artist what to refine next. Add a step for an element (its scope is its file name, after the accents) only when the artist asks for that element by name or asks for element steps; never repaint the elements one by one by default. Improve titles, done_when and checks from the brief, the prompts and the images. Add a guides step only when the artist asks for guides. Then stop.\n';
+// The plan follows the request (plan-from-request goals 1-3, approved 2026-10-24): folder_plan_draft holds the stages the
+// artist asked for, in the host's order, and the host keeps them so (plan-stages.ts shapePlan): the planner improves the
+// words, may regroup the refine steps' parts, and looks the tools up with painting_tool_help.
+const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist approves the plan with Start painting. folder_plan_draft holds the stages the artist asked for, in the order the host keeps (an underpainting before anything that needs one, Refine only after a whole-picture Finish, Accents last); plan_stages says which and why. First look up each stage tool the draft uses with painting_tool_help (no name: the catalogue with what each does, its rough time on this canvas and what it needs; a name: its full description), then call propose_plan with the draft\'s steps in its order, keeping each step\'s kind, tool and parts: the underpainting is a whole-picture reference transfer (paint_from_reference), the Finish blends the soft areas and restrokes the forms (paint_finish; keep its title exactly "Finish"), a "Refine: <parts>" step refines those elements inside their found area (refine_to_goal; keep the "Refine: " start of its title; you may regroup the parts by meaning, every element in exactly one of at most 7 groups), Accents paints the lights, darks and detail on the whole picture (paint_accents). Do not add a stage the draft does not hold: the artist asks for the next stages later. Add a step for an element (its scope is its file name, after the stages) only when the artist asks for that element by name; never repaint the elements one by one by default. Improve titles, done_when and checks from the brief, the prompts and the images. Add a guides step only when the artist asks for guides. Then stop.\n';
 // A plan step that names guides: the artist asked for them when approving it.
 const GUIDES_STEP = /\b(guides?|trac(e|ing)|block-in|construction lines?)\b/i;
 const FOLDER_ANSWERS = ['Follow the edited plan','Keep the current plan'];
@@ -381,7 +393,8 @@ export class StudioRuntime extends PaintingRuntime {
     // Not fatal here, so the panel can explain; no chat starts without it.
     await this.ensureTracing();
     // The panel builds the generic settings' controls from their declarations, before it gets the values.
-    this.emit({type:'settings_schema',fields:panelSchema()});
+    await this.loadProbeRecords();
+    this.emitSettingsSchema();
     this.emitExecutionSettings();
     this.emitDecisions().catch(()=>{});   // endpoints and the live model list for the panel
     await this.capabilityService();this.emitModels();
@@ -470,9 +483,12 @@ export class StudioRuntime extends PaintingRuntime {
   // Langfuse context for the current chat: its study id is the Langfuse session.
   traceInfo(role) {
     const goal=this.goal, step=goal?.brief?.steps?.[goal.current_step];
-    const traceName={painter:{agent:'paint-goal',plan:'plan-painting',ask:'answer-artist'}[this.mode] ?? 'answer-artist',reviewer:'review-canvas',preparation:'prepare-batch'}[role];
-    return {traceName,sessionId:this.study?.id,tags:[role,'mode:'+this.mode],
-      ids:{study_id:this.study?.id,goal_revision:goal?.revision,plan_step:goal?(goal.current_step+1)+'/'+(goal.brief?.steps?.length ?? 0):null,goal_status:goal?.status,provider:this.study?.provider,model:this.study?.model},
+    // A plan turn on the painter session is the planner's (plan-from-request goal 4): its own trace and generation names.
+    const planner=role==='painter' && this.planningWith ? this.planningWith : null;
+    const traceName=planner ? 'plan-folder' : {painter:{agent:'paint-goal',plan:'plan-painting',ask:'answer-artist'}[this.mode] ?? 'answer-artist',reviewer:'review-canvas',preparation:'prepare-batch'}[role];
+    return {traceName,sessionId:this.study?.id,tags:[planner ? 'planner' : role,'mode:'+this.mode],...(planner ? {generationName:'plan-steps'} : {}),
+      ids:{study_id:this.study?.id,goal_revision:goal?.revision,plan_step:goal?(goal.current_step+1)+'/'+(goal.brief?.steps?.length ?? 0):null,goal_status:goal?.status,
+        provider:planner?.provider ?? this.study?.provider,model:planner?.id ?? this.study?.model},
       metadata:{study_name:this.study?.name,objective:goal?.brief?.objective,plan_step:step,luna_mode:this.lunaMode?.()}};
   }
   traceSession(session,role) {
@@ -684,10 +700,12 @@ export class StudioRuntime extends PaintingRuntime {
   }
   /** Luna's reading of a typed Agent message (message-reading.ts): one text decision, made once a message and kept with
    * the policy it gives (the keyword rules' when Luna is off, failed or not on Guide). Null outside a chat. */
-  async readArtistMessage(text) {
+  async readArtistMessage(text, {stages=false}={}) {
     const said=String(text ?? ''), mode=this.lunaMode();
-    // Kept for this text and Decision checks mode; a failed or timed-out reading is asked again (review, 2026-10-24).
-    if (this.messageReading?.text===said && this.messageReading.study===this.study && this.messageReading.mode===mode && !this.messageReading.reading?.fallback) return this.messageReading;
+    // Kept for this text and Decision checks mode; a failed or timed-out reading is asked again (review, 2026-10-24). A
+    // reading made with the plan's stage questions (plan-from-request goal 1) serves one asked without them too.
+    if (this.messageReading?.text===said && this.messageReading.study===this.study && this.messageReading.mode===mode && !this.messageReading.reading?.fallback
+      && (!stages || this.messageReading.stages)) return this.messageReading;
     if (!this.goal) return null;
     const index=this.study?.folder ? this.folderIndex : null;
     const elements=(index?.elements ?? []).map(e=>({name:e.name, guess:String(this.folderGuessOf(e) || e.name)}));
@@ -695,13 +713,13 @@ export class StudioRuntime extends PaintingRuntime {
     let reading=null;
     if (mode!=='off') {
       const client=await this.luna().catch(()=>null);
-      reading=client ? await readMessage({client, text:said, elements, signal:this.lunaSignal()}) : null;
+      reading=client ? await readMessage({client, text:said, elements, signal:this.lunaSignal(), stages}) : null;
       this.diagnostics?.record({type:'message_reading', mode, ...(reading ? {element:reading.element, one_part:reading.one_part, negation:reading.negation,
-        reference:reading.reference, hand_painting:reading.hand_painting, elapsed_ms:reading.elapsed_ms, cost:reading.cost, input_tokens:reading.input_tokens,
+        reference:reading.reference, hand_painting:reading.hand_painting, ...(reading.stages ? {stages:reading.stages} : {}), elapsed_ms:reading.elapsed_ms, cost:reading.cost, input_tokens:reading.input_tokens,
         ...(reading.fallback ? {fallback:reading.fallback} : {})} : {fallback:'not_connected'})});
     }
     const policy=messagePolicy({reading, act:mode==='guide', text:said, elements, planned});
-    this.messageReading={study:this.study, text:said, mode, reading, policy};
+    this.messageReading={study:this.study, text:said, mode, reading, policy, stages};
     return this.messageReading;
   }
   /** One unify pass (unify-pass.ts): after a whole-picture underpainting, the chat's first whole-canvas softening call is
@@ -908,6 +926,60 @@ export class StudioRuntime extends PaintingRuntime {
   comparisonCropSide() {
     const d=this.executionSettings?.decisions;
     return resolvedCropSide(d ? this.probeRecords?.[modelKey(d.endpoint, d.model)] : null, CROP_SIDE);
+  }
+  // The Planner model (plan-from-request goal 4, the artist 2026-10-24: stronger planners for planning only). Plan turns
+  // (a folder's planFolder, Plan-phase turns) switch the one painter session to the planner with Pi's setModel and back
+  // when the turn ends, so the conversation, tools and transcript stay one; painting turns always run on the painter.
+  /** The routes the Planner model setting offers: connected interactive models measured by the resolution probe (the
+   * decision model aside), the painter's, and the saved choice (marked when it is not connected). */
+  plannerRoutes() {
+    const decisions=this.executionSettings?.decisions, measured=new Set(Object.keys(this.probeRecords ?? {}));
+    if (decisions) measured.delete(modelKey(decisions.endpoint, decisions.model));
+    const routes=[], seen=new Set();
+    const add=(route,label)=>{ if(!seen.has(route)){ seen.add(route); routes.push({route,label}); } };
+    for (const m of this.models?.getModels?.() ?? []) {
+      const painter=this.study && m.provider===this.study.provider && m.id===this.study.model;
+      if (this.models.hasConfiguredAuth(m.provider) && isInteractiveModel(m) && (painter || measured.has(modelKey(m.provider, m.id)))) add(`${m.provider}/${m.id}`, `${m.name || m.id} (${m.provider})`);
+    }
+    const saved=this.executionSettings?.planner_model;
+    if (saved && saved!=='painter' && !seen.has(saved)) {
+      const slash=saved.indexOf('/'), m=slash>0 ? this.models?.getModel?.(saved.slice(0,slash),saved.slice(slash+1)) : null;
+      add(saved, m && this.models.hasConfiguredAuth(m.provider) ? `${m.name || m.id} (${m.provider})` : `${saved} (not connected)`);
+    }
+    return routes;
+  }
+  /** The generic settings' declarations for the panel, with the planner routes; sent again only when they change. */
+  emitSettingsSchema() {
+    const fields=panelSchema({models:this.plannerRoutes()}), text=JSON.stringify(fields);
+    if (text===this.settingsSchemaSent) return;
+    this.settingsSchemaSent=text; this.emit({type:'settings_schema',fields});
+  }
+  emitModels(selected) { super.emitModels(selected); this.emitSettingsSchema(); }
+  /** The model plan turns run on: the Planner model when it is connected and interactive, else the painter's. */
+  plannerModel() {
+    const painter=this.models.getModel(this.study.provider,this.study.model), route=this.executionSettings?.planner_model;
+    if (!route || route==='painter') return painter;
+    const slash=route.indexOf('/'), model=slash>0 ? this.models.getModel(route.slice(0,slash),route.slice(slash+1)) : null;
+    if (!model || !isInteractiveModel(model) || !this.models.hasConfiguredAuth(model.provider)) {
+      if (this.plannerMissing!==route) { this.plannerMissing=route; this.emit({type:'action',seconds:0,message:`The planner model ${route} is not connected: the painter model plans.`}); }
+      return painter;
+    }
+    return model;
+  }
+  /** Run a plan turn on the planner model: the session switches to it and back to the painter whatever happens. */
+  async withPlanner(run) {
+    const painter=this.models.getModel(this.study.provider,this.study.model), planner=this.plannerModel();
+    // A text-only planner gets no images: the references count as not sent, so the painter's next turn sends them.
+    const withheld=model=>{ if (model && !model.input?.includes('image')) { this.referencesSent=null; this.referenceImagesNote='not attached: the planner model reads text only; the references are described in this context'; } };
+    if (!this.session || !planner || (planner.provider===painter?.provider && planner.id===painter?.id)) {
+      this.planningWith=painter ?? null;
+      try { withheld(painter); return await run(painter); } finally { this.planningWith=null; }
+    }
+    await this.session.setModel(planner);
+    this.diagnostics?.record({type:'planner_model',provider:planner.provider,model:planner.id});
+    this.planningWith=planner;
+    try { withheld(planner); return await run(planner); }
+    finally { this.planningWith=null; await this.session.setModel(painter).catch(error=>this.diagnostics?.record({type:'planner_model_restore_failed',message:this.redact(error.message)})); }
   }
   /** The probe results (view-size.ts): the shipped model-resolutions.json, then the artist's own resolution-probe.json in
    * the data folder (scripts/resolution-probe.ts --record-to), which wins. Read once; a missing or broken file is no record. */
@@ -1258,7 +1330,7 @@ export class StudioRuntime extends PaintingRuntime {
     this.executionSettings=executionSettings({...this.executionSettings,...value});
     if (this.goal) this.goal.execution_settings=this.executionSettings;
     this.parallelPreparation=undefined;
-    this.applyExecutionSettings(); this.emitSkills();
+    this.applyExecutionSettings(); this.emitSkills(); this.emitSettingsSchema();
     await this.store.initialize();
     await writeFile(join(this.store.stateDirectory,'execution-settings.json'),JSON.stringify(this.executionSettings,null,2));
     await this.persist();
@@ -1309,7 +1381,7 @@ export class StudioRuntime extends PaintingRuntime {
   }
   // Auto changes the painter session's level as the phase changes; Pi applies it from the next request.
   applyPhaseReasoning(phase) {
-    const model = this.session && this.models.getModel(this.study.provider,this.study.model);
+    const model = this.session && (this.session.model ?? this.models.getModel(this.study.provider,this.study.model));   // the planner in a plan turn
     if (!model) return;
     const level = thinkingLevel(this.executionSettings,model,phase);
     if (this.session.thinkingLevel !== level) this.session.setThinkingLevel(level);
@@ -1317,9 +1389,10 @@ export class StudioRuntime extends PaintingRuntime {
   selectTools(phase = this.mode) {
     this.executionPhase = phase;
     this.applyPhaseReasoning(phase);
-    const vision=this.models.getModel(this.study.provider,this.study.model)?.input.includes('image');
+    const vision=(this.session?.model ?? this.models.getModel(this.study.provider,this.study.model))?.input.includes('image');
     const names = vision ? ['observe_canvas','sample_canvas_colors','view_reference','list_reference_paintings']:[];
-    if (phase === 'plan') names.push('ask_question','propose_plan','revise_requirement');
+    // The planner looks up the painting tools it plans with (plan-from-request goal 3): painting_tool_help's catalogue.
+    if (phase === 'plan') names.push('ask_question','propose_plan','revise_requirement','painting_tool_help');
     // Skills (read opens skill files only) and image assets, while planning and painting.
     if (vision && (phase === 'plan' || phase === 'agent')) names.push('read','make_asset','run_skill_script');
     if (phase === 'plan' && this.mode === 'autopilot' && this.goal?.brief) names.push('start_painting');
@@ -1468,12 +1541,12 @@ export class StudioRuntime extends PaintingRuntime {
   }
   /** The found outline of `part` for a question card or Autopilot, only when finding it asks the artist nothing: the model
    * allowed and downloaded, a decision model to locate it. Null otherwise, or when nothing was found. */
-  async proposeArea(part) {
+  async proposeArea(part, {quiet = false} = {}) {
     if (!this.study || !(await this.shapes?.ready?.())) return null;
     try {
       const found = await this.findArea({part});
       this.diagnostics?.record({type:'find_it_proposed', part, cached:found.cached, ms:found.ms, share:found.share, score:found.score});
-      this.emit({type:'action', seconds:0, message:timingLine(found)});
+      if (!quiet) this.emit({type:'action', seconds:0, message:timingLine(found)});   // a refine step's parts: one line for their union
       return found;
     } catch (error) {
       this.diagnostics?.record(findFailure('find_it_unavailable', part, error, this.redact.bind(this)));
@@ -1511,6 +1584,11 @@ export class StudioRuntime extends PaintingRuntime {
   refuseInElementStep(call) {
     // refine_to_goal over the whole picture is refused in the Accents step too (review finding).
     const steps = this.goal?.brief?.steps ?? [], step = this.mode === 'agent' ? steps[this.currentMove?.step] : null;
+    // A refine-part step never refines the whole picture (review 2026-10-24), unless the artist chose Paint everywhere on its card.
+    const index = this.mode === 'agent' ? this.currentMove?.step : this.study?.folder ? this.goal?.current_step : null, current = Number.isInteger(index) ? steps[index] : null;
+    if (call.tool === 'refine_to_goal' && current && folderStepKind(current) === 'refine_part' && !this.goal?.paint_only_here
+      && !(call.args?.area && typeof call.args.area === 'object') && !(this.goal?.area_declined ?? []).includes(this.planSteps.keyAt(index) ?? String(index)))
+      throw new Error(`Step "${layerName(current.title)}" refines only its parts: it needs their area first (ask_for_selection), never refine_to_goal on the whole picture.`);
     const part = this.elementStepPart() ?? (call.tool === 'refine_to_goal' && step && folderStepKind(step) === 'accents' ? `step "${step.title}"` : null);
     if (!part) return;
     const request = String(this.goal?.messages?.findLast?.(m => m.role === 'user')?.text ?? '');
@@ -1525,15 +1603,48 @@ export class StudioRuntime extends PaintingRuntime {
    * when it can be had without asking). True when the card was shown and the move waits. An answer to the card without an
    * area (Paint everywhere, or anything typed) is remembered for that step, so it is not asked again. */
   async elementAreaQuestion(text, answered) {
+    // An area the artist chose on a refine-part card belongs to that step (review 2026-10-24): it ends with it, as a found one.
+    const tie = answered?.select_area?.step_key, chosen = this.goal.paint_only_here;
+    if (tie && chosen && !chosen.auto) { this.goal.paint_only_here = {...chosen, auto:tie, step_area:true}; await this.persist(); this.publish(); }
     if (this.goal.paint_only_here || !this.folderPlanning() || !this.folderPlanApproved()) return false;
     const steps = this.goal.brief?.steps ?? [];
     if (!steps.length) return false;
     const index = Math.min(this.goal.current_step ?? 0, steps.length - 1);
-    if (!this.folderElement(index)) return false;
+    const refine = folderStepKind(steps[index]) === 'refine_part';
+    if (!refine && !this.folderElement(index)) return false;
     const key = this.planSteps.keyAt(index) ?? String(index), declined = this.goal.area_declined ??= [];
     if (answered?.select_area) { if (!declined.includes(key)) declined.push(key); return false; }
     if (declined.includes(key)) return false;
+    if (refine) return (await this.refinePartArea(index, key, text)) === 'asked';
     return (await askForArea(selectionHostFor(this), layerName(steps[index].title), {request:text})).asked;
+  }
+  /** A refine step per part (refine-parts.ts): Find it on each part's name, the union of the outlines becomes the step's
+   * own area (it ends with the step, as Autopilot's do); any part not found, the card asks the artist to select them,
+   * never refining the whole picture instead. True when the card was shown and the move waits. */
+  async refinePartArea(index, key, text, {ask = true} = {}) {
+    const step = this.goal.brief.steps[index], label = String(step.scope && !/\.(png|jpe?g|gif)$/i.test(step.scope) ? step.scope : layerName(step.title).replace(/^\s*refine\s*:\s*/i, ''));
+    const elements = this.folderElements(), parts = partsOf(step, elements), found = [];
+    for (const name of parts) {
+      const part = elements.find(e => e.name === name)?.guess ?? name, area = await this.proposeArea(part, {quiet:true});
+      if (!area) { found.length = 0; break; }
+      found.push(area);
+    }
+    if (found.length) {
+      try {
+        const union = await unionFound(this.study.directory, found);
+        this.diagnostics?.record({type:'refine_part_area', step:index, parts:parts.length, share:union.share});
+        await this.adoptFoundArea(union, label.slice(0, 60), key);
+        this.goal.paint_only_here = {...this.goal.paint_only_here, step_area:true};
+        this.emit({type:'action', seconds:0, message:`Found ${label} (${Math.max(1, Math.round(union.share * 100))}% of the canvas): refining only there in this step.`});
+        await this.persist(); this.publish();
+        return 'found';
+      } catch (error) { this.diagnostics?.record({type:'refine_part_area_failed', step:index, message:this.redact(error.message)}); }
+    }
+    if (!ask) return 'missing';
+    const host = {...selectionHostFor(this), propose:async () => null};
+    const asked = (await askForArea(host, label, {request:text})).asked;
+    if (asked && this.goal.question?.select_area) { this.goal.question.select_area.step_key = key; await this.persist(); }
+    return asked ? 'asked' : 'missing';
   }
   /** The key an Autopilot area belongs to: the plan step painted now (its id), or the run. */
   autoAreaKey(index = this.goal?.current_step ?? 0) { return (this.goal?.brief?.steps?.length ? this.planSteps.keyAt(index) : null) ?? 'run'; }
@@ -1554,8 +1665,19 @@ export class StudioRuntime extends PaintingRuntime {
     if (this.mode !== 'autopilot' || !this.goal?.brief) return;
     const index = this.goal.current_step ?? 0, key = this.autoAreaKey(index);
     if (this.goal.paint_only_here?.auto && this.goal.paint_only_here.auto !== key) await this.clearAutoArea(`the step ${this.goal.paint_only_here.name ?? 'the area'} was found for is over`);
-    if (!this.study?.folder || !this.folderElement(index) || this.goal.paint_only_here || (this.goal.area_tried ??= []).includes(key)) return;
+    const step = this.goal.brief.steps[index], refine = step && folderStepKind(step) === 'refine_part';
+    if (!this.study?.folder || (!refine && !this.folderElement(index)) || this.goal.paint_only_here || (this.goal.area_tried ??= []).includes(key)) return;
     this.goal.area_tried.push(key);
+    // A refine-part step: its parts' found area, or the step is skipped (Autopilot does not ask; review 2026-10-24).
+    if (refine) {
+      if ((await this.refinePartArea(index, key, '', {ask:false})) === 'missing') {
+        this.goal.step_marks = {...(this.goal.step_marks ?? {}), [key]:{...(this.goal.step_marks?.[key] ?? {}), skipped:true}};
+        this.goal.current_step = Math.min(this.firstOpenStep(), this.goal.brief.steps.length - 1);
+        this.emit({type:'action', seconds:0, message:`Skipped "${layerName(step.title)}": its parts were not found, and Autopilot refines a part only inside its area.`});
+        await this.syncFolderPlan();
+      }
+      await this.persist(); this.publish(); return;
+    }
     const part = layerName(this.goal.brief.steps[index].title), host = selectionHostFor(this);
     try { await askForArea({...host, get mode() { return 'autopilot'; }, get goal() { return host.goal; }, adopt:(proposal, name) => this.adoptFoundArea(proposal, name, key)}, part); }
     catch (error) { this.diagnostics?.record({type:'find_it_autopilot_failed', part, message:this.redact(error.message)}); }
@@ -1664,7 +1786,9 @@ export class StudioRuntime extends PaintingRuntime {
       if (this.executionPhase !== 'plan') throw new Error('Switch to Plan before changing the brief.');
       const comicProblem = this.goal.comic ? comicPlanProblems(brief, this.goal.comic.panels) : null;
       if (comicProblem) throw new Error(comicProblem);
-      brief=this.folderScopes(structuredClone(brief));this.protectDraftRequirements();
+      brief=this.shapeFolderBrief(this.folderScopes(structuredClone(brief)));this.protectDraftRequirements();
+      // A step's tool is a painting tool's name or nothing: free text the planner wrote there is dropped (review 2026-10-24).
+      {const known=this.knownTools(); brief={...brief,steps:brief.steps.map(({tool,...step})=>typeof tool==='string' && known.includes(tool.trim()) ? {...step,tool:tool.trim()} : step)};}
       for (const rule of this.goal.locked_requirements) if (!brief.requirements.includes(rule)) brief.requirements.push(rule);
       this.goal.revisions ??= []; this.goal.revisions.push({revision:this.goal.revision,brief:this.goal.brief,at:stamp(),source:'model'});
       for (const character of this.goal.character_records ?? []) {
@@ -1976,7 +2100,7 @@ export class StudioRuntime extends PaintingRuntime {
     if (!this.study?.folder || !steps.length || !this.folderPlanApproved()) return null;
     const retry = this.planSteps.indexOf(command.plan_step_key);
     const kind = folderStepKind(steps[retry >= 0 ? retry : Math.min(this.goal.current_step ?? 0, steps.length - 1)]);
-    return ['underpainting', 'finish', 'refine'].includes(kind) ? kind : null;
+    return ['underpainting', 'finish', 'refine', 'refine_part'].includes(kind) ? (kind === 'refine_part' ? 'refine' : kind) : null;
   }
   /** Agent mode: the underpainting or the finish waits for the Sharpen goal card (goal-sharpen.ts gate); true when it is held. */
   async holdForSharpen(text, command) {
@@ -2035,20 +2159,105 @@ export class StudioRuntime extends PaintingRuntime {
     const index = steps.findIndex((_, i) => !done.has(i) && !this.planSteps.isClosed(i));     // skipped and met steps too
     return index < 0 ? steps.length : index;
   }
-  /** The plan the companion suggests: the underpainting from the goal image, the finish, then accents (project-folder.ts defaultFolderSteps). */
-  folderPlanDraft() {
+  /** The folder's elements as the plan names them (the artist's names, else the guesses). */
+  folderElements() { return (this.folderIndex?.elements ?? []).map(e => ({name:e.name, guess:String(this.folderGuessOf(e) || e.name)})); }
+  /** The plan the companion suggests for these stages (plan-stages.ts folderPlanSteps; the full plan by default): the
+   * underpainting from the goal image, the finish, a refine step per group of elements, then accents. */
+  folderPlanDraft(stages = [...PLAN_STAGES]) {
     const index = this.folderIndex, name = basename(index.root);
-    return normalizeBrief({title:name.slice(0,200), objective:`Paint ${name} from its goal image: the underpainting, the finish, refine to the goal, then accents; then the artist says what to refine.`, requirements:[], freedom:[],
-      completion:['The whole picture is underpainted from the goal image, finished (soft areas blended, forms in strokes), refined to the goal at full size and its accents are crisp.'], steps:defaultFolderSteps()});
+    const words = {underpainting:'the underpainting', finish:'the finish', refine:'refine part by part to the goal', accents:'accents'};
+    const said = stages.map(stage => words[stage]), list = said.length > 1 ? said.slice(0, -1).join(', ') + ', then ' + said.at(-1) : said[0] ?? 'the underpainting';
+    const done = {underpainting:'underpainted from the goal image', finish:'finished (soft areas blended, forms in strokes)', refine:'refined to the goal at full size, part by part', accents:'its accents are crisp'};
+    return normalizeBrief({title:name.slice(0,200), objective:`Paint ${name} from its goal image: ${list}; then the artist says what next.`, requirements:[], freedom:[],
+      completion:[`The whole picture is ${stages.map(stage => done[stage]).join(', ')}.`], steps:folderPlanSteps(stages, refineGroups(this.folderElements()))});
   }
-  /** Agent mode with a folder and no approved plan: a planning turn (propose_plan, no painting tools). */
-  async planFolder(text, images) {
+  /** The stages of the folder plan already painted in this chat (its ticked steps), for the order rules. */
+  doneStages() {
+    const steps = this.goal?.brief?.steps ?? [], done = new Set(this.goal?.done_steps ?? []);
+    return [...new Set(steps.filter((_, i) => done.has(i)).map(step => ({refine_part:'refine'})[folderStepKind(step)] ?? folderStepKind(step)).filter(kind => PLAN_STAGES.includes(kind)))];
+  }
+  /** Which stages the plan holds for this message (plan-stages.ts stagePolicy: Luna's reading in the same call, the
+   * keywords, or the plan card's answer), or null when the card asks. Kept on the goal with where it came from. */
+  async planStagesFor(text, answered) {
+    // A draft exists (review 2026-10-24): the message revises it, so its stages stay unless asked otherwise.
+    const revised = !answered?.plan_stages ? await this.reviseFolderStages(text) : null;
+    if (revised) return revised;
+    let answer = answered?.plan_stages ? (s => s ? {stages:s, whole:s.length === PLAN_STAGES.length, source:'card'} : null)(stagesFromCard(text)) : null;
+    if (!answer) {
+      const reading = await this.readArtistMessage(text, {stages:true});
+      answer = stagePolicy({reading:reading?.reading ?? null, act:this.lunaMode() === 'guide', text});
+    }
+    if (!answer.stages) {
+      this.goal.question = {id:randomUUID(), question:STAGE_CARD.question, options:[...STAGE_CARD.options], asked_in:'agent', plan_stages:{request:String(text).slice(0,500)}};
+      this.goal.status = 'needs_input'; await this.persist(); this.publish();
+      this.emit({type:'question', ...this.goal.question});
+      this.diagnostics?.record({type:'plan_stages', source:'ask'});
+      return null;
+    }
+    const ordered = orderStages(answer.stages, {done:this.doneStages()});
+    this.goal.plan_stages = {stages:ordered.stages, source:answer.source, added:ordered.added, request:String(answered?.plan_stages?.request ?? text).slice(0,500)};
+    this.diagnostics?.record({type:'plan_stages', source:answer.source, stages:ordered.stages, added:ordered.added.map(a => a.stage)});
+    return this.goal.plan_stages;
+  }
+  /** The stages the folder's current plan holds: the recorded ones, else those its steps show (an older plan, PLAN.md). */
+  currentStages() {
+    const steps = this.goal?.brief?.steps ?? [];
+    return this.goal?.plan_stages?.stages ?? (steps.length ? PLAN_STAGES.filter(stage => !nextStages(steps).includes(stage)) : null);
+  }
+  /** A message on a folder plan already drafted (Agent's planning turn, or a Plan-mode turn): plan-stages.ts reviseStages
+   * keeps its stages, adds only those explicitly asked for, removes only those negated. Null when there is no draft. */
+  async reviseFolderStages(text) {
+    const current = this.study?.folder && this.goal?.brief && this.goal.folder_plan_root === this.study.folder.root ? this.currentStages() : null;
+    if (!current?.length) return null;
+    const reading = await this.readArtistMessage(text, {stages:true});
+    const answer = reviseStages({current, reading:reading?.reading ?? null, act:this.lunaMode() === 'guide', text});
+    this.goal.plan_stages = {stages:answer.stages, source:answer.added.length || answer.removed.length ? answer.source : this.goal.plan_stages?.source ?? 'keywords',
+      added:[], request:String(text).slice(0,500)};
+    this.diagnostics?.record({type:'plan_stages', source:'revision', stages:answer.stages, added:answer.added, removed:answer.removed});
+    return this.goal.plan_stages;
+  }
+  /** The stages the plan's steps show now. */
+  currentStagesOfSteps() { const steps = this.goal?.brief?.steps ?? []; return PLAN_STAGES.filter(stage => !nextStages(steps).includes(stage)); }
+  /** Painting tool names (a step's tool must be one: review 2026-10-24). */
+  knownTools() { return paintingTools(this).map(t => t.name); }
+  /** propose_plan in a folder planning turn: the planner's steps shaped to the stages asked (plan-stages.ts shapePlan). */
+  shapeFolderBrief(brief) {
+    const stages = this.goal?.plan_stages?.stages;
+    if (!this.study?.folder || !stages?.length) return brief;
+    const known = this.knownTools();
+    // The artist's own whole-picture steps (kept from the plan as it is) stay; others the request did not ask for go.
+    const keepWhole = (this.goal?.brief?.steps ?? []).filter(step => folderStepKind(step) === 'whole').map(step => step.title);
+    const shaped = shapePlan(brief.steps, {draft:folderPlanSteps(stages, refineGroups(this.folderElements())), elements:this.folderElements(), known, keepWhole});
+    if (shaped.dropped.length || shaped.notes.length) this.diagnostics?.record({type:'folder_plan_shaped', dropped:shaped.dropped, notes:shaped.notes});
+    return {...brief, steps:shaped.steps};
+  }
+  /** Agent mode with a folder and no approved plan: a planning turn (propose_plan, no painting tools). Its stages follow
+   * the request (planStagesFor); a plan card answer (`answered`) gives them. */
+  async planFolder(text, images, answered = null) {
+    const stages = await this.planStagesFor(text, answered);
+    if (!stages) { this.setActivity('awaiting_user', 'Your answer will guide the plan.'); return; }
+    const request = answered?.plan_stages ? `${answered.plan_stages.request}\n\n(The artist answered "${answered.question}": ${String(text).trim()}.)` : text;
     this.goal.status = this.goal.brief ? 'paused' : 'draft';
-    this.selectTools('plan'); this.publish();
-    const draft = this.folderPlanDraft();
-    try { await super.runPrompt(this.context('plan') + FOLDER_PLAN + 'folder_plan_draft: ' + JSON.stringify(draft) + '\n\nArtist:\n' + text, images); }
+    const revisionsBefore = (this.goal.revisions ??= []).length;
+    const draft = this.folderPlanDraft(stages.stages);
+    const why = {stages:stages.stages, source:stages.source, ...(stages.added.length ? {added:stages.added} : {})};
+    try {
+      await this.withPlanner(async planner => {
+        this.selectTools('plan'); this.publish();
+        await super.runPrompt(this.context('plan') + FOLDER_PLAN + 'plan_stages: ' + JSON.stringify(why) + '\nfolder_plan_draft: ' + JSON.stringify(draft) + '\n\nArtist:\n' + request,
+          planner?.input?.includes('image') ? images : []);
+      });
+    }
     finally { this.selectTools(this.mode); }
     if (this.cancelRequested || this.runError || this.goal.question) return;
+    const proposedNow = (this.goal.revisions ?? []).slice(revisionsBefore).some(r => r.source === 'model');
+    if (!proposedNow && this.goal.brief && this.goal.folder_plan_root === this.study.folder.root
+      && JSON.stringify(this.currentStagesOfSteps()) !== JSON.stringify(stages.stages)) {   // the stages changed and the planner proposed nothing: the host reshapes the plan
+      const before = structuredClone(this.goal.brief);
+      this.goal.revisions.push({revision:this.goal.revision,brief:before,at:stamp(),source:'folder'});
+      this.goal.brief = normalizeBrief(this.shapeFolderBrief(before)); this.goal.revision++; this.goal.approved_revision = null;
+      await this.persist(); await this.folderPlanChanged(before);
+    }
     if (!this.goal.brief || this.goal.folder_plan_root !== this.study.folder.root) {   // nothing proposed for the folder: the host proposes the draft
       this.goal.revisions ??= []; this.goal.revisions.push({revision:this.goal.revision,brief:this.goal.brief ?? null,at:stamp(),source:'folder'});
       this.goal.brief = draft; this.goal.revision++; this.goal.approved_revision = null; this.goal.current_step = 0; this.goal.done_steps = [];
@@ -2056,8 +2265,11 @@ export class StudioRuntime extends PaintingRuntime {
     }
     this.goal.status = 'ready'; await this.persist(); this.publish();
     const elements = this.goal.brief.steps.filter(step => folderStepKind(step) === 'element').length;
+    const refines = this.goal.brief.steps.filter(step => folderStepKind(step) === 'refine_part').length;
+    const stagesSaid = stages.stages.map(stage => stage === 'refine' ? (refines ? `${refines} refine step${refines === 1 ? '' : 's'}, one a group of parts` : 'refine to the goal') : ({underpainting:'the underpainting', finish:'the finish', accents:'accents'})[stage]);
     this.setActivity('idle', `Plan ready: ${this.goal.brief.steps.length} move${this.goal.brief.steps.length === 1 ? '' : 's'}`
-      + (elements ? `, ${elements} of them for the elements you asked for.` : ': the underpainting, the finish, then accents; then I ask you what to refine (name an element to add its step).')
+      + (elements ? `, ${elements} of them for the elements you asked for.` : `: ${listAnd(stagesSaid)}; then I ask you what next.`)
+      + (stages.added.length ? ` (${stages.added.map(a => a.because).join('; ')}.)` : '')
       + ' Review or edit it, then press Start painting.');
   }
   /** After the plan changed: ticks follow their steps by title, the next open step is current, PLAN.md is rewritten. */
@@ -2087,6 +2299,8 @@ export class StudioRuntime extends PaintingRuntime {
     }
     const step = steps[index], name = layerName(step.title);
     move = {...move, step:index};
+    // A refine-part step's own area ends with it (review 2026-10-24): the next step and Accents are not confined to it.
+    if (this.goal.paint_only_here?.step_area && this.goal.paint_only_here.auto === this.autoAreaKey(index)) await this.clearAutoArea('the step it was found for is over');
     this.goal.done_steps = [...new Set([...(this.goal.done_steps ?? []), index])].sort((a, b) => a - b);
     if (this.guidesAvailable()) {                                // the element is done: its guide goes (the artist can show it again)
       try {
@@ -2116,6 +2330,11 @@ export class StudioRuntime extends PaintingRuntime {
       const kind = folderStepKind(step);
       if (kind === 'finish') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: finish the underpainting on the whole picture with paint_finish (the soft areas blended in the underpainting's own paint, the forms restroked from ${goalText}). One call; then look at the canvas and finish_move. No typed strokes and no accents in this step.\n`;
       if (kind === 'refine') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: refine the whole picture to ${goalText} with refine_to_goal (the host finds the regions still furthest from the goal at full size and refines each: a fine finish, then accents, finer where needed). One call; then look at the canvas and finish_move. No typed strokes and no other painting in this step.\n`;
+      if (kind === 'refine_part') {
+        const area = this.goal.paint_only_here;
+        if (area) return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}": refine its parts to ${goalText} with refine_to_goal inside the Paint only here area (${chipLine(area)}; refine_to_goal works in it by default: the regions there still furthest from the goal at full size, a fine finish, then accents, finer where needed). One call; then look at the canvas and finish_move. No typed strokes and no other painting in this step.\n`;
+        return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}": the artist chose to refine without an area, so refine the whole picture to ${goalText} with refine_to_goal. One call; then look at the canvas and finish_move. No typed strokes and no other painting in this step.\n`;
+      }
       if (kind === 'accents') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: crisp accents on the whole picture with paint_accents from ${goalText} (lights, glints, darks and lines, in the underpainting's own paint). Paint only this step, with no typed strokes over the underpainting, then finish_move.\n`;
       if (kind === 'whole') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: ${String(step.done_when ?? '').trim()} Refine what the underpainting has rather than repainting it (paint_finish, paint_accents, Krita's layers and filters), then finish_move.\n`;
       return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: the underpainting of the whole picture from ${goalText} (paint_from_reference, all of it onto the whole canvas). Paint only this step. ${UNDERPAINTING_MOVE_NOTE}\n`;
@@ -2139,6 +2358,43 @@ export class StudioRuntime extends PaintingRuntime {
       return index.elements.filter(e => !finished.has(e.name)).map(e => String(this.folderGuessOf(e) || e.name)).slice(0, 8);
     }
     return steps.map((step, i) => !done.has(i) && step?.title).filter(Boolean).map(String).slice(0, 8);
+  }
+  /** A later request adds the next stages to an approved folder plan (plan-from-request goal 1: "now the finish"): the
+   * stages the message asks for that the plan does not hold yet (Luna's reading when it acts and is sure, else the
+   * keywords; a message naming no stage adds nothing), with the order rules, before any element steps. Asking for them is
+   * the approval, as for an element's step. 'added' when steps were added (the first new one is painted next). */
+  async folderStageRequest(text) {
+    const brief = this.goal?.brief;
+    if (!brief?.steps?.length || !nextStages(brief.steps).length) return;
+    const reading = await this.readArtistMessage(text, {stages:true});
+    // "Refine the Kremlin towers" refines an element (folderElementRequest), not the refine stage.
+    if (reading?.policy?.target || reading?.policy?.add?.length || reading?.policy?.ask_add?.length) return;
+    // Only an explicit request adds a stage ("now the finish"); a complaint naming one ("the highlights are too bright",
+    // "more detail") adds nothing (review 2026-10-24). Nothing is removed from an approved plan here: Skip does that.
+    const current = this.currentStagesOfSteps();
+    const answer = reviseStages({current, reading:reading?.reading ?? null, act:this.lunaMode() === 'guide', text});
+    const ordered = {stages:answer.added, added:[]};
+    if (!ordered.stages.length) return;
+    const fresh = folderPlanSteps(ordered.stages, refineGroups(this.folderElements()));
+    const rank = step => (k => k === 'refine_part' ? PLAN_STAGES.indexOf('refine') : PLAN_STAGES.indexOf(k))(folderStepKind(step));
+    const steps = [...brief.steps], done = new Set(this.goal.done_steps ?? []);
+    // Inserted steps never go before a step already painted, met or skipped.
+    const painted = steps.reduce((last, _, i) => done.has(i) || this.planSteps.isClosed(i) ? i + 1 : last, 0);
+    for (const step of fresh) {
+      let at = painted;
+      steps.forEach((s, i) => { const r = rank(s); if (i >= painted && r >= 0 && r <= rank(step)) at = i + 1; });
+      steps.splice(at, 0, step);
+    }
+    if (steps.length > 16) { this.emit({type:'action', seconds:0, message:`The plan is full (${brief.steps.length} steps): remove a step to add ${listAnd(ordered.stages)}.`}); return; }
+    const before = structuredClone(brief);
+    this.goal.revisions ??= []; this.goal.revisions.push({revision:this.goal.revision,brief:before,at:stamp(),source:'user'});
+    this.goal.brief = normalizeBrief({...brief, steps});
+    this.goal.revision++; this.goal.approved_revision = this.goal.revision; this.goal.status = 'paused';
+    this.goal.plan_stages = {stages:PLAN_STAGES.filter(stage => !nextStages(steps).includes(stage)), source:answer.source, added:ordered.added, request:String(text).slice(0,500)};
+    this.diagnostics?.record({type:'plan_stages_added', source:answer.source, stages:ordered.stages});
+    await this.folderPlanChanged(before);
+    this.emit({type:'action', seconds:0, message:`Added to the plan: ${listAnd(fresh.map(step => layerName(step.title)))}.`});
+    return 'added';
   }
   /** The artist's message names folder elements (project-folder.ts elementsNamed) while the plan is approved: each one not
    * yet in the plan gets its step at the end (a plan holds the underpainting and FOLDER_PLAN_ELEMENTS more), and the
@@ -2191,7 +2447,10 @@ export class StudioRuntime extends PaintingRuntime {
    * name; naming one adds its step (folderElementRequest). Empty outside a folder chat. */
   refineNextQuestion() {
     if (!this.study?.folder || !this.folderIndex?.elements?.length) return '';
-    const offer = this.elementsToOffer();
+    // The stages not in the plan yet come first (plan-from-request goal 1: "paint the underpainting", then the host asks).
+    const next = nextStages(this.goal?.brief?.steps ?? []), offer = this.elementsToOffer();
+    if (next.length) return ` What next? ${listOr(next.map(stage => ({underpainting:'the underpainting', finish:'the finish', refine:'refine part by part', accents:'the accents'})[stage]))}: say which and I add it`
+      + (offer.length ? `; or name an element to refine (${listOr(offer)}).` : '.');
     const add = this.lunaMode() === 'guide' ? 'name one and I add its step' : 'name one and I ask before adding its step';
     return ' What should I refine next?' + (offer.length ? ' ' + listOr(offer) + `: ${add}, or type what to change.` : ' Type what to change.');
   }
@@ -2568,7 +2827,10 @@ export class StudioRuntime extends PaintingRuntime {
     try {
       await this.addReferences(command.references);
       await this.setPaintOnlyHere(command.paint_only_here);          // an area the message brings (Use my selection, the typed phrase)
-      if (this.mode !== 'autopilot') await this.clearAutoArea('the area Autopilot found ended with its run');   // e.g. left by a crash
+      // A refine-part step's area stays while that step is painted (a continuation, a Redo); one left from another step goes.
+      const stepArea = this.goal?.paint_only_here?.step_area ? this.goal.paint_only_here : null;
+      if (this.mode !== 'autopilot' && !(stepArea && stepArea.auto === this.autoAreaKey()))
+        await this.clearAutoArea(stepArea ? 'the step it was found for is over' : 'the area Autopilot found ended with its run');   // e.g. left by a crash
       this.goal.canvas_selection = this.canvasSelection; this.goal.region_selection=this.regionSelection;
       // A request held for the Sharpen goal card (holdForSharpen) is in the transcript already.
       const message = command.sharpen_resumed ? this.goal.messages.findLast(m => m.role === 'user') : await this.remember('user', text,command.message_id);
@@ -2610,7 +2872,7 @@ export class StudioRuntime extends PaintingRuntime {
       // A project folder's plan is approved before anything paints: Start painting approves it, anything else revises it.
       if (this.mode === 'agent' && this.folderPlanning() && !this.folderPlanApproved()) {
         if (command.start_plan && !command.keep_follow && this.goal.brief && this.goal.folder_plan_root === this.study.folder.root) { this.goal.approved_revision = this.goal.revision; this.goal.done_steps ??= []; }
-        else { await this.planFolder(modelText, images); return; }
+        else { await this.planFolder(answered?.plan_stages ? text : modelText, images, answered?.plan_stages ? answered : null); return; }
       }
       // The add-step card's answer: yes adds the steps asked about; either way the request it held is painted next.
       // A panel option (a card's button) is never read as the artist's message (review, 2026-10-24).
@@ -2619,7 +2881,7 @@ export class StudioRuntime extends PaintingRuntime {
       if (this.mode === 'agent' && this.folderPlanning() && addAnswer)
         await this.folderElementRequest(addAnswer.request, {approved:text.trim() === answered.options[0] ? addAnswer.names : [], target:addAnswer.target ?? null});
       else if (this.mode === 'agent' && this.folderPlanning() && !command.start_plan && !command.move_kind && !moveKind && !optionAnswer
-        && await this.folderElementRequest(text) === 'asked') { this.setActivity('awaiting_user', 'Your answer will guide the next step.'); return; }
+        && await this.folderStageRequest(text) !== 'added' && await this.folderElementRequest(text) === 'asked') { this.setActivity('awaiting_user', 'Your answer will guide the next step.'); return; }
       // A folder element step with no area: the card asks for it first (Find it for me's outline proposed when it can be had).
       if (this.mode === 'agent' && command.move_kind !== 'guides' && moveKind !== 'guides' && await this.elementAreaQuestion(addAnswer ? addAnswer.request : text, addAnswer ? null : answered)) {
         this.setActivity('awaiting_user', 'Your answer will guide the next step.'); return;
@@ -2637,10 +2899,17 @@ export class StudioRuntime extends PaintingRuntime {
       const wasComplete = this.goal.status === 'complete';
       if (!useReadyPlan) {
         this.goal.status = this.goal.brief ? 'paused' : 'draft';
-        this.selectTools(phase); this.publish();
-        await this.routeDirection(text);
+        // A Plan-mode revision in a folder chat may add or remove stages (review 2026-10-24), as in Agent's planning turn.
+        if (phase === 'plan' && this.study?.folder) await this.reviseFolderStages(text);
+        const turn = async model => {
+          this.selectTools(phase); this.publish();
+          await this.routeDirection(text);
+          if(this.cancelRequested)return;
+          await super.runPrompt(this.context(phase) + (phase === 'ask' ? TEACHER_INSTRUCTIONS + '\n' : '') + 'User message:\n' + modelText, model?.input?.includes('image') === false ? [] : images);
+        };
+        // A Plan-phase turn runs on the Planner model (plan-from-request goal 4); Ask stays on the painter.
+        if (phase === 'plan') { try { await this.withPlanner(turn); } finally { this.selectTools(phase); } } else await turn();
         if(this.cancelRequested)return;
-        await super.runPrompt(this.context(phase) + (phase === 'ask' ? TEACHER_INSTRUCTIONS + '\n' : '') + 'User message:\n' + modelText, images);
       }
       // Autopilot works toward the brief like a goal: after every reply it keeps painting unless
       // something awaits the artist (a question or requirement change, or a plan that no longer

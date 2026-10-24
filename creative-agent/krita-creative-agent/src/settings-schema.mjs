@@ -50,6 +50,12 @@ export const SETTINGS = Object.freeze([
     error: 'Choose a canvas view size: Auto, 1024, 1568 or 2048 pixels.',
     options: [['auto', 'Auto: what the model reads'], [1024, '1024 px'], [1568, '1568 px'], [2048, '2048 px']],
     tooltip: 'How large the painter sees the canvas (the long side). Auto uses the size the painter\'s model was measured to read in full, up to 2048 px, and 1568 px for a model not measured yet. Larger views show finer detail but cost more per look.' },
+  // Planner model (plan-from-request goal 4, the artist 2026-10-24: try stronger planners for planning only): a
+  // provider/model route, or the painter's own. Its options are the routes the companion lists (panelSchema({models})):
+  // the connected models measured by the resolution probe (model-resolutions.json), the painter's and the saved one.
+  { key: 'planner_model', type: 'model', default: 'painter', panel: 'generic', label: 'Planner model', accessible: 'Planner model',
+    error: 'Planner model: choose Same as the painter or a connected provider/model.', options: [['painter', 'Same as the painter']],
+    tooltip: 'The model that makes and revises the plan (a project folder\'s plan, Plan mode). Painting always uses the painter model chosen above. A model that is not connected plans as the painter.' },
   { key: 'routing', type: 'choice', default: 'off', panel: 'generic', label: 'Decision checks', accessible: 'Decision checks',
     error: 'Unknown decisions mode.', options: [['off', 'Off'], ['evaluate', 'Evaluate only'], ['guide', 'Guide agent']],
     note: 'Fast typed decisions: request routing, artifacts a pass introduced, progress between reviews and run pacing. When on, the canvas, pass images and your direction go to the decision endpoint below. Evaluate only records results; Guide agent also acts on them. The painter still decides and edits the image.' },
@@ -61,13 +67,17 @@ export const SETTING_DEFAULTS = Object.freeze(Object.fromEntries(SETTINGS.map(s 
 
 /** The value, or throws the setting's own message when it is not allowed. */
 export function validSetting(setting, value) {
-  const ok = setting.type === 'boolean' ? typeof value === 'boolean' : setting.options.some(([v]) => v === value);
+  const ok = setting.type === 'boolean' ? typeof value === 'boolean'
+    : setting.type === 'model' ? value === setting.default || (typeof value === 'string' && value.length <= 200 && /^[A-Za-z0-9][\w.-]*\/\S+$/.test(value))
+    : setting.options.some(([v]) => v === value);
   if (!ok) throw new Error(setting.error);
   return value;
 }
 
-/** What the panel needs to build the generic controls, in display order. */
-export function panelSchema() {
-  return SETTINGS.filter(s => s.panel === 'generic').map(({ key, label, accessible, options, tooltip, note, control }) =>
-    ({ key, label, accessible, tooltip: tooltip ?? '', note: note ?? '', control: control ?? 'combo', options: options.map(([value, text]) => ({ value, label: text })) }));
+/** What the panel needs to build the generic controls, in display order. `models`: the routes a model setting offers
+ * after its own options ([{route: 'provider/id', label}]), listed by the companion. */
+export function panelSchema({ models = [] } = {}) {
+  return SETTINGS.filter(s => s.panel === 'generic').map(({ key, type, label, accessible, options, tooltip, note, control }) =>
+    ({ key, label, accessible, tooltip: tooltip ?? '', note: note ?? '', control: control ?? 'combo',
+      options: [...options.map(([value, text]) => ({ value, label: text })), ...(type === 'model' ? models.map(m => ({ value: m.route, label: m.label })) : [])] }));
 }

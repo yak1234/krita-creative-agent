@@ -248,3 +248,15 @@ test('writePlanGoal: a chat with no plan records the goal in a PLAN.md with no s
   assert.equal(twice.text, plan.text, 'the same goal again changes nothing');
   await assert.rejects(writePlanGoal(root, 'bad\nname.png'), /one line/);
 }));
+
+// plan-from-request goal 2: a step's kind, tool and parts follow it through PLAN.md (by its identity), so an edited
+// PLAN.md keeps its refine steps' parts; a line the planner never wrote has none and is read by its title.
+test('briefFromPlan keeps a step’s kind, tool and parts by its identity', () => {
+  const brief = { title: 'T', objective: 'O', requirements: [], freedom: [], completion: ['C'], steps: [
+    { title: 'Underpainting from the goal image', done_when: 'Laid.', scope: 'whole composition', kind: 'underpainting', tool: 'paint_from_reference' },
+    { title: 'Refine: Moonlit sky and historic buildings', done_when: 'Close.', scope: 'Moonlit sky and historic buildings', kind: 'refine_part', tool: 'refine_to_goal', parts: ['a/01-sky.png', 'a/02-b.png'] }] };
+  const plan = parsePlan(planText(brief, []));
+  const back = briefFromPlan({ title: plan.title, steps: [plan.steps[1], plan.steps[0], { title: 'Refine: the bridge', done: false }] }, brief);
+  assert.deepEqual(back.steps.map(s => [s.title, s.kind, s.tool, s.parts]), [['Refine: Moonlit sky and historic buildings', 'refine_part', 'refine_to_goal', ['a/01-sky.png', 'a/02-b.png']],
+    ['Underpainting from the goal image', 'underpainting', 'paint_from_reference', undefined], ['Refine: the bridge', undefined, undefined, undefined]]);
+});

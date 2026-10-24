@@ -36,6 +36,12 @@ export function signInMessage(provider, lapsed = false) {
  */
 const hooks = runtime => /** @type {RuntimeHooks} */ (/** @type {unknown} */ (runtime));
 
+/** Tokens kept free before Pi compacts: 30% of the model's context window, so it compacts at 70% of the window (the
+ * artist, 2026-10-24: "yes 70% of its window"), never under 4096. A model without a window counts as 131072. */
+export function compactionReserve(model) {
+  return Math.max(4096, Math.round(0.3 * (Number(model?.contextWindow) > 0 ? Number(model.contextWindow) : 131072)));
+}
+
 export class PaintingRuntime {
   /** @param {{root?: string, config?: any, bridge?: any, emit?: (event: object) => void, models?: any}} options */
   constructor({ root, config, bridge, emit, models }) {
@@ -257,7 +263,7 @@ export class PaintingRuntime {
   async openSession(model, sessionFile) {
       const { directory, id } = this.study;
       const settings = SettingsManager.inMemory({
-        compaction: { enabled: true, reserveTokens: Math.max(16384, (model.contextWindow ?? 131072) - 65536), keepRecentTokens: 12000 }, retry: { enabled: true, maxRetries: 2, baseDelayMs: 1000, provider: { timeoutMs: 90000, maxRetries: 0 } },
+        compaction: { enabled: true, reserveTokens: compactionReserve(model), keepRecentTokens: 12000, modelOverrides: { [model.provider + '/' + model.id]: { reserveTokens: compactionReserve(model) } } }, retry: { enabled: true, maxRetries: 2, baseDelayMs: 1000, provider: { timeoutMs: 90000, maxRetries: 0 } },
         packages: [], extensions: [], skills: [], enableAnalytics: false, enableInstallTelemetry: false,
         images: { autoResize: true, blockImages: false },
       });
@@ -280,6 +286,13 @@ export class PaintingRuntime {
         resourceLoader: loader, settingsManager: settings, customTools: tools, tools: [...tools.map(t => t.name), ...extensions.flatMap(e => e.tools ?? [])],
         sessionManager: (managers => sessionFile ? managers.open(sessionFile, join(directory, 'sessions'), directory) : managers.create(directory, join(directory, 'sessions')))(hooks(this).sessionManagers ?? SessionManager) });
       this.session = result.session;
+      // Compaction follows the model the session runs on now (the Planner model switches it for plan turns): its own
+      // reserve, set before each switch, so a smaller planner window does not compact every turn (review 2026-10-24).
+      const setModel = this.session.setModel.bind(this.session);
+      this.session.setModel = async (next, options) => {
+        settings.applyOverrides({ compaction: { modelOverrides: { [next.provider + '/' + next.id]: { reserveTokens: compactionReserve(next) } } } });
+        return setModel(next, options);
+      };
       this.session.agent.toolExecution = 'sequential';
       // Send only the newest canvas images to the model; Pi's own transform runs first.
       const transform = this.session.agent.transformContext;

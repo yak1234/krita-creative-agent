@@ -17,7 +17,8 @@ import { contourTool } from './contour-tool.mjs';
 import { brushCards } from './brush-catalog.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS } from './craft.mjs';
 import { assetTools } from './assets.mjs';
-import { skillReadTool } from './skills.mjs';
+import { skillReadTool, SKILLS_DIR } from './skills.mjs';
+import { toolCatalogue, toolHelp, toolboxIndex, toolboxHelp } from './tool-catalogue.ts';
 
 /** @template {import('typebox').TProperties} T @param {T} properties */
 const object = properties => Type.Object(properties, { additionalProperties: false });
@@ -193,8 +194,8 @@ export function paintingTools(runtime) {
         projection_feather:Type.Optional(Type.Integer({minimum:0,maximum:64})),
         commands:Type.Array(object({tool:Type.String(),parameters_json:Type.String({description:'JSON object containing parameters documented by painting_tool_help'})}),{minItems:1,maxItems:256})}), 'painting_toolbox'),
     tool('painting_tool_help', 'Inspecting painting tools',
-      'Discover the native painting toolbox and exact parameter formats. Includes brush settings inspection. Read this before painting_toolbox.',
-      object({}), 'painting_tool_help'),
+      'Without a name: while planning, the catalogue of painting stages and tools (what each does, its rough time on this canvas, what it needs first); while painting, the native painting toolbox and exact parameter formats, with brush settings inspection (read this before painting_toolbox). With a name: that painting tool\'s full description, parameters and the skills that use it.',
+      object({ name: Type.Optional(Type.String({ minLength: 1, maxLength: 60, description: 'A painting tool to look up, e.g. paint_finish.' })) }), 'painting_tool_help'),
     tool('create_layer', 'Creating a layer',
       'Create a layer with its craft settings in one call: paint, fill or group. A fill uses a generator from krita_capabilities: color with generator_config {color:\u0027#RRGGBB\u0027}, pattern with {pattern: name}, gradient with {shape: linear|radial|square|conical|spiral, start_position_x/y and end_position_x/y (percent of the canvas), start_color, end_color, repeat: none|forwards|alternate} (a live, re-editable gradient layer); region [x,y,w,h] limits it. Set blend_mode (multiply for shadow, screen/add for light), opacity, alpha_lock (paint only). clip_base: true puts the layer alone in a clip group so later layers can clip to it live (use for flats). clip_to: a layer ID to clip this layer to: live above a clip base, otherwise a mask of that layer\u2019s current alpha (the artist\u2019s layers are never moved). One reversible pass; returns the canvas image.',
       object({ name: Type.String({ minLength: 1, maxLength: 120 }), type: Type.Union([Type.Literal('paint'), Type.Literal('fill'), Type.Literal('group')]),
@@ -325,6 +326,7 @@ export function paintingTools(runtime) {
     },
   ];
   shapeLimits(runtime, tools);
+  helpLookup(runtime, tools);
   tools.push(recipeTool(runtime, tools.find(t=>t.name==='paint_pass').execute));
   tools.push(contourTool(runtime, tools.find(t=>t.name==='painting_toolbox').execute));
   tools.push(...referenceTools(runtime,tools.find(t=>t.name==='paint_pass').execute,tools.find(t=>t.name==='fill_region').execute));
@@ -355,6 +357,30 @@ export function paintingTools(runtime) {
   tools.push(...selectionTools(selectionHostFor(runtime)));
   tools.push(...assetTools(runtime), skillReadTool());
   return tools;
+}
+
+/** painting_tool_help (plan-from-request goal 3, tool-catalogue.ts): a name looks up that tool among the painter's own
+ * (the whole list, built last); no name while planning is the catalogue; no name while painting is the plugin's toolbox
+ * help, as before. Each lookup is recorded for the diagnostics (the planner's lookups show there). */
+function helpLookup(runtime, tools) {
+  const help = tools.find(t => t.name === 'painting_tool_help');
+  help.execute = async (id, args = {}, signal) => {
+    const name = typeof args.name === 'string' && args.name.trim() ? args.name.trim() : null, planning = runtime.executionPhase === 'plan';
+    runtime.diagnostics?.record?.({ type: planning ? 'planner_tool_help' : 'painter_tool_help', ...(name ? { name } : {}) });
+    const canvas = runtime.decisionObservation ?? runtime.lastObservation ?? runtime.canvasContext?.canvas ?? null;
+    const size = canvas?.width && canvas?.height ? { width: canvas.width, height: canvas.height } : null;
+    // The plugin's toolbox help, read once a session: an index without a name, one command with its name (review
+    // 2026-10-24: whole, it came back as a truncated stub). Every answer stays under HELP_LIMIT.
+    const toolbox = async () => {
+      if (runtime.toolboxHelp?.session !== runtime.session) runtime.toolboxHelp = { session: runtime.session, value: await runtime.callNative('painting_tool_help', {}, id) };
+      return runtime.toolboxHelp.value ?? {};
+    };
+    let value;
+    if (!name) value = planning ? toolCatalogue({ tools, canvas: size }) : toolboxIndex(await toolbox());
+    else if (tools.some(t => t.name === name) || planning) value = await toolHelp(name, { tools, canvas: size, skillsDir: SKILLS_DIR });
+    else value = toolboxHelp(await toolbox(), name) ?? await toolHelp(name, { tools, canvas: size, skillsDir: SKILLS_DIR });
+    return { content: [{ type: 'text', text: JSON.stringify(value) }], details: value };
+  };
 }
 
 /** The runtime as paint-only-here.ts's SelectionHost: ask_for_selection and the studio's element steps share it. */

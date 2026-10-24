@@ -128,7 +128,8 @@ export class LangfuseTracing {
       const trace = { traceName: name, sessionId: info.sessionId, tags: info.tags, version: this.release,
         metadata: Object.fromEntries(Object.entries(info.ids ?? {}).filter(([, v]) => v != null).map(([k, v]) => [k, String(v).slice(0, 200)])) };
       const root = this.start(null, name, { metadata: { ...info.ids, ...info.metadata, pi_session_id: session.sessionId, system_prompt: session.agent?.state?.systemPrompt } }, { asType: 'agent' }, trace);
-      run = { root, trace, pending: [], turnStart: new Date(), firstToken: null, lastText: '' };
+      // A run may name its own generations (the studio's plan turns on the Planner model: plan-steps).
+      run = { root, trace, pending: [], turnStart: new Date(), firstToken: null, lastText: '', generationName: info.generationName ?? generationName };
       onRun?.({ traceId: root.traceId, observationId: root.id });
     };
     const handler = event => {
@@ -147,7 +148,7 @@ export class LangfuseTracing {
           run.pending.push(message);
         } else if (event.type === 'message_end') {
           const m = event.message, output = chatMessage(m);
-          const generation = this.start(run.root, generationName, {
+          const generation = this.start(run.root, run.generationName, {
             model: m.responseModel ?? m.model, input: run.pending, output,
             usageDetails: usageDetails(m.usage), costDetails: costDetails(m.usage),
             completionStartTime: run.firstToken ?? undefined,

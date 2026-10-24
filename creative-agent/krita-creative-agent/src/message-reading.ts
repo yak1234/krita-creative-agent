@@ -23,11 +23,20 @@ import { elementsNamed } from './project-folder.ts';
 export const SURE = 0.7;
 export type Element = { name: string; guess: string };
 export type ReferenceAnswer = 'change' | 'return' | 'neither';
+/** A folder plan's stages (plan-from-request goal 1), in their painting order. */
+export type PlanStage = 'underpainting' | 'finish' | 'refine' | 'accents';
+export const PLAN_STAGES: readonly PlanStage[] = ['underpainting', 'finish', 'refine', 'accents'];
+export type ScopeAnswer = 'whole' | 'stages' | 'neither';
+/** The stages a message asks for, while a folder plan is being made: the whole painting, only some stages, or neither,
+ * and each stage's probability of being asked for (null: no usable answer). */
+export type StageReading = { scope: { choice: ScopeAnswer; confidence: number } | null; asked: Record<PlanStage, number | null> };
 export type Reading = {
   /** The element the message asks to work on now (name null: none), or null when no element was asked about or answered. */
   element: { name: string | null; confidence: number } | null;
   one_part: number | null; negation: number | null; hand_painting: number | null;
   reference: { choice: ReferenceAnswer; confidence: number } | null;
+  /** Only when asked (`stages`: a folder plan is being made), else null. */
+  stages: StageReading | null;
   elapsed_ms: number; cost: number; input_tokens: number; fallback?: FallbackReason;
 };
 export type MessagePolicy = {
@@ -46,10 +55,25 @@ const REFERENCE: Record<ReferenceAnswer, string> = {
   neither: 'It asks to paint, refine or finish what the reference shows, only says what not to paint or what to leave alone, or says nothing about the reference.',
 };
 const noul = (instructions: string, yes: string, no: string) => ({ type: 'noul' as const, instructions, criteria: { true: yes, false: no } });
+// The plan's stages (plan-from-request goal 1, the artist 2026-10-24: "paint the underpainting" still queued Finish, Refine
+// and Accents). Asked in the same single decision, only while a folder plan is being made.
+const SCOPE: Record<ScopeAnswer, string> = {
+  whole: 'It asks for the whole painting: to paint it all, like the goal image, the whole thing, every stage.',
+  stages: 'It asks only for one or some stages of the painting (the underpainting, the finish, refining, the accents), not the whole painting.',
+  neither: 'It names no stage and does not ask for the whole painting (a greeting, a question, a comment, one part of the picture).',
+};
+const STAGE_TEXT: Record<PlanStage, string> = {
+  underpainting: 'the underpainting: the first lay-in of the whole picture\u2019s colours and light from the goal image (a block-in)',
+  finish: 'the finish: the soft areas blended and the forms restroked over the whole picture',
+  refine: 'refining: bringing the picture (or its parts) closer to the goal image, crisper and more detailed',
+  accents: 'the accents: lights, glints, darks and fine lines',
+};
 
 /** Luna's reading of one typed message: one text decision. A fallback is no reading (every answer null). */
-export async function readMessage({ client, text, elements, signal }: { client: DecisionMaker; text: string; elements: readonly Element[]; signal?: AbortSignal }): Promise<Reading> {
-  const empty: Reading = { element: null, one_part: null, negation: null, hand_painting: null, reference: null, elapsed_ms: 0, cost: 0, input_tokens: 0 };
+export async function readMessage({ client, text, elements, signal, stages = false }: { client: DecisionMaker; text: string; elements: readonly Element[]; signal?: AbortSignal;
+  /** A folder plan is being made: also ask which of its stages the message asks for. */
+  stages?: boolean }): Promise<Reading> {
+  const empty: Reading = { element: null, one_part: null, negation: null, hand_painting: null, reference: null, stages: null, elapsed_ms: 0, cost: 0, input_tokens: 0 };
   const listed = elements.slice(0, 24);
   const questions: Questions = {
     ...(listed.length ? { element: { type: 'choice' as const,
@@ -64,6 +88,11 @@ export async function readMessage({ client, text, elements, signal }: { client: 
     reference: { type: 'choice' as const, instructions: 'The painting is made from a goal reference image. What does the message ask, compared with that reference? Saying not to paint something, or to leave it alone, is no change from the reference.', criteria: { ...REFERENCE } },
     hand_painting: noul('Does the message ask for hand-painted work: visible or expressive brushstrokes, painting by hand or freehand?',
       'It asks for hand-painted work.', 'It does not ask for hand-painted work.'),
+    ...(stages ? {
+      plan_scope: { type: 'choice' as const, instructions: 'The painter is about to plan a painting in stages: the underpainting, the finish, refining toward the goal image, the accents. What does the message ask for?', criteria: { ...SCOPE } },
+      ...Object.fromEntries(PLAN_STAGES.map(stage => [`stage_${stage}`, noul(`Does the message ask for ${STAGE_TEXT[stage]}? Saying not to do it, or to leave it for later, is no.`,
+        'It asks for this stage.', 'It does not ask for this stage.')])),
+    } : {}),
   };
   let result;
   try {
@@ -85,9 +114,11 @@ export async function readMessage({ client, text, elements, signal }: { client: 
   const elementKeys = ['none', ...listed.map((_, i) => `element_${i + 1}`)];
   const element = listed.length ? picked(a.element, elementKeys) : null;
   const reference = picked(a.reference, Object.keys(REFERENCE));
+  const scope = stages ? picked(a.plan_scope, Object.keys(SCOPE)) : null;
   return { element: element ? { name: element.choice === 'none' ? null : listed[Number(element.choice.slice(8)) - 1]!.name, confidence: element.confidence } : null,
     one_part: p(a.one_part), negation: p(a.negation), hand_painting: p(a.hand_painting),
     reference: reference as Reading['reference'],
+    stages: stages ? { scope: scope as StageReading['scope'], asked: Object.fromEntries(PLAN_STAGES.map(stage => [stage, p(a[`stage_${stage}`])])) as Record<PlanStage, number | null> } : null,
     elapsed_ms: result.elapsed_ms, cost: result.usage.cost, input_tokens: result.usage.input_tokens };
 }
 

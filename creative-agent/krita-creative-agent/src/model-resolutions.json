@@ -68,5 +68,23 @@
         }
       }
     }
+  },
+  "openrouter:deepseek/deepseek-v4.1-flash": {
+    "view_side": 1536,
+    "crop_side": 1536,
+    "reads": 1536,
+    "measured_at": "2026-10-24T22:22:34.007Z"
+  },
+  "openrouter:z-ai/glm-5.3-flash": {
+    "view_side": 1024,
+    "crop_side": 1024,
+    "reads": 1024,
+    "measured_at": "2026-10-24T22:22:59.037Z"
+  },
+  "openrouter:qwen/qwen3.8-flash": {
+    "view_side": 2048,
+    "crop_side": 1536,
+    "reads": 2048,
+    "measured_at": "2026-10-24T22:23:23.185Z"
   }
 }

@@ -271,8 +271,13 @@ export async function readFolderText(root: string, name: string, max = 4000): Pr
 // (finish-stage goal 8, the artist 2026-10-24: "i want the end result where our accents and finishes make it move eventually
 // to the final"): the host's loop of fine finishes and accents on the regions still furthest from the goal (refine-goal.ts). An element's step is added only when the artist asks for it
 // (by name, or by adding the step); the element images stay attached as references.
-export type FolderStep = { title: string; done_when: string; scope: string };
-export type FolderStepKind = 'underpainting' | 'finish' | 'refine' | 'accents' | 'element' | 'whole';
+// The plan follows the request (plan-from-request, approved 2026-10-24): a step records its kind (`kind`: matching titles
+// broke whenever the planner reworded one), the tool it paints with (`tool`, checked by the host: plan-stages.ts stepTool)
+// and, for a refine step per part, the element files it refines (`parts`). All three are optional, so an older plan or a
+// PLAN.md line without them is read by its title as before.
+export type FolderStepKind = 'underpainting' | 'finish' | 'refine' | 'refine_part' | 'accents' | 'element' | 'whole';
+export const FOLDER_STEP_KINDS: readonly FolderStepKind[] = ['underpainting', 'finish', 'refine', 'refine_part', 'accents', 'element', 'whole'];
+export type FolderStep = { title: string; done_when: string; scope: string; kind?: FolderStepKind; tool?: string; parts?: string[] };
 export const UNDERPAINTING_STEP = 'Underpainting from the goal image';
 export const FINISH_STEP = 'Finish';
 export const REFINE_STEP = 'Refine to the goal';
@@ -294,11 +299,14 @@ export function elementStep(name: string, guess: string): FolderStep {
   return { title: guess.slice(0, 200), done_when: `${guess} is refined in its place as the goal image shows it, its look from ${basename(name)}.`, scope: name };
 }
 
-/** What a folder plan step paints: an element (its scope is an image), accents, the finish (the default step's own title,
- * exactly: an older PLAN.md's "Finishing touches" or "Finish the underpainting" keep their kinds), the underpainting, or
- * another whole step. */
-export function folderStepKind(step: { title: string; scope?: string }): FolderStepKind {
+/** What a folder plan step paints: its own `kind` when it records one; else by its scope and title: an element (its scope
+ * is an image), a refine step for some parts ("Refine: sky and moon"), accents, the finish (the default step's own title,
+ * exactly: an older PLAN.md's "Finishing touches" or "Finish the underpainting" keep their kinds), refine to the goal
+ * (its own title, exactly), the underpainting, or another whole step. */
+export function folderStepKind(step: { title: string; scope?: string; kind?: string }): FolderStepKind {
+  if (step.kind && (FOLDER_STEP_KINDS as readonly string[]).includes(step.kind)) return step.kind as FolderStepKind;
   if (step.scope && IMAGE_TYPES.has(extname(step.scope.trim()).toLowerCase())) return 'element';
+  if (/^\s*refine\s*:\s*\S/i.test(step.title)) return 'refine_part';
   if (/\baccents?\b/i.test(step.title)) return 'accents';
   if (step.title.trim().toLowerCase() === FINISH_STEP.toLowerCase()) return 'finish';
   if (step.title.trim().toLowerCase() === REFINE_STEP.toLowerCase()) return 'refine';

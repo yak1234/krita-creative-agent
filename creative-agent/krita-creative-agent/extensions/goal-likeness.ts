@@ -2,7 +2,7 @@
 // is to the goal before and after it (src/goal-likeness.ts, on the plugin's blurred Lab grids). A batch that made it
 // clearly less like the goal is undone through the pass review, as Luna's undo, and the painter is told what got worse
 // and where. The cap is per move and shared with Luna review (UNDO_CAP undos in all), then the move stops for the artist.
-// Measured, never undone: accents, colour transfers, layer settings, a departure the artist asked for; and every batch
+// Measured, never undone: accents, the finish, colour transfers, layer settings, a departure the artist asked for; and every batch
 // when the studio says measure only (Reference colours off, a message Luna could not classify) or the goal has no kept
 // whole-picture transfer to protect (frame.protect). A project folder's element step is judged like any other batch once
 // its goal is underpainted (the artist, 2026-10-23). Runs before Luna review, which skips a batch this undid or capped
@@ -37,7 +37,8 @@ export interface LikenessHost {
 /** Automatic undos per move: past this a worse batch is reported and the move stops, so a move is never undone empty. */
 export const UNDO_CAP = 2;
 const line = (value: Record<string, unknown>) => ({ type: 'text' as const, text: JSON.stringify({ goal_likeness: value }) });
-const WHY: Record<Exemption, string> = { accents: 'accents are small by design', transfer: 'it is a colour transfer from a reference',
+const WHY: Record<Exemption, string> = { accents: 'accents are small by design',
+  finish: 'the finish repaints the underpainting from the goal by design (the artist approved its look)', transfer: 'it is a colour transfer from a reference',
   departure: 'the artist asked for a change from the reference', layer_settings: 'it changes layer settings, not only paint' };
 const UNPROTECTED = 'this chat has no kept whole-picture transfer of the goal to protect';
 

@@ -12,7 +12,7 @@ export const NEED_HINTS = {
   texture:'Add surface texture clipped to the flat: paint_recipe or paint_pass with clip_to and blend_mode overlay (soft_light for subtle) at layer_opacity 0.3-0.5, or a pattern fill_region with clip_to and blend_mode overlay.',
   glow:'Make the lights glow: set_layer style outer_glow on the light layers, and apply_filter gaussian blur on a copy of a light layer for bloom.',
   depth:'Push the area back: a low-opacity fog fill in the sky colour above it and an apply_filter blur (filter layer on its group), lowering contrast.',
-  accents:'Finish with paint_accents on the area: it brightens the lights, deepens the darks and sharpens the thin lines where the canvas is softer than the reference, in its own paint.',
+  accents:'Finish the area with paint_finish if it still shows the underpainting\u2019s dabs, then paint_accents on it: it brightens the lights, deepens the darks and sharpens the thin lines where the canvas is softer than the reference, in its own paint.',
   done:'This area reads as finished; move on to the next one.',
 };
 

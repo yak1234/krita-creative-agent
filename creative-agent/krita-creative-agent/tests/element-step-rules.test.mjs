@@ -38,7 +38,7 @@ test('the artist asking for it lets it through; a refusal of it does not', () =>
 test('the refusal names what was refused and the sequence to use, with or without the area', () => {
   const refused = elementStepRefusal(wand, { part: 'Moonlit sky', area: true, request: 'Paint the moonlit sky.' });
   assert.match(refused, /^Nothing was painted: a selection made from colour \(a magic wand or a colour range\) is not used in an element step \(Moonlit sky\)/);
-  assert.match(refused, /paint_from_reference of the goal image, the whole goal over the whole canvas: only the dabs inside the area are painted; then paint_accents/);
+  assert.match(refused, /paint_from_reference of the goal image, the whole goal over the whole canvas: only the dabs inside the area are painted; then paint_finish and paint_accents/);
   const both = elementStepRefusal({ tool: 'paint_batch', args: { actions: [{ tool: 'split_by_color', arguments: {} }, { tool: 'paint_pass', arguments: { strokes: [stroke] } }] } },
     { part: 'Moonlit sky', area: false, request: '' });
   assert.match(both, /split_by_color and typed strokes are not used/);

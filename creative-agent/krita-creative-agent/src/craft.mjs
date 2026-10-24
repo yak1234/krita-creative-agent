@@ -6,7 +6,8 @@ export const CRAFT_TOOLS = ['create_layer','set_layer','select','fill_region','a
 export const FORK_TOOLS = ['bucket_fill','enclose_and_fill','krita_gradient','smart_patch'];
 // Craft tools that change the canvas; each name is also its bridge operation.
 export const CRAFT_OPERATIONS = ['create_layer','set_layer','fill_region','apply_filter','colorize_flats','transform_layer','clone_layer','split_by_color','krita_action','bucket_fill','enclose_and_fill','krita_gradient','smart_patch'];
-// Operations that can run for minutes on a large canvas; past this the outcome is uncertain.
-export const LONG_OPERATIONS = ['apply_filter','colorize_flats','split_by_color'];
+// Operations that can run for minutes on a large canvas; past this the outcome is uncertain. The finish (finish_pass.py)
+// took about a minute on a whole 6000 x 4500 canvas offline.
+export const LONG_OPERATIONS = ['apply_filter','colorize_flats','split_by_color','finish'];
 // Comic page operations: comic_page is called by the host when painting starts; letter by the painter.
 export const COMIC_OPERATIONS = ['comic_page','letter'];

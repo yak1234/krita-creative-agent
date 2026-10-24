@@ -9,7 +9,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { goalSharpener, enlargement, estimateSeconds, ENLARGEMENT, OFFER_PIXELS, staleGoalSource, goalSourceFile, sharpenedContext } from '../src/goal-sharpen.ts';
+import { goalSharpener, enlargement, estimateSeconds, ENLARGEMENT, OFFER_PIXELS, staleGoalSource, goalSourceFile, sharpenedContext, noMoreDetailNote, refineRequested, pictureGoal, MATCHED_DE } from '../src/goal-sharpen.ts';
 import { UPSCALE_MODEL } from '../src/upscale/model.ts';
 import { modelDirectory } from '../src/shapes/model.ts';
 import { UpscaleError } from '../src/upscale/index.ts';
@@ -98,16 +98,35 @@ test('a goal enlarged more than 2x is offered once, with the size, the time and 
   assert.equal(h.calls.length, 0, 'and Krita is not asked anything');
 });
 
-test('no offer for a goal 2x or less, without a canvas, with Never, or for a chat without a folder goal', async t => {
+test('no offer for a goal 2x or less, without a canvas, with Never, or for a reference that is not the whole-picture goal', async t => {
   for (const options of [{ goal: { width: 3000, height: 2250 } }, { canvas: null }, { setting: 'never' }]) {
     const h = await setup(t, options);
     await h.sharpener.check();
     assert.equal(h.events.length, 0, JSON.stringify(options));
   }
+  for (const change of [{ width: 1448, height: 600 }, { purpose: 'palette' }, { part_kind: 'crop' }, { role: 'asset' }]) {
+    const h = await setup(t);
+    Object.assign(h.study.references[0], { source: undefined, folder_name: undefined }, change);
+    await h.sharpener.check();
+    assert.equal(h.events.length, 0, 'not the picture: ' + JSON.stringify(change));
+  }
+});
+
+// Fix 4 (finish-stage, approved 2026-10-24): an attached goal, not a folder's, gets the same card; tonight's case was
+// final_goal.png (1448 x 1086) attached to a 6000 x 4500 canvas underpainted in an earlier chat.
+test('an attached goal of the canvas’s proportions enlarged more than 2x is offered once, and Use sharpened swaps it', async t => {
   const h = await setup(t);
-  h.study.references[0].source = undefined;
-  await h.sharpener.check();
-  assert.equal(h.events.length, 0, 'an artist’s own reference is not the folder goal');
+  Object.assign(h.study.references[0], { source: undefined, folder_name: undefined, purpose: 'general' });
+  await h.sharpener.check(); await h.sharpener.check();
+  const offer = last(h.events, 'goal_sharpen_offer');
+  assert.equal(h.events.filter(e => e.type === 'goal_sharpen_offer').length, 1, 'once');
+  assert.equal(offer.factor, 4.1);
+  assert.equal(h.sharpener.status().state, 'offered', 'the state of the chat’s picture goal');
+  await h.sharpener.answer({ id: offer.id, action: 'sharpen' });
+  await settle(h.sharpener);
+  await h.sharpener.answer({ id: last(h.events, 'goal_sharpen_review').id, action: 'use' });
+  const goal = h.study.references[0];
+  assert.deepEqual([goal.id, goal.width, goal.height, goal.sharpened.from.width], ['reference-goal', 2309, 1732, 1448]);
 });
 
 test('Sharpen: progress, then the side by side; Use sharpened makes the goal reference the sharpened picture, same id', async t => {
@@ -347,4 +366,45 @@ test('gate: Autopilot follows the setting: Ask shows the card and paints; Always
   const agent = await setup(t, { setting: 'always', busy: true });
   assert.equal(await agent.sharpener.gate({ wait: true }), 'paint', 'Always in Agent mode: sharpened without asking, then painted');
   assert.equal(agent.study.references[0].width, 2309);
+});
+
+// Fix 5 (finish-stage, approved 2026-10-24): chat "Creative painting 22" spent 20 passes inventing strokes on a canvas that
+// already matched a 4.1x enlarged goal (ΔE 1.7).
+test('no more detail: a refine request on a canvas matching an enlarged, unsharpened goal gets the note; anything else none', () => {
+  const asked = { text: 'Refine the left buildings, more detail please.', distance: 1.7, enlargement: 4.14, sharpened: false, offer: true };
+  assert.match(noMoreDetailNote(asked), /^GOAL RESOLUTION: the canvas already matches the goal image at the goal’s own resolution \(goal likeness ΔE 1\.7\)[^]*4\.1x larger[^]*offer to sharpen/);
+  // Review finding: with Never, or after the artist kept the original, the painter only says the goal has no more detail.
+  const kept = noMoreDetailNote({ ...asked, offer: false });
+  assert.match(kept, /no more detail to give here/); assert.doesNotMatch(kept, /sharpen/i);
+  for (const change of [{ sharpened: true }, { enlargement: 2 }, { distance: MATCHED_DE + 0.1 }, { distance: null }, { text: 'Add a red car on the bridge.' }])
+    assert.equal(noMoreDetailNote({ ...asked, ...change }), null, JSON.stringify(change));
+  for (const said of ['Make the towers sharper', 'crisper windows', 'clean up the bridge', 'refine the sky', 'add detail to the dome'])
+    assert.ok(refineRequested(said), said);
+  for (const said of ['Paint a dog', 'finish the sky', 'Finished? define the plan'])
+    assert.equal(refineRequested(said), null, said);
+});
+
+test('offerable: not with Never, not after the artist kept the original (here or in an earlier chat), not once sharpened', async t => {
+  const h = await setup(t);
+  const goal = h.study.references[0];
+  assert.equal(await h.sharpener.offerable(goal), true);
+  h.state.setting = 'never'; assert.equal(await h.sharpener.offerable(goal), false); h.state.setting = 'ask';
+  await h.sharpener.check();
+  await h.sharpener.answer({ id: last(h.events, 'goal_sharpen_offer').id, action: 'original' });
+  assert.equal(await h.sharpener.offerable(goal), false, 'Use as is');
+  const again = await setup(t);
+  await writeFile(join(again.data, 'goal-sharpen.json'), JSON.stringify({ version: 1, choices: { [sha(GOAL)]: { choice: 'original', at: 'then' } } }));
+  assert.equal(await again.sharpener.offerable(again.study.references[0]), false, 'remembered from an earlier chat');
+  assert.equal(await again.sharpener.offerable({ ...again.study.references[0], sharpened: {} }), false);
+});
+
+test('the picture goal: the folder\u2019s first, else the first attached goal reference of the canvas\u2019s proportions', () => {
+  const canvas = { width: 6000, height: 4500 };
+  const palette = { id: 'p', path: 'p', role: 'reference', purpose: 'palette', width: 1448, height: 1086 };
+  const own = { id: 'g', path: 'g', role: 'reference', purpose: 'general', width: 1448, height: 1086 };
+  const folder = { id: 'f', path: 'f', role: 'reference', source: 'folder', width: 100, height: 300 };
+  assert.equal(pictureGoal([palette, own], canvas)?.id, 'g');
+  assert.equal(pictureGoal([palette, own, folder], canvas)?.id, 'f');
+  assert.equal(pictureGoal([{ ...own, width: 1000 }], canvas), null, 'other proportions');
+  assert.equal(pictureGoal([own], null), null, 'no canvas yet');
 });

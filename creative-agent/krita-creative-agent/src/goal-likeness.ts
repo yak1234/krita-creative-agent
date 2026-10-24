@@ -43,7 +43,7 @@ export type Measure = {
   grid_cells: number;
   worse: Worse | null;
 };
-export type Exemption = 'accents' | 'transfer' | 'departure' | 'layer_settings';
+export type Exemption = 'accents' | 'finish' | 'transfer' | 'departure' | 'layer_settings';
 
 const round = (v: number, d = 2) => Math.round(v * 10 ** d) / 10 ** d;
 
@@ -175,13 +175,15 @@ export async function classifyDeparture({ client, text, signal }: { client: Deci
 }
 
 type Args = Record<string, unknown> & { actions?: { tool?: string }[] };
-/** Why a batch is measured but never undone: accents are small by design; a colour transfer paints a reference the artist
+/** Why a batch is measured but never undone: accents are small by design; the finish repaints the whole underpainting from
+ * the goal by design (finish-stage, its look approved by the artist 2026-10-24); a colour transfer paints a reference the artist
  * attached; a layer setting (opacity, blend mode) changes how existing paint shows, not the paint; a departure the artist
  * asked for. Null: the batch may be undone. */
 const LAYER_SETTINGS = ['adjust_layer', 'set_layer'];
 export function exemption(tool: string, args: Args = {}, { departure = null }: { departure?: string | null } = {}): Exemption | null {
   const actions = tool === 'paint_batch' && Array.isArray(args.actions) ? args.actions : null;
   if (tool === 'paint_accents' || (actions?.length && actions.every(a => a?.tool === 'paint_accents'))) return 'accents';
+  if (tool === 'paint_finish') return 'finish';
   if (tool === 'paint_from_reference' || tool === 'continue_reference_painting') return 'transfer';
   if (LAYER_SETTINGS.includes(tool) || actions?.some(a => LAYER_SETTINGS.includes(String(a?.tool)))) return 'layer_settings';
   return departure ? 'departure' : null;

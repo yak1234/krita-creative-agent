@@ -21,7 +21,7 @@ const atomic=async(path,value)=>{await writeFile(path+'.tmp',JSON.stringify(valu
 const underpaintingNote=j=>{const f=j.fitted,timing=`${j.total} strokes, about ${f.minutes} min`;
  return (f.widened?`Steps for the whole-picture underpainting set on the canvas and widened to fit the underpainting budget (about ${f.underpainting} strokes, ${UNDERPAINTING_MINUTES} min at the measured rate): [${j.recipe.steps}] source px`
   :`Steps for the whole-picture underpainting set on the canvas: [${j.recipe.steps}] source px`)
-  +`, ${f.canvas_px} canvas px between fine dabs (${timing}; you asked for [${f.from}]). Make the picture crisp with paint_accents after it.`;};
+  +`, ${f.canvas_px} canvas px between fine dabs (${timing}; you asked for [${f.from}]). Finish it with paint_finish, then make it crisp with paint_accents.`;};
 // Jobs belong to a plan revision. Older jobs also recorded a stage; steps no longer gate work.
 const scope=r=>r.goal?JSON.stringify([r.goal.revision]):null;
 const sameScope=(job,r)=>{if(job.scope===scope(r))return true;try{return !!r.goal&&JSON.parse(job.scope)[0]===r.goal.revision;}catch{return false;}};

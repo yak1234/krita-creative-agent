@@ -8,6 +8,7 @@ import {referenceTools,findReferenceAccents} from './reference-tool.mjs';
 import { mapReferencePoint } from './reference-generator.mjs';
 import { guideTools } from './guide-tool.ts';
 import { accentTools } from './accents-tool.ts';
+import { finishTools } from './finish-tool.ts';
 import { selectionTools } from './paint-only-here.ts';
 import { canvasShape, checkPassLimits, passShape, shapeReport, shapeSchema, shapeTimings } from './shapes/use.ts';
 import { recipeTool } from './recipe-tool.mjs';
@@ -333,7 +334,10 @@ export function paintingTools(runtime) {
   // Guides: hand-placed construction lines and perspective on the element's own guide layer (guide-tool.ts), only when
   // the artist asks; nothing is traced from a reference (crisp-accents).
   tools.push(...guideTools(runtime, { execute: operation => nativeExecute(runtime, operation), mapPoint: mapReferencePoint }));
-  // Accents (accents-tool.ts): stage two, what the canvas lacks next to the reference, adjusted in its own paint by Krita's filters.
+  // Finish (finish-tool.ts): stage two, the underpainting's soft areas blended and its forms restroked from the goal it was made from.
+  tools.push(...finishTools(runtime, { goal: canvas => runtime.finishGoal ? runtime.finishGoal(canvas) : Promise.resolve({ goal: null, underpainted: false }),
+    sharpenFirst: goal => runtime.finishSharpenFirst ? runtime.finishSharpenFirst(goal) : Promise.resolve(null), finish: nativeExecute(runtime, 'finish') }));
+  // Accents (accents-tool.ts): stage three, what the canvas lacks next to the reference, adjusted in its own paint by Krita's filters.
   tools.push(...accentTools(runtime, { findAccents: request => findReferenceAccents(runtime, request), adjust: nativeExecute(runtime, 'accents') }));
   // A flat fill anywhere in a batch is nudged before anything paints (studio.mjs fillNudge), so the batch is refused whole.
   tools.push(batchTool(tools, name => runtime.toolOffered?.(name) ?? true,

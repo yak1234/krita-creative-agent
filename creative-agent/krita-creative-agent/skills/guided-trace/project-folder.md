@@ -1,18 +1,20 @@
 # A project folder plan
 
-When the artist works from a project folder, the approved plan has one move per step. By default it has two:
+When the artist works from a project folder, the approved plan has one move per step. By default it has three:
 
 1. **Underpainting from the goal image (step 1).** The whole picture from the goal image with `paint_from_reference`
    (all of it onto the whole canvas). No guides: a guides step comes only when the artist asks for one, and then its
    name says so ("Guides: the whole composition").
-2. **Accents (step 2).** `paint_accents` on the whole picture from the goal image: lights, glints, darks and lines, in
+2. **Finish (step 2).** `paint_finish` on the whole picture: the soft areas (sky, mist, water) blended in the
+   underpainting's own paint, the forms restroked from the goal image. One call. No typed strokes over the underpainting.
+3. **Accents (step 3).** `paint_accents` on the whole picture from the goal image: lights, glints, darks and lines, in
    the underpainting's own paint. No typed strokes over the underpainting.
-3. **Then the artist decides.** The plan ends there and the host asks the artist what to refine next. The element
+4. **Then the artist decides.** The plan ends there and the host asks the artist what to refine next. The element
    images stay attached as references.
 
 **An element step only when the artist asks for it** (by name, or by adding the step). The goal image decides where the
 element sits; its element reference (the numbered file the move names) decides its look. Refine it where the
-underpainting already has it: `paint_accents` on its area, Krita's layers and filters for light and colour, and only a
+underpainting already has it: `paint_finish` and then `paint_accents` on its area, Krita's layers and filters for light and colour, and only a
 few small typed marks. Never repaint an element by hand unless the artist asks for hand-painted work. Draw its guide
 first (named exactly as the move says) only when the artist asked for guides. Paint nothing else. The step is judged
 against the goal image like any other: a batch that makes the canvas clearly less like it is undone.

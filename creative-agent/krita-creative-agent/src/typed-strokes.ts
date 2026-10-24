@@ -92,7 +92,7 @@ export function typedStrokeRefusal(call: StrokeCall, canvas: { width: number; he
   if (!over.length) return null;
   return `Nothing was painted: the canvas has its whole-picture underpainting, so typed strokes are limited to ${MAX_MARKS} small marks a call, `
     + `each at most ${cap} px wide (2% of the canvas), and this call has ${over.join(' and ')}. Repainting areas by hand pulls the painting away `
-    + 'from the goal. Refine with paint_accents instead (lights, glints, darks and lines from the goal image, on the whole picture or an area), '
+    + 'from the goal. Refine with paint_finish (soft areas blended, forms restroked from the goal image) and paint_accents instead (lights, glints, darks and lines from the goal image), on the whole picture or an area, '
     + 'or Krita’s layers and filters; for anything more, ask the artist. Typed strokes beyond this are for when the artist asks for hand-painted work.';
 }
 

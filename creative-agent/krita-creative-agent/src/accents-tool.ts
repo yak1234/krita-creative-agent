@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
-// paint_accents (openspec crisp-accents; the artist, 2026-10-23): stage two after the underpainting adjusts the painting's
+// paint_accents (openspec crisp-accents; the artist, 2026-10-23): the last stage after the underpainting (and the finish,
+// finish-tool.ts, since 2026-10-24) adjusts the painting's
 // OWN paint with Krita's features where the reference is sharper, brighter or darker than the canvas; it adds no marks.
 // The painter names an area, which kinds and how many; the plugin compares the reference with the canvas view and keeps
 // only what the canvas lacks (find_accents, accent_find.py: the residual decides, and is the strength); this module maps
@@ -151,7 +152,7 @@ const json = (value: unknown): Result['content'][number] => ({ type: 'text', tex
 export function accentTools(runtime: AccentsRuntime, dependencies: AccentsDependencies): ToolDefinition<any, unknown>[] {
   return [{
     name: 'paint_accents', label: 'Painting accents', executionMode: 'sequential', parameters: accentsSchema,
-    description: 'Stage two after the underpainting: make the painting crisp where the reference is sharper, brighter or darker than '
+    description: 'Stage three, after the underpainting and paint_finish: make the painting crisp where the reference is sharper, brighter or darker than '
       + 'the canvas, by adjusting the canvas\u2019s own paint with Krita\u2019s filters (no marks): lights and glints brightened '
       + '(Dodge, with a soft Screen bloom), darks deepened (Burn), thin lines and lost edges sharpened (High Pass in Overlay), each in a '
       + 'soft mask. Name the area (whole picture, a box, a selection, or an element\u2019s shape; the artist\u2019s Paint only here area by default while it is set), the kinds and how many; the host '

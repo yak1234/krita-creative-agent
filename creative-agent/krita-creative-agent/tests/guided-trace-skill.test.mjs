@@ -91,8 +91,10 @@ test('a project folder plan starts with the underpainting from the goal image; g
   assert.match(text, /paint_from_reference/);
   assert.match(text, /only when the artist ask/i);
   assert.doesNotMatch(text, /Block-in \(step 1\)/);
-  // The artist, 2026-10-23: underpainting, accents, then the artist decides; an element step only when asked for.
-  assert.match(text, /2\. \*\*Accents \(step 2\)\.\*\* `paint_accents` on the whole picture/);
+  // The artist, 2026-10-23: underpainting, accents, then the artist decides; an element step only when asked for. The
+  // finish comes between them (finish-stage, 2026-10-24).
+  assert.match(text, /2\. \*\*Finish \(step 2\)\.\*\* `paint_finish` on the whole picture/);
+  assert.match(text, /3\. \*\*Accents \(step 3\)\.\*\* `paint_accents` on the whole picture/);
   assert.match(text, /what to refine next/);
   assert.match(text, /An element step only when the artist asks for it/);
   assert.doesNotMatch(text, /One element per move, back to front/i);

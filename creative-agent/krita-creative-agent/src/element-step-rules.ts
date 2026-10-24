@@ -3,7 +3,8 @@
 // What an element step may use (openspec element-scoped-painting; the artist, 2026-10-24). In the live chat 385b4a4f the
 // artist named "Moonlit sky"; the painter selected three times, split the canvas by colour, made a material and sent typed
 // paint_batch strokes that the typed-stroke cap refused. An element step has one good sequence: a scoped reference transfer
-// of the goal inside the element's area (the underpainting engine, only the dabs inside it), then paint_accents in the area.
+// of the goal inside the element's area (the underpainting engine, only the dabs inside it), then paint_finish and
+// paint_accents in the area (finish-stage, 2026-10-24: the finish between them, as on the whole picture).
 // In an element step the studio (studio.mjs) refuses, before anything runs:
 //   - split_by_color, and selections made from colour (a magic-wand seed, a colour range; bucket_fill's "similar" mode),
 //   - make_material and stamp_material,
@@ -65,8 +66,8 @@ export function elementStepRefusal(call: Call, { part, area, request }: { part: 
   const refused = callKinds(call).filter(kind => !askedFor(kind, request));
   if (!refused.length) return null;
   const sequence = area
-    ? `paint_from_reference of the goal image, the whole goal over the whole canvas: only the dabs inside the area are painted; then paint_accents, which works in the area by default`
-    : `ask the artist for its area (ask_for_selection), then paint_from_reference of the goal image inside it and paint_accents there`;
+    ? `paint_from_reference of the goal image, the whole goal over the whole canvas: only the dabs inside the area are painted; then paint_finish and paint_accents, which work in the area by default`
+    : `ask the artist for its area (ask_for_selection), then paint_from_reference of the goal image inside it, then paint_finish and paint_accents there`;
   return `Nothing was painted: ${refused.map(kind => WHAT[kind]).join(' and ')} ${refused.length > 1 ? 'are' : 'is'} not used in an element step `
-    + `(${part}) unless the artist asks for it. Paint the element with the scoped transfer and accents instead: ${sequence}.`;
+    + `(${part}) unless the artist asks for it. Paint the element with the scoped transfer, the finish and accents instead: ${sequence}.`;
 }

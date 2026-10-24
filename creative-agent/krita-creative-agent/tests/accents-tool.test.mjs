@@ -146,7 +146,7 @@ test('no accents there: nothing is painted and the painter is told', async t => 
 test('painter guidance: after the underpainting, crispness is paint_accents; the layer-need accents hint names it', async () => {
   const { PAINTING_INSTRUCTIONS } = await import('../src/prompt.mjs');
   const { NEED_HINTS } = await import('../src/layer-need.mjs');
-  assert.match(PAINTING_INSTRUCTIONS, /stage two[^.]*paint_accents/i);
+  assert.match(PAINTING_INSTRUCTIONS, /stage two paint_finish[^.]*three paint_accents/i, 'the finish, then accents (finish-stage)');
   assert.doesNotMatch(PAINTING_INSTRUCTIONS, /realism comes from paint_reference_edges/);
   assert.doesNotMatch(PAINTING_INSTRUCTIONS, /\/trace|traced lines/, 'no visible tracing');
   assert.match(NEED_HINTS.accents, /paint_accents/);

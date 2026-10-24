@@ -217,12 +217,20 @@ test('a subfolder that cannot be read is listed as skipped, the scan goes on', a
   } finally { await chmod(locked, 0o755).catch(() => {}); await rm(root, { recursive: true, force: true }); }
 });
 
-// Plan shape (the artist, 2026-10-23): underpainting, accents, then the artist says what to refine; element steps only on request.
-test('the default folder plan is the underpainting, then accents on the whole picture; no element steps', () => {
+// Plan shape (the artist, 2026-10-23): underpainting, accents, then the artist says what to refine; element steps only on
+// request. The finish between the underpainting and the accents (finish-stage, approved 2026-10-24).
+test('the default folder plan is the underpainting, the finish, then accents on the whole picture; no element steps', () => {
   const steps = defaultFolderSteps();
-  assert.deepEqual(steps.map(s => [s.title, s.scope]), [['Underpainting from the goal image', 'whole composition'], ['Accents', 'whole composition']]);
-  assert.match(steps[1].done_when, /lights/i); assert.match(steps[1].done_when, /darks/i);
-  assert.deepEqual(steps.map(folderStepKind), ['underpainting', 'accents']);
+  assert.deepEqual(steps.map(s => [s.title, s.scope]), [['Underpainting from the goal image', 'whole composition'], ['Finish', 'whole composition'], ['Accents', 'whole composition']]);
+  assert.match(steps[1].done_when, /blended/i); assert.match(steps[1].done_when, /strokes/i);
+  assert.match(steps[2].done_when, /lights/i); assert.match(steps[2].done_when, /darks/i);
+  assert.deepEqual(steps.map(folderStepKind), ['underpainting', 'finish', 'accents']);
+  // Review finding: only the default step's own title is the finish; older PLAN.md titles keep their kinds.
+  assert.equal(folderStepKind({ title: ' finish ', scope: 'whole composition' }), 'finish');
+  assert.equal(folderStepKind({ title: 'Finishing touches on the sky', scope: 'whole composition' }), 'whole');
+  assert.equal(folderStepKind({ title: 'Finish the underpainting of the whole picture', scope: 'whole composition' }), 'underpainting');
+  assert.equal(folderStepKind({ title: 'Finished sky glow', scope: 'whole composition' }), 'whole', 'only a step named for the finish');
+  assert.equal(folderStepKind({ title: 'Finish with accents', scope: 'whole composition' }), 'accents');
   const towers = elementStep('assets/04-kremlin-towers.png', 'Kremlin towers');
   assert.deepEqual([towers.title, towers.scope, folderStepKind(towers)], ['Kremlin towers', 'assets/04-kremlin-towers.png', 'element']);
   assert.equal(folderStepKind({ title: 'Soften the sky', scope: 'whole composition' }), 'whole', 'an artist\u2019s own whole-picture step is neither');

@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Sharpen goal (the artist, 2026-10-24): a goal image much smaller than the canvas cannot give the painting detail it does
-// not have (New Moscow: 1448 x 1086 on 6000 x 4500, 4.1x). When the project folder's goal would be enlarged more than
-// ENLARGEMENT onto the canvas, the chat offers once per goal (by content hash) to sharpen it 4x on this computer with
+// not have (New Moscow: 1448 x 1086 on 6000 x 4500, 4.1x). When the whole-picture goal (pictureGoal: the project folder's
+// goal, else an attached goal reference of the canvas's proportions; finish-stage fix 4, approved 2026-10-24: an attached
+// final_goal.png on a canvas underpainted in an earlier chat got no card) would be enlarged more than ENLARGEMENT onto the
+// canvas, the chat offers once per goal (by content hash) to sharpen it 4x on this computer with
 // Real-ESRGAN x4plus (upscale/), nothing uploaded. The setting "Sharpen small goal images" (settings-schema.mjs
 // sharpen_goal) decides: Ask (the default) offers a card, Always sharpens and uses it without asking, Never does neither.
 //   offer card [Sharpen] [Use as is]  ->  progress on the Now card (Stop cancels)  ->  side by side [Use sharpened] [Keep original]
@@ -34,7 +36,7 @@ const CHOICES_FILE = 'goal-sharpen.json';
 export type Sharpened = { from: { path: string; width: number; height: number; sha256: string; mimeType?: string }; model: string; revision: string;
   scale: number; full: string; at: string };
 export type GoalReference = { id: string; path: string; width?: number; height?: number; mimeType?: string; source?: string; role?: string;
-  part_kind?: string; name?: string; folder_name?: string; sharpened?: Sharpened; mass_map?: unknown };
+  part_kind?: string; purpose?: string; name?: string; folder_name?: string; sharpened?: Sharpened; mass_map?: unknown };
 type Result = { reference: { path: string; width: number; height: number; mimeType: string; bytes: number }; full: { path: string; width: number; height: number };
   compare: string; ms: number; peak_mb: number; provider: string; tiles: number };
 export type SharpenRecord = { state: 'offered' | 'running' | 'review' | 'used' | 'kept' | 'failed' | 'cancelled'; id: string; name?: string; factor?: number;
@@ -67,6 +69,42 @@ export function enlargement(goal: { width?: number; height?: number }, canvas: {
 /** The project folder's goal reference (a whole picture, not a part), or null. */
 export const folderGoal = (references: readonly GoalReference[] | undefined) =>
   references?.find(r => r.source === 'folder' && r.role === 'reference' && !r.part_kind) ?? null;
+
+const ASPECT_TOLERANCE = 0.03;                   // as goal-likeness.ts: a reference with the canvas's proportions is the picture
+/** The whole-picture goal: the project folder's, else the first attached goal reference (a general or composition
+ * reference, not a part or an asset) of the canvas's proportions, the one goal likeness and accents place over the whole
+ * canvas; null when there is none (or no canvas yet). A sharpened goal keeps its proportions, so it stays the goal. */
+export function pictureGoal(references: readonly GoalReference[] | undefined, canvas: { width?: unknown; height?: unknown } | null | undefined): GoalReference | null {
+  const folder = folderGoal(references);
+  if (folder) return folder;
+  const cw = Number(canvas?.width), ch = Number(canvas?.height);
+  if (!(cw > 0 && ch > 0)) return null;
+  return (references ?? []).find(r => (r.role ?? 'reference') === 'reference' && !r.part_kind && ['general', 'composition'].includes(r.purpose ?? 'general')
+    && Number(r.width) > 0 && Number(r.height) > 0 && Math.abs(Number(r.width) / Number(r.height) / (cw / ch) - 1) <= ASPECT_TOLERANCE) ?? null;
+}
+
+// "No more detail, sharpen it" (finish-stage fix 5, approved 2026-10-24): in chat "Creative painting 22" the artist asked
+// to refine the left buildings; the canvas already matched the goal (ΔE 1.7) and the goal was enlarged 4.1x, so 20
+// passes of invented hand strokes changed nothing visible. When a message asks to refine and the canvas matches the goal
+// at the goal's resolution, an enlarged goal that is not sharpened has nothing more to give: the painter says so and
+// offers Sharpen instead.
+/** A message that asks for refinement: more detail, sharper, crisper, cleaner, finished. */
+const REFINE = /\b(?:refin\w*|(?:more|finer|add(?:ing)?) detail\w*|detail(?:ed|s)?|sharp(?:en\w*|er|ness)|crisp\w*|clean(?:er| up)|tighten\w*|polish\w*)\b/i;
+/** The canvas matches the goal at the goal's resolution: its goal likeness (whole-canvas mean ΔE on the likeness grid) is
+ * at most this. New Moscow's underpainting measured 1.7; a canvas still missing areas measures well above. */
+export const MATCHED_DE = 3;
+export const refineRequested = (text: string): string | null => String(text ?? '').match(REFINE)?.[0] ?? null;
+
+/** The note for the painter when the artist asks to refine what the goal cannot give more of, or null. `distance` is the
+ * canvas's goal likeness, `enlargement` how many times larger the goal is drawn onto the canvas; `offer` whether the
+ * Sharpen card may still be offered (not with Never, not after the artist kept the original: offerable). */
+export function noMoreDetailNote({ text, distance, enlargement, sharpened, offer }: { text: string; distance: number | null; enlargement: number; sharpened: boolean; offer: boolean }): string | null {
+  if (sharpened || !(enlargement > ENLARGEMENT) || distance === null || !(distance <= MATCHED_DE) || !refineRequested(text)) return null;
+  return `GOAL RESOLUTION: the canvas already matches the goal image at the goal\u2019s own resolution (goal likeness \u0394E ${distance.toFixed(1)}), and `
+    + `the goal image is drawn ${enlargement.toFixed(1)}x larger than it is, so it has no more detail to give here. Tell the artist so in a sentence`
+    + (offer ? ' and offer to sharpen the goal image 4x (the Sharpen goal card beside the chat, or Settings: Sharpen small goal images)' : '')
+    + '; do not invent detail with typed strokes. paint_finish and paint_accents still work from the goal where the canvas lacks what it shows.';
+}
 
 type Rect = [number, number, number, number];
 const isRect = (v: unknown): v is Rect => Array.isArray(v) && v.length === 4 && v.every(n => typeof n === 'number' && Number.isFinite(n));
@@ -170,9 +208,9 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
         + `right: sharpened, on its most detailed part. ${r.reference.width === r.full.width ? 'The painter reads it at full size.' : `The painter reads it at ${r.reference.width} x ${r.reference.height}, the most its reference tools take.`} Use the sharpened goal?` };
   };
 
-  /** The goal reference's state for the panel's folder card. */
+  /** The goal reference's state for the panel's folder card (the whole-picture goal: the folder's when there is one). */
   function status(): { state: string; factor?: number; sharpened?: { width: number; height: number; full: [number, number] } } | null {
-    const study = host.study, goal = folderGoal(study?.references);
+    const study = host.study, goal = pictureGoal(study?.references, host.canvas());
     if (!study || !goal) return null;
     if (goal.sharpened) return { state: 'used', sharpened: { width: goal.width ?? 0, height: goal.height ?? 0, full: [goal.sharpened.from.width * goal.sharpened.scale, goal.sharpened.from.height * goal.sharpened.scale] } };
     const record = Object.values(study.goal_sharpen ?? {}).find(r => r.name === goal.path);
@@ -182,7 +220,7 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
   /** Offers, sharpens by itself, or does nothing, as the setting, the goal's size and earlier answers say. Never throws. */
   async function check(): Promise<void> {
     try {
-      const study = host.study, goal = folderGoal(study?.references);
+      const study = host.study, goal = pictureGoal(study?.references, host.canvas());
       if (!study || !goal || goal.sharpened || host.setting() === 'never') return;
       const factor = enlargement(goal, host.canvas());
       if (!(factor > ENLARGEMENT) || (goal.width ?? 0) * (goal.height ?? 0) > OFFER_PIXELS) return;
@@ -215,7 +253,7 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
   }
 
   async function run(sha: string, signal: AbortSignal): Promise<void> {
-    const study = host.study, goal = folderGoal(study?.references), record = study?.goal_sharpen?.[sha];
+    const study = host.study, goal = pictureGoal(study?.references, host.canvas()), record = study?.goal_sharpen?.[sha];
     if (!study || !goal || !record) return;
     record.state = 'running'; delete record.message; await host.persist();
     const progress = (done: number, total: number, message: string) => host.emit({ type: 'goal_sharpen_progress', id: record.id, done, total, message });
@@ -279,7 +317,7 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
 
   /** The goal reference becomes the sharpened picture: same id and placement, its pixels and size changed. */
   async function use(study: Study, sha: string, record: SharpenRecord) {
-    const goal = folderGoal(study.references), result = record.result;
+    const goal = pictureGoal(study.references, host.canvas()), result = record.result;
     if (!goal || !result || goal.sharpened) return;
     // Only onto the picture it was made from: the goal may have changed since (the goal picker).
     if (goal.path !== record.name || await hashOf(goal.path).catch(() => '') !== sha) {
@@ -334,7 +372,7 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
   async function gate({ wait }: { wait: boolean }): Promise<'paint' | 'wait'> {
     try {
       await check();
-      const study = host.study, goal = folderGoal(study?.references);
+      const study = host.study, goal = pictureGoal(study?.references, host.canvas());
       if (!study || !goal || goal.sharpened) return 'paint';
       const sha = await hashOf(goal.path), record = study.goal_sharpen?.[sha];
       if (!record) return 'paint';
@@ -346,6 +384,17 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
       }
       return wait && ['offered', 'cancelled', 'review'].includes(record.state) ? 'wait' : 'paint';
     } catch { return 'paint'; }
+  }
+
+  /** Whether the Sharpen card may still be offered for `goal`: not with Never, not once it is sharpened, not after the artist
+   * kept the original (Use as is, Keep original; in this chat or remembered from an earlier one), and not after it failed. */
+  async function offerable(goal: GoalReference): Promise<boolean> {
+    if (goal.sharpened || host.setting() === 'never') return false;
+    try {
+      const sha = await hashOf(goal.path), record = host.study?.goal_sharpen?.[sha];
+      if (record && ['kept', 'used', 'failed'].includes(record.state)) return false;
+      return (await choices()).choices[sha]?.choice !== 'original';
+    } catch { return false; }
   }
 
   /** After a run: a swap the artist approved while it painted happens now; then a goal the canvas now shows small is offered. */
@@ -365,6 +414,6 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
       if (all && (['offered', 'running', 'review', 'cancelled'].includes(record.state) || record.pending_use)) delete all[sha];
   }
 
-  return { check, gate, answer, settle, status, goalChanged, stop() { running?.controller.abort(); }, running: () => running?.done ?? null };
+  return { check, gate, answer, settle, status, goalChanged, offerable, stop() { running?.controller.abort(); }, running: () => running?.done ?? null };
 }
 export type GoalSharpener = ReturnType<typeof goalSharpener>;

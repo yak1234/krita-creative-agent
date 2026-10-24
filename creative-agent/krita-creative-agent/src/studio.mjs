@@ -9,7 +9,7 @@ import { panelSchema } from './settings-schema.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS } from './craft.mjs';
 import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension } from './extensions.mjs';
 import { transferJobId, underpaintingState, underpaintingRefusal, closedNote, UNDERPAINTING_MOVE_NOTE } from './underpainting-move.ts';
-import { classifyDeparture, decodeGrid, departureRequested, goalMapping, gridSize, likenessLine, returnToReference } from './goal-likeness.ts';
+import { classifyDeparture, decodeGrid, departureRequested, goalMapping, gridSize, likenessLine, measure, returnToReference } from './goal-likeness.ts';
 import { layerNeedCheck, paintedRole } from './layer-need.mjs';
 import { mayBeDone, askWhenDoneNote } from './ask-when-done.ts';
 import { unifyActions, unifyRefusal, WHOLE_CANVAS_SHARE } from './unify-pass.ts';
@@ -40,7 +40,8 @@ import { fillNudge, massGuidance, hasGoalReference, paintedTransfers, referenceC
 import { transferRefusal, existingPainting, WHOLE_SHARE } from './reference-tool.mjs';
 import { typedStrokeRefusal, handPaintingRequested } from './typed-strokes.ts';
 import { scanFolder, readFolderText, defaultFolderSteps, elementStep, folderStepKind, elementsNamed, goalChoices, goalNamed, FOLDER_LIMITS } from './project-folder.ts';
-import { goalSharpener, sharpenedContext } from './goal-sharpen.ts';
+import { goalSharpener, sharpenedContext, noMoreDetailNote, refineRequested, ENLARGEMENT } from './goal-sharpen.ts';
+import { sharpenFirstMessage } from './finish-tool.ts';
 import { ensureMassMaps } from './mass-map.ts';
 import { writePlan, writePlanGoal, appendNote, readPlan, parsePlan, planDifference, briefFromPlan, remapTicks, stepFile, stepKeys, layerName } from './folder-notes.ts';
 import { planStepControls, stepMarksContext, withStepIds, STEP_ID } from './plan-steps.ts';
@@ -127,7 +128,7 @@ export function approvedReviewScope(changes=[]) {
 export const restoredReviewStart = goal => goal?.review_start_index ?? goal?.reviews?.length ?? 0;
 const jsonResult = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }], details: value });
 const MODEL_IMAGE_SIDE = 1568;        // long side; Claude and GPT downscale larger images to about this
-const mutates = op => ['paint_pass','adjust_layer','painting_toolbox','stamp','draw_guide','accents',...CRAFT_OPERATIONS,...COMIC_OPERATIONS].includes(op);
+const mutates = op => ['paint_pass','adjust_layer','painting_toolbox','stamp','draw_guide','accents','finish',...CRAFT_OPERATIONS,...COMIC_OPERATIONS].includes(op);
 // Guided trace (guide-tool.ts): offered in Agent and Autopilot painting while the guides setting is on.
 const GUIDE_TOOLS = ['draw_guide','finish_guide'];
 // A guide-only move (the panel's move_kind guides, or an Undo retry of one): guides, looking and finish_move; nothing paints.
@@ -236,11 +237,12 @@ function moveReviewLine({verdict,findings,undone_batches,batches}) {
 const LIKENESS_CACHE=8;
 // Tools whose calls an element step checks (element-step-rules.ts): colour splits and selections, typed strokes, and a batch of them.
 const ELEMENT_STEP_GUARDED=['select','split_by_color','paint_pass','paint_batch','painting_toolbox','paint_contours','paint_recipe','bucket_fill','enclose_and_fill','fill_region','apply_filter','create_layer'];
-const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer','painting_toolbox','stamp_material',...CRAFT_OPERATIONS,'letter','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_accents'];
+const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer','painting_toolbox','stamp_material',...CRAFT_OPERATIONS,'letter','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_finish','paint_accents'];
 /** Agent mode's request for "Paint this plan": the plan's current step, one move at a time. */
 // Project folder (B3): with a folder, Agent mode plans first. Nothing paints before the artist approves with Start painting.
-// The plan's shape (the artist, 2026-10-23): underpainting, accents, then the artist says what to refine (project-folder.ts).
-const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist approves the plan with Start painting. Call propose_plan now, as in folder_plan_draft: step 1 is the underpainting of the whole composition from the goal image (a whole-picture reference transfer), step 2 is accents on the whole picture (paint_accents: lights, darks and detail from the goal image), and then the plan ends: the host asks the artist what to refine next. Add a step for an element (its scope is its file name, after the accents) only when the artist asks for that element by name or asks for element steps; never repaint the elements one by one by default. Improve titles, done_when and checks from the brief, the prompts and the images. Add a guides step only when the artist asks for guides. Then stop.\n';
+// The plan's shape (the artist, 2026-10-23; the finish added 2026-10-24, finish-stage): underpainting, finish, accents,
+// then the artist says what to refine (project-folder.ts).
+const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist approves the plan with Start painting. Call propose_plan now, as in folder_plan_draft: step 1 is the underpainting of the whole composition from the goal image (a whole-picture reference transfer), step 2 is the finish on the whole picture (paint_finish: soft areas blended, forms restroked from the goal image; keep its title exactly "Finish"), step 3 is accents on the whole picture (paint_accents: lights, darks and detail from the goal image), and then the plan ends: the host asks the artist what to refine next. Add a step for an element (its scope is its file name, after the accents) only when the artist asks for that element by name or asks for element steps; never repaint the elements one by one by default. Improve titles, done_when and checks from the brief, the prompts and the images. Add a guides step only when the artist asks for guides. Then stop.\n';
 // A plan step that names guides: the artist asked for them when approving it.
 const GUIDES_STEP = /\b(guides?|trac(e|ing)|block-in|construction lines?)\b/i;
 const FOLDER_ANSWERS = ['Follow the edited plan','Keep the current plan'];
@@ -828,13 +830,9 @@ export class StudioRuntime extends PaintingRuntime {
   async likenessFrame() {
     const canvas=this.decisionObservation ?? this.lastObservation;
     if (!canvas?.width || !canvas?.height || !this.study) return null;
-    const folder=join(this.study.directory,'reference-paintings');
-    const completed=await Promise.all((await this.wholeTransfers(canvas)).filter(job=>job.status==='complete')
-      .map(async job=>({job, at:(await stat(join(folder,job.id+'.json')).catch(()=>null))?.mtimeMs ?? 0})));
-    const transfers=completed.sort((a,b)=>b.at-a.at).map(entry=>entry.job);
-    const mapping=goalMapping({references:this.study.references, transfers, canvas});
-    const reference=mapping && this.study.references.find(r => r.id === mapping.reference_id);
-    if (!reference) return null;
+    const placed=await this.goalPlacement(canvas);
+    if (!placed) return null;
+    const {mapping, reference}=placed;
     this.likenessCanvas={width:canvas.width, height:canvas.height};
     // An attached reference never changes (the chat keeps its own copy), so the goal is read once for its crop.
     const key=[reference.id,reference.path,mapping.source,mapping.target].join(':');
@@ -845,6 +843,58 @@ export class StudioRuntime extends PaintingRuntime {
     }
     this.likenessCells=this.likenessGoal.cells;
     return {goal:this.likenessGoal.grid, target:mapping.target, protect:mapping.from==='transfer' || (reference.source==='folder' && !this.currentMove?.element)};
+  }
+  /** The chat's whole-picture goal and where it sits on the canvas (goal-likeness.ts goalMapping): where the most recent
+   * kept, completed whole transfer of a goal reference put it, else a goal of the canvas's proportions over the whole
+   * canvas. {mapping, reference} or null. Goal likeness, paint_finish and the "no more detail" note read the same goal. */
+  async goalPlacement(canvas, transfers) {
+    const folder=join(this.study.directory,'reference-paintings');
+    // A transfer made on a canvas of another size (the painting was resized since) places nothing on this one.
+    const completed=await Promise.all((transfers ?? await this.wholeTransfers(canvas)).filter(job=>job.status==='complete'
+      && (!job.canvas || (job.canvas.width===canvas.width && job.canvas.height===canvas.height)))
+      .map(async job=>({job, at:(await stat(join(folder,job.id+'.json')).catch(()=>null))?.mtimeMs ?? 0})));
+    const mapping=goalMapping({references:this.study.references, transfers:completed.sort((a,b)=>b.at-a.at).map(entry=>entry.job), canvas});
+    const reference=mapping && this.study.references.find(r => r.id === mapping.reference_id);
+    return reference ? {mapping, reference} : null;
+  }
+  /** The "no more detail" note (goal-sharpen.ts noMoreDetailNote; finish-stage fix 5): the artist asks to refine, the canvas
+   * already matches the goal at its resolution and the goal is enlarged more than 2x and not sharpened. The Sharpen card is
+   * offered again when it was never answered. Empty on any doubt: a note must never stop a move. */
+  async goalDetailNote(text, canvas) {
+    if (!refineRequested(text) || !canvas?.width || !canvas?.height) return '';
+    try {
+      const placed=await this.goalPlacement(canvas);
+      if (!placed || placed.reference.sharpened) return '';
+      const enlargement=placed.mapping.target[2]/placed.mapping.source[2], frame=enlargement > 2 ? await this.likenessFrame() : null;
+      const view=canvas.unguided_path ?? canvas.image_path;
+      if (!frame || !view || canvas.region) return '';
+      const {grid}=await this.likenessGrid(view,{source:frame.target,size:[canvas.width,canvas.height]});
+      // The card is offered only while it may be: not with Never, not after the artist kept the original.
+      const offer=!!(await this.goalSharpen?.offerable?.(placed.reference));
+      const note=noMoreDetailNote({text, distance:measure(frame.goal, grid, grid, frame.target).whole.before, enlargement, sharpened:false, offer});
+      if (!note) return '';
+      this.diagnostics?.record({type:'goal_detail_note', enlargement:Math.round(enlargement*10)/10, offer});
+      if (offer) void this.goalSharpen?.check().catch(() => {});
+      return '\n' + note + '\n';
+    } catch { return ''; }
+  }
+  /** paint_finish from an unsharpened goal enlarged more than ENLARGEMENT (finish-tool.ts sharpenFirst; review, 2026-10-24:
+   * Finish from it mostly blurs): refused once a goal in the chat, with the Sharpen card shown, while the card may be offered. */
+  async finishSharpenFirst(goal) {
+    const reference=goal?.reference, enlargement=goal ? goal.target[2]/goal.source[2] : 0;
+    if (!reference || reference.sharpened || !(enlargement > ENLARGEMENT) || !this.goal) return null;
+    const asked=(this.goal.finish_sharpen_asked ??= []);
+    if (asked.includes(reference.path) || !(await this.goalSharpen?.offerable?.(reference))) return null;
+    asked.push(reference.path); await this.persist();
+    void this.goalSharpen.check().catch(() => {});
+    return sharpenFirstMessage(enlargement);
+  }
+  /** paint_finish's goal (finish-tool.ts): the placed goal, and whether the whole picture is underpainted (a kept whole
+   * transfer, or a painting the chat started on: an underpainting made in an earlier chat counts). */
+  async finishGoal(canvas) {
+    const transfers=await this.wholeTransfers(canvas), placed=await this.goalPlacement(canvas, transfers);
+    return {goal:placed ? {reference:placed.reference, source:placed.mapping.source, target:placed.mapping.target, from:placed.mapping.from} : null,
+      underpainted:await this.underpainted(canvas, transfers)};
   }
   /** One image's likeness grid from the plugin (goal_likeness.py), cached by content: the view after one batch is
    * usually the view before the next. The grid's size follows the goal's target on the canvas. */
@@ -1139,7 +1189,7 @@ export class StudioRuntime extends PaintingRuntime {
     // Skills (read opens skill files only) and image assets, while planning and painting.
     if (vision && (phase === 'plan' || phase === 'agent')) names.push('read','make_asset','run_skill_script');
     if (phase === 'plan' && this.mode === 'autopilot' && this.goal?.brief) names.push('start_painting');
-    if (phase === 'agent') names.push('ask_for_selection','propose_protection','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_accents','list_brushes','paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer',...CRAFT_TOOLS,...GUIDE_TOOLS,'letter','finish_move','painting_toolbox','painting_tool_help','ask_question','record_progress','request_review');
+    if (phase === 'agent') names.push('ask_for_selection','propose_protection','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_finish','paint_accents','list_brushes','paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer',...CRAFT_TOOLS,...GUIDE_TOOLS,'letter','finish_move','painting_toolbox','painting_tool_help','ask_question','record_progress','request_review');
     // Agent (collaborative) paints one move per turn: no review or progress bookkeeping tools.
     // With Luna pacing, Autopilot's host tracks plan steps; request_review stays as a backstop.
     const hidden = phase !== 'agent' ? [] : this.mode === 'agent' ? ['record_progress','request_review','ask_question',...(this.executionSettings?.move_size === 'quick' ? ['finish_move'] : [])]
@@ -1569,6 +1619,9 @@ export class StudioRuntime extends PaintingRuntime {
     }
     await this.persist(); this.publish();
     this.startMassMaps();
+    // A goal attached by the artist (not the folder's, which attachFolder checks) may be offered the Sharpen card too, also
+    // when the underpainting was made before it was attached (finish-stage fix 4).
+    if ((items ?? []).some(item => !item.folder)) void this.goalSharpen?.check().catch(() => {});
   }
   // The mass map (mass-map.ts): the whole-picture reference's masses, found once in the background and kept in the chat
   // folder; the painter reads their summary in the study context, the panel shows the thumbnail beside the reference.
@@ -1767,18 +1820,21 @@ export class StudioRuntime extends PaintingRuntime {
       settled: () => this.resumeAfterSharpen(),
     };
   }
-  /** Whether the move about to paint is the folder plan's underpainting (the step a whole-picture transfer of the goal paints). */
-  underpaintingNext(command = {}) {
+  /** The folder plan step about to paint reads the goal whole (the underpainting, or the finish: review, 2026-10-24): its kind,
+   * or null. The Sharpen goal card holds either. */
+  sharpenStepNext(command = {}) {
     const steps = this.goal?.brief?.steps ?? [];
-    if (!this.study?.folder || !steps.length || !this.folderPlanApproved()) return false;
+    if (!this.study?.folder || !steps.length || !this.folderPlanApproved()) return null;
     const retry = this.planSteps.indexOf(command.plan_step_key);
-    return folderStepKind(steps[retry >= 0 ? retry : Math.min(this.goal.current_step ?? 0, steps.length - 1)]) === 'underpainting';
+    const kind = folderStepKind(steps[retry >= 0 ? retry : Math.min(this.goal.current_step ?? 0, steps.length - 1)]);
+    return ['underpainting', 'finish'].includes(kind) ? kind : null;
   }
-  /** Agent mode: the underpainting waits for the Sharpen goal card (goal-sharpen.ts gate); true when it is held. */
+  /** Agent mode: the underpainting or the finish waits for the Sharpen goal card (goal-sharpen.ts gate); true when it is held. */
   async holdForSharpen(text, command) {
-    if (!this.underpaintingNext(command) || await this.goalSharpen.gate({wait:true}) !== 'wait') return false;
+    const kind = this.sharpenStepNext(command);
+    if (!kind || await this.goalSharpen.gate({wait:true}) !== 'wait') return false;
     this.sharpenHeld = {text, command:{...command, chat_mode:'agent', sharpen_resumed:true}};
-    this.setActivity('awaiting_user', 'Answer the Sharpen goal card first: the underpainting starts after it.');
+    this.setActivity('awaiting_user', `Answer the Sharpen goal card first: the ${kind} starts after it.`);
     return true;
   }
   /** The goal's sharpening settled: a held underpainting starts now (after the run that holds the studio, if any). */
@@ -1830,11 +1886,11 @@ export class StudioRuntime extends PaintingRuntime {
     const index = steps.findIndex((_, i) => !done.has(i) && !this.planSteps.isClosed(i));     // skipped and met steps too
     return index < 0 ? steps.length : index;
   }
-  /** The plan the companion suggests: the underpainting from the goal image, then accents (project-folder.ts defaultFolderSteps). */
+  /** The plan the companion suggests: the underpainting from the goal image, the finish, then accents (project-folder.ts defaultFolderSteps). */
   folderPlanDraft() {
     const index = this.folderIndex, name = basename(index.root);
-    return normalizeBrief({title:name.slice(0,200), objective:`Paint ${name} from its goal image: the underpainting, then accents; then the artist says what to refine.`, requirements:[], freedom:[],
-      completion:['The whole picture is underpainted from the goal image and its accents are crisp.'], steps:defaultFolderSteps()});
+    return normalizeBrief({title:name.slice(0,200), objective:`Paint ${name} from its goal image: the underpainting, the finish, then accents; then the artist says what to refine.`, requirements:[], freedom:[],
+      completion:['The whole picture is underpainted from the goal image, finished (soft areas blended, forms in strokes) and its accents are crisp.'], steps:defaultFolderSteps()});
   }
   /** Agent mode with a folder and no approved plan: a planning turn (propose_plan, no painting tools). */
   async planFolder(text, images) {
@@ -1852,7 +1908,7 @@ export class StudioRuntime extends PaintingRuntime {
     this.goal.status = 'ready'; await this.persist(); this.publish();
     const elements = this.goal.brief.steps.filter(step => folderStepKind(step) === 'element').length;
     this.setActivity('idle', `Plan ready: ${this.goal.brief.steps.length} move${this.goal.brief.steps.length === 1 ? '' : 's'}`
-      + (elements ? `, ${elements} of them for the elements you asked for.` : ': the underpainting, then accents; then I ask you what to refine (name an element to add its step).')
+      + (elements ? `, ${elements} of them for the elements you asked for.` : ': the underpainting, the finish, then accents; then I ask you what to refine (name an element to add its step).')
       + ' Review or edit it, then press Start painting.');
   }
   /** After the plan changed: ticks follow their steps by title, the next open step is current, PLAN.md is rewritten. */
@@ -1909,8 +1965,9 @@ export class StudioRuntime extends PaintingRuntime {
     if (!element) {
       if (guides) return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: the guides the step names (draw_guide, element "${name}") placed from ${goalText}. Paint only this step, then finish_move.\n`;
       const kind = folderStepKind(step);
+      if (kind === 'finish') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: finish the underpainting on the whole picture with paint_finish (the soft areas blended in the underpainting's own paint, the forms restroked from ${goalText}). One call; then look at the canvas and finish_move. No typed strokes and no accents in this step.\n`;
       if (kind === 'accents') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: crisp accents on the whole picture with paint_accents from ${goalText} (lights, glints, darks and lines, in the underpainting's own paint). Paint only this step, with no typed strokes over the underpainting, then finish_move.\n`;
-      if (kind === 'whole') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: ${String(step.done_when ?? '').trim()} Refine what the underpainting has rather than repainting it (paint_accents, Krita's layers and filters), then finish_move.\n`;
+      if (kind === 'whole') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: ${String(step.done_when ?? '').trim()} Refine what the underpainting has rather than repainting it (paint_finish, paint_accents, Krita's layers and filters), then finish_move.\n`;
       return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: the underpainting of the whole picture from ${goalText} (paint_from_reference, all of it onto the whole canvas). Paint only this step. ${UNDERPAINTING_MOVE_NOTE}\n`;
     }
     // An element step is one the artist asked for: it refines the element over the underpainting, judged against the goal.
@@ -1918,7 +1975,7 @@ export class StudioRuntime extends PaintingRuntime {
     // accents in the area (the artist, 2026-10-24); colour splits and selections, materials and typed strokes are refused
     // there unless the artist asks (element-step-rules.ts).
     const area = this.goal.paint_only_here, refused = 'No split_by_color, colour selections (magic wand, colour ranges), materials or typed strokes: the host refuses them in an element step unless the artist asks for them.';
-    if (area) return `\nPROJECT FOLDER MOVE: paint only step ${move.step + 1} of the approved plan, "${name}", the element the artist asked for, inside the Paint only here area (${chipLine(area)}). The default sequence: 1. paint_from_reference of ${goalText}, the whole goal over the whole canvas with its default steps: the underpainting engine at full strength, and only the dabs inside the area are painted; 2. paint_accents from ${goalText}, which works in the area by default. ${refused} Its look also comes from the element reference ${element.id} (${file}). Then finish_move.\n`;
+    if (area) return `\nPROJECT FOLDER MOVE: paint only step ${move.step + 1} of the approved plan, "${name}", the element the artist asked for, inside the Paint only here area (${chipLine(area)}). The default sequence: 1. paint_from_reference of ${goalText}, the whole goal over the whole canvas with its default steps: the underpainting engine at full strength, and only the dabs inside the area are painted; 2. paint_finish, which works in the area by default (its soft parts blended, its forms restroked from the goal); 3. paint_accents from ${goalText}, which works in the area by default. ${refused} Its look also comes from the element reference ${element.id} (${file}). Then finish_move.\n`;
     return `\nPROJECT FOLDER MOVE: paint only step ${move.step + 1} of the approved plan, "${name}", the element the artist asked for, on a layer named "${name}". Its look comes from the element reference ${element.id} (${file}); ${goalText} decides where it sits. The artist chose to paint it without an area: refine it where the underpainting already has it with paint_accents on its area from ${goalText} (or the element's aligned close-up), Krita's layers and filters for its light and colour${guides ? `; over its guide (draw_guide with element "${name}") first` : '; draw a guide only when the artist asks for one'}. ${refused} Then finish_move. When it reads as finished you may propose protecting it (propose_protection).\n`;
   }
   /** Ask when it may be done: the elements the painter offers the artist. The project folder's elements, else the plan's
@@ -2412,7 +2469,7 @@ export class StudioRuntime extends PaintingRuntime {
       if (this.mode === 'autopilot' && !this.cancelRequested && !this.runError && !openForArtist && this.goal.brief && proceed) {
         this.goal.approved_revision = this.goal.revision;
         this.goal.locked_requirements = [...this.goal.brief.requirements]; this.goal.character_records = structuredClone(this.goal.brief.characters ?? []);
-        if (this.underpaintingNext()) await this.goalSharpen.gate({wait:false});   // Autopilot follows the setting: nothing waits for the card
+        if (this.sharpenStepNext()) await this.goalSharpen.gate({wait:false});   // Autopilot follows the setting: nothing waits for the card
         await this.runGoal();
       }
       if (this.runError && this.goal.status !== 'limited') this.goal.status = 'paused';
@@ -2895,7 +2952,8 @@ export class StudioRuntime extends PaintingRuntime {
       if (state && full) this.goal.reference_skills_shown = true;
       const folderMove = this.folderMoveInstructions(move);
       const underpaintingNote = state?.transfer && !folderMove ? '\n' + UNDERPAINTING_MOVE_NOTE + '\n' : '';
-      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + underpaintingNote + folderMove + (move.ask_next ? askWhenDoneNote(move.ask_next.reason, this.layerNeed.area, move.ask_next.elements) : '') + '\nArtist:\n' + text, images);
+      const detailNote = guidesOnly || command.move_kind ? '' : await this.goalDetailNote(String(command.display_text ?? text ?? ''), canvas);
+      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + underpaintingNote + folderMove + detailNote + (move.ask_next ? askWhenDoneNote(move.ask_next.reason, this.layerNeed.area, move.ask_next.elements) : '') + '\nArtist:\n' + text, images);
     } finally {
       this.goal.used_ms += Date.now() - this.goalStartedAt; this.goalStartedAt = undefined;
       const guidesOnly = !move.actions && move.guides > 0;

@@ -2,6 +2,21 @@
 
 <!-- Add your project instructions above or below the Repowise section. Repowise only updates the managed section between markers. -->
 
+## Test in Toska before anything ships (the artist's rule, 2026-10-23)
+
+Unit tests, the plugin suite on a fake Krita, offscreen panel scripts, C++ programs and numpy previews are not a live test.
+On 2026-10-23 every one of them passed while the installed app froze its panel, blocked all clicks with an invisible
+popup, opened settings off-screen, and miscounted plan progress; the artist found each one.
+
+- **Every change that reaches the artist is live-tested in Toska first**: the real app, through the krita MCP server
+  pointed at Toska (`KRITA_URL=http://localhost:5679`, the fork's `krita-mcp/server.py`), never stock Krita (5678).
+- Live tests run on **copies** (never the artist's originals or the `new_moscow` folders), only when Toska is idle, and
+  name every document opened or closed. Cover what the change touches: the panel (clicks, tabs, popups, dialogs, the
+  Now card), a real chat move, Undo/Redo, and the painting result.
+- **Say exactly which tests ran.** Never call something "tested" or "working" when only fakes, offscreen widgets or
+  previews ran; say "not run in Toska yet" instead.
+- If the live test can't run (the MCP server points elsewhere, Toska is busy), say so and hold the install.
+
 ## Build for the general case
 
 The Creative Agent is a distributed plugin. Every feature is for every artist, every painting and every

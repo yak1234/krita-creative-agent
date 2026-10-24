@@ -105,7 +105,7 @@ VIEW_JPEG_QUALITY = 90
 # to see the dab texture the painter was meant to fix.
 VIEW_SIDE = 1568
 # The long side the companion may set instead (view_options view_side; luna-goal-reviewer goal 3, the artist 2026-10-24):
-# what the painter's model actually reads, measured by the companion's resolution probe, up to 2048 by default there.
+# what the painter's model actually reads, measured by the companion's resolution probe, up to 2000 there (Pi shrinks anything larger).
 VIEW_SIDE_RANGE = (512, 4096)
 
 try:
@@ -403,16 +403,19 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             # selecting, or taking ownership of a painting document.
             # refresh=False skips the full recomposite: for a close-up of a canvas just observed,
             # whose revision the caller compares, so a stale projection cannot pass unnoticed.
-            fields(params, ('output_dir', 'document_id', 'region', 'refresh', 'guides'), ('output_dir',))
+            fields(params, ('output_dir', 'document_id', 'region', 'refresh', 'guides', 'jpeg'), ('output_dir',))
             if not isinstance(params.get('refresh', True), bool):
                 raise ValueError('refresh must be boolean')
+            if not isinstance(params.get('jpeg', False), bool):
+                raise ValueError('jpeg must be true or false')
             guides = self._creative_guides_flag(params)
             destination = self._creative_output(request)
             doc = self._creative_document(params.get('document_id'))
             if doc is None:
                 return {'status': 'ok', 'state': 'none', 'message': 'No canvas is open.'}
             return self._creative_observe(doc, {'output': destination, 'layers': set(),
-                'document_id': document_id(doc), 'projection_fresh': not params.get('refresh', True)}, params.get('region'), **guides)
+                'document_id': document_id(doc), 'projection_fresh': not params.get('refresh', True),
+                **({'jpeg_views': True} if params.get('jpeg') else {})}, params.get('region'), **guides)
         if operation == 'paint_only_here':
             # Autopilot's found area (Find it for me on an element step, the companion's adoptFoundArea): the rest of the
             # painting is protected at once, as the panel's Paint only here does, outside the undo history; or cleared when
@@ -2205,7 +2208,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         scale = round(image.width() / (region[2] if region else doc.width()), 3)
         previews = os.path.join(session['output'], '.previews')
         os.makedirs(previews, exist_ok=True)
-        filename = self._creative_save_view(previews, image, region)
+        filename = self._creative_save_view(previews, image, region, jpeg=session.get('jpeg_views', False))
         unguided_path = None
         if unguided is not None and guides:
             unguided_path = self._creative_save_view(previews, self._creative_view_image(doc, unguided, region, scaled_read=False, side=side), region)
@@ -2238,12 +2241,12 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         session['observe_ms'] = parts
         return observation
 
-    def _creative_save_view(self, previews, image, region):
-        """Save a view image in the previews folder: its path."""
+    def _creative_save_view(self, previews, image, region, jpeg=False):
+        """Save a view image in the previews folder: its path. jpeg: a region view as JPEG too (the painter's close-ups)."""
         # The whole-canvas view goes to the model after every action and stays in the chat log:
         # as a 1024-px PNG it was ~1.2 MB per action, as JPEG ~0.2 MB with no difference a model
         # can use. Zoomed crops (texture detail) and canvases with transparency stay PNG.
-        jpeg = not region and not self._creative_has_transparency(image)
+        jpeg = (jpeg or not region) and not self._creative_has_transparency(image)
         filename = os.path.join(previews, 'view-' + uuid.uuid4().hex + ('.jpg' if jpeg else '.png'))
         if not image.save(filename, 'JPEG' if jpeg else 'PNG', VIEW_JPEG_QUALITY if jpeg else -1):
             raise RuntimeError('Could not save the canvas observation')

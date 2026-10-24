@@ -3,18 +3,18 @@
 // The resolution probe (openspec luna-goal-reviewer goal 3, the artist 2026-10-24: "not assumed, measured"). Many vision
 // models shrink a large image before they read it, so a larger canvas view can cost more and show nothing more. The probe
 // draws a picture whose fine detail has a fixed size in pixels (a small digit and a row of small dots in each of five
-// framed boxes), at each of PROBE_SIZES on the long side and as 1:1 crops of the boxes, and asks a model what each box
-// holds. A model that reads the 2048 px picture as well as the 1:1 crops keeps 2048 px; one that misses the detail at
-// 2048 but not at 1536 shrinks the picture somewhere between. recommendSides turns the scores into the painter's view
+// framed boxes), at each of PROBE_SIZES on the long side (1024 to 2560) and as 1:1 crops of the boxes, and asks a model what each box
+// holds. A model that reads the 2048 px picture as well as the 1:1 crops reads 2048 px; one that misses the detail at
+// 2048 but not at 1792 shrinks the picture somewhere between. recommendSides turns the scores into the painter's view
 // side (view-size.ts, at most MAX_VIEW_SIDE) and the side of Luna's goal-comparison crops (goal-comparison.ts).
 // scripts/resolution-probe.ts runs it against a model and records the result; this module only draws, asks and scores.
 import type { Rgba } from './bounded-image.ts';
 
-export const PROBE_SIZES = [1024, 1536, 2048, 2560] as const;
+export const PROBE_SIZES = [1024, 1280, 1536, 1792, 2048, 2560] as const;
 /** The longest crop Luna's goal comparison sends: three images a crop, up to three crops a call. */
 export const MAX_CROP_SIDE = 1536;
-/** The painter's view never grows past this (the proposal: up to 2048 px on the long side). */
-export const PROBE_VIEW_CAP = 2048;
+/** The painter's view never grows past this: Pi shrinks any image over 2000 px a side before it is sent. */
+export const PROBE_VIEW_CAP = 2000;
 /** Pixels in one unit of the detail: a digit is 5 x 7 units, a dot 2 x 2 with 2 between. */
 export const UNIT = 2;
 export const BOX_IDS = ['top_left', 'top_right', 'centre', 'bottom_left', 'bottom_right'] as const;
@@ -90,19 +90,30 @@ export function scoreProbe(questions: ProbeQuestion[], answers: Record<string, s
   return { correct, total: questions.length, accuracy: Math.round(correct / questions.length * 100) / 100 };
 }
 
-/** The sizes a model reads: the largest probed size up to which every size scores within 0.1 of the 1:1 crops (and at
- * least 0.8) and still costs more input tokens than the size below it (when the provider reports them: equal tokens at a
- * larger size mean the model shrank it, so the extra pixels are thrown away, measured live on deepseek-flash 2026-10-24);
- * the view at most PROBE_VIEW_CAP, a crop at most MAX_CROP_SIDE. Null when it misses the crops too (it cannot read this
- * detail at all, so the probe says nothing about size). */
-export function recommendSides(result: { crops: { accuracy: number }; sizes: Record<number, { accuracy: number; input_tokens?: number }> }): { view_side: number; crop_side: number; reads: number } | null {
+export type SizeResult = { accuracy: number; input_tokens?: number; cache_read_tokens?: number; cache_write_tokens?: number; cost?: number };
+
+/** What one size cost the model to read: its input tokens with the cached ones (a provider that caches the image reports
+ * it as cache read or write, Anthropic through OpenRouter as 4 input tokens at every size), or 0 when not reported. */
+export const sizeTokens = (at: SizeResult | undefined): number => (at?.input_tokens ?? 0) + (at?.cache_read_tokens ?? 0) + (at?.cache_write_tokens ?? 0);
+
+/** The sizes a model reads: the largest probed size that scores within 0.1 of the 1:1 crops (and at least 0.8) of those
+ * that still cost more than the size below them: more tokens (input with cached, sizeTokens) when the provider
+ * reports them, else more money. Equal tokens at a larger size mean the model shrank it, so the extra pixels are thrown
+ * away (measured live on deepseek-flash 2026-10-24). The view at most PROBE_VIEW_CAP, a crop at most MAX_CROP_SIDE. Null
+ * when it misses the crops too (it cannot read this detail at all, so the probe says nothing about size). */
+export function recommendSides(result: { crops: { accuracy: number }; sizes: Record<number, SizeResult> }): { view_side: number; crop_side: number; reads: number } | null {
   if (!(result.crops.accuracy >= 0.6)) return null;
   const bar = Math.max(0.8, result.crops.accuracy - 0.1);
-  let reads = 0, tokens = 0;
+  const counted = PROBE_SIZES.some(size => sizeTokens(result.sizes[size]) > 0);
+  const spent = (at: SizeResult | undefined) => counted ? sizeTokens(at) : at?.cost ?? 0;
+  // Sizes are probed until the cost stops growing (the model shrank the picture); of those, the largest that scores the
+  // bar is read. A dip at one size between sizes it reads is noise (deepseek-flash at 1280 in two live runs), not a limit.
+  let reads = 0, before = 0;
   for (const size of PROBE_SIZES) {
-    const at = result.sizes[size], used = at?.input_tokens ?? 0;
-    if ((at?.accuracy ?? 0) < bar || (reads && tokens > 0 && used > 0 && used < tokens * 1.05)) break;
-    reads = size; tokens = used;
+    const at = result.sizes[size], used = spent(at);
+    if (before > 0 && used > 0 && used < before * 1.05) break;
+    if ((at?.accuracy ?? 0) >= bar) reads = size;
+    if (used > 0) before = used;
   }
   const floor = PROBE_SIZES[0];
   return { view_side: Math.min(Math.max(reads, floor), PROBE_VIEW_CAP), crop_side: Math.min(Math.max(reads, floor), MAX_CROP_SIDE), reads };

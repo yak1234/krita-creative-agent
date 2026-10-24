@@ -185,6 +185,32 @@ test('native painting is excluded from the model silence timeout', () => {
   assert.equal(runtime.cancelRequested, false);
 });
 
+test('a history compaction is not model silence: the watch waits for it and restarts after it (eyes-and-history 4)', () => {
+  const events = [];
+  const runtime = new PaintingRuntime({config: {model_idle_timeout_ms: 50}, emit: e => events.push(e)});
+  runtime.busy = true; runtime.activity = 'waiting'; runtime.lastModelActivityAt = 0;
+  runtime.session = {agent: {clearAllQueues() {}, abort() { throw new Error('must not abort while Pi compacts the history'); }}};
+  runtime.onEvent({type: 'compaction_start', reason: 'threshold'});
+  runtime.checkModelWait(Date.now() + 60000);
+  assert.equal(runtime.cancelRequested, false, 'a slow compaction is not a silent model');
+  assert.ok(events.some(e => e.type === 'status' && /summar/i.test(e.message ?? '')), 'the artist sees what it waits for');
+  runtime.onEvent({type: 'compaction_end', reason: 'threshold', result: undefined, aborted: false, willRetry: false});
+  runtime.checkModelWait(Date.now() + 10);
+  assert.equal(runtime.cancelRequested, false, 'the silence watch starts again from the end of the compaction');
+  let aborted = 0;
+  runtime.session = {agent: {clearAllQueues() {}, abort() { aborted++; }}};
+  runtime.checkModelWait(Date.now() + 51);
+  assert.equal(aborted, 1, 'after it, silence is silence again');
+  // At a turn's end the activity is not "waiting": the compaction hands back the one it found (review c).
+  const seen = [];
+  const other = new PaintingRuntime({config: {}, emit: e => seen.push(e)});
+  other.setActivity('tool', 'Looking at the canvas…');
+  other.onEvent({type: 'compaction_start', reason: 'threshold'});
+  other.onEvent({type: 'compaction_end', reason: 'threshold', result: undefined, aborted: false, willRetry: false});
+  assert.equal(other.activity, 'tool');
+  assert.deepEqual(seen.at(-1), {type: 'status', phase: 'tool', message: 'Looking at the canvas…'});
+});
+
 test('provider errors are not overwritten with a ready message', async () => {
   const events = [];
   const runtime = new PaintingRuntime({config: {}, emit: e => events.push(e)});

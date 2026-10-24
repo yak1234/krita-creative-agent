@@ -1,6 +1,6 @@
 {
   "openrouter:openai/gpt-6-luna-decisions": {
-    "view_side": 2048,
+    "view_side": 2000,
     "crop_side": 1536,
     "reads": 2048,
     "measured_at": "2026-10-24T20:10:17.142Z",
@@ -38,33 +38,234 @@
     "view_side": 1536,
     "crop_side": 1536,
     "reads": 1536,
-    "measured_at": "2026-10-24T20:10:46.057Z",
+    "measured_at": "2026-10-24T23:00:40.161Z",
     "probe": {
-      "crops": 0.7,
+      "crops": 1,
       "sizes": {
         "1024": {
           "accuracy": 1,
-          "ms": 1839,
-          "cost": 0.0004503,
-          "input_tokens": 1085
+          "ms": 2027,
+          "cost": 0.000186876,
+          "input_tokens": 189,
+          "cache_read_tokens": 896,
+          "cache_write_tokens": 0
+        },
+        "1280": {
+          "accuracy": 0.6,
+          "ms": 1859,
+          "cost": 0.0005036999999999999,
+          "input_tokens": 1327,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
         },
         "1536": {
           "accuracy": 1,
-          "ms": 2190,
-          "cost": 0.0005829,
-          "input_tokens": 1591
+          "ms": 1930,
+          "cost": 0.000168948,
+          "input_tokens": 183,
+          "cache_read_tokens": 1408,
+          "cache_write_tokens": 0
+        },
+        "1792": {
+          "accuracy": 0.9,
+          "ms": 3252,
+          "cost": 0.0005973,
+          "input_tokens": 1591,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
         },
         "2048": {
-          "accuracy": 0.9,
-          "ms": 2063,
-          "cost": 0.0005829,
-          "input_tokens": 1591
+          "accuracy": 1,
+          "ms": 1756,
+          "cost": 0.000168948,
+          "input_tokens": 183,
+          "cache_read_tokens": 1408,
+          "cache_write_tokens": 0
         },
         "2560": {
-          "accuracy": 0.5,
-          "ms": 6790,
-          "cost": 0.0005829,
-          "input_tokens": 1591
+          "accuracy": 0.6,
+          "ms": 2071,
+          "cost": 0.000183348,
+          "input_tokens": 183,
+          "cache_read_tokens": 1408,
+          "cache_write_tokens": 0
+        }
+      }
+    }
+  },
+  "openrouter:anthropic/claude-haiku-5.5": {
+    "view_side": 2000,
+    "crop_side": 1536,
+    "reads": 2560,
+    "measured_at": "2026-10-24T22:59:10.241Z",
+    "probe": {
+      "crops": 1,
+      "sizes": {
+        "1024": {
+          "accuracy": 1,
+          "ms": 2134,
+          "cost": 0.000273775,
+          "input_tokens": 4,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 1707
+        },
+        "1280": {
+          "accuracy": 1,
+          "ms": 2036,
+          "cost": 0.000345525,
+          "input_tokens": 4,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 2281
+        },
+        "1536": {
+          "accuracy": 1,
+          "ms": 2259,
+          "cost": 0.00043315,
+          "input_tokens": 4,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 2982
+        },
+        "1792": {
+          "accuracy": 1,
+          "ms": 2248,
+          "cost": 0.0005283999999999999,
+          "input_tokens": 4,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 3744
+        },
+        "2048": {
+          "accuracy": 1,
+          "ms": 2511,
+          "cost": 0.0006531499999999999,
+          "input_tokens": 4,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 4742
+        },
+        "2560": {
+          "accuracy": 1,
+          "ms": 4588,
+          "cost": 0.0007369,
+          "input_tokens": 4,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 5412
+        }
+      }
+    }
+  },
+  "openrouter:z-ai/glm-5.3-flash": {
+    "view_side": 1792,
+    "crop_side": 1536,
+    "reads": 1792,
+    "measured_at": "2026-10-24T22:59:57.900Z",
+    "probe": {
+      "crops": 0.8,
+      "sizes": {
+        "1024": {
+          "accuracy": 1,
+          "ms": 2674,
+          "cost": 5.6481200000000004e-05,
+          "input_tokens": 1630,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "1280": {
+          "accuracy": 1,
+          "ms": 22582,
+          "cost": 0.00042186240000000004,
+          "input_tokens": 2204,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "1536": {
+          "accuracy": 1,
+          "ms": 3271,
+          "cost": 0.000116074,
+          "input_tokens": 2904,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "1792": {
+          "accuracy": 0.9,
+          "ms": 3377,
+          "cost": 0.0001147588,
+          "input_tokens": 3666,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "2048": {
+          "accuracy": 0.7,
+          "ms": 3197,
+          "cost": 0.00016876520000000002,
+          "input_tokens": 4664,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "2560": {
+          "accuracy": 0.7,
+          "ms": 2973,
+          "cost": 0.0002214584,
+          "input_tokens": 30,
+          "cache_read_tokens": 6912,
+          "cache_write_tokens": 0
+        }
+      }
+    }
+  },
+  "openrouter:qwen/qwen3.8-flash": {
+    "view_side": 1792,
+    "crop_side": 1536,
+    "reads": 1792,
+    "measured_at": "2026-10-24T23:00:23.126Z",
+    "probe": {
+      "crops": 0.9,
+      "sizes": {
+        "1024": {
+          "accuracy": 1,
+          "ms": 2731,
+          "cost": 0.00025849,
+          "input_tokens": 1388,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "1280": {
+          "accuracy": 1,
+          "ms": 3164,
+          "cost": 0.00031247999999999996,
+          "input_tokens": 1820,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "1536": {
+          "accuracy": 1,
+          "ms": 2724,
+          "cost": 0.00040499,
+          "input_tokens": 2349,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "1792": {
+          "accuracy": 0.8,
+          "ms": 3498,
+          "cost": 0.0004915399999999999,
+          "input_tokens": 2973,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "2048": {
+          "accuracy": 1,
+          "ms": 3746,
+          "cost": 0.00051989,
+          "input_tokens": 3115,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
+        },
+        "2560": {
+          "accuracy": 1,
+          "ms": 4353,
+          "cost": 0.00051989,
+          "input_tokens": 3115,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0
         }
       }
     }
@@ -74,17 +275,5 @@
     "crop_side": 1536,
     "reads": 1536,
     "measured_at": "2026-10-24T22:22:34.007Z"
-  },
-  "openrouter:z-ai/glm-5.3-flash": {
-    "view_side": 1024,
-    "crop_side": 1024,
-    "reads": 1024,
-    "measured_at": "2026-10-24T22:22:59.037Z"
-  },
-  "openrouter:qwen/qwen3.8-flash": {
-    "view_side": 2048,
-    "crop_side": 1536,
-    "reads": 2048,
-    "measured_at": "2026-10-24T22:23:23.185Z"
   }
 }

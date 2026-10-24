@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 // The resolution probe, run for real (openspec luna-goal-reviewer goal 3; src/resolution-probe.ts draws and scores). For
-// each model: one request a probed size (the whole picture at 1024, 1536, 2048 and 2560 px on the long side) and one with
-// the five boxes as 1:1 crops, ten known answers each, so five requests a model. Prints accuracy, latency, tokens and cost
-// per request and the sides recommendSides gives; with --record-to, merges {view_side, crop_side, ...} by model into that
+// each model: one request a probed size (the whole picture at each of PROBE_SIZES on the long side) and one with the five
+// boxes as 1:1 crops, ten known answers each, so seven requests a model. Prints accuracy, latency, tokens (input, cache read,
+// cache write) and cost per request and the sides recommendSides gives; with --record-to, merges {view_side, crop_side, ...} by model into that
 // JSON (the shipped src/model-resolutions.json, or the artist's data folder resolution-probe.json, view-size.ts).
 //   node scripts/resolution-probe.ts --luna                                   the decision model (Decision checks' choice)
 //   node scripts/resolution-probe.ts --painter deepseek/deepseek-flash        a painter model, through Pi's own connection
@@ -22,7 +22,7 @@ import { modelKey } from '../src/view-size.ts';
 import type { DecisionPart, Questions } from '../src/decisions/types.ts';
 
 type Image = { label: string; png: Buffer };
-type Asked = { answers: Record<string, string | null>; ms: number; cost: number; input_tokens: number; error?: string };
+type Asked = { answers: Record<string, string | null>; ms: number; cost: number; input_tokens: number; cache_read_tokens?: number; cache_write_tokens?: number; error?: string };
 type Reader = { key: string; ask(images: Image[], questions: ProbeQuestion[]): Promise<Asked> };
 
 const { values } = parseArgs({ options: { luna: { type: 'boolean' }, 'luna-model': { type: 'string' }, painter: { type: 'string' },
@@ -75,6 +75,7 @@ async function painterReader(route: string, scratch: string): Promise<Reader> {
         const parsed = json ? JSON.parse(json) as Record<string, unknown> : {};
         const answers = Object.fromEntries(questions.map(q => [q.id, parsed[q.id] === undefined || parsed[q.id] === null ? null : String(parsed[q.id]).trim()]));
         return { answers, ms: Date.now() - started, cost: reply.usage?.cost?.total ?? 0, input_tokens: reply.usage?.input ?? 0,
+          cache_read_tokens: reply.usage?.cacheRead ?? 0, cache_write_tokens: reply.usage?.cacheWrite ?? 0,
           ...(reply.stopReason === 'error' ? { error: 'provider_error' } : {}) };
       } catch (error) {
         return { answers: {}, ms: Date.now() - started, cost: 0, input_tokens: 0, error: (error as Error)?.name === 'TimeoutError' ? 'timeout' : 'request_failed' };
@@ -84,13 +85,14 @@ async function painterReader(route: string, scratch: string): Promise<Reader> {
 }
 
 async function probe(reader: Reader, seed: number) {
-  const sizes: Record<number, Score & { ms: number; cost: number; input_tokens: number; error?: string }> = {};
+  const sizes: Record<number, Score & { ms: number; cost: number; input_tokens: number; cache_read_tokens: number; cache_write_tokens: number; error?: string }> = {};
   for (const size of PROBE_SIZES) {
     const p = probeImage({ width: size, height: Math.round(size * 3 / 4), seed: seed + size });
     const questions = probeQuestions(p.boxes);
     const asked = await reader.ask([{ label: `IMAGE (${size} x ${Math.round(size * 3 / 4)} px):`, png: encodeRgba(p.image) }], questions);
-    sizes[size] = { ...scoreProbe(questions, asked.answers), ms: asked.ms, cost: asked.cost, input_tokens: asked.input_tokens, ...(asked.error ? { error: asked.error } : {}) };
-    process.stderr.write(`${reader.key} ${size}px: ${sizes[size].correct}/${sizes[size].total} in ${asked.ms} ms, $${asked.cost.toFixed(5)}, ${asked.input_tokens} input tokens${asked.error ? ' (' + asked.error + ')' : ''}\n`);
+    sizes[size] = { ...scoreProbe(questions, asked.answers), ms: asked.ms, cost: asked.cost, input_tokens: asked.input_tokens,
+      cache_read_tokens: asked.cache_read_tokens ?? 0, cache_write_tokens: asked.cache_write_tokens ?? 0, ...(asked.error ? { error: asked.error } : {}) };
+    process.stderr.write(`${reader.key} ${size}px: ${sizes[size].correct}/${sizes[size].total} in ${asked.ms} ms, $${asked.cost.toFixed(5)}, ${asked.input_tokens} input + ${sizes[size].cache_read_tokens} cache read + ${sizes[size].cache_write_tokens} cache write tokens${asked.error ? ' (' + asked.error + ')' : ''}\n`);
   }
   const p = probeImage({ width: 2560, height: 1920, seed: seed + 1 }), crops = probeCrops(p), questions = probeQuestions(p.boxes, { crops: true });
   const asked = await reader.ask(crops.map((c, i) => ({ label: `CROP ${i + 1}:`, png: encodeRgba(c.image) })), questions);
@@ -128,7 +130,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       const path = values['record-to'];
       let records: Record<string, unknown> = {};
       try { records = JSON.parse(await readFile(path, 'utf8')); } catch { /* a new file */ }
-      for (const r of results) if (!('unreadable' in r)) records[r.key] = { view_side: r.view_side, crop_side: r.crop_side, reads: r.reads, measured_at: r.measured_at };
+      // The scores beside the sides, so a later reader can see why (accuracy, latency, cost and tokens a size).
+      const summary = (r: Awaited<ReturnType<typeof probe>>) => ({ crops: r.crops.accuracy, sizes: Object.fromEntries(Object.entries(r.sizes).map(([size, at]) =>
+        [size, { accuracy: at.accuracy, ms: at.ms, cost: at.cost, input_tokens: at.input_tokens, cache_read_tokens: at.cache_read_tokens, cache_write_tokens: at.cache_write_tokens, ...(at.error ? { error: at.error } : {}) }])) });
+      for (const r of results) if (!('unreadable' in r)) records[r.key] = { view_side: r.view_side, crop_side: r.crop_side, reads: r.reads, measured_at: r.measured_at, probe: summary(r) };
       await writeFile(path + '.tmp', JSON.stringify(records, null, 2) + '\n'); await rename(path + '.tmp', path);
       process.stderr.write(`Recorded in ${path}.\n`);
     }

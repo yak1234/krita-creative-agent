@@ -68,6 +68,66 @@ test('the model never receives host bookkeeping, and long results stay valid JSO
   assert.equal(messages[0].content[1].type,'image','the saved transcript is not changed');
 });
 
+test('an observation over its limit keeps the layers and the revision, never the bare stub (eyes-and-history 6)', async()=>{
+  const {modelResultText}=await import('../src/tools.mjs');
+  // 60 layers with every field the plugin sends, as in a 46-81 layer chat: over the 6000-character limit.
+  const layer=(i,depth=0)=>({id:'{'+String(i).padStart(8,'0')+'-aaaa-bbbb-cccc-dddddddddddd}',name:'Move '+i+' · Kremlin towers, warm light',depth,opacity:1,visible:i%3!==0,editable_by_agent:i!==0,type:'paintlayer'});
+  const observation=(layers,extra={})=>({status:'ok',document_id:'doc-1',name:'New Moscow',width:6000,height:4000,image_path:'/p/view.jpg',path:'/p/view.jpg',
+    revision:'rev-42',content_id:'c',region:null,image_width:1568,image_height:1045,scale:0.261,layers,weight:{level:'ok'},filename:'/p/painting.kra',modified:true,
+    artist_focus:{selected_layers:[]},comic:null,protected_areas:[],...extra});
+  const index=JSON.parse(modelResultText(observation(Array.from({length:60},(_,i)=>layer(i,i%4===0?0:1)))));
+  assert.equal(index.result_truncated,undefined,'no stub');
+  assert.equal(index.revision,'rev-42'); assert.deepEqual([index.width,index.height],[6000,4000]);
+  assert.equal(index.layers.length,60,'every layer, compact');
+  assert.deepEqual(index.layers[0],{id:layer(0).id,name:layer(0).name,hidden:true,locked:true},'id, name, and only the flags that are set');
+  assert.deepEqual(index.layers[1],{id:layer(1).id,name:layer(1).name,depth:1});
+  // So many layers that even the compact index is over: the top level and the counts.
+  const many=JSON.parse(modelResultText(observation(Array.from({length:400},(_,i)=>layer(i,i%20===0?0:1)))));
+  assert.equal(many.revision,'rev-42'); assert.equal(many.layer_count,400); assert.equal(many.top_level_layers,20);
+  assert.equal(many.layers.length,20,'the top-level layers'); assert.ok(many.layers.every(l=>!l.depth));
+  assert.equal(typeof many.hidden_layers,'number');
+  assert.match(many.layers_note,/top-level/);
+  // Whatever else is long, the revision and size survive and the text stays valid JSON within its limit.
+  const long=modelResultText(observation(Array.from({length:4000},(_,i)=>layer(i,0)),{artist_focus:{selected_layers:Array.from({length:500},(_,i)=>({id:'x'+i,name:'y'.repeat(30)}))}}));
+  const parsed=JSON.parse(long);
+  assert.equal(parsed.revision,'rev-42'); assert.deepEqual([parsed.width,parsed.height],[6000,4000]); assert.equal(parsed.layer_count,4000);
+  assert.ok(long.length<=6000+8000+200,'within its limit and the layers\u2019 budget: '+long.length);
+});
+
+test('close-ups count apart: the newest look keeps its view and crops, the look before keeps its view only (review b)', async()=>{
+  const {keepRecentImages}=await import('../src/tools.mjs');
+  const image=n=>({type:'image',data:n,mimeType:'image/jpeg'});
+  const look=(n,crops)=>({role:'toolResult',content:[{type:'text',text:'{}'},image('view'+n),
+    ...Array.from({length:crops},(_,i)=>[{type:'text',text:'CLOSE-UP '+(i+1)+' of the area you work in: canvas [0, 0, 10, 10]'},image('crop'+n+i)]).flat()]});
+  const kept=keepRecentImages([look(1,0),look(2,2),look(3,2)]).map(m=>m.content.filter(p=>p.type==='image').map(p=>p.data));
+  assert.deepEqual(kept,[[],['view2'],['view3','crop30','crop31']]);
+});
+
+test('one layer with a huge name never stalls the layer budget (eyes-and-history review a)',{timeout:5000},async()=>{
+  const {modelResultText}=await import('../src/tools.mjs');
+  const huge=[{id:'a',name:'n'.repeat(20000),depth:0,visible:true,editable_by_agent:true,type:'paintlayer'}];
+  const compact=JSON.parse(modelResultText({status:'ok',layer_id:'a',layers:huge,revision:'r'},{compactLayers:true}));
+  assert.equal(compact.layer_index.length,1); assert.ok(compact.layer_index[0].name.length<300); assert.equal(compact.layer_index[0].id,'a');
+  const observed=JSON.parse(modelResultText({status:'ok',layers:huge,revision:'r',width:10,height:10}));
+  assert.equal(observed.layers.length,1); assert.ok(observed.layers[0].name.length<300); assert.equal(observed.revision,'r');
+});
+
+test('every native result with a revision refreshes the revision the next change expects (eyes-and-history 8)', async()=>{
+  const {nativeExecute}=await import('../src/tools.mjs');
+  const runtime={decisionObservation:{revision:'r1',document_id:'doc',layers:[{id:'a'}]},emit(){},
+    callNative:async()=>({status:'ok',layer_id:'a',revision:'r2'})};
+  await nativeExecute(runtime,'set_layer')('call-1',{layer_id:'a',visible:false});
+  assert.equal(runtime.decisionObservation.revision,'r2','a layer change without an image still moves the revision');
+  assert.deepEqual(runtime.decisionObservation.layers,[{id:'a'}],'the rest of the last observation stays');
+  runtime.callNative=async()=>({status:'ok',brushes:[]});
+  await nativeExecute(runtime,'list_brushes')('call-2',{});
+  assert.equal(runtime.decisionObservation.revision,'r2','a result without a revision changes nothing');
+  // A read-only result reports the CURRENT revision: adopting it would hide the artist's edits since the painter looked.
+  runtime.callNative=async()=>({status:'ok',colors:[],revision:'artist-edit'});
+  await nativeExecute(runtime,'sample_colors')('call-3',{points:[[1,1]]});
+  assert.equal(runtime.decisionObservation.revision,'r2','only a change the painter made moves the expected revision');
+});
+
 test('paint_batch validates every action before painting, runs them in order and returns one image', async()=>{
   const {batchTool}=await import('../src/tools.mjs');
   const {Type}=await import('typebox');

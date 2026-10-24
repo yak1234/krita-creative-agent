@@ -47,6 +47,19 @@ commands = []
 panel.process = types.SimpleNamespace(state=lambda: QProcess.ProcessState.Running, write=lambda data: commands.append(json.loads(data)))
 panel.handle_event({'type':'ready','models':[{'provider':'openrouter','id':'deepseek/deepseek-v4.1-flash','name':'DeepSeek V4.1 Flash','configured':True}], 'bridge':{}, 'build':{'version':'1.0.0','build_id':'test-build'}})
 assert commands[-1] == {'type':'context','action':'inspect'}
+# Nothing chosen yet (a fresh install): OpenRouter's Qwen3 VL is pre-selected when it is connected (the artist,
+# 2026-10-24); a model the artist chose, or one the companion reports as selected, is never overridden.
+_qwen = {'provider':'openrouter','id':'qwen/qwen3-vl-235b-a22b-instruct','name':'Qwen3 VL 235B','configured':True}
+_deepseek = {'provider':'openrouter','id':'deepseek/deepseek-v4.1-flash','name':'DeepSeek V4.1 Flash','configured':True}
+_direct = {'provider':'deepseek','id':'deepseek-flash','name':'DeepSeek Flash','configured':True}
+def _fresh_panel(models, **extra):
+    fresh = module.CreativeAgentDocker(); fresh.process = types.SimpleNamespace(state=lambda: QProcess.ProcessState.Running, write=lambda data: None)
+    fresh.handle_event({'type':'ready','models':models,'bridge':{},'build':{'version':'1.0.0','build_id':'test-build'},**extra})
+    selected = fresh.model.currentData(); fresh.deleteLater(); return selected
+assert _fresh_panel([_direct, _deepseek, _qwen]) == {'provider':'openrouter','id':_qwen['id']}, 'fresh install: Qwen3 VL'
+assert _fresh_panel([_direct, _deepseek, dict(_qwen, configured=False)]) != {'provider':'openrouter','id':_qwen['id']}, 'not connected: today\u2019s choice'
+assert _fresh_panel([_direct, _deepseek, _qwen], selected={'provider':'deepseek','id':'deepseek-flash'}) == {'provider':'deepseek','id':'deepseek-flash'}, 'the artist\u2019s choice stays'
+assert _fresh_panel([_direct, _deepseek]) == {'provider':'deepseek','id':'deepseek-flash'}, 'without it: today\u2019s behaviour (first connected provider)'
 # A generated stand-in canvas, so the test runs on a fresh clone.
 (root / 'output').mkdir(parents=True, exist_ok=True)
 image_path = str(root / 'output' / 'ui-fixture-canvas.png')

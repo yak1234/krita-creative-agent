@@ -6,13 +6,14 @@ import { chatCloseups } from './closeups.ts';
 import {passCheck, progressCheck, moveCheck, seamCheck} from './visual-checks.ts';
 import { executionSettings, thinkingLevel, AUTO_REASONING_NOTE } from './execution-settings.mjs';
 import { panelSchema } from './settings-schema.mjs';
-import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS } from './craft.mjs';
+import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS, mutates } from './craft.mjs';
 import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension } from './extensions.mjs';
 import { transferJobId, underpaintingState, underpaintingRefusal, closedNote, UNDERPAINTING_MOVE_NOTE } from './underpainting-move.ts';
 import { goalSpec } from './goal-spec.ts';
 import { refineToGoalNote } from './refine-goal.ts';
 import { readMessage, messagePolicy } from './message-reading.ts';
 import { resolvedViewSide, resolvedCropSide, modelKey, VIEW_SIDE_TODAY } from './view-size.ts';
+import { addCloseupCrops, callArea, CROP_SIDE as CLOSEUP_SIDE } from './closeup-crops.ts';
 import { comparisonArea, cropPlan, goalSource, compareWithGoal, withContext, CROP_SIDE } from './goal-comparison.ts';
 import { decodeGrid, departureRequested, goalMapping, gridSize, likenessLine, measure, returnToReference } from './goal-likeness.ts';
 import { layerNeedCheck, paintedRole } from './layer-need.mjs';
@@ -141,7 +142,6 @@ export function approvedReviewScope(changes=[]) {
 export const restoredReviewStart = goal => goal?.review_start_index ?? goal?.reviews?.length ?? 0;
 const jsonResult = value => ({ content: [{ type: 'text', text: JSON.stringify(value) }], details: value });
 const MODEL_IMAGE_SIDE = 1568;        // long side; Claude and GPT downscale larger images to about this
-const mutates = op => ['paint_pass','adjust_layer','painting_toolbox','stamp','draw_guide','accents','finish',...CRAFT_OPERATIONS,...COMIC_OPERATIONS].includes(op);
 // Guided trace (guide-tool.ts): offered in Agent and Autopilot painting while the guides setting is on.
 const GUIDE_TOOLS = ['draw_guide','finish_guide'];
 // A guide-only move (the panel's move_kind guides, or an Undo retry of one): guides, looking and finish_move; nothing paints.
@@ -1429,6 +1429,12 @@ export class StudioRuntime extends PaintingRuntime {
       // (they are hidden, so tidying changes nothing the artist sees).
       try { const tidied = await super.callNative('tidy_kept', {stage_id:stage}); saved += tidied?.removed_layers ?? 0; }
       catch (error) { this.emit({type:'action', message:'Kept work was not tidied: '+this.redact(error.message)}); }
+    }
+    // Undone moves' passes stay hidden until the artist keeps a later move: then there is no way back to them either, and
+    // chats reached 46-81 layers (eyes-and-history 7). Only the hidden layers its rejected passes made go (tidy_kept undone); Undo itself removes none.
+    for (const move of (this.goal?.moves ?? []).filter(m=>m.status==='undone' && !m.tidied)) {
+      try { const tidied = await super.callNative('tidy_kept', {stage_id:'move-'+move.number, undone:true}); saved += tidied?.removed_layers ?? 0; move.tidied = true; }
+      catch (error) { this.emit({type:'action', message:'Undone work was not tidied: '+this.redact(error.message)}); break; }
     }
     if (saved) this.emit({type:'action', message:`Merged kept passes: ${saved} fewer layer${saved === 1 ? '' : 's'}.`});
     await this.persist();
@@ -3143,6 +3149,7 @@ export class StudioRuntime extends PaintingRuntime {
         const recovered = await this.recoverUncertain(error);
         if (recovered) error.recovered = recovered; else this.recordUncertain(error);
       }
+      if (error.code==='canvas_changed' && await this.freshAfterChange(error)) throw error;
       if (['revision_changed','canvas_changed','document_changed','wrong_document','manual_edit'].includes(error.code)) {
         this.goal.pause_reason = error.message; this.stop(); this.setActivity('paused',error.message);
       }
@@ -3174,6 +3181,33 @@ export class StudioRuntime extends PaintingRuntime {
       await this.visualPassCheck(result,operationId);
     }
     return result;
+  }
+  /** Close-ups of the area an Agent move works in (Paint only here, else its newest call's area) for a whole-canvas look,
+   * each at most the painter model's measured crop side (eyes-and-history 2). */
+  addCloseups(content, observation) {
+    if (this.mode !== 'agent' || !this.currentMove || !this.study) return 0;
+    const record=this.study.provider ? this.probeRecords?.[modelKey(this.study.provider, this.study.model)] : null, study=this.study;
+    return addCloseupCrops({
+      area:()=>this.paintOnlyArea()?.bounds ?? this.currentMove?.area ?? null,
+      side:()=>Math.min(resolvedCropSide(record, CLOSEUP_SIDE), this.viewSide()),
+      peek:region=>this.bridge.call('peek',{output_dir:study.directory,region,refresh:false,jpeg:true,...(observation.document_id ? {document_id:observation.document_id} : {})},study.id),
+      image:async path=>(await imageContent(study.directory,path)).content,
+    }, observation, content);
+  }
+  /** The painting changed since the painter last looked (the artist painted, or Krita moved the revision): in an Agent move
+   * the painter gets the fresh canvas and a note (error.recovered, as nativeExecute hands it on) instead of the move stopping.
+   * Not for a canvas of another size (the plan needs review), and at most three times a move. True when it recovered. */
+  async freshAfterChange(error) {
+    const move=this.currentMove;
+    if (this.mode!=='agent' || this.executionPhase!=='agent' || !move || this.cancelRequested || !this.study?.bound) return false;
+    if ((move.canvas_changes=(move.canvas_changes ?? 0)+1)>3) return false;
+    let fresh;
+    try { fresh=await super.callNative('observe',{},randomUUID()); } catch { return false; }
+    const before=this.decisionObservation;
+    if (!fresh?.revision || (before && (fresh.width!==before.width || fresh.height!==before.height))) return false;
+    this.lastObservation=fresh; this.decisionObservation=fresh;
+    error.recovered={...fresh,note:'The painting changed since your last look (the artist or Krita changed it), so nothing was painted. This is the canvas now: check it, then paint the step again.'};
+    return true;
   }
   /** Once per chat, the artist hears what makes the painting heavy for Krita and the fixes (painting_weight.py). Never changes it. */
   noteWeight(result) {
@@ -3844,6 +3878,8 @@ export class StudioRuntime extends PaintingRuntime {
   }
   onEvent(event) {
     super.onEvent(event); this.countUsage(event);
+    // Where the Agent move works: the area its newest call names, for the close-ups (closeup-crops.ts).
+    if (event.type === 'tool_execution_start' && this.mode === 'agent' && this.currentMove) { const area=callArea(event.args); if (area) this.currentMove.area=area; }
     if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') this.replyText += event.assistantMessageEvent.delta;
     if (event.type === 'message_end' && event.message.role === 'assistant' && this.replyText) {
       const text = this.replyText; this.replyText = '';

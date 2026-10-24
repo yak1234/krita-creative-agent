@@ -197,6 +197,24 @@ class NativePolicyTests(unittest.TestCase):
             self.assertEqual(sessions[1][1], [0, 0, 64, 64])
             with self.assertRaises(ValueError): peek(refresh='no')
 
+    def test_peek_close_ups_can_be_saved_as_jpeg(self):
+        # eyes-and-history review b: the painter's close-ups are JPEG (a region view is PNG otherwise: multi-MB files).
+        h = Harness(); sessions = []
+        h._creative_observe = lambda doc, session, region=None: sessions.append(session) or {'status': 'ok'}
+        with tempfile.TemporaryDirectory() as root:
+            identifier = str(uuid.uuid4()); destination = pathlib.Path(root) / identifier; destination.mkdir()
+            peek = lambda **extra: h.cmd_creative({'operation': 'peek', 'session_id': identifier, 'params': {'output_dir': str(destination), **extra}})
+            peek(region=[0, 0, 64, 64], refresh=False, jpeg=True); peek(region=[0, 0, 64, 64])
+            self.assertEqual([s.get('jpeg_views', False) for s in sessions], [True, False])
+            with self.assertRaises(ValueError): peek(jpeg='yes')
+        saved = []
+        class Image:
+            def hasAlphaChannel(self): return False
+            def save(self, filename, kind, quality): saved.append((os.path.splitext(filename)[1], kind, quality)); return True
+        module.CreativeTools._creative_save_view(h, '/previews', Image(), [0, 0, 64, 64], jpeg=True)
+        module.CreativeTools._creative_save_view(h, '/previews', Image(), [0, 0, 64, 64])
+        self.assertEqual(saved, [('.jpg', 'JPEG', module.VIEW_JPEG_QUALITY), ('.png', 'PNG', -1)])
+
     def test_successive_saves_use_one_working_file(self):
         h = Harness(); paths = []
         h.cmd_save_native = lambda p: paths.append(p['path']) or {'status': 'ok'}

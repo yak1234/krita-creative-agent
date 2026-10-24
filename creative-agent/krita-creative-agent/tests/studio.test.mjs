@@ -2032,6 +2032,89 @@ test('Keep merges the kept move into one layer before the next move; the setting
  } finally {await h.close();}
 });
 
+test('a painting changed since the last look does not stop an Agent move: the painter gets the fresh canvas (eyes-and-history 8)',{timeout:30000},async()=>{
+ let changed=0; let h;
+ h=await harness(req=>{
+  if(!req.tools.some(t=>t.function.name==='paint_batch')) return {content:'Hello.'};
+  return /HOST MODE/.test(latestUserText(req)) && req.messages.at(-1).role==='user' ? call('paint_pass',{...pass,name:'Towers'}) : call('finish_move',{summary:'Towers'});
+ },async(operation,params)=>{
+  if(operation==='paint_pass' && !changed++) throw Object.assign(new Error('The painting changed since the last observation. Inspect the fresh canvas before continuing.'),{code:'canvas_changed'});
+  if(operation==='observe') {
+   const path=join(h.runtime.study.directory,'fresh.png'); await writeFile(path,png);
+   return {status:'ok',document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,image_path:path,layers:[],revision:'revision-fresh',content_id:'fresh'};
+  }
+ });
+ try {
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  await h.runtime.prompt('Paint the Kremlin towers.');
+  assert.equal(h.calls.filter(c=>c.operation==='paint_pass').length,1);
+  const failed=h.calls.findIndex(c=>c.operation==='paint_pass');
+  assert.ok(h.calls.slice(failed).some(c=>c.operation==='observe'),'re-observed after the change');
+  assert.equal(h.runtime.goal.pause_reason,undefined,'not paused');
+  assert.equal(h.runtime.decisionObservation.revision,'revision-fresh','the next change expects the fresh revision');
+  const told=h.requests.flatMap(r=>r.messages).filter(m=>m.role==='tool').map(m=>JSON.stringify(m.content)).join('\n');
+  assert.match(told,/changed since your last look/,'the painter hears why');
+  assert.ok(h.runtime.goal.moves.at(-1).finished,'the move went on to its end');
+ } finally {await h.close();}
+});
+
+test('Keep also removes the hidden passes of earlier undone moves, once (eyes-and-history 7)',{timeout:30000},async()=>{
+ let painted=0; let h;
+ h=await harness(req=>{
+  if(!req.tools.some(t=>t.function.name==='paint_batch')) return {content:'Hello.'};
+  return /HOST MODE/.test(latestUserText(req)) && req.messages.at(-1).role==='user' ? call('paint_pass',{...pass,name:'Towers '+(++painted)}) : call('finish_move',{summary:'Towers'});
+ },async(operation,params,_study,id)=>{
+  const dir=h.runtime.study.directory;
+  if(operation==='merge_passes') return {status:'ok',merged_layers:0,remaining_runs:0,passes:[]};
+  if(operation==='tidy_kept') return {status:'ok',removed_layers:1};
+  if(operation!=='paint_pass') return undefined;
+  await writeFile(join(dir,'view.png'),png);
+  return {status:'ok',document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,image_path:join(dir,'view.png'),layers:[],revision:'r-'+id,content_id:'c-'+id,passes:[]};
+ });
+ try {
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  await h.runtime.prompt('Paint the Kremlin towers.');
+  await h.runtime.moveAction({action:'undo',move:1});
+  assert.equal(h.runtime.goal.moves[0].status,'undone');
+  assert.ok(!h.calls.some(c=>c.operation==='tidy_kept'),'Undo itself removes nothing: the artist may still look back');
+  const retry=h.runtime.goal.moves.at(-1).number;
+  await h.runtime.moveAction({action:'keep',move:retry});
+  const tidied=h.calls.filter(c=>c.operation==='tidy_kept').map(c=>c.params.stage_id);
+  assert.deepEqual(tidied.sort(),['move-1','move-'+retry].sort(),'the kept move and the undone one before it');
+  assert.ok(h.runtime.goal.moves[0].tidied,'recorded, so it is not tidied again');
+  assert.equal(h.calls.find(c=>c.operation==='tidy_kept' && c.params.stage_id==='move-1').params.undone,true,'only the layers its rejected passes made');
+  assert.equal(h.calls.find(c=>c.operation==='tidy_kept' && c.params.stage_id==='move-'+retry).params.undone,undefined);
+  const next=h.runtime.goal.moves.at(-1).number;
+  await h.runtime.moveAction({action:'keep',move:next});
+  assert.equal(h.calls.filter(c=>c.operation==='tidy_kept' && c.params.stage_id==='move-1').length,1,'once');
+ } finally {await h.close();}
+});
+
+test('an Agent move working in an area sees close-ups of it with each whole-canvas look (eyes-and-history 2)',{timeout:30000},async()=>{
+ let h;
+ h=await harness(req=>{
+  if(!req.tools.some(t=>t.function.name==='paint_batch')) return {content:'Hello.'};
+  const last=req.messages.at(-1), tools=req.messages.filter(m=>m.role==='tool').length;
+  if(/HOST MODE/.test(latestUserText(req)) && last.role==='user') return call('paint_pass',{...pass,name:'Towers',region:[3000,1000,800,600]});
+  return tools<2 ? call('observe_canvas',{}) : call('finish_move',{summary:'Towers'});
+ },async(operation,params)=>{
+  const dir=h.runtime.study.directory;
+  if(!['paint_pass','observe','peek'].includes(operation) || operation==='peek' && !params.region) return undefined;
+  const path=join(dir,operation+'.png'); await writeFile(path,png);
+  return {status:'ok',document_id:'doc',name:'Untitled',filename:'',modified:true,width:6000,height:4000,image_path:path,layers:[],revision:'r-big',content_id:'c',passes:[],
+   ...(operation==='peek'?{region:params.region,scale:1}:{})};
+ });
+ try {
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  await h.runtime.prompt('Paint the Kremlin towers.');
+  const peeks=h.calls.filter(c=>c.operation==='peek' && c.params.region);
+  assert.deepEqual(peeks.map(c=>c.params.region),[[3000,1000,800,600]],'one crop of where the move painted');
+  assert.ok(peeks.every(c=>c.params.jpeg===true),'saved as JPEG, not a multi-MB PNG');
+  const told=h.requests.flatMap(r=>r.messages).filter(m=>m.role==='user' || m.role==='tool').map(m=>JSON.stringify(m.content)).join('\n');
+  assert.match(told,/CLOSE-UP 1 of the area you work in: canvas \[3000, 1000, 800, 600\]/);
+ } finally {await h.close();}
+});
+
 test('a Subject move that reaches its limit stops for the artist and says so',{timeout:30000},async()=>{
  let painterCalls=0; let h;
  h=await harness(req=>{
@@ -2584,7 +2667,7 @@ test('the canvas view size: Auto is the painter model’s probed side, else toda
   assert.equal(sides().at(-1),1568,'not measured: today’s size');
   h.runtime.probeRecords={[`${h.runtime.study.provider}:${h.runtime.study.model}`]:{view_side:2048,crop_side:1024},'openrouter:openai/gpt-6-luna-decisions':{crop_side:1536}};
   await h.runtime.syncViewOptions();
-  assert.equal(sides().at(-1),2048,'the painter model reads 2048 px');
+  assert.equal(sides().at(-1),2000,'the painter model reads 2048 px, but Pi shrinks past 2000');
   assert.equal(h.runtime.comparisonCropSide(),1536,'Luna’s crops: the decision model’s own measured side');
   await h.runtime.setExecutionSettings({view_size:1024});
   assert.equal(sides().at(-1),1024,'the artist’s choice');

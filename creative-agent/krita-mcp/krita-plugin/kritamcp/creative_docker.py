@@ -61,6 +61,9 @@ def canvas_details(canvas):
     return details
 
 
+# The painter pre-selected when the artist has chosen none yet and it is connected.
+DEFAULT_PAINTER = ('openrouter', 'qwen/qwen3-vl-235b-a22b-instruct')
+
 def provider_name(identifier):
     return {'openrouter': 'OpenRouter', 'opencode-go': 'OpenCode Go', 'opencode': 'OpenCode',
             'openai-codex': 'OpenAI Codex', 'openai': 'OpenAI', 'deepseek': 'DeepSeek',
@@ -2968,6 +2971,10 @@ class CreativeAgentDocker(DockWidget):
             self.models = event['models']
             self.providers = event.get('providers') or []
             selected = self.accepted_model if self.study_active else event.get('selected') or self.model.currentData()
+            # Nothing chosen yet (a fresh install): the default painter when it is connected (the artist, 2026-10-24).
+            if not selected and not self.accepted_model:
+                selected = next(({'provider': m['provider'], 'id': m['id']} for m in self.models if (m['provider'], m['id']) == DEFAULT_PAINTER
+                                 and m.get('configured') and m.get('interactive', True)), None)
             provider = (selected or {}).get('provider') or self.provider_filter.currentData()
             if not provider:
                 provider = next((m['provider'] for m in self.models if m.get('configured') and m.get('interactive', True)), None)

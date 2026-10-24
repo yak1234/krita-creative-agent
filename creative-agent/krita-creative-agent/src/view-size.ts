@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Sharper eyes (openspec luna-goal-reviewer goal 3, the artist 2026-10-24): the painter's canvas view may grow from the
-// plugin's VIEW_SIDE (1568 px on the long side) to 2048 px, and Luna's goal-comparison crops to the size Luna reads 1:1,
+// plugin's VIEW_SIDE (1568 px on the long side) to 2000 px (Pi's image resize shrinks anything larger before it is sent), and Luna's goal-comparison crops to the size Luna reads 1:1,
 // but only as far as each model actually reads (the resolution probe, resolution-probe.ts): a larger view is not sent
 // where the model would shrink it anyway. The execution setting view_size (settings-schema.mjs) is Auto by default: the
 // painter model's measured side, else today's size; or a size the artist chooses. The measured sides come from
 // model-resolutions.json (shipped, from probes run with scripts/resolution-probe.ts) and the artist's own probe results
 // in the data folder (resolution-probe.json), which win. The plugin is told through view_options view_side.
 export const VIEW_SIDE_TODAY = 1568;
-export const MAX_VIEW_SIDE = 2048;
+export const MAX_VIEW_SIDE = 2000;
 export type ProbeRecord = { view_side?: number; crop_side?: number; reads?: number; measured_at?: string };
 export type ProbeRecords = Record<string, ProbeRecord>;
 

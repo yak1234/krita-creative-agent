@@ -318,12 +318,24 @@ class NativeCraft:
         replaced. Keep means there is no way back to them. Only the agent's own hidden layers; their history entries
         are marked tidied. Not a canvas change (they are hidden), so no pass; the next checkpoint saves it. Like _native_tidy it
         removes hidden layers and writes no pixels, so protection does not apply."""
-        fields(params, ('stage_id',), ('stage_id',))
+        fields(params, ('stage_id', 'undone'), ('stage_id',))
         stage = text(params['stage_id'], 'stage_id', 100)
+        undone = params.get('undone', False)
+        if not isinstance(undone, bool):
+            raise ValueError('undone must be true or false')
         passes = [e for e in session.get('passes', []) if e.get('stage_id') == stage]
-        # Never a guide: a rejected move's guide stays hidden for the artist, as a finished one does (guide_craft.py).
-        candidates = {e['layer_id'] for e in passes if e.get('rejected') and e.get('layer_id') and e.get('kind') != 'guide'}
-        candidates |= {e['source_layer_id'] for e in passes if e.get('source_layer_id') and not e.get('rejected')}
+        if undone:
+            # An undone move, tidied when a later move is kept (eyes-and-history 7): only the layers its rejected passes
+            # made themselves. A set_layer, adjust_layer, continued pass or guide carries a layer that is not its own, and
+            # a layer another stage's pass still uses stays.
+            used = {e.get('layer_id') for e in session.get('passes', []) if not e.get('rejected')}
+            candidates = {e['layer_id'] for e in passes if e.get('rejected') and e.get('layer_id') and e.get('kind') not in ('guide', 'adjust_layer', 'set_layer')
+                          and self._creative_new_contribution(e) and not e.get('continuation_of')}
+            candidates -= used | {e['layer_id'] for e in passes if e.get('layer_id') and (e.get('kind') in ('guide', 'adjust_layer', 'set_layer') or e.get('continuation_of'))}
+        else:
+            # Never a guide: a rejected move's guide stays hidden for the artist, as a finished one does (guide_craft.py).
+            candidates = {e['layer_id'] for e in passes if e.get('rejected') and e.get('layer_id') and e.get('kind') != 'guide'}
+            candidates |= {e['source_layer_id'] for e in passes if e.get('source_layer_id') and not e.get('rejected')}
         removed = []
         for identifier in sorted(candidates):
             if identifier not in session['layers']:

@@ -5,7 +5,10 @@ export const DEFAULT_DECISIONS = Object.freeze({endpoint:'openrouter',model:'ope
 // Defaults and validation come from the declarations in settings-schema.mjs; decisions keeps its own.
 export const DEFAULT_EXECUTION_SETTINGS = Object.freeze({ ...SETTING_DEFAULTS, decisions: DEFAULT_DECISIONS });
 export function executionSettings(value={}) {
+  /** @type {Record<string, any>} */
   const settings={...DEFAULT_EXECUTION_SETTINGS,...value};
+  // 2048 px was a choice until Pi's image resize (2000 px a side at most) was found to shrink it: a saved 2048 is 2000.
+  if (settings.view_size===2048) settings.view_size=2000;
   // Only declared keys survive, so a setting an older build saved is dropped.
   const result=Object.fromEntries(SETTINGS.map(setting=>[setting.key,validSetting(setting,settings[setting.key])]));
   const decisions={...DEFAULT_DECISIONS,...(settings.decisions ?? {})};

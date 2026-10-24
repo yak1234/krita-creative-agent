@@ -7,6 +7,7 @@ import { basename, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { containedFile, imageContent, imageInfo } from './files.mjs';
 import { paintingTools, resultContent, keepRecentImages } from './tools.mjs';
+import { trimOldToolResults } from './history-trim.ts';
 import { PAINTING_INSTRUCTIONS, studyContext } from './prompt.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS } from './craft.mjs';
 import { BUILD_INFO, PROTOCOL_VERSION } from './build-info.mjs';
@@ -294,9 +295,10 @@ export class PaintingRuntime {
         return setModel(next, options);
       };
       this.session.agent.toolExecution = 'sequential';
-      // Send only the newest canvas images to the model; Pi's own transform runs first.
+      // Send only the newest canvas images to the model, and older tool results as one line (history-trim.ts); Pi's own
+      // transform runs first.
       const transform = this.session.agent.transformContext;
-      this.session.agent.transformContext = async (messages, signal) => keepRecentImages(transform ? await transform(messages, signal) : messages);
+      this.session.agent.transformContext = async (messages, signal) => keepRecentImages(trimOldToolResults(transform ? await transform(messages, signal) : messages));
       stopAfterTurn(this.session.agent, () => this.turns, turns => this.cancelRequested || this.faulted || turns >= 24);
       this.session.subscribe(event => this.onEvent(event));
       this.untrace?.(); this.untrace = hooks(this).traceSession?.(this.session, 'painter');
@@ -356,7 +358,7 @@ export class PaintingRuntime {
     } finally { this.busy = false; this.emit({ type: 'busy', busy: false }); }
   }
   setActivity(phase, message) {
-    this.activity = phase;
+    this.activity = phase; this.activityMessage = message;
     this.emit({ type: 'status', phase, message });
   }
   async callNative(operation, params = {}, operationId) {
@@ -381,7 +383,8 @@ export class PaintingRuntime {
     finally { closed = true; clearInterval(timer); }
   }
   checkModelWait(now = Date.now()) {
-    if (!this.busy || this.cancelRequested || !['waiting', 'thinking', 'replying', 'planning'].includes(this.activity)) return;
+    // Pi compacting the history is not a silent model: a slow summary aborted moves (eyes-and-history 4).
+    if (!this.busy || this.cancelRequested || this.compacting || !['waiting', 'thinking', 'replying', 'planning'].includes(this.activity)) return;
     if (now - this.lastModelActivityAt >= this.modelIdleTimeoutMs) {
       this.runError = 'The model stopped responding for ' + Math.round(this.modelIdleTimeoutMs / 1000) + ' seconds. The run is paused. Send a message to try again.';
       this.stop();
@@ -401,6 +404,16 @@ export class PaintingRuntime {
       this.setActivity('retrying','Temporary model connection problem. Retrying automatically ('+event.attempt+'/'+event.maxAttempts+')…');
     }
     if (event.type === 'auto_retry_end' && event.success) this.runError = undefined;
+    if (event.type === 'compaction_start') {
+      this.compacting = true; this.beforeCompaction = { phase: this.activity, message: this.activityMessage };
+      if (!this.cancelRequested) this.setActivity('compacting', 'Summarising the conversation so far…');
+    }
+    if (event.type === 'compaction_end') {
+      this.compacting = false; this.lastModelActivityAt = Date.now();
+      // Back to what it was doing (a compaction at a turn's end is not a wait for the model).
+      const before = this.beforeCompaction; this.beforeCompaction = undefined;
+      if (!this.cancelRequested && this.activity === 'compacting') this.setActivity(before?.phase ?? 'waiting', before?.message ?? 'Waiting for the model…');
+    }
     if (event.type === 'turn_start' || (event.type === 'message_start' && event.message.role === 'assistant')) {
       this.lastModelActivityAt = Date.now();
       if (!this.cancelRequested) this.setActivity('waiting', 'Waiting for the model…');
@@ -441,7 +454,7 @@ export class PaintingRuntime {
   runDeadlineMs() { return 10 * 60 * 1000; }
   async runPrompt(prompt, images = []) {
     this.turns = 0;
-    this.runError = undefined;
+    this.runError = undefined; this.compacting = false;
     this.lastModelActivityAt = Date.now();
     this.setActivity('waiting', 'Waiting for the model…');
     if (this.cancelRequested) { this.emit({ type: 'status', message: 'Paused before the next model request.' }); return; }

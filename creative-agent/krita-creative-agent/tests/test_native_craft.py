@@ -801,6 +801,29 @@ class TidyKeptTests(region_tests.RegionSetup, unittest.TestCase):
         again = self.h.cmd_creative({'operation': 'tidy_kept', 'session_id': 'session', 'params': {'stage_id': 'move-1'}})
         self.assertEqual(again['removed_layers'], 0, 'nothing twice')
 
+    def test_an_undone_move_loses_only_the_layers_its_rejected_passes_made(self):
+        # eyes-and-history 7: Keep tidies earlier undone moves (undone: true). Their passes may carry an existing layer's
+        # id (set_layer, adjust_layer, a continued paint pass, a guide): that layer is not theirs to remove.
+        run(self.h, 'create_layer', {'name': 'Clouds', 'type': 'paint', 'stage_id': 'move-1'}, 'clouds')
+        clouds = self.h._creative_session['passes'][-1]['layer_id']
+        run(self.h, 'create_layer', {'name': 'Wash', 'type': 'paint', 'stage_id': 'move-2'}, 'wash')
+        wash = self.h._creative_session['passes'][-1]['layer_id']
+        run(self.h, 'create_layer', {'name': 'Shared', 'type': 'paint', 'stage_id': 'move-2'}, 'shared')
+        shared = self.h._creative_session['passes'][-1]['layer_id']
+        run(self.h, 'review_pass', {'pass_id': 'wash', 'action': 'reject'}, 'reject-wash')
+        run(self.h, 'review_pass', {'pass_id': 'shared', 'action': 'reject'}, 'reject-shared')
+        passes = self.h._creative_session['passes']
+        passes += [{'id': 'hide', 'kind': 'set_layer', 'layer_id': clouds, 'stage_id': 'move-2', 'rejected': True},
+                   {'id': 'more', 'kind': 'paint_pass', 'layer_id': clouds, 'continuation_of': clouds, 'stage_id': 'move-2', 'rejected': True},
+                   {'id': 'kept-later', 'kind': 'paint_pass', 'layer_id': shared, 'continuation_of': shared, 'stage_id': 'move-3'}]
+        self.h._creative_node(self.h.doc, clouds).setVisible(False)
+        result = self.h.cmd_creative({'operation': 'tidy_kept', 'session_id': 'session', 'params': {'stage_id': 'move-2', 'undone': True}})
+        self.assertEqual(result['removed_layers'], 1)
+        with self.assertRaises(ValueError):
+            self.h._creative_node(self.h.doc, wash)
+        self.h._creative_node(self.h.doc, clouds)      # an earlier move's layer the undone passes only touched
+        self.h._creative_node(self.h.doc, shared)      # still used by a pass of another stage
+
     def test_another_stage_and_the_artists_layers_are_left_alone(self):
         figure = self.artist_layer(); figure.shown = False
         run(self.h, 'create_layer', {'name': 'Other', 'type': 'paint', 'stage_id': 'move-2'}, 'other')

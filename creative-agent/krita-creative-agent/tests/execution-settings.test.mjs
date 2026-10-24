@@ -72,13 +72,16 @@ test('Sharpen small goal images: Ask by default, Always or Never; one schema ent
  assert.match(field.tooltip,/nothing is uploaded/i);
 });
 
-test('canvas view size (luna-goal-reviewer goal 3): Auto by default, or 1024, 1568 or 2048 px', async () => {
+test('canvas view size (luna-goal-reviewer goal 3, eyes-and-history 1): Auto by default, or 1024, 1568 or 2000 px', async () => {
  const { panelSchema } = await import('../src/settings-schema.mjs');
  assert.equal(executionSettings().view_size, 'auto');
- assert.equal(executionSettings({view_size:2048}).view_size, 2048);
- assert.throws(() => executionSettings({view_size:'2048'}), /canvas view size/);
+ assert.equal(executionSettings({view_size:2000}).view_size, 2000);
+ // Pi shrinks any image over 2000 px a side, so 2048 was never seen: a saved 2048 becomes 2000.
+ assert.equal(executionSettings({view_size:2048}).view_size, 2000);
+ assert.throws(() => executionSettings({view_size:'2000'}), /canvas view size/);
  const field = panelSchema().find(f => f.key === 'view_size');
- assert.deepEqual(field.options.map(o => o.value), ['auto', 1024, 1568, 2048]);
+ assert.deepEqual(field.options.map(o => o.value), ['auto', 1024, 1568, 2000]);
+ assert.doesNotMatch(field.tooltip, /2048/);
 });
 
 // A planner model (plan-from-request goal 4, the artist 2026-10-24): plan turns may use another model than the painter.

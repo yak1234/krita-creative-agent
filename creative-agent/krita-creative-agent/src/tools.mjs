@@ -15,7 +15,7 @@ import { canvasShape, checkPassLimits, passShape, shapeReport, shapeSchema, shap
 import { recipeTool } from './recipe-tool.mjs';
 import { contourTool } from './contour-tool.mjs';
 import { brushCards } from './brush-catalog.mjs';
-import { COMIC_OPERATIONS, CRAFT_OPERATIONS } from './craft.mjs';
+import { COMIC_OPERATIONS, CRAFT_OPERATIONS, mutates } from './craft.mjs';
 import { assetTools } from './assets.mjs';
 import { skillReadTool, SKILLS_DIR } from './skills.mjs';
 import { toolCatalogue, toolHelp, toolboxIndex, toolboxHelp } from './tool-catalogue.ts';
@@ -88,17 +88,45 @@ export function modelResultText(result, {compactLayers=false,focusLayerIds=[],li
   // The layer index lets the model address any layer, so it has its own, larger budget;
   // past that, the newest layers are kept. Everything else shares `limit`.
   let index=model.layer_index;
-  while (index && JSON.stringify(index).length>LAYER_INDEX_LIMIT) { index=index.slice(-Math.floor(index.length*0.75)); model.layer_index_truncated=true; }
+  if (index && JSON.stringify(index).length>LAYER_INDEX_LIMIT) { index=newestFitting(index); model.layer_index_truncated=true; }
   // The artist's features likewise (an observation's name and protected flag per feature): a budget of their own,
   // protected ones first, so many features never crowd out the rest of the result.
   let features=model.features;
   while (Array.isArray(features) && JSON.stringify(features).length>FEATURES_LIMIT) { features=features.slice(0,Math.floor(features.length*0.75)); model.features_truncated=true; }
   const size=value=>JSON.stringify({...value,layer_index:undefined,features:undefined}).length;
+  // An observation's full layer list over budget: a compact list with the layer index's budget, never no layers at all
+  // (40 times in 7 chats the painter lost every layer and the revision to the stub below; eyes-and-history 6).
+  let layers;
+  if (size(model)>limit && Array.isArray(model.layers)) { const compact=compactLayerList(model.layers); layers=compact.layers; model={...model,layers:undefined,...compact.counts}; }
   // Over budget: shorten the longest string fields, never emitting invalid JSON.
   for (let cap=1200; size(model)>limit && cap>=60; cap=Math.floor(cap/2))
     model=Object.fromEntries(Object.entries(model).map(([key,value])=>[key,typeof value==='string' && value.length>cap ? value.slice(0,cap)+'…' : value]));
-  if (size(model)>limit) model={status:model.status,error:model.error,error_code:model.error_code,layer_id:model.layer_id,layer_count:model.layer_count,result_truncated:'Observe the canvas for details.'};
-  return JSON.stringify({...model,...(index?{layer_index:index}:{}),...(features?{features}:{})});
+  if (size(model)>limit) model={...Object.fromEntries(KEPT.map(key=>[key,model[key]])),result_truncated:layers ? 'Some details were left out; the layers and the revision are here.' : 'Observe the canvas for details.'};
+  return JSON.stringify({...model,...(layers?{layers}:{}),...(index?{layer_index:index}:{}),...(features?{features}:{})});
+}
+// What a result over its limit always keeps (with its compact layers): what the painter needs to address the canvas.
+const KEPT=['status','error','error_code','layer_id','layer_count','top_level_layers','hidden_layers','layers_note','layers_truncated',
+  'revision','width','height','image_width','image_height','scale','region','name'];
+/** An observation's layers in the layer index's budget: each as id and name with only the flags that are set (depth,
+ * hidden, locked, group); past the budget the top-level layers with counts; past that the newest top-level ones. */
+function compactLayerList(all) {
+  const compact=layer=>({id:layer.id,name:layer.name,...(layer.depth?{depth:layer.depth}:{}),...(layer.visible===false?{hidden:true}:{}),
+    ...(layer.editable_by_agent===false?{locked:true}:{}),...(layer.type==='grouplayer'?{group:true}:{})});
+  const fits=list=>JSON.stringify(list).length<=LAYER_INDEX_LIMIT;
+  const counts={layer_count:all.length,hidden_layers:all.filter(l=>l.visible===false).length};
+  let layers=all.map(compact);
+  if (fits(layers)) return {layers,counts};
+  layers=layers.filter(l=>!l.depth);
+  const top={...counts,top_level_layers:layers.length,layers_note:'Too many layers to list: these are the top-level layers. Observe again after tidying, or name a layer to work on.'};
+  if (fits(layers)) return {layers,counts:top};
+  return {layers:newestFitting(layers),counts:{...top,layers_truncated:true}};
+}
+/** The newest layer entries that fit the layer index's budget: always progress, down to one entry with its name cut. */
+function newestFitting(list) {
+  const fits=entries=>JSON.stringify(entries).length<=LAYER_INDEX_LIMIT;
+  while (list.length>1 && !fits(list)) list=list.slice(-Math.max(1,Math.floor(list.length*0.75)));
+  if (!fits(list)) list=list.map(layer=>({...layer,name:String(layer.name ?? '').slice(0,200)+'…'}));
+  return fits(list) ? list : [];
 }
 export async function resultContent(runtime, result, {compactLayers=false,focusLayerIds=[],limit=undefined}={}) {
   /** @type {any[]} */
@@ -139,7 +167,13 @@ export function nativeExecute(runtime, operation) {
         // The capability manifest is the answer itself, not bookkeeping: it gets its own budget.
         const response = await resultContent(runtime, result, {compactLayers:operation!=='observe',
           focusLayerIds:[params.layer_id,params.source_layer_id], limit:operation==='capabilities' ? (params.full ? 40000 : 6000) : undefined});
+        // A whole-canvas look in an area the move works in also carries close-ups of it (closeup-crops.ts, studio.mjs).
+        if (operation === 'observe' && !params.region && result.image_path) await runtime.addCloseups?.(response.content, result);
         if (result.image_path) runtime.decisionObservation = result;
+        // A change without an image (a layer setting) still moves the canvas revision: the next change expects the new one,
+        // or the plugin refuses it as "the painting changed" (eyes-and-history 8). Only the painter's own changes: a
+        // read-only result reports the current revision, which would hide the artist's edits from that check.
+        else if (mutates(operation) && typeof result?.revision === 'string' && runtime.decisionObservation) runtime.decisionObservation = { ...runtime.decisionObservation, revision: result.revision };
         return response;
       } catch (error) {
         // Recovered in an active Agent run: the painter gets the fresh canvas and continues.
@@ -525,13 +559,19 @@ export const batchPrefix = id => 'batch-' + createHash('sha256').update(String(i
 // Only the newest canvas images stay in what the model is sent; older tool-result
 // images become a short note. The saved transcript keeps everything.
 export function keepRecentImages(messages, keep=2) {
-  let seen=0;
+  // Close-ups (an image after a "CLOSE-UP" label, closeup-crops.ts) count apart: only the newest look keeps them, and they
+  // never push out the look before's view.
+  const crop=(content,i)=>content[i]?.type==='image' && content[i-1]?.type==='text' && String(content[i-1].text).startsWith('CLOSE-UP ');
+  let seen=0, newest=true;
   const out=[...messages];
   for (let i=out.length-1;i>=0;i--) {
     const m=out[i];
     if (m?.role!=='toolResult' || !Array.isArray(m.content) || !m.content.some(p=>p.type==='image')) continue;
-    if (seen<keep) { seen+=m.content.filter(p=>p.type==='image').length; continue; }
-    out[i]={...m,content:m.content.map(p=>p.type==='image'?{type:'text',text:'[Earlier canvas image omitted; a newer canvas image follows.]'}:p)};
+    const keepViews=seen<keep, keepCrops=newest;
+    seen+=m.content.filter((p,k)=>p.type==='image' && !crop(m.content,k)).length; newest=false;
+    if (keepViews && keepCrops) continue;
+    out[i]={...m,content:m.content.map((p,k)=>p.type!=='image' || (keepViews && !crop(m.content,k)) ? p
+      : {type:'text',text:crop(m.content,k) ? '[Earlier close-up omitted.]' : '[Earlier canvas image omitted; a newer canvas image follows.]'})};
   }
   return out;
 }

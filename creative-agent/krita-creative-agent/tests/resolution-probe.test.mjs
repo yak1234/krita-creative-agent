@@ -59,24 +59,40 @@ test('questions: a digit and a dot count a box, as choices; scored against the k
 });
 
 test('the recommended sizes: the largest probed size the model reads as well as the 1:1 crops, the view capped', () => {
-  assert.deepEqual(PROBE_SIZES, [1024, 1536, 2048, 2560]);
+  assert.deepEqual(PROBE_SIZES, [1024, 1280, 1536, 1792, 2048, 2560]);
   const at = (accuracies, crops = 1) => ({ crops: { accuracy: crops }, sizes: Object.fromEntries(PROBE_SIZES.map((s, i) => [s, { accuracy: accuracies[i] }])) });
-  assert.deepEqual(recommendSides(at([1, 1, 0.5, 0.2])), { view_side: 1536, crop_side: 1536, reads: 1536 });
-  assert.deepEqual(recommendSides(at([1, 1, 1, 1])), { view_side: 2048, crop_side: 1536, reads: 2560 }, 'the view stops at 2048, a crop at 1536');
-  assert.deepEqual(recommendSides(at([0.9, 0.5, 0.3, 0.1])), { view_side: 1024, crop_side: 1024, reads: 1024 });
-  assert.equal(recommendSides(at([0.2, 0.1, 0.1, 0.1], 0.3)), null, 'the crops not read either: the probe says nothing');
+  const fill = (result, key, values) => { values.forEach((v, i) => { result.sizes[PROBE_SIZES[i]][key] = v; }); return result; };
+  assert.deepEqual(recommendSides(at([1, 1, 1, 0.9, 0.5, 0.2])), { view_side: 1792, crop_side: 1536, reads: 1792 });
+  assert.deepEqual(recommendSides(at([1, 1, 1, 1, 1, 1])), { view_side: 2000, crop_side: 1536, reads: 2560 }, 'the view stops at 2000 (Pi shrinks past it), a crop at 1536');
+  assert.deepEqual(recommendSides(at([0.9, 0.5, 0.3, 0.1, 0.1, 0.1])), { view_side: 1024, crop_side: 1024, reads: 1024 });
+  assert.deepEqual(recommendSides(at([1, 1, 0.5, 0.3, 0.1, 0.1])), { view_side: 1280, crop_side: 1280, reads: 1280 });
+  assert.equal(recommendSides(at([0.2, 0.1, 0.1, 0.1, 0.1, 0.1], 0.3)), null, 'the crops not read either: the probe says nothing');
   // Input tokens that stop growing: the model shrinks larger pictures (deepseek-flash, live 2026-10-24: 1085, 1591, 1591, 1591).
-  const tokens = at([1, 1, 0.9, 0.5], 0.7);
-  [1085, 1591, 1591, 1591].forEach((t, i) => { tokens.sizes[PROBE_SIZES[i]].input_tokens = t; });
+  const tokens = fill(at([1, 1, 1, 0.9, 0.9, 0.5], 0.7), 'input_tokens', [1085, 1300, 1591, 1591, 1591, 1591]);
   assert.deepEqual(recommendSides(tokens), { view_side: 1536, crop_side: 1536, reads: 1536 });
-  const growing = at([1, 1, 0.9, 0.7], 0.9);
-  [2768, 3729, 5073, 6801].forEach((t, i) => { growing.sizes[PROBE_SIZES[i]].input_tokens = t; });
-  assert.deepEqual(recommendSides(growing), { view_side: 2048, crop_side: 1536, reads: 2048 }, 'Luna, live 2026-10-24');
+  const growing = fill(at([1, 1, 1, 0.9, 0.9, 0.7], 0.9), 'input_tokens', [2768, 3200, 3729, 4400, 5073, 6801]);
+  assert.deepEqual(recommendSides(growing), { view_side: 2000, crop_side: 1536, reads: 2048 }, 'Luna, live 2026-10-24');
+  // Cached input counts (eyes-and-history 3a): Anthropic through OpenRouter reported 4 input tokens at every size while
+  // the image went to the cache, so "tokens stopped growing" called claude-haiku-5.5 a 1024 reader at 10/10 up to 2560.
+  const cached = fill(fill(at([1, 1, 1, 1, 1, 1]), 'input_tokens', [4, 4, 4, 4, 4, 4]), 'cache_write_tokens', [1200, 1800, 2600, 3500, 4600, 7100]);
+  assert.deepEqual(recommendSides(cached), { view_side: 2000, crop_side: 1536, reads: 2560 });
+  const read = fill(fill(at([1, 1, 1, 1, 1, 1]), 'input_tokens', [4, 4, 4, 4, 4, 4]), 'cache_read_tokens', [1200, 1800, 2600, 2600, 2600, 2600]);
+  assert.deepEqual(recommendSides(read), { view_side: 1536, crop_side: 1536, reads: 1536 }, 'cache reads count too');
+  // A dip below the bar at one size between sizes it reads is noise, not a limit: deepseek-flash scored 6/10 and 7/10 at
+  // 1280 in two live runs (2026-10-24) and 10/10 and 9/10 at 1536, where its tokens stop growing (1591 from 1536 on).
+  const dip = fill(fill(at([1, 0.6, 1, 0.9, 1, 0.6]), 'input_tokens', [189, 1327, 183, 1591, 183, 183]), 'cache_read_tokens', [896, 0, 1408, 0, 1408, 1408]);
+  assert.deepEqual(recommendSides(dip), { view_side: 1536, crop_side: 1536, reads: 1536 });
+  // No tokens reported: cost growth decides; a cost that stops growing means the picture was shrunk.
+  const costs = fill(at([1, 1, 1, 1, 1, 1]), 'cost', [0.0004, 0.0005, 0.0006, 0.0006, 0.0006, 0.0006]);
+  assert.deepEqual(recommendSides(costs), { view_side: 1536, crop_side: 1536, reads: 1536 });
+  const neither = at([1, 1, 1, 1, 0.9, 0.9]);
+  assert.deepEqual(recommendSides(neither), { view_side: 2000, crop_side: 1536, reads: 2560 }, 'no tokens and no cost: accuracy alone');
 });
 
 test('view-size: auto is the painter model’s measured side, else today’s; a chosen size is used as it is', () => {
   const records = { [modelKey('deepseek', 'deepseek-flash')]: { view_side: 2048, crop_side: 1024 }, [modelKey('openrouter', 'openai/gpt-6-luna-decisions')]: { crop_side: 1536 } };
-  assert.equal(resolvedViewSide('auto', records[modelKey('deepseek', 'deepseek-flash')]), 2048);
+  assert.equal(resolvedViewSide('auto', records[modelKey('deepseek', 'deepseek-flash')]), 2000, 'Pi shrinks past 2000 px');
+  assert.equal(MAX_VIEW_SIDE, 2000);
   assert.equal(resolvedViewSide('auto', null), VIEW_SIDE_TODAY, 'not measured: today’s size');
   assert.equal(resolvedViewSide('auto', { view_side: 4000 }), MAX_VIEW_SIDE, 'never past the cap');
   assert.equal(resolvedViewSide(1024, records[modelKey('deepseek', 'deepseek-flash')]), 1024, 'the artist’s choice wins');

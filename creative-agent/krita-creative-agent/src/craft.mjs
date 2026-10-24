@@ -12,3 +12,5 @@ export const CRAFT_OPERATIONS = ['create_layer','set_layer','fill_region','apply
 export const LONG_OPERATIONS = ['apply_filter','colorize_flats','split_by_color','finish','area_likeness','area_accents','refine_map'];
 // Comic page operations: comic_page is called by the host when painting starts; letter by the painter.
 export const COMIC_OPERATIONS = ['comic_page','letter'];
+/** Native operations that change the painting (journalled, expected_revision checked). */
+export const mutates = op => ['paint_pass','adjust_layer','painting_toolbox','stamp','draw_guide','accents','finish',...CRAFT_OPERATIONS,...COMIC_OPERATIONS].includes(op);

@@ -173,6 +173,23 @@ public Q_SLOTS:
      */
     bool removeFeature(const QString &name);
 
+    /**
+     * @brief setTransientFeature sets a transient feature (KisFeature::isTransientKind(): only "paint-only-here", the
+     * Creative Agent's Paint only here protection of the rest of the painting): added, or replaced when one of that
+     * name and a transient kind is there, directly and outside the undo history. It is no undo step, does not clear
+     * the Redo, does not mark the document modified, and is never saved in a .kra. Masks are made as in addFeature();
+     * author "artist", state "kept".
+     * @return the feature, or None for a kind that is not transient, a blank name or one an ordinary feature has,
+     * or no mask
+     */
+    Feature *setTransientFeature(const QString &name, const QString &kind, Selection *mask, bool isProtected = true);
+
+    /**
+     * @brief removeTransientFeature removes the transient feature called \p name, outside the undo history.
+     * @return false if there is none (an ordinary feature of that name is left alone: removeFeature() removes it)
+     */
+    bool removeTransientFeature(const QString &name);
+
     // Krita Agent: feature builders (krita-fork 6.3; implemented in DocumentFeatureBuilders.cpp). Each returns a new
     // mask (255 inside, 0 outside) to give to addFeature(), built by Krita's own selection logic without a view. None
     // changes a pixel, the selection or the undo history. The caller owns the returned objects.

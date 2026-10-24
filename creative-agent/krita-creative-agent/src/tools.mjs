@@ -8,6 +8,7 @@ import {referenceTools,findReferenceAccents} from './reference-tool.mjs';
 import { mapReferencePoint } from './reference-generator.mjs';
 import { guideTools } from './guide-tool.ts';
 import { accentTools } from './accents-tool.ts';
+import { selectionTools } from './paint-only-here.ts';
 import { canvasShape, checkPassLimits, passShape, shapeReport, shapeSchema, shapeTimings } from './shapes/use.ts';
 import { recipeTool } from './recipe-tool.mjs';
 import { contourTool } from './contour-tool.mjs';
@@ -333,6 +334,10 @@ export function paintingTools(runtime) {
   // A flat fill anywhere in a batch is nudged before anything paints (studio.mjs fillNudge), so the batch is refused whole.
   tools.push(batchTool(tools, name => runtime.toolOffered?.(name) ?? true,
     async actions => { if (actions.some(a => a.tool === 'fill_region')) await runtime.fillNudge?.({batch:true}); return prepareBatchShapes(runtime, actions); }));
+  // Paint only here (paint-only-here.ts): for work on one part with no area set, ask the artist to select it (Agent only).
+  tools.push(...selectionTools({ get mode() { return runtime.mode; }, get goal() { return runtime.goal ?? null; }, emit: event => runtime.emit?.(event),
+    persist: () => runtime.persist?.() ?? Promise.resolve(), publish: () => runtime.publish?.(), yieldTurn: () => { runtime.yieldRequested = true; },
+    latestRequest: () => String(runtime.goal?.messages?.findLast?.(m => m.role === 'user')?.text ?? '') }));
   tools.push(...assetTools(runtime), skillReadTool());
   return tools;
 }

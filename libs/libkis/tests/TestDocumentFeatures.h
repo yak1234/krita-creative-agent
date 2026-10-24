@@ -23,6 +23,8 @@ private Q_SLOTS:
     void testWhitespaceNamesAreRejected();
     void testNamesAreTrimmed();
     void testInvertedSelectionGivesABoundedMask();
+    void testTransientFeatureIsNoUndoStep();
+    void testTransientFeatureIsNotSaved();
 };
 
 #endif // TESTDOCUMENTFEATURES_H

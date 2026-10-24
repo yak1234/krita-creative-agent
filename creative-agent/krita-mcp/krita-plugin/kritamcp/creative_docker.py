@@ -23,6 +23,7 @@ except ImportError:                                       # command_queue is not
     artist_editing = threading.Event()
 from .protection import ProtectionCraft
 from .feature_guard import FeatureCraft
+from .paint_only_panel import PaintOnlyBar
 from .reference_parts import part_image, crop_image, opaque_bounds
 from .qt_compat import Qt, QProcess, QProcessEnvironment, QUrl, QTimer, pyqtSignal, QEvent, QSize, QRectF, scoped, QCoreApplication, QStandardPaths
 from .qt_compat import QToolTip
@@ -1610,6 +1611,8 @@ class CreativeAgentDocker(DockWidget):
         cancel_part = QPushButton('Cancel'); cancel_part.clicked.connect(self.close_part); part_bar.addWidget(cancel_part)
         compose.addWidget(self.part_bar); self.part_bar.hide()
         self.part_timer = QTimer(self); self.part_timer.setInterval(1000); self.part_timer.timeout.connect(self.check_part_session)
+        # Paint only here (paint_only_panel.py): the artist's selection as the one area the agent may paint in.
+        self.paint_only = PaintOnlyBar(self); compose.addWidget(self.paint_only)
         # Slash commands: typing "/" lists the companion's commands; choosing one inserts it.
         self.skills = []; self.slash_commands = []
         self.slash_menu = QListWidget(); self.slash_menu.setAccessibleName('Commands'); self.slash_menu.setMaximumHeight(150)
@@ -1747,6 +1750,7 @@ class CreativeAgentDocker(DockWidget):
             QPushButton#emptyAction:hover { background: %(raised)s; }
             QPushButton#contextChip { background: %(raised)s; text-align: left; font-size: 11px; min-height: 26px; padding: 3px 7px; }
             QPushButton#contextAction { background: transparent; padding: 2px 4px; font-size: 17px; min-width: 16px; }
+            QPushButton#paintOnlyChip { background: %(raised)s; border: 1px solid %(accent)s; text-align: left; font-size: 11px; font-weight: 600; min-height: 26px; padding: 3px 7px; }
             QPushButton#contextAction::menu-indicator { image: none; width: 0; }
             QPushButton#sendMessage, QPushButton#stopAction { background: %(button)s; color: %(buttonText)s; font-size: 18px; font-weight: 500; min-width: 17px; min-height: 24px; padding: 2px 5px; border-radius: 7px; }
             QPushButton#sendMessage:disabled { background: %(raised)s; color: %(muted)s; }
@@ -2534,6 +2538,7 @@ class CreativeAgentDocker(DockWidget):
     def poll_canvas_metadata(self):
         if not self.isVisible(): return
         self.refresh_document_state()
+        self.paint_only.poll()                           # a leftover Paint only here protection goes, with or without the companion
         if not self.process: return
         try:
             doc = Krita.instance().activeDocument()
@@ -2561,6 +2566,7 @@ class CreativeAgentDocker(DockWidget):
         self.tabs.setCurrentIndex(self.chat_tab)
         self.goal = None; self.plan_bar.hide(); self.move_bar.hide(); self.current_move = None; self.question_id = None; self.question_controls = []; self.closeup_question_id = None; self.closeup_controls = []
         self.pending_references = []; self.attached_references = []; self.show_references()
+        self.paint_only.chat_ended()
         self.empty_state.show()
         self.last_user_item = None
         self.chat_mode = 'ask'; self.mode_selector.blockSignals(True); self.mode_selector.setCurrentIndex(0); self.mode_selector.blockSignals(False)
@@ -2976,6 +2982,7 @@ class CreativeAgentDocker(DockWidget):
             if 'painting_target' in event:
                 self.painting_target = event['painting_target'] or {}
                 if self.painting_target.get('filename'): self.saved_path = self.painting_target['filename']
+            self.paint_only.sync(self.goal)
             self.render_scope_tray(); self.render_target()
             self.chat_mode = event['mode']
             self.mode_selector.blockSignals(True)
@@ -3035,7 +3042,9 @@ class CreativeAgentDocker(DockWidget):
             self.flush_stream(); self.reply_open = False
             if self.question_id != event['id']:
                 self.question_id = event['id']
-                self.question_controls = self.transcript.add_question(event['question'], event.get('options', []), self.answer_question, event.get('image_path'))
+                # The painter asks for a selection (ask_for_selection): Select with Freehand, Use my selection, Paint everywhere.
+                self.question_controls = (self.paint_only.select_card(event) if event.get('select_area') else
+                                          self.transcript.add_question(event['question'], event.get('options', []), self.answer_question, event.get('image_path')))
             self.prompt.setPlaceholderText('Answer here, or choose an option above…')
         elif kind == 'review':
             self.flush_stream(); self.reply_open = False
@@ -3189,6 +3198,8 @@ class CreativeAgentDocker(DockWidget):
         self.reply_open = False
         shared = {'chat_mode': self.chat_mode, 'start_plan': start_plan, 'references': self.pending_references,
                   'canvas': self.context_payload(), 'message_id': message_id}
+        area = self.paint_only.for_message(prompt)              # Paint only here: the typed phrase, an answer, or an area set before the chat
+        if area: shared['paint_only_here'] = area
         if self.study_active:
             self.send(dict(shared, type='prompt', text=prompt))
         else:
@@ -3593,6 +3604,7 @@ class CreativeAgentDocker(DockWidget):
         self.protect_button.setEnabled(not self.busy and self.protection_editing is None)
         self.protect_button.setToolTip('Pause to change protection' if self.busy else 'Protected areas: what the agent must never change')
         self.features_section.set_locked(self.feature_wait_reason() is not None)
+        if hasattr(self, 'paint_only'): self.paint_only.update_controls()
         for control in (self.source, self.name, self.experiment): control.setEnabled(not self.study_active and not self.busy)
         self.model.setEnabled(not self.busy and not self.pending_model_change)
         self.provider_filter.setEnabled(not self.busy and not self.pending_model_change)

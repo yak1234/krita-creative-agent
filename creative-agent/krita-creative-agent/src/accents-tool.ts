@@ -20,6 +20,7 @@ import { Type, type Static } from 'typebox';
 import type { AgentToolResult, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { canvasShape, shapeSchema, type CanvasHost } from './shapes/use.ts';
 import { decodePlane } from './shapes/png.ts';
+import { loadAreaMask } from './paint-only-here.ts';
 
 export const ACCENT_KINDS = ['lights', 'glints', 'darks', 'lines'] as const;
 export type AccentKind = typeof ACCENT_KINDS[number];
@@ -79,6 +80,8 @@ export type AccentsRuntime = CanvasHost & {
   askAccents?(question: { question: string; options: string[]; key: string; count: number }): void;
   /** The artist's answer to that question for `key`, used once: {yes, count} or null. */
   takeAccentsAnswer?(key: string): { key: string; count: number; yes: boolean } | null;
+  /** The artist's Paint only here area (paint-only-here.ts), the default area while it is set. */
+  paintOnlyArea?(): { mask_path: string; bounds: number[] } | null;
 };
 export type AccentsDependencies = {
   /** The plugin's find_accents for an attached reference (reference-tool.mjs findReferenceAccents). */
@@ -151,7 +154,7 @@ export function accentTools(runtime: AccentsRuntime, dependencies: AccentsDepend
     description: 'Stage two after the underpainting: make the painting crisp where the reference is sharper, brighter or darker than '
       + 'the canvas, by adjusting the canvas\u2019s own paint with Krita\u2019s filters (no marks): lights and glints brightened '
       + '(Dodge, with a soft Screen bloom), darks deepened (Burn), thin lines and lost edges sharpened (High Pass in Overlay), each in a '
-      + 'soft mask. Name the area (whole picture, a box, a selection, or an element\u2019s shape), the kinds and how many; the host '
+      + 'soft mask. Name the area (whole picture, a box, a selection, or an element\u2019s shape; the artist\u2019s Paint only here area by default while it is set), the kinds and how many; the host '
       + 'compares the reference with the canvas and adjusts only what the canvas lacks, strongest first, as one Accents group (one '
       + 'Undo). Not stretch-limited. Skips protected areas and says how many. '
       + `More than ${ASK_ABOVE} at once: show the artist the count and ask first.`,
@@ -182,8 +185,13 @@ export function accentTools(runtime: AccentsRuntime, dependencies: AccentsDepend
       const map = (x: number, y: number): Point => [target![0] + (x - source![0]) * scale, target![1] + (y - source![1]) * scale];
       // The area on the canvas, and the part of the reference under it.
       let bounds: number[] = target, limit: { selection?: string; inside_shape?: { mask_path: string; bounds: number[] } } = {}, mask: { data: Uint8Array; width: number; bounds: number[] } | null = null;
-      const area = args.area ?? 'whole';
-      if (typeof area === 'object' && 'box' in area) bounds = area.box;
+      const area = args.area ?? 'whole', scoped = args.area === undefined ? runtime.paintOnlyArea?.() ?? null : null;
+      if (scoped) {
+        // Paint only here: the artist's area is the default, its pixels as the plugin's limit (an element shape's file).
+        const plane = await loadAreaMask(scoped, runtime.study.directory);
+        bounds = plane.bounds; mask = { data: plane.data, width: plane.width, bounds: plane.bounds };
+        limit = { inside_shape: { mask_path: scoped.mask_path, bounds: plane.bounds } };
+      } else if (typeof area === 'object' && 'box' in area) bounds = area.box;
       else if (typeof area === 'object' && 'selection' in area) {
         const found = await runtime.callNative('select', { name: 'Accents area', steps: [/[+&-]/.test(area.selection) ? { feature: area.selection } : { saved: area.selection }] }).catch(() =>
           runtime.callNative('select', { name: 'Accents area', steps: [{ feature: area.selection }] }));

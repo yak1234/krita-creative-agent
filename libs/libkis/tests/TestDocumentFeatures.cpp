@@ -427,4 +427,81 @@ void TestDocumentFeatures::testInvertedSelectionGivesABoundedMask()
     QCOMPARE(feature->area(), qint64(200 * 100));
 }
 
+void TestDocumentFeatures::testTransientFeatureIsNoUndoStep()
+{
+    // Paint only here (element-scoped-painting): the protection of the rest of the painting is set and cleared outside
+    // the history, so the artist's Undo and Redo never meet it, and setting it never clears their Redo.
+    FeaturesDocument d;
+    QScopedPointer<Selection> sky(rectSelection(QRect(0, 0, 200, 50)));
+    QScopedPointer<Feature> skyFeature(d.doc->addFeature("Sky", "sky", sky.data(), "artist", "kept", false));
+    d.settle();
+    d.undo();                                            // the artist's Redo is waiting
+    QVERIFY(d.names().isEmpty());
+    const int steps = d.undoSteps();
+    QVERIFY(d.kisdoc->undoStack()->canRedo());
+    d.kisdoc->setModified(false);
+    const QByteArray before = d.pixels();
+
+    QScopedPointer<Selection> outside(rectSelection(QRect(0, 50, 200, 100)));
+    QScopedPointer<Feature> transient(d.doc->setTransientFeature("Outside", "paint-only-here", outside.data(), true));
+    QVERIFY(transient);
+    d.settle();
+    QCOMPARE(d.undoSteps(), steps);
+    QVERIFY(d.kisdoc->undoStack()->canRedo());
+    QVERIFY(!d.kisdoc->isModified());
+    QVERIFY(d.doc->protectionActive());
+    QVERIFY(d.pixels() == before);
+
+    d.redo();                                            // the artist's Redo still works, and leaves the protection
+    QCOMPARE(d.names(), QStringList({"Outside", "Sky"}));
+    d.undo();
+    QCOMPARE(d.names(), QStringList({"Outside"}));
+
+    // Set again: replaced in place, still no step.
+    QScopedPointer<Selection> smaller(rectSelection(QRect(0, 100, 200, 50)));
+    QScopedPointer<Feature> replaced(d.doc->setTransientFeature("Outside", "paint-only-here", smaller.data(), true));
+    QVERIFY(replaced);
+    QCOMPARE(replaced->bounds(), QRect(0, 100, 200, 50));
+    QCOMPARE(d.names(), QStringList({"Outside"}));
+    QVERIFY(d.doc->removeTransientFeature("Outside"));
+    d.settle();
+    QVERIFY(d.names().isEmpty());
+    QCOMPARE(d.undoSteps(), steps);
+    QVERIFY(!d.doc->protectionActive());
+    QVERIFY(!d.kisdoc->isModified());
+
+    // Only the transient kinds: an ordinary feature keeps its history.
+    QScopedPointer<Selection> ground(rectSelection(QRect(0, 50, 200, 100)));
+    QVERIFY(!d.doc->setTransientFeature("Ground", "ground", ground.data(), true));
+    QScopedPointer<Feature> groundFeature(d.doc->addFeature("Ground", "ground", ground.data()));
+    QVERIFY(!d.doc->removeTransientFeature("Ground"));
+    QVERIFY(!d.doc->setTransientFeature("Ground", "paint-only-here", ground.data(), true));    // a name taken
+    QVERIFY(!d.doc->removeTransientFeature("Moon"));
+}
+
+void TestDocumentFeatures::testTransientFeatureIsNotSaved()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath("transient.kra");
+    {
+        FeaturesDocument d;
+        QScopedPointer<Selection> sky(rectSelection(QRect(0, 0, 200, 50)));
+        QScopedPointer<Feature> feature(d.doc->addFeature("Sky", "sky", sky.data(), "artist", "kept", true));
+        QScopedPointer<Selection> outside(rectSelection(QRect(0, 50, 200, 100)));
+        QScopedPointer<Feature> transient(d.doc->setTransientFeature("Outside", "paint-only-here", outside.data(), true));
+        QVERIFY(transient);
+        d.settle();
+        QVERIFY(d.kisdoc->exportDocumentSync(path, d.kisdoc->nativeFormatMimeType()));
+        QCOMPARE(d.names(), QStringList({"Sky", "Outside"}));     // saving leaves it in the open document
+    }
+    QScopedPointer<KisDocument> loaded(KisPart::instance()->createDocument());
+    loaded->setFileBatchMode(true); // never a dialog in a test
+    loaded->setMimeType(KisDocument::nativeFormatMimeType());
+    QVERIFY(loaded->loadNativeFormat(path));
+    Document doc(loaded.data(), false);
+    QVERIFY(doc.feature("Sky"));
+    QVERIFY(!doc.feature("Outside"));
+}
+
 KISTEST_TEMPORARY_HOME_MAIN(TestDocumentFeatures)

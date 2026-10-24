@@ -24,6 +24,7 @@ private Q_SLOTS:
     void testResavingANewerVersionWarns();
     void testMissingMaskIsSkipped();
     void testUnknownElementAndFilesAreIgnored();
+    void testTransientFeaturesAreNeverSaved();
 };
 
 #endif // KISKRAFEATURESTEST_H

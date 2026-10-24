@@ -20,6 +20,8 @@ import contextlib
 import json
 import unicodedata
 
+from .paint_only_here import is_system_feature
+
 # Keys that lift or change protection. Compared without case, underscores and hyphens, at any depth of a call.
 PRIVILEGED = ('allowprotected', 'setprotectionsuspended', 'protectionsuspended', 'setprotected', 'removefeature')
 # Operations that change a feature or its protection: the artist's panel only, never a model's tool call.
@@ -282,10 +284,12 @@ class FeatureCraft:
         poll). Empty without the fork."""
         if not self._feature_ready(doc):
             return []
+        # Paint only here's protection of the rest of the painting is the system's (paint_only_here.py): never listed.
+        features = [f for f in doc.features() if not is_system_feature(f)]
         if brief:
-            return [{'name': f.name(), 'kind': f.kind(), 'protected': bool(f.isProtected())} for f in doc.features()]
+            return [{'name': f.name(), 'kind': f.kind(), 'protected': bool(f.isProtected())} for f in features]
         return [{'name': f.name(), 'kind': f.kind(), 'protected': bool(f.isProtected()), 'author': f.author(), 'state': f.state()}
-                for f in doc.features()]
+                for f in features]
 
     OBSERVED_FEATURES = 24
 

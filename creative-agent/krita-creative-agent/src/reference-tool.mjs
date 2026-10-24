@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import { defineTool } from '@earendil-works/pi-coding-agent';
 import {Type} from 'typebox';
 import {containedFile,imageContent} from './files.mjs';
+import {scopePlan,loadAreaMask,scopedShare,chipLine} from './paint-only-here.ts';
 import {referenceSchema,edgeSchema,surfaceSchema,generateReferencePlan,generateEdgePlan,generateSurfacePlan,estimateReferenceStrokes,DEFAULT_STEPS,REFERENCE_GENERATOR_VERSION} from './reference-generator.mjs';
 // Strokes per native call. Each call re-reads the canvas and journals its receipt; at 128 that
 // overhead was ~80% of a 157k-stroke job. The plugin accepts up to 1024 per pass.
@@ -19,6 +20,7 @@ const allowed=r=>{if(!isPaintingMode(r.mode)||r.executionPhase!=='agent'||r.canc
 const summary=j=>({job_id:j.id,name:j.recipe.name,status:j.status,completed_strokes:j.completed,total_strokes:j.total,pass:j.pass+1,pass_count:j.pass_count,
  ...(j.closeup?{closeup:j.closeup}:{}),
  ...(j.fitted?{fitted:`Steps widened from [${j.fitted.from}] to [${j.recipe.steps}] so the transfer fits ${j.fitted.move?`one Agent move (about ${j.fitted.move} strokes)`:`about ${j.fitted.minutes} of the ${j.fitted.left} minutes left`}; the dabs are larger, so refine focal areas by hand, and make the picture crisp with paint_accents.`}:{}),
+ ...(j.inside_label?{inside:j.inside_label+'. Only the dabs inside it were planned; Krita keeps every write there.'}:{}),
  ...(j.ground?{ground:'A toned ground layer in the reference\u2019s colours, top to bottom, lies under the transfer, so gaps between dabs show its tone, not white canvas.'}:{}),
  next_action:j.status==='complete'?'Review the finished canvas.':j.status==='awaiting_review'?'Inspect this pass image, then continue_reference_painting for the next refinement pass.':'Resume with continue_reference_painting after inspecting any interruption.'});
 // A transfer is underpainting: on a large canvas its dabs are 25-60 px whatever the steps, so running
@@ -49,13 +51,17 @@ export function partShare(recipe,part){
  return Math.max(0,Math.min(sx+sw,bx+bw)-Math.max(sx,bx))*Math.max(0,Math.min(sy+sh,by+bh)-Math.max(sy,by))/(sw*sh);
 }
 // Where the artist has protected what matters, the size caps step aside: the plugin keeps every protected pixel.
-export function transferRefusal(goal,recipe,canvas,paintedJobs,{established=false,protectedAreas=0,part=null}={}){
+// Inside the artist's Paint only here area (paint-only-here.ts, goal 6) a transfer is measured by the area (`inside.share`),
+// and the size caps step aside until a transfer has painted that area (`inside.painted`).
+export function transferRefusal(goal,recipe,canvas,paintedJobs,{established=false,protectedAreas=0,part=null,inside=null}={}){
  const steps=goal?.brief?.steps?.length??0,step=goal?.current_step??0;
  const instead='Paint it yourself: paint_contours for silhouettes and overlaps, paint_pass with small brushes and long directed strokes for edges and detail, clipped create_layer for light and shadow.';
- const share=recipe.target[2]*recipe.target[3]/(canvas.width*canvas.height)*(part?partShare(recipe,part):1),uncapped=protectedAreas||part;
+ const share=inside?inside.share:recipe.target[2]*recipe.target[3]/(canvas.width*canvas.height)*(part?partShare(recipe,part):1),uncapped=protectedAreas||part||(inside&&!inside.painted);
  // A focal patch lifts the size and late-plan rules, not the stretch limit (every transfer has it).
  if(share<=FOCAL_SHARE)return stretchRefusal(recipe,{established,paintedJobs});
- if(steps>1&&step>=Math.ceil(steps/2))return `Reference transfer is for underpainting and is off from step ${Math.ceil(steps/2)+1} of ${steps}: it only stamps the reference again as dabs. A focal patch (one face or hand) of at most ${Math.round(FOCAL_SHARE*100)}% of the canvas is still allowed. ${instead}`;
+ // An untouched Paint only here area lifts the late-plan rule too: a folder plan's element steps come last (underpainting,
+ // accents, then the elements the artist names) and paint their element inside the area the artist drew.
+ if(steps>1&&step>=Math.ceil(steps/2)&&!(inside&&!inside.painted))return `Reference transfer is for underpainting and is off from step ${Math.ceil(steps/2)+1} of ${steps}: it only stamps the reference again as dabs. A focal patch (one face or hand) of at most ${Math.round(FOCAL_SHARE*100)}% of the canvas is still allowed. ${instead}`;
  if(!uncapped&&established&&share>REGION_SHARE)return `This painting already exists, so a reference transfer may only fill a missing region of at most ${Math.round(REGION_SHARE*100)}% of the canvas (this target is ${Math.round(share*100)}%); a full transfer would stamp dabs over the finished surface. ${instead}`;
  if(!uncapped&&paintedJobs>0&&share>REGION_SHARE)return `This plan already has a reference transfer. Another one may only fill a missing region of at most ${Math.round(REGION_SHARE*100)}% of the canvas (this target is ${Math.round(share*100)}%); a second full transfer re-rolls the same dabs. ${instead}`;
  return stretchRefusal(recipe,{established,paintedJobs});
@@ -156,7 +162,12 @@ export function referenceTools(runtime,executePass,fillRegion){
   if(decoded.sha256!==source.sha256)throw new Error('Decoded reference identity differs.');
   return {width:decoded.width,height:decoded.height,data:Buffer.from(decoded.rgba_base64,'base64')};
  }
- const buildPlan=(recipe,pixels,canvas)=>({edges:generateEdgePlan,surface:generateSurfacePlan}[recipe.mode]??generateReferencePlan)(recipe,pixels,{width:canvas.width,height:canvas.height});
+ // A job inside a Paint only here area keeps only the dabs centred inside it, read from the job's own area: a resume
+ // rebuilds the same plan whatever the chat's area is now.
+ const buildPlan=async(recipe,pixels,canvas,inside)=>{
+  const plan=({edges:generateEdgePlan,surface:generateSurfacePlan}[recipe.mode]??generateReferencePlan)(recipe,pixels,{width:canvas.width,height:canvas.height});
+  return inside?scopePlan(plan,await loadAreaMask(inside,runtime.study.directory)):plan;
+ };
  async function start(id,recipe,signal){
   signal?.throwIfAborted();allowed(runtime);await mkdir(folder(),{recursive:true});const identifier=hash(id).slice(0,32);let old;try{old=JSON.parse(await readFile(path(identifier),'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
   if(old){if(JSON.stringify(old.requested??old.recipe)!==JSON.stringify(recipe))throw new Error('Operation ID reused with different reference instructions.');return response(old,await runtime.callNative('observe'));}
@@ -168,11 +179,15 @@ export function referenceTools(runtime,executePass,fillRegion){
   const observation=await runtime.callNative('observe');runtime.decisionObservation=observation;
   const pixels=await decode(source);
   let ground=null,fitted=null,requested=asked;
+  // The artist's Paint only here area (paint-only-here.ts): every transfer while it is set paints inside it only.
+  const area=runtime.goal?.paint_only_here??null,inside=area?{sha256:area.sha256,mask_path:area.mask_path,bounds:area.bounds}:null;
+  if(area&&scopedShare(area,recipe.target)<=0)throw new Error(`The target [${recipe.target}] lies outside the area the artist chose (${chipLine(area).toLowerCase()}, bounds [${area.bounds}]): transfer the reference area that lies under it, or the whole reference over the whole canvas.`);
   if(!recipe.mode&&scope(runtime)){
-   const painted=(await paintedJobs()).filter(j=>!j.recipe.mode).length,established=existingPainting(runtime,observation);
+   const all=await paintedJobs(),painted=all.filter(j=>!j.recipe.mode).length,established=existingPainting(runtime,observation);
    const ref=runtime.study.references.find(r=>r.id===recipe.reference_id),part=ref?.part_kind==='part'&&ref.bounds?ref:null;
-   const refusal=transferRefusal(runtime.goal,recipe,observation,painted,{established,protectedAreas:observation.protected_areas?.length??0,part})
-    ??(!painted&&!established?wholeReferenceRefusal(recipe,{...ref,width:pixels.width,height:pixels.height},observation):null);
+   const scoped=area?{share:scopedShare(area,recipe.target),painted:all.some(j=>!j.recipe.mode&&j.inside?.sha256===area.sha256)}:null;
+   const refusal=transferRefusal(runtime.goal,recipe,observation,painted,{established,protectedAreas:observation.protected_areas?.length??0,part,inside:scoped})
+    ??(!painted&&!established&&!area?wholeReferenceRefusal(recipe,{...ref,width:pixels.width,height:pixels.height},observation):null);
    if(refusal)throw new Error(refusal);
    const left=runtime.timeLeftMs?.();
    if(Number.isFinite(left)){const fit=fitStepsToTime(recipe,left/1000,runtime.referenceStrokeRate);if(fit){recipe=fit.recipe;fitted={from:fit.from,minutes:Math.round(left*TRANSFER_TIME_SHARE/6000)/10,left:Math.round(left/6000)/10};}}
@@ -184,8 +199,9 @@ export function referenceTools(runtime,executePass,fillRegion){
    const refusal=stretchRefusal(recipe,{established:existingPainting(runtime,observation),paintedJobs:(await paintedJobs()).length});
    if(refusal)throw new Error(refusal);
   }
-  const plan=buildPlan(recipe,pixels,observation);
-  const job={id:identifier,version:REFERENCE_GENERATOR_VERSION,recipe,...(requested!==recipe?{requested}:{}),...(routed?{closeup:routed.note}:{}),...(fitted?{fitted}:{}),...(ground?{ground}:{}),reference_hash:source.sha256,plan_hash:hash(JSON.stringify(plan)+'\n'),canvas:{width:observation.width,height:observation.height},scope:scope(runtime),status:'ready',pass:0,pass_count:plan.passes.length,offset:0,completed:0,total:plan.total,last_revision:observation.revision,layer_id:null,pending:null};await atomic(path(identifier),job);return run(job,signal,plan);
+  const plan=await buildPlan(recipe,pixels,observation,inside);
+  if(inside&&!plan.total)throw new Error(`No dab of this transfer lies inside the area the artist chose (${chipLine(area).toLowerCase()}): transfer the reference area that lies under it.`);
+  const job={id:identifier,version:REFERENCE_GENERATOR_VERSION,recipe,...(inside?{inside,inside_label:chipLine(area)}:{}),...(requested!==recipe?{requested}:{}),...(routed?{closeup:routed.note}:{}),...(fitted?{fitted}:{}),...(ground?{ground}:{}),reference_hash:source.sha256,plan_hash:hash(JSON.stringify(plan)+'\n'),canvas:{width:observation.width,height:observation.height},scope:scope(runtime),status:'ready',pass:0,pass_count:plan.passes.length,offset:0,completed:0,total:plan.total,last_revision:observation.revision,layer_id:null,pending:null};await atomic(path(identifier),job);return run(job,signal,plan);
  }
  async function run(job,signal,built){
   allowed(runtime);
@@ -205,7 +221,7 @@ export function referenceTools(runtime,executePass,fillRegion){
    job.ground={status:'done',layer_id:done.layer_id??null};job.last_revision=done.revision;await save();
   }
   let current=await runtime.callNative('observe');
-  const plan=built??buildPlan(job.recipe,await decode(source),job.canvas??current);
+  const plan=built??await buildPlan(job.recipe,await decode(source),job.canvas??current,job.inside);
   if(hash(JSON.stringify(plan)+'\n')!==job.plan_hash)throw new Error('The stroke plan could not be rebuilt identically. Do not replay it.');
   if(plan.version!==job.version||JSON.stringify(plan.recipe)!==JSON.stringify(job.recipe))throw new Error('The saved reference job no longer matches its stroke plan.');
   if(current.width!==plan.canvas.width||current.height!==plan.canvas.height||current.revision!==job.last_revision)throw new Error('The canvas changed since this job checkpoint. Preserve the changes and inspect before starting a new job.');

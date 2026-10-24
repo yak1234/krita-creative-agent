@@ -43,6 +43,7 @@ import { scanFolder, readFolderText, defaultFolderSteps, elementStep, folderStep
 import { ensureMassMaps } from './mass-map.ts';
 import { writePlan, appendNote, readPlan, parsePlan, planDifference, briefFromPlan, remapTicks, stepFile, stepKeys, layerName } from './folder-notes.ts';
 import { planStepControls, stepMarksContext, withStepIds, STEP_ID } from './plan-steps.ts';
+import { applyPaintOnlyCommand, areaContext } from './paint-only-here.ts';
 import { constants as fsConstants, realpathSync } from 'node:fs';
 import { open as openFile } from 'node:fs/promises';
 
@@ -124,7 +125,7 @@ export const STUDIO_INSTRUCTIONS = `You are Creative Agent, a painting collabora
 The host supplies the current Ask, Plan, Agent or Autopilot mode and a persistent painting brief on every request.
 Ask (teacher mode): answer questions, examine references or the current canvas, and teach the artist how a painter would build the picture in Krita, step by step. You cannot paint in this phase.
 Plan: understand the user's intent and turn it into a concrete painting brief using propose_plan. You cannot paint in this phase.
-Agent: execute the agreed brief with the native painting tools. The host may first ask you to draft or revise a brief before enabling those tools.
+Agent: execute the agreed brief with the native painting tools. The host may first ask you to draft or revise a brief before enabling those tools. For work on one part of the painting ("paint the sky", "only the hair") with no Paint only here area in the context, call ask_for_selection instead of guessing where it is (not for a part they say to leave alone); with an area, keep to it and start your reply with its line.
 In Autopilot the host resumes painting after your reply unless you asked a question or the painting is finished. When the painting is finished and the user gives new painting direction, or asks to execute or continue the brief, call start_painting with their exact instruction. This hands control to the painting phase and enables the native painting tools; do not tell the user to re-enable tools. For questions or requests to discuss/revise the plan, answer or revise without starting. Never call start_painting just because Agent mode is selected.
 During execution the host loops through painting, observation and review automatically. A failed visual criterion calls for another correction, not user approval. A rejected tool argument means that action was not applied: read its error and choose a supported action without asking the user to repair the tools. Ask the user only for a missing artistic decision, not to operate the internal review loop. Use painting_tool_help to discover native brush, shape, selection, erasing, transform and layer tools. Existing unlocked layers can be adjusted; painting_toolbox edits existing paint on a reversible copy. Choose broad construction moves when appropriate, not endless small overlay corrections. The run continues without the user until the painting passes review or the user presses Stop; never wait for user approval mid-run.
 
@@ -666,7 +667,8 @@ export class StudioRuntime extends PaintingRuntime {
   async wholeTransfers(canvas) {
     const undone = this.undoneReferenceJobs();
     const jobs = await paintedTransfers(this.study.directory, {anyRevision:true}).catch(() => []);
-    return jobs.filter(job => !undone.has(job.id) && Array.isArray(job.recipe?.target)
+    // A transfer inside the artist's Paint only here area (paint-only-here.ts) paints that area, not the whole picture.
+    return jobs.filter(job => !undone.has(job.id) && !job.inside && Array.isArray(job.recipe?.target)
       && job.recipe.target[2] * job.recipe.target[3] >= WHOLE_CANVAS_SHARE * canvas.width * canvas.height);
   }
   /** Has the whole picture been underpainted? A painting the chat started on, or a kept whole-canvas transfer. */
@@ -1113,7 +1115,7 @@ export class StudioRuntime extends PaintingRuntime {
     // Skills (read opens skill files only) and image assets, while planning and painting.
     if (vision && (phase === 'plan' || phase === 'agent')) names.push('read','make_asset','run_skill_script');
     if (phase === 'plan' && this.mode === 'autopilot' && this.goal?.brief) names.push('start_painting');
-    if (phase === 'agent') names.push('propose_protection','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_accents','list_brushes','paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer',...CRAFT_TOOLS,...GUIDE_TOOLS,'letter','finish_move','painting_toolbox','painting_tool_help','ask_question','record_progress','request_review');
+    if (phase === 'agent') names.push('ask_for_selection','propose_protection','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_accents','list_brushes','paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer',...CRAFT_TOOLS,...GUIDE_TOOLS,'letter','finish_move','painting_toolbox','painting_tool_help','ask_question','record_progress','request_review');
     // Agent (collaborative) paints one move per turn: no review or progress bookkeeping tools.
     // With Luna pacing, Autopilot's host tracks plan steps; request_review stays as a backstop.
     const hidden = phase !== 'agent' ? [] : this.mode === 'agent' ? ['record_progress','request_review','ask_question',...(this.executionSettings?.move_size === 'quick' ? ['finish_move'] : [])]
@@ -1164,6 +1166,12 @@ export class StudioRuntime extends PaintingRuntime {
     if (reached && limit.calls > 1) move.limited = true;
     return reached;
   }
+  /** Paint only here (paint-only-here.ts): the panel's set or clear, alone or with a message; the area lives on the goal. */
+  async setPaintOnlyHere(command) {
+    await applyPaintOnlyCommand({study:this.study, goal:this.goal, persist:()=>this.persist(), publish:()=>this.publish(),
+      say:message=>this.emit({type:'action', seconds:0, message})}, command);
+  }
+  paintOnlyArea() { return this.goal?.paint_only_here ?? null; }
   /** paint_accents' confirmation scope: the move (an Agent move, else the plan step) the question was asked in. */
   accentsKey() { return this.mode==='agent' && this.currentMove ? 'move-'+this.currentMove.number : 'step-'+this.goal?.revision+'-'+this.goal?.current_step; }
   /** paint_accents past 150 accents: an actual question to the artist (as ask_question asks one), tied to its move and count. */
@@ -1341,6 +1349,7 @@ export class StudioRuntime extends PaintingRuntime {
       folder: this.folderContext(),
       closeups: this.closeups?.context(),
       layer_need: phase==='agent' && this.layerNeed ? this.layerNeed : undefined,
+      paint_only_here: areaContext(this.goal.paint_only_here),
     }) + '\n\n' + (this.goal.comic && COMIC_GUIDANCE[phase] ? COMIC_GUIDANCE[phase] + '\n\n' : '');
   }
   async addReferences(items) {
@@ -2043,6 +2052,7 @@ export class StudioRuntime extends PaintingRuntime {
     contextRequest ??= {selection:{...this.canvasSelection},region:structuredClone(this.regionSelection),ticket:this.contextTicket()};
     try {
       await this.addReferences(command.references);
+      await this.setPaintOnlyHere(command.paint_only_here);          // an area the message brings (Use my selection, the typed phrase)
       this.goal.canvas_selection = this.canvasSelection; this.goal.region_selection=this.regionSelection;
       const message = await this.remember('user', text,command.message_id);
       this.goal.review_start_index=this.goal.reviews.length;
@@ -2631,7 +2641,7 @@ export class StudioRuntime extends PaintingRuntime {
    * runs. In a batch it is checked before anything paints (tools.mjs), so the whole batch is refused and not counted. */
   async fillNudge({batch = false} = {}) {
     const move = this.currentMove;
-    if (!move || this.fillNudged === move) return;
+    if (!move || this.fillNudged === move || this.goal?.paint_only_here) return;   // a scoped transfer is there (goal 6)
     const state = await this.referenceFirstState();
     if (!state) return;
     this.fillNudged = move;

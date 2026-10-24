@@ -28,6 +28,7 @@ from .merge_craft import MergeCraft
 from .native_craft import NativeCraft, compact_actions
 from .protection import ProtectionCraft, PANEL_ONLY as PROTECTION_PANEL_ONLY
 from .script_steps import one_step
+from .paint_only_here import AREAS as PAINT_ONLY
 from .feature_guard import EXPRESSION_LIMIT, FeatureCraft, PANEL_ONLY as FEATURE_PANEL_ONLY, agent_writing, reject_privileged
 from .material_stamp import MaterialCraft, RESOURCE_PREFIX as STAMP_RESOURCE_PREFIX
 from .accent_adjust import AccentCraft
@@ -683,6 +684,9 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         if operation in ('paint_pass', 'create_layer', 'fill_region', 'apply_filter') + TOOL_OPERATIONS:
             self._comic_validate_scope(doc, session, operation, params)
         self._protect_refuse(doc, session, operation, params)
+        # Paint only here (paint_only_here.py): the rest of the painting is protected before any agent write, put back if an
+        # Undo took it, so the area holds whatever the painter sends.
+        PAINT_ONLY.ensure(doc)
         lap('validate')
         # A continuation batch starts where the last one on its layer ended: reuse that image
         # instead of re-rendering the whole canvas (reference jobs send hundreds of batches).

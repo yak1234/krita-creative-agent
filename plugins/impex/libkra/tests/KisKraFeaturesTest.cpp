@@ -583,4 +583,29 @@ void KisKraFeaturesTest::testResavingANewerVersionWarns()
     QVERIFY(current->exportDocumentSync(dir.filePath("resaved-current.kra"), current->nativeFormatMimeType()));
 }
 
+void KisKraFeaturesTest::testTransientFeaturesAreNeverSaved()
+{
+    // Paint only here's protection of the rest of the painting (kind "paint-only-here") lasts a chat, never a file.
+    QTemporaryDir dir;
+    FeatureDocument source;
+    KisPixelSelectionSP outside = new KisPixelSelection();
+    outside->select(QRect(0, 100, 300, 100));
+    source.add(new KisFeature("Outside the Paint only here area", "paint-only-here", outside, KisFeature::Artist, KisFeature::Kept, true));
+    QVERIFY(KisFeature::isTransientKind("paint-only-here"));
+    QVERIFY(!KisFeature::isTransientKind("sky"));
+    const QString path = source.save(dir);
+    QVERIFY(!path.isEmpty());
+    QDomDocument dom = readMaindoc(path);
+    QVERIFY(!dom.toString().contains("paint-only-here"));
+    QScopedPointer<KisDocument> loaded(loadKra(path));
+    QCOMPARE(featureNames(loaded->image()), QStringList({"Sky", "Moon", "Tower 3"}));
+
+    // Only a transient feature: nothing is written at all.
+    FeatureDocument alone(false);
+    alone.add(new KisFeature("Outside the Paint only here area", "paint-only-here", outside, KisFeature::Artist, KisFeature::Kept, true));
+    const QString alonePath = alone.save(dir, "alone.kra");
+    QDomDocument aloneDom = readMaindoc(alonePath);
+    QVERIFY(featuresElementOf(aloneDom).isNull());
+}
+
 KISTEST_TEMPORARY_HOME_MAIN(KisKraFeaturesTest)

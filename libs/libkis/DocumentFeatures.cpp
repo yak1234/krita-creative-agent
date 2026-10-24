@@ -103,6 +103,38 @@ Feature *Document::addFeature(const QString &rawName,
     return new Feature(image, feature);
 }
 
+Feature *Document::setTransientFeature(const QString &rawName, const QString &kind, Selection *mask, bool isProtected)
+{
+    KisImageSP image = imageOf(document());
+    if (!image || !mask || !mask->selection() || !isValidName(rawName) || !KisFeature::isTransientKind(kind)) return nullptr;
+    const QString name = featureName(rawName);
+    KisFeatureList *list = image->featureList();
+    KisFeatureSP existing = list->featureByName(name);
+    if (existing && !KisFeature::isTransientKind(existing->kind())) return nullptr;
+
+    KisPixelSelectionSP pixels = KisFeature::boundedMask(mask->selection()->projection(), image->bounds());
+    KisFeatureSP feature = new KisFeature(name, kind, pixels, KisFeature::Artist, KisFeature::Kept, isProtected);
+    if (!ScriptWaits::waitForQueuedWork(image, "Document.setTransientFeature()")) return nullptr;
+    feature->measure(image->projection());
+
+    // Directly into the list (it locks itself), never through a command: no undo step, no Redo cleared, no modified mark.
+    list->setMayHaveFeatures();
+    const int index = existing ? list->indexOf(existing->id()) : -1;
+    if (existing) list->removeFeature(existing->id());
+    if (!list->insertFeature(feature, index)) return nullptr;
+    return new Feature(image, feature);
+}
+
+bool Document::removeTransientFeature(const QString &name)
+{
+    KisImageSP image = imageOf(document());
+    if (!image) return false;
+    KisFeatureSP feature = image->featureList()->featureByName(featureName(name));
+    if (!feature || !KisFeature::isTransientKind(feature->kind())) return false;
+    if (!ScriptWaits::waitForQueuedWork(image, "Document.removeTransientFeature()")) return false;
+    return bool(image->featureList()->removeFeature(feature->id()));
+}
+
 bool Document::renameFeature(const QString &name, const QString &rawNewName)
 {
     KisImageSP image = imageOf(document());

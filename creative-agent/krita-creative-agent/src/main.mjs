@@ -72,6 +72,7 @@ async function handle(command) {
       case 'move': await runtime.moveAction(command); break;
       case 'plan_step': await runtime.planStep(command); break;     // Skip, Restore, Good enough, Met, Redo (plan-steps.ts validates)
       case 'closeup_answer': await runtime.answerCloseup(command); break;   // the panel's answer to a closeup_question
+      case 'paint_only_here': await runtime.setPaintOnlyHere(command); break;   // the panel's Paint only here area: set or clear
       case 'shapes_model': runtime.shapes.answer(['accept', 'enable'].includes(command.action) ? command.action : 'decline'); break;   // shapes_model_needed's answer, or Ask again
       case 'shutdown': await shutdown(); break;
       default: throw new Error('Unknown panel command.');

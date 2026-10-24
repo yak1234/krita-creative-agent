@@ -444,6 +444,11 @@ KisPixelSelectionSP KisFeature::boundedMask(KisPixelSelectionSP mask, const QRec
     return bounded;
 }
 
+bool KisFeature::isTransientKind(const QString &kind)
+{
+    return kind == QLatin1String("paint-only-here");
+}
+
 QString KisFeature::authorToString(Author author)
 {
     return author == Artist ? QStringLiteral("artist") : QStringLiteral("agent");

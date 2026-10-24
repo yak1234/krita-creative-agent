@@ -193,3 +193,20 @@ test('the canvas\u2019s own paint is adjusted: one accents call per paint_accent
   await tool.execute('a2', { reference_id: 'goal', kinds: ['lights'] });
   assert.equal(adjusts().length, 2, 'a later call is its own group in the move: Undo of the move removes both');
 });
+
+test('with a Paint only here area and no area given, accents work inside it: only those in its pixels, limited to its mask', async t => {
+  // The reference maps 4x onto the canvas: (150, 150) lands at (600, 600), (300, 300) at (1200, 1200).
+  const { tool, runtime, adjusts, passes } = await setup(t, { accents: [light(150, 150, 0.9), light(300, 300, 0.8), light(110, 110, 0.7)] });
+  const bounds = [400, 400, 600, 600], data = new Uint8Array(600 * 600);
+  for (let y = 100; y < 400; y++) for (let x = 100; x < 400; x++) data[y * 600 + x] = 255;      // canvas 500-799: (440, 440) is in the bounds, not the area
+  const { mkdir } = await import('node:fs/promises');
+  await mkdir(join(runtime.study.directory, '.shapes'), { recursive: true });
+  const mask_path = join(runtime.study.directory, '.shapes', 'paint-only-0123456789abcdef01234567.png');
+  await writeFile(mask_path, encodePlane({ width: 600, height: 600, data }));
+  runtime.paintOnlyArea = () => ({ mask_path, bounds });
+  await tool.execute('a1', { reference_id: 'goal', kinds: ['lights'] });
+  assert.equal(passes().length, 1, 'only the accent inside the selected pixels');
+  assert.deepEqual(adjusts()[0].params.inside_shape, { mask_path, bounds }, 'the plugin cuts the masks to the area');
+  await tool.execute('a2', { reference_id: 'goal', kinds: ['lights'], area: 'whole' });
+  assert.equal(adjusts()[1].params.inside_shape, undefined, 'an area the painter names still goes');
+});

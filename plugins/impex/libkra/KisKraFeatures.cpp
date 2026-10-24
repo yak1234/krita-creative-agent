@@ -95,11 +95,23 @@ bool readMask(KoStore *store, const QString &location, KisPixelSelectionSP mask)
     store->close();
     return ok;
 }
+/// The features a .kra keeps: all but the transient ones (KisFeature::isTransientKind(): Paint only here's protection
+/// lasts a chat, never a file).
+QList<KisFeatureSP> savedFeatures(KisImageSP image)
+{
+    QList<KisFeatureSP> result;
+    Q_FOREACH (KisFeatureSP feature, image->featureList()->features()) {
+        if (!KisFeature::isTransientKind(feature->kind())) result << feature;
+    }
+    return result;
+}
 } // namespace
 
 void saveToXML(QDomDocument &doc, QDomElement &imageElement, KisImageSP image)
 {
-    if (!image || image->featureList()->isEmpty()) return;
+    if (!image) return;
+    const QList<KisFeatureSP> saved = savedFeatures(image);
+    if (saved.isEmpty()) return;
 
     QDomElement featuresElement = doc.createElement(ElementName);
     featuresElement.setAttribute("version", Version);
@@ -110,7 +122,7 @@ void saveToXML(QDomDocument &doc, QDomElement &imageElement, KisImageSP image)
                  sourceVersion, Version, sourceVersion);
     }
 
-    Q_FOREACH (KisFeatureSP feature, image->featureList()->features()) {
+    Q_FOREACH (KisFeatureSP feature, saved) {
         const KisFeature::Properties properties = feature->properties();
 
         QDomElement e = doc.createElement(FeatureElement);
@@ -143,14 +155,16 @@ void saveToXML(QDomDocument &doc, QDomElement &imageElement, KisImageSP image)
 
 bool saveMasks(KoStore *store, const QString &imageName, KisImageSP image, QStringList *errors)
 {
-    if (!image || image->featureList()->isEmpty()) return true;
+    if (!image) return true;
+    const QList<KisFeatureSP> saved = savedFeatures(image);
+    if (saved.isEmpty()) return true;
 
     KisConfig cfg(true);
     store->setCompressionEnabled(cfg.compressKra());
     KisStorePaintDeviceWriter writer(store);
 
     bool success = true;
-    Q_FOREACH (KisFeatureSP feature, image->featureList()->features()) {
+    Q_FOREACH (KisFeatureSP feature, saved) {
         const QString location = maskLocation(imageName, maskFileName(feature));
         KisPixelSelectionSP mask = feature->mask();
 
@@ -215,6 +229,7 @@ void load(const QDomElement &featuresElement,
             name = QStringLiteral("Feature");
             warn(i18nc("Warning when loading a .kra file", "A feature had no name; it was called %1.", name));
         }
+        if (KisFeature::isTransientKind(e.attribute("kind"))) continue;     // never saved; a file that has one is not ours
         const QString fileName = e.attribute("mask");
         if (!isPlainFileName(fileName)) {
             warn(i18nc("Warning when loading a .kra file", "Feature %1 has no mask; it was not loaded.", name));

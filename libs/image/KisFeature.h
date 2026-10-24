@@ -174,6 +174,13 @@ public:
      */
     static KisPixelSelectionSP boundedMask(KisPixelSelectionSP mask, const QRect &bounds);
 
+    /**
+     * Whether features of \p kind are transient: set and removed outside the undo history (libkis
+     * Document.setTransientFeature()) and never saved in a .kra or loaded from one. Only "paint-only-here", Paint only
+     * here's protection of the rest of the painting (the Creative Agent plugin), which lasts a chat, not a file.
+     */
+    static bool isTransientKind(const QString &kind);
+
     static QString authorToString(Author author);
     /// "artist" or "agent"; anything else gives \p fallback.
     static Author authorFromString(const QString &value, Author fallback = Agent);

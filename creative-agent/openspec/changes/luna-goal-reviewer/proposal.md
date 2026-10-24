@@ -24,6 +24,14 @@ the right colour). Element names in the artist's messages are matched by keyword
    departures, the typed-stroke exemption. The keyword rules stay as the offline fallback; when Luna is off or
    unsure, the host does nothing irreversible (no step added, no undo).
 
+3. **Sharper eyes** (the artist, 2026-10-24; both models have ~1M-token windows, so size is about speed/cost, not
+   space). The painter's observe view grows from about 1024 px to up to 2048 px on the long side, and Luna's goal
+   comparison uses 1:1 crops (canvas pixels, the batch's area; several crops when the area is larger than one crop).
+   Not assumed, measured: many vision models shrink large images internally, so a resolution probe per model
+   (a synthetic image with fine detail — small numbers and dot counts — at 1024/1536/2048/2560 px and as 1:1 crops)
+   finds the size each model actually reads; the view size is set to the smallest size that keeps the detail, and a
+   larger view is not sent where the model would throw it away. Latency and cost per call are measured and reported.
+
 ## Non-goals
 
 - Luna never paints and never decides alone to restart or repaint; it judges and routes.

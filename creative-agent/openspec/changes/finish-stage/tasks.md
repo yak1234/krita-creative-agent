@@ -5,7 +5,7 @@
 - [x] 1.2 Companion: paint_finish tool, goal placement, progress, likeness, Undo; default folder plan underpainting -> finish -> accents
 - [x] 1.3 Sharpen offer for any attached goal; "no more detail, sharpen it" guidance
 - [x] 1.4 Tests (Python under PyQt5 and PyQt6, companion unit), timings on the New Moscow copy
-- [ ] 1.5 Live in Toska on a copy (lead)
+- [x] 1.5 Live in Toska on a copy (lead, 2026-10-24, build 9cf3db8b): plan underpainting -> Finish -> accents; Sharpen card; underpainting 10 min (ΔE 61.9 -> 0.3); Finish 70 s, 108 squares, progress on the Now card, look matches the spike; accents 15 s; Finish with Paint only here on the sky: outside unchanged (3 of 1.4 M preview pixels over 8 levels). Not verified live: Undo of a Finish move by pixels (the move was marked undone; preview vs export comparison inconclusive), Stop mid-Finish, the attach-after-underpainting Sharpen case, the no-more-detail note
 
 Builder's notes (section 1): `finish_pass.py` (plugin operation `finish`) runs the spike's algorithm per 512 px tile: each
 tile reads the clean composite below the Finish group (one read of the padded work, before anything is written) and the

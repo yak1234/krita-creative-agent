@@ -3052,6 +3052,7 @@ export class StudioRuntime extends PaintingRuntime {
   }
   /** Undo a move: its passes hidden through the pass review, its status undone. */
   async rejectMove(move) {
+    this.stopsAtUndo = this.stops ?? 0;                 // a Stop during the undo means no retry (retryMove)
     await this.reviewPass({action:'reject', pass_id:'stage:move-'+move.number});
     move.status = 'undone';
     // An undone colour pass is not done: the reference-first skills go in again in full (reference-first.ts).
@@ -3062,6 +3063,11 @@ export class StudioRuntime extends PaintingRuntime {
    * made a retry drop good cloud forms and fill flat over the moon, in a live test). A plan step's retry paints that same
    * step, with what the artist said to change (plan-steps.ts). */
   retryMove(move, note) {
+    // LIVE (2026-10-24): Stop pressed while Redo undid the move was cleared when the retry started, and the retry painted.
+    if ((this.stops ?? 0) !== this.stopsAtUndo) {
+      this.setActivity('idle', `Move ${move.number} undone. Stopped, so it is not painted again.`);
+      return Promise.resolve();
+    }
     const did = move.summary ?? move.title;
     return this.prompt(`I undid move ${move.number}${did ? ` (it ${String(did).replace(/^[A-Z]/, c => c.toLowerCase())})` : ''}. Try a different way to do the same request: keep what already works in the painting, refine existing forms rather than repainting them, and do not repeat what that move did.${note ? ` What to change: ${note}` : ''}`,
       {move_kind:move.guides_only ? 'guides' : 'retry', ...(move.step_key ? {plan_step_key:move.step_key} : {})});
@@ -3389,6 +3395,7 @@ export class StudioRuntime extends PaintingRuntime {
   // companion's shutdown and every test cleanup dispose before removing a data folder.
   dispose() { this.store?.close?.(); }
   stop(clearQueued = true) {
+    if (clearQueued) this.stops = (this.stops ?? 0) + 1;   // the artist's Stop (retryMove); a typed message's own stop is not
     this.sleepGuard.stop();
     this.shapes?.stop?.();                             // a pending shape-model question or download is cancelled
     if (this.transition) this.transition.cancelled=true;

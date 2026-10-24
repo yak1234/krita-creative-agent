@@ -3842,6 +3842,23 @@ test('Met keeps a finished step and goes on; Redo undoes it and retries with wha
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
 });
 
+test('Stop pressed while Redo undoes the move: the move stays undone and nothing is painted again',{timeout:60000},async()=>{
+ // LIVE (Toska, 2026-10-24): Stop right after Redo was cleared when the retry started, and the retry painted.
+ const root=await projectFolder();
+ const {h}=await folderMoves({root});
+ try {
+  await h.runtime.prompt('',{start_plan:true});
+  const reviewPass=h.runtime.reviewPass.bind(h.runtime);
+  h.runtime.reviewPass=async(...args)=>{ const result=await reviewPass(...args); h.runtime.stop(); return result; };
+  const statuses=[], emit=h.runtime.emit.bind(h.runtime);
+  h.runtime.emit=event=>{ if(event?.type==='status') statuses.push(event.message); return emit(event); };
+  await stepCommand(h,'redo',0);
+  assert.equal(h.runtime.goal.moves[0].status,'undone');
+  assert.equal(h.runtime.goal.moves.length,1,'no retry move was started');
+  assert.match(statuses.at(-1) ?? '',/Move 1 undone.*not painted again/);
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
 test('without a folder, a plan started in Agent mode paints step by step: Met goes on to the next step not skipped',{timeout:60000},async()=>{
  const turns=new Map(); let h;
  h=await harness(req=>{

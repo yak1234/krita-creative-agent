@@ -7,7 +7,7 @@ import { mkdtemp, readFile, rm, writeFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { findArea, promptsFromCells, cleanMask, leakShare, toCanvas, timingLine, readFound, foundPath, checkRequest, FindError, POSITIVE, NEGATIVE } from '../src/find-it.ts';
-import { decisionLocator, gridPicture, gridSize, cellRect, unanswered, GRID_CELLS, LOCATE_PIXELS } from '../src/find-it-locate.ts';
+import { decisionLocator, gridPicture, gridSize, cellRect, unanswered, fitRgba, GRID_CELLS, LOCATE_PIXELS, ENLARGE } from '../src/find-it-locate.ts';
 import { decodePlane, encodePlane } from '../src/shapes/png.ts';
 import { decodeRgba, pngSize } from '../src/png-rgba.ts';
 
@@ -281,7 +281,8 @@ test('a thin part that fills no cell: the cells showing any of it are looked at 
   assert.ok(decider.requests.every(r => r.purpose === 'find-it'));
   assert.match(decider.requests[0].questions.any_12.instructions, /^Does cell 12 \(the yellow-outlined cell labelled 12\) show any part of the bridge\?$/);
   const zoomed = pngSize(Buffer.from(decider.requests[1].parts[1].data, 'base64'));
-  assert.deepEqual([zoomed.width, zoomed.height], [768, 128], 'row 4, columns 2-7 of the first grid, at the view\'s own pixels');
+  // Row 4, columns 2-7 of the first grid: a 768 x 128 cut of the view, enlarged on its proportions.
+  assert.ok(zoomed.width >= 2 * 768 && Math.abs(zoomed.width / zoomed.height - 6) < 0.05, `${zoomed.width} x ${zoomed.height}`);
   assert.deepEqual(cells.area, [128 / 1024, 384 / 768, 896 / 1024, 512 / 768]);
   assert.equal(cells.looks, 2);
   const { prompts, negatives } = promptsFromCells(cells, 1024, 768);
@@ -321,5 +322,68 @@ test('a thin part is found end to end: points on it, its outline merged, not "I 
     assert.deepEqual(found.bounds, [480, 800, 1280, 80], 'the bridge on the 2048 x 1536 canvas');
     assert.equal(found.locate_looks, 2);
     assert.ok(shapes.length >= 8 && found.kept === shapes.length, `${found.kept} of ${shapes.length}`);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+// LIVE in Toska (2026-10-24, the build with the thin-part fix): "Domed church" on New Moscow's goal, "I could not see Domed
+// church". The church is small: it showed in six cells of the whole view and in two of the enlarged look, and no cell was
+// ever mostly it (0.21-0.34), so the zoom ran on into a 272 x 181 cut the grid's numbers covered. A small part: a 20 px
+// square on the corner of four cells of a 1024 x 768 view.
+const onSquare = (x, y) => x >= 374 && x < 394 && y >= 374 && y < 394;
+
+test('an enlarged look is a larger picture: a small cut grows 2-4 times a side; one that would grow less is sent as it is', () => {
+  const small = fitRgba({ width: 272, height: 181, data: new Uint8Array(272 * 181 * 4) }, LOCATE_PIXELS);
+  assert.deepEqual([small.width, small.height], [272 * ENLARGE, 181 * ENLARGE]);
+  const large = { width: 1086, height: 724, data: new Uint8Array(1086 * 724 * 4) };
+  assert.equal(fitRgba(large, LOCATE_PIXELS), large, 'the bridge\'s cut: grown 1.15 times it is sent as it is');
+  const huge = fitRgba({ width: 2309, height: 1732, data: new Uint8Array(2309 * 1732 * 4) }, LOCATE_PIXELS);
+  assert.ok(huge.width * huge.height <= LOCATE_PIXELS);
+});
+
+test('a small part that no cell is mostly, even enlarged: the few cells showing it, one box around them half a cell wider', async () => {
+  const decider = seeingDecider(), view = paintedView(1024, 768, onSquare);
+  const cells = await decisionLocator(async () => decider)('the church', view);
+  assert.equal(decider.requests.length, 2, 'the whole view, then the four cells showing it, enlarged');
+  const sent = pngSize(Buffer.from(decider.requests[1].parts[1].data, 'base64'));
+  assert.deepEqual([sent.width, sent.height], [1024, 1024], 'the 256 x 256 cut, four times a side');
+  assert.equal(cells.small, true); assert.equal(cells.looks, 2);
+  const { prompts, box } = promptsFromCells(cells, 1024, 768);
+  assert.deepEqual(prompts, [], 'no point at a cell\'s centre');
+  const [x, y, w, h] = box;
+  assert.ok(x <= 374 && y <= 374 && x + w >= 394 && y + h >= 394, 'the box holds the part: ' + box);
+  assert.ok(w < 100 && h < 100, 'and little else: ' + box);
+  // A thin part keeps its points (the bridge); the sky its cells; neither is small.
+  const bridge = await decisionLocator(async () => seeingDecider())('the bridge', paintedView(1024, 768, onBridge));
+  assert.equal(bridge.small, undefined); assert.ok(promptsFromCells(bridge, 1024, 768).prompts.length >= 8);
+});
+
+test('a small part is found end to end from its box; a mask mostly outside the box is something else and is dropped', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'find-it-'));
+  try {
+    const W = 1024, H = 768, asked = [];
+    let behind = false;                                   // the shapes model answers the box with the building behind it
+    const service = {
+      async study() { return { ms: 1, load_ms: 0, peak_mb: 1, provider: 'cpu', studied: true, attempt: 1 }; },
+      async shape(_id, prompt) {
+        asked.push(prompt);
+        const square = prompt.box && !behind, [bx, by, w, h] = square ? [374, 374, 20, 20] : [300, 0, 200, 400];
+        const mask_path = join(directory, `mask-${asked.length}.png`);
+        await writeFile(mask_path, encodePlane({ width: w, height: h, data: new Uint8Array(w * h).fill(255) }));
+        return { bounds: [bx, by, w, h], score: 0.9, mask_path, model: 'fake', revision: 'r', ms: 2, peak_mb: 1, provider: 'cpu', cached: false };
+      },
+      async forget() {}, async close() {},
+    };
+    const view = join(directory, 'view.png'); await writeFile(view, 'view');
+    const host = { directory, shapes: service, shapeStudies: new Map(),
+      view: async () => ({ path: view, width: 2 * W, height: 2 * H, revision: 'rev-1' }),
+      pixels: async () => ({ sha: 'c'.repeat(64), pixels: paintedView(W, H, onSquare) }),
+      locate: decisionLocator(async () => seeingDecider()) };
+    const found = await findArea(host, { part: 'Domed church' });
+    assert.equal(asked.length, 1); assert.ok(asked[0].box, 'one box prompt');
+    assert.deepEqual(found.bounds, [748, 748, 40, 40], 'the square on the 2048 x 1536 canvas');
+    assert.deepEqual([found.prompts, found.kept, found.locate_looks], [1, 1, 2]);
+    behind = true; host.view = async () => ({ path: view, width: 2 * W, height: 2 * H, revision: 'rev-2' });
+    host.pixels = async () => ({ sha: 'd'.repeat(64), pixels: paintedView(W, H, onSquare) });
+    await assert.rejects(findArea(host, { part: 'Domed church' }), e => e.code === 'not_found' && /No outline of Domed church/.test(e.message));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

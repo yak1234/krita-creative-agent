@@ -20,9 +20,15 @@
 // it are looked at again, cut from the view at its own pixels and with their own grid, until cells are mostly the part
 // (the bridge's band, enlarged: one cell 0.82), at most LOOKS requests. Bridges, railings, rivers, power lines, any part
 // thinner than a cell; a part that fills cells (the sky) takes one request as before.
+// A small part fills no cell even enlarged (LIVE in Toska, 2026-10-24: "Domed church" on the same goal showed in six cells
+// of the whole view and two of the enlarged look, mostly it at most 0.34, and the zoom ran on into a 272 x 181 cut the
+// numbers covered). An enlarged look's cut is now grown to the picture size (fitRgba), and on an enlarged look where at
+// most FEW cells show the part and none is mostly it, those cells come back as a small part (Cells.small): find-it.ts
+// gives the shapes model one box around them instead of points at their centres.
 // Mechanism only: the decision client comes in as a small interface; this module imports no .mjs.
 import { encodeRgb } from './shapes/png.ts';
 import { reduceRgba } from './bounded-image.ts';
+import { resizeBilinear } from './shapes/image.ts';
 
 export type Rgba = { width: number; height: number; data: Uint8Array };
 /** The grid picture the model read: its size in pixels and PNG bytes. */
@@ -34,7 +40,9 @@ export type Box = [number, number, number, number];
  * is not (cells showing none of it), for the leak check; when absent, the cells at or below NEGATIVE are. `looks`: the
  * requests it took (more than one for a thin part). */
 export type Cells = { cols: number; rows: number; p: number[]; ms: number; model?: string; picture?: LocatePicture;
-  area?: Box; guard?: Box[]; looks?: number };
+  area?: Box; guard?: Box[]; looks?: number;
+  /** A small part: `p` is whether each cell shows any of it (none was mostly it on an enlarged look). */
+  small?: boolean };
 /** No answer, and why: the decision client's fallback (not_connected, timeout, refused, service_or_response_error...), its
  * HTTP status or error name when it has one, how long it took, and the picture sent. */
 export type Unanswered = { fallback: string; status?: number; error?: string; ms: number; picture?: LocatePicture };
@@ -50,9 +58,13 @@ export const GRID_CELLS = 48;
 export const LOCATE_PIXELS = 1024 * 1024;
 /** A cell at or above this probability is the part (or shows it); at or below NEGATIVE it is not. */
 export const POSITIVE = 0.6, NEGATIVE = 0.15;
-/** Requests at most for one part: the whole view, then up to two enlarged looks at the cells showing a thin part. */
+/** Requests at most for one part: the whole view, then up to two enlarged looks at the cells showing a thin or small part. */
 export const LOOKS = 3;
 export const WHOLE: Box = [0, 0, 1, 1];
+/** An enlarged look's picture is at most this many times the view's pixels a side. */
+export const ENLARGE = 4;
+/** On an enlarged look, at most this many cells showing a part and none mostly it: a small part, pointed at there. */
+export const FEW = 4;
 export function gridSize(width: number, height: number, cells = GRID_CELLS): { cols: number; rows: number } {
   const cols = Math.max(2, Math.round(Math.sqrt(cells * width / height)));
   return { cols, rows: Math.max(2, Math.round(cells / cols)) };
@@ -70,6 +82,18 @@ export function cellBox(index: number, cols: number, rows: number, area: Box = W
 /** A box in `width` x `height` pixels: [x0, y0, x1, y1). */
 export const boxPixels = (box: Box, width: number, height: number): [number, number, number, number] =>
   [Math.round(box[0] * width), Math.round(box[1] * height), Math.round(box[2] * width), Math.round(box[3] * height)];
+/** The picture on its own proportions at most `pixels`: reduced when larger; enlarged (bilinear, 2-ENLARGE times a side)
+ * when it fits twice a side or more, so an enlarged look at a small part is not a small picture under the grid's numbers
+ * (New Moscow's domed church: a 272 x 181 cut). A picture that would grow less is sent as it is: the bridge's 1086 x 724
+ * cut, grown 1.15 times, changed the model's answers for no more detail. */
+export function fitRgba(image: Rgba, pixels: number): Rgba {
+  if (image.width * image.height >= pixels) return reduceRgba(image, pixels);
+  const k = Math.min(ENLARGE, Math.sqrt(pixels / (image.width * image.height)));
+  if (k < 2) return image;
+  const width = Math.max(1, Math.floor(image.width * k)), height = Math.max(1, Math.floor(image.height * k));
+  if (width === image.width && height === image.height) return image;
+  return { width, height, data: resizeBilinear(image.data, image.width, image.height, 4, width, height) };
+}
 /** `box` of the view, cut out at the view's own pixels. */
 function cut(view: Rgba, box: Box): Rgba {
   const [x0, y0, x1, y1] = boxPixels(box, view.width, view.height), width = Math.max(1, x1 - x0), height = Math.max(1, y1 - y0);
@@ -132,7 +156,7 @@ export function decisionLocator(client: () => Promise<Decider | null>, { cells =
     let area = WHOLE;
     for (let look = 1; ; look++) {
       const seen = cut(view, area), { cols, rows } = gridSize(seen.width, seen.height, cells);
-      const shown = reduceRgba(seen, pixels), png = encodeRgb(gridPicture(shown, cols, rows));
+      const shown = area === WHOLE ? reduceRgba(seen, pixels) : fitRgba(seen, pixels), png = encodeRgb(gridPicture(shown, cols, rows));
       const picture = { width: shown.width, height: shown.height, bytes: png.length };
       const questions: Record<string, unknown> = {};
       for (let i = 1; i <= cols * rows; i++)
@@ -156,12 +180,18 @@ export function decisionLocator(client: () => Promise<Decider | null>, { cells =
       };
       const p = Array.from({ length: cols * rows }, (_, i) => answer('cell_' + (i + 1)));
       const any = Array.from({ length: cols * rows }, (_, i) => answer('any_' + (i + 1)));
+      const earlier = guard.length;
       for (let i = 0; i < any.length; i++) if (any[i]! <= NEGATIVE) guard.push(cellBox(i, cols, rows, area));
       const found: Cells = { cols, rows, p, ms: ms(), picture, ...(result.model ? { model: result.model } : {}),
         ...(look > 1 ? { area, guard, looks: look } : {}) };
-      if (p.some(value => value >= POSITIVE) || look >= looks) return found;
-      // No cell is mostly the part: the box around the cells showing it, unless that is no smaller than this look.
+      if (p.some(value => value >= POSITIVE)) return found;
       const showing = any.flatMap((value, i) => value >= POSITIVE ? [cellBox(i, cols, rows, area)] : []);
+      // A small part on an enlarged look: a few cells show it and none is mostly it. Those cells are where to point; the
+      // guard is the earlier looks' only, since this look's neighbouring cells can hold the rest of it.
+      if (look > 1 && showing.length && showing.length <= FEW)
+        return { ...found, p: any, guard: guard.slice(0, earlier), small: true };
+      if (look >= looks) return found;
+      // No cell is mostly the part: the box around the cells showing it, unless that is no smaller than this look.
       if (!showing.length) return found;
       const next: Box = [Math.min(...showing.map(b => b[0])), Math.min(...showing.map(b => b[1])), Math.max(...showing.map(b => b[2])), Math.max(...showing.map(b => b[3]))];
       const [x0, y0, x1, y1] = boxPixels(next, view.width, view.height);

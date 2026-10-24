@@ -30,14 +30,17 @@ import { SHAPES_MODEL } from './shapes/model.ts';
 import { boxPixels, cellBox, NEGATIVE, POSITIVE, unanswered, type Cells, type PartLocator, type Rgba, type Unanswered } from './find-it-locate.ts';
 
 export { NEGATIVE, POSITIVE };
-export const FINDER_VERSION = 3;                         // 2: a named part is found on the goal when it is placed (goal());
-                                                         // 3: a thin part is looked at again, enlarged (find-it-locate.ts)
+export const FINDER_VERSION = 4;                         // 2: a named part is found on the goal when it is placed (goal());
+                                                         // 3: a thin part is looked at again, enlarged (find-it-locate.ts);
+                                                         // 4: a small part is one box around the few cells showing it
 /** The goal is looked at as a copy of at most this many pixels (the studio's host.pixels, bounded-image.ts): the shapes
  * model works at 1024 a side and the locator's grid at LOCATE_PIXELS, so a goal sharpened 4x (25 million pixels) is
  * never decoded whole for Find it (LIVE rehearsal 2, 2026-10-24: 4.7 s of trace_reference on Krita's GUI thread). */
 export const FIND_PIXELS = 2_000_000;
 /** A cell's mask is dropped when more than this share of it lies in "not" cells: it leaked into another object. */
 export const LEAK = 0.25;
+/** A small part's mask is kept when at least this share of it lies in its box (not something larger passing through). */
+export const IN_BOX = 0.5;
 /** A clicked point's mask below this score is still loaded (the artist sees it and adjusts), with a note. */
 export const UNSURE = 0.6;
 /** Found areas kept in a chat's .shapes. */
@@ -112,13 +115,23 @@ type Point = [number, number, number];
  * Why one point a prompt: on New Moscow's sky (real SAM 2.1 base-plus, 2026-10-24) single points scored 0.96-0.99 and
  * merged into a clean sky; adding the two nearest "not" cells as negative points dropped scores to 0.28-0.94 and left
  * holes, four of them to 0.31-0.86, and all the cells in one prompt missed the moon. "Not" cells guard instead: a mask
- * that leaks into them is dropped. */
-export function promptsFromCells(cells: Cells, width: number, height: number): { prompts: Point[][]; negatives: Rect[] } {
+ * that leaks into them is dropped.
+ * A small part (cells.small: a few cells show it on an enlarged look, none is mostly it) is one box instead, [x, y, w, h]:
+ * around those cells and half a cell wider on each side. On New Moscow's goal (real SAM 2.1 base-plus, 2026-10-24) the
+ * domed church showed in two cells of 68 x 60 view pixels; a point at either centre found the tall building behind it or
+ * one dome, the box of the two cells the domes only, and the widened box the church. */
+export function promptsFromCells(cells: Cells, width: number, height: number): { prompts: Point[][]; negatives: Rect[]; box?: Rect } {
   const cell = (i: number) => boxPixels(cellBox(i, cells.cols, cells.rows, cells.area), width, height);
   const centre = (i: number): [number, number] => { const [x0, y0, x1, y1] = cell(i); return [(x0 + x1) / 2, (y0 + y1) / 2]; };
   const yes = cells.p.map((p, i) => [p, i] as const).filter(([p]) => p >= POSITIVE).sort((a, b) => b[0] - a[0] || a[1] - b[1]).map(([, i]) => i);
   const no = cells.guard ? cells.guard.map(box => boxPixels(box, width, height))
     : cells.p.map((p, i) => [p, i] as const).filter(([p]) => p <= NEGATIVE).map(([, i]) => cell(i));
+  if (cells.small && yes.length) {
+    const rects = yes.map(cell), [cx0, cy0, cx1, cy1] = rects[0]!, mx = (cx1 - cx0) / 2, my = (cy1 - cy0) / 2;
+    const x0 = Math.max(0, Math.round(Math.min(...rects.map(r => r[0])) - mx)), y0 = Math.max(0, Math.round(Math.min(...rects.map(r => r[1])) - my));
+    const x1 = Math.min(width, Math.round(Math.max(...rects.map(r => r[2])) + mx)), y1 = Math.min(height, Math.round(Math.max(...rects.map(r => r[3])) + my));
+    return { prompts: [], negatives: no, box: [x0, y0, x1 - x0, y1 - y0] };
+  }
   return { prompts: yes.map(i => [[...centre(i), 1] as Point]), negatives: no };
 }
 
@@ -173,6 +186,18 @@ export function cleanMask(mask: Uint8Array, width: number, height: number, seeds
     const edge = members.some(m => { const x = m % width, y = Math.floor(m / width); return x === 0 || y === 0 || x === width - 1 || y === height - 1; });
     if (!edge && members.length < hole) for (const m of members) mask[m] = 255;
   }
+}
+
+/** The mask's pixel nearest (x, y), as a seed for cleaning; null when the mask is empty. */
+function nearestInside(found: { bounds: Rect; data: Uint8Array }, x: number, y: number): number[] | null {
+  const [bx, by, bw, bh] = found.bounds;
+  let best: number[] | null = null, distance = Infinity;
+  for (let j = 0; j < bh; j++) for (let i = 0; i < bw; i++) {
+    if ((found.data[j * bw + i] ?? 0) < 128) continue;
+    const d = (bx + i - x) ** 2 + (by + j - y) ** 2;
+    if (d < distance) { distance = d; best = [bx + i + 0.5, by + j + 0.5, 1]; }
+  }
+  return best;
 }
 
 const covers = (found: { bounds: Rect; data: Uint8Array }, x: number, y: number) => {
@@ -252,7 +277,7 @@ export async function findArea(host: FindHost, request: FindRequest): Promise<Fo
 
   const view_w = pixels.width, view_h = pixels.height, kx = view_w / view.width, ky = view_h / view.height;
   const data = pixels.data instanceof Uint8Array ? pixels.data : new Uint8Array(pixels.data);
-  let prompts: Point[][], negatives: Rect[] = [], cells: Cells | null = null, locateMs = 0;
+  let prompts: Point[][], negatives: Rect[] = [], box: Rect | undefined, cells: Cells | null = null, locateMs = 0;
   if ('points' in checked) prompts = [checked.points.map(([x = 0, y = 0, label = 1]) => [Math.min(view_w, x * kx), Math.min(view_h, y * ky), label] as Point)];
   else {
     if (!host.locate) throw new FindError('no_locator', `Finding ${part} by name needs a decision model that reads images (Settings › Decisions). Select it with the Freehand tool instead.`);
@@ -262,26 +287,29 @@ export async function findArea(host: FindHost, request: FindRequest): Promise<Fo
     if (unanswered(located)) throw new FindError('no_locator', `The decision model did not answer where ${part} is. ${FREEHAND}`,
       located ?? { fallback: 'no_answer', ms: locateMs });
     cells = located;
-    ({ prompts, negatives } = promptsFromCells(cells, view_w, view_h));
-    if (!prompts.length) throw new FindError('not_found', `I could not see ${part} on the painting. Try another name for it, or select it with the Freehand tool.`);
+    ({ prompts, negatives, box } = promptsFromCells(cells, view_w, view_h));
+    if (!prompts.length && !box) throw new FindError('not_found', `I could not see ${part} on the painting. Try another name for it, or select it with the Freehand tool.`);
   }
   const shaping = performance.now(), union = new Uint8Array(view_w * view_h), scores: number[] = [];
   const studyKey = `${goal ? 'goal' : 'canvas'}:${sha.slice(0, 24)}`;   // canvasShape's key for the view: one study per picture
-  for (const prompt of prompts) {
+  const asked: ({ points: Point[] } | { box: Rect })[] = box ? [{ box }] : prompts.map(points => ({ points }));
+  const seeds = prompts.flatMap(prompt => prompt.filter(point => point[2] === 1)) as number[][];
+  for (const prompt of asked) {
     host.signal?.throwIfAborted();
     let found: Found;
-    try { found = await findShape(host, studyKey, { width: view_w, height: view_h, data }, { points: prompt }); }
+    try { found = await findShape(host, studyKey, { width: view_w, height: view_h, data }, prompt); }
     catch (error) { if ((error as { code?: unknown }).code === 'empty' || /No shape was found/.test((error as Error).message)) continue; throw error; }
-    const [px = 0, py = 0] = prompt[0]!;
     if (cells) {
-      if (!covers(found, px, py)) continue;                                                 // it found something else
+      if ('points' in prompt) { const [px = 0, py = 0] = prompt.points[0]!; if (!covers(found, px, py)) continue; }   // it found something else
+      else { const [x, y, w, h] = prompt.box; if (leakShare(found, [[x, y, x + w, y + h]], view_w, view_h) < IN_BOX) continue; }
       if (negatives.length && leakShare(found, negatives, view_w, view_h) > LEAK) continue;
     }
+    if ('box' in prompt) { const [x, y, w, h] = prompt.box, seed = nearestInside(found, x + w / 2, y + h / 2); if (seed) seeds.push(seed); }
     const [bx, by, bw, bh] = found.bounds;
     for (let j = 0; j < bh; j++) for (let i = 0; i < bw; i++) if ((found.data[j * bw + i] ?? 0) >= 128) union[(by + j) * view_w + bx + i] = 255;
     scores.push(found.result.score);
   }
-  cleanMask(union, view_w, view_h, prompts.flatMap(prompt => prompt.filter(point => point[2] === 1)));
+  cleanMask(union, view_w, view_h, seeds);
   const shapesMs = elapsed(shaping);
   const merged = goal ? mapToCanvas(union, { width: view_w, height: view_h }, view, goalMapping(goal, { width: view_w, height: view_h }), goal.placement.target)
     : toCanvas(union, { width: view_w, height: view_h }, view);
@@ -290,7 +318,7 @@ export async function findArea(host: FindHost, request: FindRequest): Promise<Fo
   await writeFile(mask_path, encodePlane({ width: merged.bounds[2], height: merged.bounds[3], data: merged.data }));
   const score = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length * 100) / 100;
   const result: Omit<FoundArea, 'part' | 'mask_path' | 'cached' | 'ms'> = { bounds: merged.bounds, canvas: [view.width, view.height],
-    share: Math.round(merged.inside / (view.width * view.height) * 10000) / 10000, score, prompts: prompts.length, kept: scores.length,
+    share: Math.round(merged.inside / (view.width * view.height) * 10000) / 10000, score, prompts: asked.length, kept: scores.length,
     revision: view.revision ?? null, found_on: goal ? 'goal' : 'canvas', ...(cells?.model ? { located_by: cells.model } : {}),
     looked_at: [view_w, view_h], ...(cells?.picture ? { locate_picture: cells.picture } : {}), ...((cells?.looks ?? 1) > 1 ? { locate_looks: cells!.looks! } : {}),
     ...(!cells && score < UNSURE ? { note: `The outline is uncertain (score ${score}): adjust it with Freehand (Shift adds, Alt subtracts), or click again.` } : {}) };

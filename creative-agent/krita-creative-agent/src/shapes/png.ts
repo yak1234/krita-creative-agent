@@ -65,13 +65,23 @@ export function decodePlane(file: Uint8Array, limit?: { width: number; height: n
 /** A grey 8-bit PNG, every row filter 0. */
 export function encodePlane({ width, height, data }: Plane): Buffer {
   if (data.length !== width * height || !width || !height) throw new Error('A shape plane needs width x height bytes.');
-  const raw = Buffer.alloc(height * (width + 1));
-  for (let y = 0; y < height; y++) raw.set(data.subarray(y * width, (y + 1) * width), y * (width + 1) + 1);
+  return encodeRows(width, height, 1, data);
+}
+
+/** An RGB 8-bit PNG (three bytes a pixel), every row filter 0: a picture for a decision model. */
+export function encodeRgb({ width, height, data }: Plane): Buffer {
+  if (data.length !== width * height * 3 || !width || !height) throw new Error('An RGB picture needs width x height x 3 bytes.');
+  return encodeRows(width, height, 3, data);
+}
+
+function encodeRows(width: number, height: number, channels: 1 | 3, data: Uint8Array): Buffer {
+  const stride = width * channels, raw = Buffer.alloc(height * (stride + 1));
+  for (let y = 0; y < height; y++) raw.set(data.subarray(y * stride, (y + 1) * stride), y * (stride + 1) + 1);
   const chunk = (kind: string, body: Buffer) => {
     const head = Buffer.alloc(8); head.writeUInt32BE(body.length, 0); head.write(kind, 4, 'latin1');
     const tail = Buffer.alloc(4); tail.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), body])), 0);
     return Buffer.concat([head, body, tail]);
   };
-  const header = Buffer.alloc(13); header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4); header[8] = 8;
+  const header = Buffer.alloc(13); header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = channels === 3 ? 2 : 0;
   return Buffer.concat([SIGNATURE, chunk('IHDR', header), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
 }

@@ -5,6 +5,13 @@ description: Paint or replace a sky (night, dusk, storm, clear) as one convincin
 
 # Paint a sky
 
+**A sky the artist names, or a project folder's sky step:** with no Paint only here area, call `ask_for_selection`
+(the host proposes the shapes model's outline of the sky for the artist to confirm; never a seed or colour selection
+for it). With the area set: `paint_from_reference` of the goal image, the whole goal over the whole canvas (only the
+dabs inside the area are painted), then `paint_accents`, which works in the area. In an element step the host refuses
+seeds, colour ranges, `split_by_color`, materials and typed strokes unless the artist asks for them; the routes below
+are for a sky no reference shows.
+
 **Which route:** your instructions say how many AI images this chat allows. With one available, use the
 **AI image route**; with AI images off or used up, use the **hand-painted route** and do not call `make_asset`.
 Tool details for the AI image route (prompts, checking assets, scripts) are in the `image-asset` skill.

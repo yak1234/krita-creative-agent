@@ -3197,15 +3197,20 @@ test('after Keep the step is ticked, PLAN.md updated, NOTES.md gains a line and 
   assert.doesNotMatch(firstText,/PROJECT FOLDER MOVE[^\n]*draw_guide/,'no guides by default');
   await h.runtime.moveAction({action:'keep',move:1});
   assert.deepEqual(h.runtime.goal.done_steps,[0]);
+  // The next step is an element with no Paint only here area: its card comes first (the artist, 2026-10-24). This artist
+  // types their own answer: everywhere, by hand (typed strokes in an element step only when the artist asks for them).
+  assert.equal(h.runtime.goal.moves.length,1,'the element step waits for its area');
+  assert.equal(h.events.filter(e=>e.type==='question').at(-1).select_area.part,'Moonlit sky');
+  await h.runtime.prompt('Paint it everywhere, by hand.');
   const second=h.runtime.goal.moves[1];
-  assert.deepEqual([second.step,second.status],[1,'ready'],'Keep starts the next element\'s move, which stops for Keep / Undo again');
+  assert.deepEqual([second.step,second.status],[1,'ready'],'the answer starts the element\'s move, which stops for Keep / Undo again');
   const skyText=latestUserText(painters[1]);
-  assert.match(skyText,/Paint step 2 of the plan: Moonlit sky/);
+  assert.match(skyText,/PROJECT FOLDER MOVE: paint only step 2 of the approved plan, "Moonlit sky"/);
   const sky=h.runtime.study.references.find(r=>r.folder_name==='assets/01-moonlit-sky.png');
   assert.ok(skyText.includes(sky.id),'the move names the element\'s reference');
   assert.doesNotMatch(skyText,/First draw_guide/,'an element move draws no guide unless asked');
   assert.match(skyText,/guide[^.]*only when the artist asks/i);
-  assert.equal(imagesInLatestMessage(painters[1]).length,3,'the goal, this element and the canvas: not every element of the folder');
+  assert.deepEqual(h.runtime.painterReferences().map(r=>r.folder_name ?? r.role).sort(),['assets/01-moonlit-sky.png','final_goal.png'].sort(),'the goal and this element: not every element of the folder');
   await h.runtime.moveAction({action:'keep',move:2});
   assert.deepEqual(h.runtime.goal.done_steps,[0,1]);
   const finished=h.calls.filter(c=>c.operation==='finish_guide').map(c=>c.params.element);
@@ -3253,11 +3258,19 @@ test('the default folder plan: underpainting, accents, then the artist is asked;
   await h.runtime.prompt('Refine the Kremlin towers.');
   assert.deepEqual(h.runtime.goal.brief.steps.map(s=>[s.title,s.scope]).at(-1),['Kremlin towers','assets/04-kremlin-towers.png']);
   assert.equal(h.runtime.goal.approved_revision,h.runtime.goal.revision,'the artist asked for it: no second approval');
+  // No Paint only here area yet: the card asks for the element's area first (the artist, 2026-10-24), nothing paints before.
+  const card=h.events.filter(e=>e.type==='question').at(-1);
+  assert.deepEqual(card.options,['Find it for me','Select with Freehand','Use my selection','Paint everywhere'],'no shapes model here: the plain card');
+  assert.deepEqual([card.select_area.part,card.select_area.request],['Kremlin towers','Refine the Kremlin towers.']);
+  assert.equal(painters.length,2,'the element step waits for the answer');
+  await h.runtime.prompt('Paint everywhere');
   const towers=h.runtime.goal.moves.at(-1);
   assert.equal(towers.step,2);
   const text=latestUserText(painters[2].req), reference=h.runtime.study.references.find(r=>r.folder_name==='assets/04-kremlin-towers.png');
   assert.ok(text.includes(reference.id),'the element step names its reference');
   assert.match(text,/PROJECT FOLDER MOVE[^\n]*paint_accents/,'an element is refined with accents, not repainted by hand');
+  assert.match(text,/^Refine the Kremlin towers\.\n\n\(The artist answered "Select Kremlin towers: [^"]*": Paint everywhere\.\)/m,'the move paints what was asked before the card');
+  assert.match(text,/chose to paint it without an area[^\n]*the host refuses them in an element step/);
   assert.match(await readFile(join(root,'PLAN.md'),'utf8'),/^- \[ \] 3\. Kremlin towers \(assets\/04-kremlin-towers\.png\)/m);
   await h.runtime.prompt('Looks good, carry on with the lights.');
   assert.equal(h.runtime.goal.brief.steps.length,3,'a message naming no element adds no step');
@@ -3380,6 +3393,9 @@ async function folderMoves({finish=true, root}={}) {
  await h.runtime.openFolder({path:root});
  await h.start('agent','Paint this folder.');
  h.runtime.forkTools=true; h.runtime.guidesView=true;
+ // These tests are about Keep and ticks: their element moves paint typed strokes with no area. The element step's card and
+ // refusals are tested on their own ('a folder element step with its area set…', 'after Keep the step is ticked…').
+ h.runtime.elementAreaQuestion=async()=>false; h.runtime.refuseInElementStep=()=>{};
  return {h,offered};
 }
 
@@ -3971,4 +3987,36 @@ test('paint_accents asks an actual question; only the artist’s yes to it lets 
   await h.runtime.prompt('No, fewer');
   assert.equal(h.runtime.takeAccentsAnswer('move-3').yes,false);
  } finally {await h.close();}
+});
+
+test('a folder element step with its area set: the scoped transfer then accents, and split_by_color is refused before it runs',{timeout:60000},async()=>{
+ const painters=[];
+ let h;
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(names.includes('propose_plan')) return {content:'Here is the plan.'};
+  const move=h.runtime.currentMove;
+  if(!names.includes('paint_batch') || !move || move.finished) return {content:'Done.'};
+  painters.push({move:move.number,req});
+  return painters.filter(p=>p.move===move.number).length===1 ? call('split_by_color',{source:'visible',colors:6}) : {content:'I will use the transfer.'};
+ });
+ const root=await projectFolder();
+ try {
+  const { encodePlane } = await import('../src/shapes/png.ts');
+  await h.runtime.openFolder({path:root});
+  await h.start('agent','Paint this folder.');
+  h.runtime.goal.approved_revision=h.runtime.goal.revision; h.runtime.goal.done_steps=[0,1];
+  await h.runtime.prompt('Refine the Kremlin towers.');
+  assert.equal(painters.length,0,'the card first');
+  const mask=join(h.output,'panel-mask.png');
+  await writeFile(mask,encodePlane({width:200,height:300,data:new Uint8Array(200*300).fill(255)}));
+  await h.runtime.prompt('Use my selection',{paint_only_here:{action:'set',mask_path:mask,bounds:[300,100,200,300],canvas:[768,1024],name:'Kremlin towers'}});
+  assert.equal(h.runtime.goal.paint_only_here.name,'Kremlin towers');
+  const text=latestUserText(painters[0].req);
+  assert.match(text,/inside the Paint only here area \(Painting only inside your selection: Kremlin towers\)\. The default sequence: 1\. paint_from_reference of the goal image reference-[^,]+, the whole goal over the whole canvas/);
+  assert.match(text,/2\. paint_accents from the goal image/);
+  const refused=JSON.stringify(painters[1].req.messages);
+  assert.match(refused,/Nothing was painted: split_by_color is not used in an element step \(Kremlin towers\)/);
+  assert.equal(h.calls.filter(c=>c.operation==='split_by_color').length,0,'refused before the bridge');
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
 });

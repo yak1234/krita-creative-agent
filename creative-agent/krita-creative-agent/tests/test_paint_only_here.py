@@ -63,6 +63,7 @@ class ForkDocument:
     def protectedSelection(self, inverted=False): return Selection()
     def protectionActive(self): return any(f.isProtected() for f in self.list)
     def selection(self, *args): return self.picked
+    def setSelection(self, selection): self.picked = selection
 
 
 def selected(x, y, w, h, value=255):
@@ -185,6 +186,32 @@ class PaintOnlyHereTests(unittest.TestCase):
         finally:
             import shutil; shutil.rmtree(folder)
 
+    def test_a_found_outline_becomes_the_documents_selection(self):
+        """Find it for me: the companion's found outline (.shapes/found-*.png, cropped to its bounds) is loaded as the document's
+        selection, which the artist adjusts; nothing is protected until they press Paint only here."""
+        folder = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(folder, '.shapes'))
+            path = os.path.join(folder, '.shapes', 'found-0123456789abcdef01234567.png')
+            with open(path, 'wb') as handle: handle.write(paint_only.encode_png(2, 2, b'\xff\x00\xff\xff'))
+            self.assertEqual(self.areas.load_found(self.doc, {'bounds': [1, 1, 2, 2], 'mask_path': path}, folder), [1, 1, 2, 2])
+            picked = self.doc.picked.m
+            self.assertEqual([picked[1 * SIZE + 1], picked[1 * SIZE + 2], picked[2 * SIZE + 1], picked[0]], [255, 0, 255, 0])
+            self.assertIsNone(self.doc.feature(paint_only.SYSTEM_NAME), 'a selection only: nothing protected yet')
+            self.assertEqual(self.doc.steps, [])
+            with self.assertRaisesRegex(ValueError, 'does not fit'):
+                self.areas.load_found(self.doc, {'bounds': [3, 3, 2, 2], 'mask_path': path}, folder)
+            other = os.path.join(folder, '.shapes', 'paint-only-0123456789abcdef01234567.png')
+            with open(other, 'wb') as handle: handle.write(paint_only.encode_png(2, 2, b'\xff' * 4))
+            for wrong in (other, os.path.join(folder, 'found-0123456789abcdef01234567.png'), 'found-0123456789abcdef01234567.png'):
+                with self.assertRaisesRegex(ValueError, 'only from this chat folder'):
+                    self.areas.load_found(self.doc, {'bounds': [0, 0, 2, 2], 'mask_path': wrong}, folder)
+            another = os.path.join(folder, 'another-chat')
+            with self.assertRaisesRegex(ValueError, 'only from this chat folder'):
+                self.areas.load_found(self.doc, {'bounds': [1, 1, 2, 2], 'mask_path': path}, another)
+        finally:
+            import shutil; shutil.rmtree(folder)
+
     def test_the_typed_phrase(self):
         for text in ('paint only in my selection', 'Please paint the sky only inside my selection.', 'work only within the selection'):
             self.assertTrue(paint_only.wants_area(text), text)
@@ -214,6 +241,28 @@ class BridgeTests(feature_tests.Setup, unittest.TestCase):
         done = feature_tests.run(self.h, 'fill_region', dict(feature_tests.FILL, selection='Sky'), 'fill')
         self.assertEqual(done['status'], 'ok', done.get('error'))
         self.assertIsNotNone(self.doc.feature(paint_only.SYSTEM_NAME), 'protected again before the fill')
+
+    def test_autopilot_sets_and_clears_a_found_area_through_the_bridge(self):
+        """Autopilot's found area (studio adoptFoundArea): the companion's mask copy protects the rest at once, outside the undo
+        history; clear ends it. Only a chat folder's paint-only mask, and bounds inside the canvas."""
+        folder = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__('shutil').rmtree(folder))
+        os.makedirs(os.path.join(folder, '.shapes'))
+        path = os.path.join(folder, '.shapes', 'paint-only-0123456789abcdef01234567.png')
+        with open(path, 'wb') as handle: handle.write(paint_only.encode_png(4, 2, b'\xff' * 8))
+        run = feature_tests.run
+        done = run(self.h, 'paint_only_here', {'action': 'set', 'bounds': [0, 0, 4, 2], 'mask_path': path, 'name': 'Moonlit sky'})
+        self.assertEqual(done['status'], 'ok', done.get('error'))
+        self.assertEqual(done['name'], 'Moonlit sky')
+        self.assertIsNotNone(self.doc.feature(paint_only.SYSTEM_NAME), 'the rest of the painting is protected')
+        self.assertEqual(paint_only.AREAS.area(self.doc)['name'], 'Moonlit sky')
+        with self.assertRaisesRegex(ValueError, 'inside the canvas'):
+            run(self.h, 'paint_only_here', {'action': 'set', 'bounds': [0, 0, 9, 2], 'mask_path': path})
+        with self.assertRaisesRegex(ValueError, 'chat folder'):
+            run(self.h, 'paint_only_here', {'action': 'set', 'bounds': [0, 0, 4, 2], 'mask_path': os.path.join(folder, 'mask.png')})
+        cleared = run(self.h, 'paint_only_here', {'action': 'clear'})
+        self.assertEqual((cleared['status'], cleared['cleared']), ('ok', True))
+        self.assertIsNone(self.doc.feature(paint_only.SYSTEM_NAME))
 
 
 if __name__ == '__main__':

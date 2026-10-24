@@ -404,6 +404,24 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 return {'status': 'ok', 'state': 'none', 'message': 'No canvas is open.'}
             return self._creative_observe(doc, {'output': destination, 'layers': set(),
                 'document_id': document_id(doc), 'projection_fresh': not params.get('refresh', True)}, params.get('region'), **guides)
+        if operation == 'paint_only_here':
+            # Autopilot's found area (Find it for me on an element step, the companion's adoptFoundArea): the rest of the
+            # painting is protected at once, as the panel's Paint only here does, outside the undo history; or cleared when
+            # that step is over. The mask is only the companion's copy in a chat folder's .shapes (paint_only_here.restore).
+            fields(params, ('action', 'document_id', 'bounds', 'mask_path', 'name'), ('action',))
+            doc = self._creative_document(params.get('document_id'))
+            if doc is None:
+                raise ValueError('Open the painting first.')
+            if params['action'] == 'clear':
+                return {'status': 'ok', 'cleared': bool(PAINT_ONLY.clear(doc))}
+            if params['action'] != 'set':
+                raise ValueError('Paint only here is set or clear.')
+            bounds = params.get('bounds')
+            if (not isinstance(bounds, list) or len(bounds) != 4 or any(isinstance(n, bool) or not isinstance(n, int) or n < 0 for n in bounds)
+                    or bounds[2] <= 0 or bounds[3] <= 0 or bounds[0] + bounds[2] > doc.width() or bounds[1] + bounds[3] > doc.height()):
+                raise ValueError('Paint only here needs the area bounds [x, y, w, h] inside the canvas.')
+            area = PAINT_ONLY.restore(doc, {'bounds': bounds, 'mask_path': params.get('mask_path'), 'name': params.get('name')})
+            return {'status': 'ok', 'bounds': area['bounds'], 'name': area['name']}
         if operation == 'sample_colors':
             fields(params, ('document_id', 'points'), ('points',))
             points = params['points']

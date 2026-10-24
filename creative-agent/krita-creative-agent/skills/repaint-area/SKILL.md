@@ -17,6 +17,9 @@ Never measure an outline from close-ups, and never cover an area with a stroke p
 
 ## 1. Select it
 
+- **A part the artist names** ("the sky", "the car") with no Paint only here area: `ask_for_selection`; the host
+  proposes the shapes model's outline for the artist to confirm or adjust. In a project folder's element step the
+  colour selections below (seeds, colour ranges, `split_by_color`) are refused unless the artist asks for them.
 - **One connected area** (the sky between towers, a wall): `select` with a seed step, one point inside it:
   `{seed: [x, y], tolerance: 24-40}`. It stops at every edge. Add `bounds` to keep it out of a similar colour
   elsewhere.

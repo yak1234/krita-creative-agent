@@ -2,7 +2,9 @@
 it stubs krita for the whole process. Paint only here (element-scoped-painting goal 1; the artist, 2026-10-23): the button
 captures the document's selection as the chat's one area (the rest of the painting protected as a hidden feature), the chip
 "Painting only inside: ..." with ✕ clears it, the typed phrase does the same with its message, the painter's
-ask_for_selection card offers Select with Freehand / Use my selection / Paint everywhere, and the document follows the chat.
+ask_for_selection card offers Find it for me / Select with Freehand / Use my selection / Paint everywhere (or, with the
+companion's outline, Use this / Adjust with Freehand / Paint everywhere), Find it for me beside the button names a part (never a click on
+the canvas) and loads the found outline as the selection, and the document follows the chat.
 With PAINT_ONLY_SCREENSHOTS=<folder> it also saves the panel with the chip in Toska Night at 360 px there.
 Mask files go to a temporary folder that is removed; no dialog opens and no profile is touched."""
 import json
@@ -90,6 +92,7 @@ class Document:
     def agentMoveOpen(self): return self.move_open
     def agentActive(self): return False
     def selection(self, expression=None): return self.selected
+    def setSelection(self, selection): self.selected = selection
 
 
 class Instance:
@@ -140,7 +143,7 @@ class PaintOnlyHere(unittest.TestCase):
         paint_only_here.AREAS._areas = []; state.document = None
 
     def chat(self, area=None, **goal):
-        self.panel.study_active = True
+        self.panel.study_active = True; self.panel.output_directory = self.folder
         self.panel.handle_event({'type': 'goal', 'goal': dict({'status': 'ready', 'paint_only_here': area}, **goal), 'mode': 'agent', 'references': []})
         app.processEvents()
 
@@ -246,16 +249,23 @@ class PaintOnlyHere(unittest.TestCase):
         self.panel.new_chat()
         self.assertIsNone(self.doc.feature(SYSTEM)); self.assertFalse(self.bar.chip.isVisible())
 
-    def question(self):
+    def question(self, proposal=None):
         self.chat()
-        self.panel.handle_event({'type': 'question', 'id': 'q1', 'question': 'Select the sky with the Freehand Selection tool (or the Magnetic one, which snaps to edges), then press Paint only here.',
-                                 'options': ['Select with Freehand', 'Use my selection', 'Paint everywhere'], 'select_area': {'part': 'the sky'}})
+        options = ['Use this', 'Adjust with Freehand', 'Paint everywhere'] if proposal else ['Find it for me', 'Select with Freehand', 'Use my selection', 'Paint everywhere']
+        self.panel.handle_event({'type': 'question', 'id': 'q1', 'question': 'Is this the sky?' if proposal else 'Select the sky: Find it for me outlines it.',
+                                 'options': options, 'select_area': dict({'part': 'the sky'}, **({'proposal': proposal} if proposal else {}))})
         app.processEvents()
         return {b.text(): b for b in self.panel.question_controls}
 
-    def test_the_painter_asks_for_a_selection_with_three_buttons(self):
+    def found_file(self, bounds, value=255):
+        os.makedirs(os.path.join(self.folder, '.shapes'), exist_ok=True)
+        path = os.path.join(self.folder, '.shapes', 'found-%024x.png' % (len(os.listdir(os.path.join(self.folder, '.shapes'))) + 1))
+        with open(path, 'wb') as handle: handle.write(paint_only_here.encode_png(bounds[2], bounds[3], bytes([value]) * (bounds[2] * bounds[3])))
+        return path
+
+    def test_the_painter_asks_for_a_selection_with_four_buttons(self):
         buttons = self.question()
-        self.assertEqual(list(buttons), ['Select with Freehand', 'Use my selection', 'Paint everywhere'])
+        self.assertEqual(list(buttons), ['Find it for me', 'Select with Freehand', 'Use my selection', 'Paint everywhere'])
         self.assertNotIn('You decide', [b.text() for b in self.panel.findChildren(QPushButton) if b.isVisible()])
         self.assertFalse(buttons['Use my selection'].isEnabled(), 'no selection yet')
         buttons['Select with Freehand'].click()
@@ -288,13 +298,111 @@ class PaintOnlyHere(unittest.TestCase):
             self.panel.resize(360, 820)
             self.question()
             self.doc.selected = selected(0, 0, W, 10); self.bar.watch_selection()
-            self.panel.question_controls[1].click()
+            self.panel.question_controls[2].click()
             self.chat({'name': 'the sky', 'bounds': [0, 0, W, 10], 'mask_path': self.sent('prompt')[-1]['paint_only_here']['mask_path']})
             for _ in range(4): app.processEvents()
             self.panel.grab().save(os.path.join(shots, 'paint-only-here-toska-night-360.png'))
             self.panel.composer.grab().save(os.path.join(shots, 'paint-only-here-composer-toska-night-360.png'))
         finally:
             module.QApplication.palette = original
+
+    # ----- Find it for me ----------------------------------------------------------------------------------------------
+    def test_find_it_for_me_names_the_part_and_loads_the_outline_as_the_selection(self):
+        self.chat()
+        self.assertTrue(self.bar.find_button.isVisible()); self.assertEqual(self.bar.find_button.accessibleName(), 'Find it for me')
+        self.bar.find_button.click(); app.processEvents()
+        self.assertTrue(self.bar.find_row.isVisible())
+        self.assertIn('Name what to find ("the sky") and press Find', self.bar.hint.text())
+        self.bar.find_field.setText('the sky'); self.bar.find_go.click()
+        [request] = self.sent('find_it')
+        self.assertEqual(request['part'], 'the sky'); self.assertTrue(request['request_id'])
+        self.assertFalse(self.bar.find_button.isEnabled(), 'one find at a time'); self.assertFalse(self.bar.find_row.isVisible())
+        self.assertEqual(self.panel.status.text(), 'Finding the sky…')
+        self.panel.handle_event({'type': 'found_area', 'request_id': 'older', 'mask_path': self.found_file([0, 0, W, 4]), 'bounds': [0, 0, W, 4]})
+        self.assertIsNone(self.doc.selected, 'an older find is ignored')
+        path = self.found_file([0, 0, W, 12])
+        self.panel.handle_event({'type': 'found_area', 'request_id': request['request_id'], 'mask_path': path, 'bounds': [0, 0, W, 12], 'canvas': [W, H],
+                                 'message': 'Found the sky in 2.9 s (locating 0.8 s, shapes model 2.0 s): 40% of the canvas.'})
+        app.processEvents()
+        self.assertEqual(self.doc.selected.m[0], 255); self.assertEqual(self.doc.selected.m[W * 20], 0, 'the outline, as marching ants')
+        self.assertEqual(Instance.tools, ['KisToolSelectOutline'], 'Freehand, to adjust it')
+        self.assertIn('Shift adds, Alt subtracts', self.bar.hint.text()); self.assertIn('Paint only here', self.bar.hint.text())
+        self.assertEqual(self.panel.status.text(), 'Found the sky in 2.9 s (locating 0.8 s, shapes model 2.0 s): 40% of the canvas.')
+        self.assertTrue(self.bar.find_button.isEnabled())
+        self.assertIsNone(self.doc.feature(SYSTEM), 'nothing protected until Paint only here')
+        self.bar.button.click()
+        self.assertEqual(self.sent('paint_only_here')[-1]['bounds'], [0, 0, W, 12], 'Paint only here takes the outline as adjusted')
+        self.assertEqual(self.doc.undo_steps, [])
+
+    def test_find_it_errors_and_refusals_are_shown_as_they_are(self):
+        self.bar.find_button.click()
+        self.assertIn('Start a chat first', self.panel.status.text()); self.assertEqual(self.sent('find_it'), [])
+        self.chat(); self.bar.find('the moon')
+        request = self.sent('find_it')[-1]
+        self.panel.handle_event({'type': 'found_area', 'request_id': request['request_id'], 'error': 'I could not see the moon on the painting. Click it on the canvas instead.'})
+        self.assertEqual(self.panel.status.text(), 'I could not see the moon on the painting. Click it on the canvas instead.')
+        self.assertIsNone(self.doc.selected)
+        self.bar.find('the sky'); request = self.sent('find_it')[-1]
+        self.panel.handle_event({'type': 'found_area', 'request_id': request['request_id'], 'mask_path': os.path.join(self.folder, 'elsewhere.png'), 'bounds': [0, 0, 2, 2]})
+        self.assertIn('only from this chat folder', self.panel.status.text()); self.assertIsNone(self.doc.selected)
+        self.bar.find('the sky'); request = self.sent('find_it')[-1]; self.doc.move_open = True
+        self.panel.handle_event({'type': 'found_area', 'request_id': request['request_id'], 'mask_path': self.found_file([0, 0, 4, 4]), 'bounds': [0, 0, 4, 4]})
+        self.assertIsNone(self.doc.selected, 'never while the agent writes'); self.assertIn('agent is working', self.panel.status.text())
+
+    def test_the_card_finds_the_part_for_the_artist(self):
+        buttons = self.question()
+        buttons['Find it for me'].click()
+        request = self.sent('find_it')[-1]
+        self.assertEqual(request['part'], 'the sky')
+        self.panel.handle_event({'type': 'found_area', 'request_id': request['request_id'], 'mask_path': self.found_file([0, 0, W, 10]), 'bounds': [0, 0, W, 10]})
+        self.assertTrue(buttons['Use my selection'].isEnabled(), 'the found outline is a selection')
+        buttons['Use my selection'].click()
+        prompt = self.sent('prompt')[-1]
+        self.assertEqual((prompt['text'], prompt['paint_only_here']['bounds'], prompt['paint_only_here']['name']), ('Use my selection', [0, 0, W, 10], 'the sky'))
+
+    def test_a_proposed_outline_is_selected_with_the_card_and_use_this_answers_with_it(self):
+        proposal = {'mask_path': self.found_file([0, 0, W, 10]), 'bounds': [0, 0, W, 10], 'canvas': [W, H], 'share': 0.33}
+        buttons = self.question(proposal)
+        self.assertEqual(list(buttons), ['Use this', 'Adjust with Freehand', 'Paint everywhere'])
+        self.assertEqual(self.doc.selected.m[0], 255, 'with no selection of the artist\'s, the proposal is the selection already')
+        self.assertTrue(buttons['Use this'].isEnabled())
+        Instance.tools.clear(); buttons['Adjust with Freehand'].click()
+        self.assertEqual(Instance.tools, ['KisToolSelectOutline']); self.assertIn('then press Use this', self.bar.hint.text())
+        self.assertEqual(self.sent('prompt'), [], 'adjusting is no answer')
+        self.doc.selected.select(0, 10, 5, 2, 255)                 # the artist adds a corner with Shift
+        buttons['Use this'].click()
+        prompt = self.sent('prompt')[-1]
+        self.assertEqual((prompt['text'], prompt['paint_only_here']['bounds']), ('Use this', [0, 0, W, 12]))
+        self.assertIsNotNone(self.doc.feature(SYSTEM))
+        self.assertFalse(any(b.isEnabled() for b in buttons.values()), 'answered once')
+
+    def test_a_proposal_never_replaces_the_artists_own_selection_until_they_press(self):
+        self.doc.selected = selected(30, 20, 5, 5)                # the artist's own selection
+        proposal = {'mask_path': self.found_file([0, 0, W, 10]), 'bounds': [0, 0, W, 10], 'canvas': [W, H], 'share': 0.33}
+        buttons = self.question(proposal)
+        self.assertEqual(self.doc.selected.m[0], 0); self.assertEqual(self.doc.selected.m[21 * W + 31], 255, 'theirs is kept')
+        self.assertIn('Your own selection is kept', self.bar.hint.text()); self.assertIn("Undo brings your selection back", self.bar.hint.text())
+        buttons['Use this'].click()
+        prompt = self.sent('prompt')[-1]
+        self.assertEqual((prompt['text'], prompt['paint_only_here']['bounds']), ('Use this', [0, 0, W, 10]), 'Use this takes the outline')
+
+    def test_adjust_takes_the_waiting_proposal_and_escape_closes_find(self):
+        self.doc.selected = selected(30, 20, 5, 5)
+        proposal = {'mask_path': self.found_file([0, 0, W, 10]), 'bounds': [0, 0, W, 10], 'canvas': [W, H], 'share': 0.33}
+        buttons = self.question(proposal)
+        buttons['Adjust with Freehand'].click()
+        self.assertEqual(self.doc.selected.m[0], 255, 'the outline to adjust'); self.assertEqual(Instance.tools[-1], 'KisToolSelectOutline')
+        self.assertEqual(self.sent('prompt'), [])
+        self.bar.find_button.click(); self.assertTrue(self.bar.find_row.isVisible())
+        from panel_paint_only_test.qt_compat import QKeyEvent, QEvent, Qt
+        app.sendEvent(self.bar.find_field, QKeyEvent(QEvent.Type.ShortcutOverride, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
+        app.sendEvent(self.bar.find_field, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
+        self.assertFalse(self.bar.find_row.isVisible()); self.assertEqual(self.sent('find_it'), [])
+
+    def test_no_canvas_click_is_ever_intercepted(self):
+        import panel_paint_only_test.paint_only_panel as panel_module
+        self.assertFalse(hasattr(self.bar, 'pick')); self.assertFalse(hasattr(panel_module, 'CanvasPick'))
+        self.assertFalse((PLUGIN / 'canvas_pick.py').exists())
 
 
 if __name__ == '__main__':

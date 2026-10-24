@@ -22,7 +22,7 @@ import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 import { PaintingRuntime, signInMessage } from './runtime.mjs';
 import { stopAfterTurn } from './turn-control.mjs';
-import { paintingTools, resultContent, batchPrefix, nativeExecute } from './tools.mjs';
+import { paintingTools, resultContent, batchPrefix, nativeExecute, selectionHostFor } from './tools.mjs';
 import { expandSkillCommand, skillsEvent } from './skills.mjs';
 import { containedFile, imageContent, imageInfo } from './files.mjs';
 import { CONSTRUCTION_REVIEW_INSTRUCTIONS, PAINTING_INSTRUCTIONS, TEACHER_INSTRUCTIONS, lessonFrom } from './prompt.mjs';
@@ -43,7 +43,11 @@ import { scanFolder, readFolderText, defaultFolderSteps, elementStep, folderStep
 import { ensureMassMaps } from './mass-map.ts';
 import { writePlan, appendNote, readPlan, parsePlan, planDifference, briefFromPlan, remapTicks, stepFile, stepKeys, layerName } from './folder-notes.ts';
 import { planStepControls, stepMarksContext, withStepIds, STEP_ID } from './plan-steps.ts';
-import { applyPaintOnlyCommand, areaContext } from './paint-only-here.ts';
+import { applyPaintOnlyCommand, areaContext, adoptArea, askForArea, chipLine } from './paint-only-here.ts';
+import { findArea, timingLine, FindError } from './find-it.ts';
+import { decisionLocator } from './find-it-locate.ts';
+import { elementStepRefusal } from './element-step-rules.ts';
+import { viewPixels } from './shapes/use.ts';
 import { constants as fsConstants, realpathSync } from 'node:fs';
 import { open as openFile } from 'node:fs/promises';
 
@@ -125,7 +129,7 @@ export const STUDIO_INSTRUCTIONS = `You are Creative Agent, a painting collabora
 The host supplies the current Ask, Plan, Agent or Autopilot mode and a persistent painting brief on every request.
 Ask (teacher mode): answer questions, examine references or the current canvas, and teach the artist how a painter would build the picture in Krita, step by step. You cannot paint in this phase.
 Plan: understand the user's intent and turn it into a concrete painting brief using propose_plan. You cannot paint in this phase.
-Agent: execute the agreed brief with the native painting tools. The host may first ask you to draft or revise a brief before enabling those tools. For work on one part of the painting ("paint the sky", "only the hair") with no Paint only here area in the context, call ask_for_selection instead of guessing where it is (not for a part they say to leave alone); with an area, keep to it and start your reply with its line.
+Agent: execute the agreed brief with the native painting tools. The host may first ask you to draft or revise a brief before enabling those tools. For work on one part of the painting ("paint the sky", "only the hair") with no Paint only here area in the context, call ask_for_selection instead of guessing where it is or selecting it by colour (not for a part they say to leave alone); with an area, keep to it and start your reply with its line, and when a reference shows the part, paint it with paint_from_reference of that reference (only the dabs inside the area are painted), then paint_accents.
 In Autopilot the host resumes painting after your reply unless you asked a question or the painting is finished. When the painting is finished and the user gives new painting direction, or asks to execute or continue the brief, call start_painting with their exact instruction. This hands control to the painting phase and enables the native painting tools; do not tell the user to re-enable tools. For questions or requests to discuss/revise the plan, answer or revise without starting. Never call start_painting just because Agent mode is selected.
 During execution the host loops through painting, observation and review automatically. A failed visual criterion calls for another correction, not user approval. A rejected tool argument means that action was not applied: read its error and choose a supported action without asking the user to repair the tools. Ask the user only for a missing artistic decision, not to operate the internal review loop. Use painting_tool_help to discover native brush, shape, selection, erasing, transform and layer tools. Existing unlocked layers can be adjusted; painting_toolbox edits existing paint on a reversible copy. Choose broad construction moves when appropriate, not endless small overlay corrections. The run continues without the user until the painting passes review or the user presses Stop; never wait for user approval mid-run.
 
@@ -218,6 +222,8 @@ function moveReviewLine({verdict,findings,undone_batches,batches}) {
 }
 // Likeness grids kept per chat (goal-likeness.ts): the goal, and the latest canvas views (one batch's after is the next's before).
 const LIKENESS_CACHE=8;
+// Tools whose calls an element step checks (element-step-rules.ts): colour splits and selections, typed strokes, and a batch of them.
+const ELEMENT_STEP_GUARDED=['select','split_by_color','paint_pass','paint_batch','painting_toolbox','paint_contours','paint_recipe','bucket_fill','enclose_and_fill','fill_region','apply_filter','create_layer'];
 const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer','painting_toolbox','stamp_material',...CRAFT_OPERATIONS,'letter','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_accents'];
 /** Agent mode's request for "Paint this plan": the plan's current step, one move at a time. */
 // Project folder (B3): with a folder, Agent mode plans first. Nothing paints before the artist approves with Start painting.
@@ -583,6 +589,7 @@ export class StudioRuntime extends PaintingRuntime {
   materialHost() {
     return {
       native: (operation, params, id, signal) => {
+        this.refuseInElementStep({tool:operation === 'stamp' ? 'stamp_material' : 'make_material', args:params});
         const run = () => nativeExecute(this, operation)(id, params, signal);
         return operation === 'stamp' ? this.paced({id, tool:'stamp_material', args:params}, run) : run();
       },
@@ -1172,6 +1179,133 @@ export class StudioRuntime extends PaintingRuntime {
       say:message=>this.emit({type:'action', seconds:0, message})}, command);
   }
   paintOnlyArea() { return this.goal?.paint_only_here ?? null; }
+  /** Find it for me (find-it.ts): the outline of a named part or a clicked point on the painting as it is now. The view is
+   * peeked (read only, without guide lines) from the chat's painting, or the active one before it is bound; the shapes model
+   * asks once for its download when it is not allowed yet (chat.ts). */
+  findArea(request) {
+    const directory = this.study.directory, documentId = this.study.bound ? this.study.target_document_id : undefined;
+    return findArea({ directory, shapes:this.shapes, get shapeStudies() { return this.owner.shapeStudies ??= new Map(); }, owner:this,
+      view: async () => {
+        const seen = await this.bridge.call('peek', {output_dir:directory, guides:false, ...(documentId ? {document_id:documentId} : {})}, this.study.id);
+        if (!seen?.image_path) throw new FindError('invalid', 'Open your painting first: Find it for me looks at the painting.');
+        this.findView = seen;
+        return {path:seen.unguided_path ?? seen.image_path, width:Number(seen.width), height:Number(seen.height), revision:seen.revision ?? null};
+      },
+      pixels: path => viewPixels(this, path, [Number(this.findView?.image_width), Number(this.findView?.image_height)]),
+      locate: decisionLocator(async () => { const client = await this.luna().catch(() => null); return client?.connected ? client : null; }),
+    }, request);
+  }
+  /** The panel's find_it command ({request_id, part}; by name only, no canvas click: review 2026-10-24): the found outline goes back as found_area,
+   * which the panel loads as the document's selection; a failure goes back with its message. Timings in the status line. */
+  async findIt(command) {
+    const request_id = String(command?.request_id ?? '').slice(0, 64);
+    try {
+      if (!this.study || !this.goal) throw new Error('Start a chat first: Find it for me belongs to a chat.');
+      if (this.busy && this.goal.status === 'active') throw new Error('Wait until the painting stops, then press Find it for me.');
+      const part = typeof command.part === 'string' ? command.part.trim().slice(0, 60) : null;
+      this.emit({type:'status', phase:this.activity ?? 'idle', message:part ? `Finding ${part}…` : 'Finding what you clicked…'});
+      const found = await this.findArea({part});
+      const message = timingLine(found) + (found.note ? ' ' + found.note : '');
+      this.diagnostics?.record({type:'find_it', part, cached:found.cached, ms:found.ms, share:found.share, score:found.score, prompts:found.prompts, kept:found.kept});
+      this.emit({type:'found_area', request_id, part, mask_path:found.mask_path, bounds:found.bounds, canvas:found.canvas, share:found.share,
+        score:found.score, cached:found.cached, ms:found.ms, message});
+      return found;
+    } catch (error) {
+      this.emit({type:'found_area', request_id, error:this.redact(error.message)});
+      return null;
+    }
+  }
+  /** The found outline of `part` for a question card or Autopilot, only when finding it asks the artist nothing: the model
+   * allowed and downloaded, a decision model to locate it. Null otherwise, or when nothing was found. */
+  async proposeArea(part) {
+    if (!this.study || !(await this.shapes?.ready?.())) return null;
+    try {
+      const found = await this.findArea({part});
+      this.diagnostics?.record({type:'find_it_proposed', part, cached:found.cached, ms:found.ms, share:found.share, score:found.score});
+      this.emit({type:'action', seconds:0, message:timingLine(found)});
+      return found;
+    } catch (error) {
+      this.diagnostics?.record({type:'find_it_unavailable', part, message:this.redact(error.message)});
+      return null;
+    }
+  }
+  /** Autopilot: a found outline becomes the chat's area, protected on the painting at once through the bridge (the panel
+   * shows the chip when the goal arrives). Every such area is the run's, never the artist's: `auto` is the step it was
+   * found for, and it ends with that step, the Autopilot run, Stop or a mode switch (clearAutoArea). A bridge failure
+   * leaves no area and no file behind; the caller paints without an area. */
+  async adoptFoundArea(proposal, part, auto = this.autoAreaKey()) {
+    const area = await adoptArea(this.study.directory, {action:'set', mask_path:proposal.mask_path, bounds:proposal.bounds, canvas:proposal.canvas, name:part});
+    try {
+      await this.bridge.call('paint_only_here', {action:'set', bounds:area.bounds, mask_path:area.mask_path, name:area.name,
+        ...(this.study.bound ? {document_id:this.study.target_document_id} : {})}, this.study.id);
+    } catch (error) {
+      await rm(area.mask_path, {force:true}).catch(() => {});
+      this.diagnostics?.record({type:'find_it_adopt_failed', part, message:this.redact(error.message)});
+      throw new Error('The found area could not be protected on the painting: ' + this.redact(error.message));
+    }
+    this.goal.paint_only_here = {...area, auto};
+    this.emit({type:'action', seconds:0, message:chipLine(area)});
+    await this.persist(); this.publish();
+    return area;
+  }
+  /** The element (its step title) a folder element step paints now, or null: an Agent move's element step, or Autopilot's
+   * current step when it is an element's. */
+  elementStepPart() {
+    const steps = this.goal?.brief?.steps ?? [];
+    const index = this.mode === 'agent' ? (this.currentMove?.element ? this.currentMove.step : null) : this.study?.folder ? this.goal?.current_step : null;
+    return Number.isInteger(index) && steps[index] && this.folderElement(index) ? layerName(steps[index].title) : null;
+  }
+  /** Element steps (element-step-rules.ts): colour splits and colour selections, materials and typed strokes are refused
+   * before they run unless the artist's latest message asks for them; the refusal points to the scoped transfer and accents. */
+  refuseInElementStep(call) {
+    const part = this.elementStepPart();
+    if (!part) return;
+    const request = String(this.goal?.messages?.findLast?.(m => m.role === 'user')?.text ?? '');
+    const refusal = elementStepRefusal(call, {part, area:!!this.goal?.paint_only_here, request});
+    if (!refusal) return;
+    this.diagnostics?.record({type:'element_step_refused', tool:call.tool, part, move:this.currentMove?.number ?? null});
+    throw new Error(refusal);
+  }
+  /** An Agent message about to paint a folder element step with no area: the card asks for it (the found outline proposed
+   * when it can be had without asking). True when the card was shown and the move waits. An answer to the card without an
+   * area (Paint everywhere, or anything typed) is remembered for that step, so it is not asked again. */
+  async elementAreaQuestion(text, answered) {
+    if (this.goal.paint_only_here || !this.folderPlanning() || !this.folderPlanApproved()) return false;
+    const steps = this.goal.brief?.steps ?? [];
+    if (!steps.length) return false;
+    const index = Math.min(this.goal.current_step ?? 0, steps.length - 1);
+    if (!this.folderElement(index)) return false;
+    const key = this.planSteps.keyAt(index) ?? String(index), declined = this.goal.area_declined ??= [];
+    if (answered?.select_area) { if (!declined.includes(key)) declined.push(key); return false; }
+    if (declined.includes(key)) return false;
+    return (await askForArea(selectionHostFor(this), layerName(steps[index].title), {request:text})).asked;
+  }
+  /** The key an Autopilot area belongs to: the plan step painted now (its id), or the run. */
+  autoAreaKey(index = this.goal?.current_step ?? 0) { return (this.goal?.brief?.steps?.length ? this.planSteps.keyAt(index) : null) ?? 'run'; }
+  /** An area Autopilot set by itself ends (its step is over, the run ended, Stop, a mode switch): the protection goes from
+   * the painting and the panel's chip with the goal. The artist's own areas are never touched. */
+  async clearAutoArea(reason) {
+    const area = this.goal?.paint_only_here;
+    if (!area?.auto) return false;
+    this.goal.paint_only_here = null;
+    await this.bridge.call('paint_only_here', {action:'clear', ...(this.study?.bound ? {document_id:this.study.target_document_id} : {})}, this.study?.id).catch(() => {});
+    this.emit({type:'action', seconds:0, message:`Painting everywhere again: ${reason}.`});
+    await this.persist(); this.publish();
+    return true;
+  }
+  /** Autopilot, each cycle: an area it found for an earlier step ends; on a folder element step with no area the found
+   * outline becomes the area by itself (once a step). Any failure paints without an area. */
+  async autopilotElementArea() {
+    if (this.mode !== 'autopilot' || !this.goal?.brief) return;
+    const index = this.goal.current_step ?? 0, key = this.autoAreaKey(index);
+    if (this.goal.paint_only_here?.auto && this.goal.paint_only_here.auto !== key) await this.clearAutoArea(`the step ${this.goal.paint_only_here.name ?? 'the area'} was found for is over`);
+    if (!this.study?.folder || !this.folderElement(index) || this.goal.paint_only_here || (this.goal.area_tried ??= []).includes(key)) return;
+    this.goal.area_tried.push(key);
+    const part = layerName(this.goal.brief.steps[index].title), host = selectionHostFor(this);
+    try { await askForArea({...host, get mode() { return 'autopilot'; }, get goal() { return host.goal; }, adopt:(proposal, name) => this.adoptFoundArea(proposal, name, key)}, part); }
+    catch (error) { this.diagnostics?.record({type:'find_it_autopilot_failed', part, message:this.redact(error.message)}); }
+    await this.persist(); this.publish();
+  }
   /** paint_accents' confirmation scope: the move (an Agent move, else the plan step) the question was asked in. */
   accentsKey() { return this.mode==='agent' && this.currentMove ? 'move-'+this.currentMove.number : 'step-'+this.goal?.revision+'-'+this.goal?.current_step; }
   /** paint_accents past 150 accents: an actual question to the artist (as ask_question asks one), tied to its move and count. */
@@ -1233,6 +1367,12 @@ export class StudioRuntime extends PaintingRuntime {
     for (const tool of tools.filter(t=>PACED_TOOLS.includes(t.name))) {
       const execute = tool.execute;
       tool.execute = (id, args, signal) => this.paced({id, tool: tool.name, args}, () => execute(id, args, signal));
+    }
+    // An element step's refusals (element-step-rules.ts) come first, before pacing or anything paints. The material tools
+    // are a Pi extension: materialHost refuses them.
+    for (const tool of tools.filter(t=>ELEMENT_STEP_GUARDED.includes(t.name))) {
+      const execute = tool.execute;
+      tool.execute = async (id, args, ...rest) => { this.refuseInElementStep({tool:tool.name, args}); return execute(id, args, ...rest); };
     }
     const add = (name, description, schema, execute) => tools.push({ name, label: name.replaceAll('_',' '), description,
       parameters: schema, executionMode: 'sequential', execute: async (_id, args, signal) => {
@@ -1635,7 +1775,12 @@ export class StudioRuntime extends PaintingRuntime {
       return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: the underpainting of the whole picture from ${goalText} (paint_from_reference, all of it onto the whole canvas). Paint only this step. ${UNDERPAINTING_MOVE_NOTE}\n`;
     }
     // An element step is one the artist asked for: it refines the element over the underpainting, judged against the goal.
-    return `\nPROJECT FOLDER MOVE: paint only step ${move.step + 1} of the approved plan, "${name}", the element the artist asked for, on a layer named "${name}". Its look comes from the element reference ${element.id} (${file}); ${goalText} decides where it sits. Refine it where the underpainting already has it: paint_accents on its area from ${goalText} (or the element's aligned close-up), Krita's layers and filters for its light and colour; typed strokes only as a few small marks${guides ? `; over its guide (draw_guide with element "${name}") first` : '; draw a guide only when the artist asks for one'}. Then finish_move. When it reads as finished you may propose protecting it (propose_protection).\n`;
+    // With its area set (Find it for me, or the artist's selection) the default is the scoped transfer of the goal, then
+    // accents in the area (the artist, 2026-10-24); colour splits and selections, materials and typed strokes are refused
+    // there unless the artist asks (element-step-rules.ts).
+    const area = this.goal.paint_only_here, refused = 'No split_by_color, colour selections (magic wand, colour ranges), materials or typed strokes: the host refuses them in an element step unless the artist asks for them.';
+    if (area) return `\nPROJECT FOLDER MOVE: paint only step ${move.step + 1} of the approved plan, "${name}", the element the artist asked for, inside the Paint only here area (${chipLine(area)}). The default sequence: 1. paint_from_reference of ${goalText}, the whole goal over the whole canvas with its default steps: the underpainting engine at full strength, and only the dabs inside the area are painted; 2. paint_accents from ${goalText}, which works in the area by default. ${refused} Its look also comes from the element reference ${element.id} (${file}). Then finish_move.\n`;
+    return `\nPROJECT FOLDER MOVE: paint only step ${move.step + 1} of the approved plan, "${name}", the element the artist asked for, on a layer named "${name}". Its look comes from the element reference ${element.id} (${file}); ${goalText} decides where it sits. The artist chose to paint it without an area: refine it where the underpainting already has it with paint_accents on its area from ${goalText} (or the element's aligned close-up), Krita's layers and filters for its light and colour${guides ? `; over its guide (draw_guide with element "${name}") first` : '; draw a guide only when the artist asks for one'}. ${refused} Then finish_move. When it reads as finished you may propose protecting it (propose_protection).\n`;
   }
   /** Ask when it may be done: the elements the painter offers the artist. The project folder's elements, else the plan's
    * steps not yet done; empty when there are neither (the painter names what it sees). Goal 1 (close-ups) may narrow this. */
@@ -1954,8 +2099,8 @@ export class StudioRuntime extends PaintingRuntime {
     this.mode = mode;
     if (!this.goal) { this.emit({ type:'mode', mode }); return; }
     this.goal.mode = mode;
-    if (this.busy) this.stop();
-    else this.selectTools(mode === 'autopilot' ? 'plan' : mode);
+    if (this.busy) this.stop();                        // a running Autopilot ends its own area (runGoal)
+    else { this.selectTools(mode === 'autopilot' ? 'plan' : mode); if (mode !== 'autopilot') await this.clearAutoArea('Autopilot is off, and the area it found ended with it'); }
     await this.persist(); this.publish();
     if (!this.busy) this.setActivity('idle', mode === 'ask' ? 'Ask how to paint something and get a step-by-step Krita lesson. The canvas stays unchanged.' : mode === 'plan' ? 'Discuss the brief and requirements. Painting starts in Agent.' : 'Ready to work in Agent. Send a direction or start the plan.');
   }
@@ -2053,6 +2198,7 @@ export class StudioRuntime extends PaintingRuntime {
     try {
       await this.addReferences(command.references);
       await this.setPaintOnlyHere(command.paint_only_here);          // an area the message brings (Use my selection, the typed phrase)
+      if (this.mode !== 'autopilot') await this.clearAutoArea('the area Autopilot found ended with its run');   // e.g. left by a crash
       this.goal.canvas_selection = this.canvasSelection; this.goal.region_selection=this.regionSelection;
       const message = await this.remember('user', text,command.message_id);
       this.goal.review_start_index=this.goal.reviews.length;
@@ -2093,7 +2239,14 @@ export class StudioRuntime extends PaintingRuntime {
         else { await this.planFolder(modelText, images); return; }
       }
       if (this.mode === 'agent' && this.folderPlanning() && !command.start_plan && !command.move_kind && !moveKind) await this.folderElementRequest(text);
-      if (this.mode === 'agent') { await this.runMove(modelText, images, {...command, display_text:text, ...(moveKind ? {move_kind:moveKind} : {})}); return; }
+      // A folder element step with no area: the card asks for it first (Find it for me's outline proposed when it can be had).
+      if (this.mode === 'agent' && command.move_kind !== 'guides' && moveKind !== 'guides' && await this.elementAreaQuestion(text, answered)) {
+        this.setActivity('awaiting_user', 'Your answer will guide the next step.'); return;
+      }
+      // An answer to the area card paints what the artist asked for before it, with the area they chose (or none).
+      const areaRequest = answered?.select_area?.request && answered.options?.includes(text.trim()) ? answered.select_area.request : null;
+      const movePrompt = areaRequest ? `${areaRequest}\n\n(The artist answered "${answered.question}": ${text.trim()}.)` : modelText;
+      if (this.mode === 'agent') { await this.runMove(movePrompt, images, {...command, display_text:text, ...(moveKind ? {move_kind:moveKind} : {})}); return; }
       // Autopilot works toward the brief like a goal: an answer to a question the painter asked
       // mid-run goes straight back to painting, without a planning turn.
       const resumeRun = this.mode === 'autopilot' && answered?.asked_in === 'agent' && this.goal.brief && this.goal.approved_revision === this.goal.revision;
@@ -2769,6 +2922,8 @@ export class StudioRuntime extends PaintingRuntime {
           this.decisionObservation = canvas;
           const step=this.goal.brief?.steps?.[this.goal.current_step], stepKey=this.goal.revision+':'+this.goal.current_step;
           if (step && this.layerNeedKey!==stepKey) { this.layerNeedKey=stepKey; await this.checkLayerNeed([step.title,step.scope].filter(Boolean).join(' — '),canvas); }
+          // A folder element step: the shapes model's outline becomes its area by itself, and Autopilot says so.
+          await this.autopilotElementArea();
           try {
             await super.runPrompt(this.context('agent') + 'Paint the whole brief, working through its steps in order. '+(this.lunaMode()==='guide' ? 'The host tracks the current step and when to review from the canvas (host_pacing in tool results); follow it instead of recording progress. ' : '(current_step_in_order is where you last recorded progress; use record_progress when you move on.) ')+'Send substantial batches with paint_batch. Use paint_recipe for locally generated coverage/scumble instead of spelling out hundreds of coordinates; use paint_contours for deliberately drawn silhouette masses and paint_pass for precise authored curves. A representational block-in must establish actual contour and pose relationships; do not substitute generic ellipses or fill the background with texture before drawing the subjects. Inspect returned previews yourself and continue directly. A Luna inspect suggestion is a preliminary visual check, not a stopping point: choose the next useful correction and paint it without asking the artist. A visual_check in a pass result lists possible artifacts that pass introduced, with their location; verify them in the returned image before correcting them. Record progress concisely. Make artistic decisions yourself; the artist is not waiting to approve steps. Only when a decision blocks the painting and neither the brief nor the references settle it (for example, which of two incompatible readings of a requirement the artist meant), call ask_question and stop; painting resumes with the answer. The run allows '+RUN_QUESTION_LIMIT+' such questions. Request independent review only when the whole painting meets the completion criteria, not after each batch or step.', images);
           } finally {
@@ -2837,6 +2992,7 @@ export class StudioRuntime extends PaintingRuntime {
       for (const worker of this.parallelWorkers ?? []) worker.stop();
       await this.preparationTask;
       this.capabilityAbort=undefined;clearInterval(watchdog); this.goal.used_ms += Date.now() - this.goalStartedAt; this.goalStartedAt = undefined;
+      await this.clearAutoArea('the Autopilot run ended, and the area it found ended with it').catch(() => {});
       await this.flushCheckpoint();
       await this.persist(); this.publish();
     }
@@ -3035,7 +3191,7 @@ export class StudioRuntime extends PaintingRuntime {
     super.stop(); this.reviewer?.stop(); for (const worker of this.parallelWorkers ?? []) worker.stop(); this.capabilityAbort?.abort();
     if (this.goal && ['active','reviewing'].includes(this.goal.status)) this.goal.status = 'paused';
     this.publish();
-    if (!this.busy) this.setActivity('idle','Paused. Your painting and plan are saved.');
+    if (!this.busy) { this.setActivity('idle','Paused. Your painting and plan are saved.'); void this.clearAutoArea('stopped').catch(() => {}); }
   }
   // The chat list with each chat's size and the agent records' total (storage-layout phase E).
   async history(query = '') {

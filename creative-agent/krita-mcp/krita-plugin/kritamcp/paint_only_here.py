@@ -38,6 +38,29 @@ MASK_FILE = re.compile(r'^paint-only-[0-9a-f]{24}\.png$')
 FOLDER_ONLY = "Paint only here reads its mask only from a chat folder's .shapes."
 
 NO_SELECTION = 'Select the area first: draw around it with the Freehand Selection tool, then press Paint only here.'
+# Find it for me's outline (the companion's find-it.ts): the chat folder's .shapes/found-<24 hex>.png.
+FOUND_FILE = re.compile(r'^found-[0-9a-f]{24}\.png$')
+FOUND_ONLY = "Find it for me reads its outline only from this chat folder's .shapes."
+
+
+def found_selection(doc, spec, make_selection, directory):
+    """Find it for me's outline ({bounds, mask_path}, the companion's found_area) as a selection of `doc`: its mask file is
+    only a found-*.png in this chat folder's own .shapes (`directory`, the chat folder), and its bounds lie inside the canvas."""
+    from .shape_mask import read_png
+    path = spec.get('mask_path')
+    if (not isinstance(path, str) or not os.path.isabs(path) or not FOUND_FILE.match(os.path.basename(path))
+            or not isinstance(directory, str) or not directory or os.path.islink(path)
+            or os.path.realpath(os.path.dirname(path)) != os.path.realpath(os.path.join(directory, '.shapes'))):
+        raise ValueError(FOUND_ONLY)
+    bounds = spec.get('bounds')
+    if (not isinstance(bounds, list) or len(bounds) != 4 or any(isinstance(n, bool) or not isinstance(n, int) or n < 0 for n in bounds)
+            or bounds[2] <= 0 or bounds[3] <= 0 or bounds[0] + bounds[2] > doc.width() or bounds[1] + bounds[3] > doc.height()):
+        raise ValueError('The outline does not fit this painting: press Find it for me again.')
+    with open(path, 'rb') as handle:
+        _w, _h, plane = read_png(handle.read(), bounds[2:])
+    selection = make_selection()
+    selection.setPixelData(plane, *bounds)
+    return selection
 
 
 def wants_area(text):
@@ -151,6 +174,13 @@ class PaintOnlyHere:
         with open(path, 'rb') as handle:
             _w, _h, plane = read_png(handle.read(), bounds[2:])
         return self.capture(doc, self._from_mask(bounds, plane), spec.get('name'))
+
+    def load_found(self, doc, spec, directory):
+        """Find it for me: the found outline becomes the document's selection (marching ants), which the artist adjusts with
+        any selection tool before pressing Paint only here or Use this. A selection, not paint: nothing is protected yet.
+        `directory` is the chat folder: only its own .shapes is read."""
+        doc.setSelection(found_selection(doc, spec, self._selection, directory))
+        return spec['bounds']
 
     def _from_mask(self, bounds, mask):
         selection = self._selection()

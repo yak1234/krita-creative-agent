@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { encodePlane, decodePlane } from '../src/shapes/png.ts';
 import { adoptArea, applyPaintOnlyCommand, areaContext, areaLabel, loadAreaMask, scopePlan, insideTest, scopedShare,
-  selectionTools, SELECT_OPTIONS, chipLine } from '../src/paint-only-here.ts';
+  selectionTools, SELECT_OPTIONS, PROPOSAL_OPTIONS, askForArea, chipLine } from '../src/paint-only-here.ts';
 import { referenceTools, transferRefusal } from '../src/reference-tool.mjs';
 
 async function folder() { return mkdtemp(join(tmpdir(), 'paint-only-')); }
@@ -195,9 +195,9 @@ test('the painter asks for a selection: a question card in Agent, never a stall 
   assert.equal(tool.name, 'ask_for_selection');
   const asked = await tool.execute('q', { part: 'the sky' });
   assert.equal(goal.status, 'needs_input'); assert.ok(host.yielded);
-  assert.equal(goal.question.question, 'Select the sky with the Freehand Selection tool (or the Magnetic one, which snaps to edges), then press Paint only here.');
+  assert.equal(goal.question.question, 'Select the sky: Find it for me outlines it with the shapes model, or draw around it with the Freehand Selection tool (the Magnetic one snaps to edges), then press Use my selection.');
   assert.deepEqual(goal.question.options, SELECT_OPTIONS);
-  assert.deepEqual(SELECT_OPTIONS, ['Select with Freehand', 'Use my selection', 'Paint everywhere']);
+  assert.deepEqual(SELECT_OPTIONS, ['Find it for me', 'Select with Freehand', 'Use my selection', 'Paint everywhere']);
   assert.deepEqual(goal.question.select_area, { part: 'the sky' });
   assert.equal(events.at(-1).type, 'question'); assert.deepEqual(events.at(-1).select_area, { part: 'the sky' });
   assert.match(asked.content[0].text, /Stop now/);
@@ -241,4 +241,47 @@ test('no card when the artist negates the part ("don\'t paint the sky"): the pai
   host.latestRequest = () => 'Paint the sky, not the towers.';
   await selectionTools(host)[0].execute('q2', { part: 'the sky' });
   assert.ok(goal.question, 'named without a negation: asked');
+});
+
+// Find it for me (find-it.ts; the artist, 2026-10-24): the card proposes the shapes model's outline when the studio has it.
+test('with a found outline the card asks "Is this the sky?" with Use this, Adjust with Freehand, Paint everywhere', async () => {
+  const events = [], goal = { status: 'active' }, asked = [];
+  const proposal = { mask_path: '/chat/.shapes/found-0123456789abcdef01234567.png', bounds: [0, 0, 40, 12], canvas: [40, 30], share: 0.4 };
+  const host = { mode: 'agent', goal, emit: e => events.push(e), persist: async () => {}, publish() {}, yieldTurn() { host.yielded = true; },
+    latestRequest: () => 'Paint the moonlit sky.', propose: async part => { asked.push(part); return proposal; } };
+  const answer = await selectionTools(host)[0].execute('q', { part: 'the sky' });
+  assert.deepEqual(asked, ['the sky']);
+  assert.match(goal.question.question, /^Is this the sky\? It is selected on your painting now\./);
+  assert.deepEqual(goal.question.options, PROPOSAL_OPTIONS);
+  assert.deepEqual(PROPOSAL_OPTIONS, ['Use this', 'Adjust with Freehand', 'Paint everywhere']);
+  assert.deepEqual(goal.question.select_area, { part: 'the sky', request: 'Paint the moonlit sky.', proposal });
+  assert.deepEqual(events.at(-1).select_area.proposal, proposal, 'the panel loads it as the selection');
+  assert.ok(host.yielded); assert.match(answer.content[0].text, /Stop now/);
+});
+
+test('a failing or empty proposal falls back to the plain card with Find it for me', async () => {
+  for (const propose of [async () => null, async () => { throw new Error('offline'); }]) {
+    const goal = { status: 'active' };
+    const host = { mode: 'agent', goal, emit() {}, persist: async () => {}, publish() {}, yieldTurn() {}, propose };
+    const outcome = await askForArea(host, 'the sky');
+    assert.equal(outcome.asked, true);
+    assert.deepEqual(goal.question.options, SELECT_OPTIONS);
+    assert.equal(goal.question.select_area.proposal, undefined);
+  }
+});
+
+test('Autopilot uses the found outline as the area by itself and says so; without one it paints without an area', async () => {
+  const said = [], goal = { status: 'active' }, adopted = [];
+  const proposal = { mask_path: '/chat/.shapes/found-0123456789abcdef01234567.png', bounds: [0, 0, 40, 12], canvas: [40, 30], share: 0.4 };
+  const host = { mode: 'autopilot', goal, emit: e => said.push(e), persist: async () => {}, publish() {}, yieldTurn() { host.yielded = true; },
+    propose: async () => proposal,
+    adopt: async (found, part) => { adopted.push([found, part]); goal.paint_only_here = { name: part, bounds: found.bounds, share: 0.4, mask_path: 'x', sha256: 'y', canvas: [40, 30], set_at: 'now' }; return goal.paint_only_here; } };
+  const outcome = await askForArea(host, 'the sky');
+  assert.equal(outcome.asked, false); assert.ok(!host.yielded); assert.equal(goal.question, undefined);
+  assert.deepEqual(adopted, [[proposal, 'the sky']]);
+  assert.match(outcome.reply, /^Painting only inside your selection: the sky\. The shapes model found the sky/);
+  assert.match(said.at(-1).message, /Autopilot found the sky with the shapes model \(40% of the canvas\) and paints only inside it/);
+  const bare = { ...host, goal: { status: 'active' }, propose: async () => null };
+  const without = await askForArea(bare, 'the sky');
+  assert.match(without.reply, /without an area/);
 });

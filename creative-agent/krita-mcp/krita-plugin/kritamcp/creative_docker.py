@@ -3078,6 +3078,9 @@ class CreativeAgentDocker(DockWidget):
         elif kind == 'shapes_model_ready':
             for button in self.shapes_model_controls: button.setEnabled(False)
             self.status.setText('The shape model is ready.')
+        elif kind == 'found_area':
+            # Find it for me (paint_only_panel.py): the outline becomes the document's selection, or the reason it did not.
+            self.paint_only.found(event)
         elif kind == 'protection_hit':
             self.flush_stream(); self.reply_open = False; self.empty_state.hide()
             self.transcript.add_message('Protected area', event['message'], True)

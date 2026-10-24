@@ -10,8 +10,10 @@
 // - the painter's context: where it is, a short description, what the host does there, and the line its reply starts with;
 // - the scoped transfer (goal 5): the same plan, only the dabs whose centre lies inside the area (scopePlan), and the share
 //   the transfer rules measure (goal 6, reference-tool.mjs);
-// - ask_for_selection: for work on one part with no area set, a question card (Select with Freehand, Use my selection,
-//   Paint everywhere) in Agent; Autopilot never stops for it.
+// - ask_for_selection (and the studio's element steps, askForArea): for work on one part with no area set, a question card
+//   in Agent, proposing the shapes model's outline when it has one (Use this, Adjust with Freehand, Paint everywhere), else
+//   Find it for me, Select with Freehand, Use my selection, Paint everywhere; Autopilot never stops for it, and uses the
+//   found outline as the area when there is one.
 // The studio's calls come in as a small host, so this module imports no .mjs.
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -153,7 +155,15 @@ export function scopedShare(area: { bounds: number[]; share: number }, target: n
 }
 
 // ----- asking the artist to select ------------------------------------------------------------------------------------------
-export const SELECT_OPTIONS = ['Select with Freehand', 'Use my selection', 'Paint everywhere'];
+// Find it for me (find-it.ts; the artist, 2026-10-24): the card also offers the shapes model's outline. When it can be had
+// without asking anything (the model allowed and downloaded, a decision model to locate the part), the card proposes it,
+// loaded in the painting as the selection: "Is this the sky?" Use this / Adjust with Freehand / Paint everywhere. Otherwise
+// Find it for me is the first option (it may ask once for the model download: the artist pressed it). Autopilot uses the
+// found outline as the area by itself and says so.
+export const SELECT_OPTIONS = ['Find it for me', 'Select with Freehand', 'Use my selection', 'Paint everywhere'];
+export const PROPOSAL_OPTIONS = ['Use this', 'Adjust with Freehand', 'Paint everywhere'];
+/** A found outline as the card and the panel see it (find-it.ts FoundArea, the fields that cross). */
+export type Proposal = { mask_path: string; bounds: number[]; canvas: number[]; share: number; score?: number; ms?: unknown; cached?: boolean; note?: string };
 const selectSchema = Type.Object({
   part: Type.String({ minLength: 1, maxLength: NAME_LIMIT, description: 'The part the artist asked about, as they said it: "the sky", "the hair", "the car".' }),
 }, { additionalProperties: false });
@@ -170,7 +180,46 @@ export type SelectionHost = {
   yieldTurn(): void;
   /** The artist's latest message, for a negated part ("don't paint the sky"). */
   latestRequest?(): string;
+  /** The shapes model's outline of `part` on the painting, only when it needs no question to the artist; null otherwise. */
+  propose?(part: string): Promise<Proposal | null>;
+  /** Autopilot: the found outline becomes the chat's area (and is protected on the painting at once). */
+  adopt?(proposal: Proposal, part: string): Promise<PaintOnlyArea>;
 };
+export type AskOutcome = { asked: boolean; adopted?: PaintOnlyArea; negated?: boolean; reply: string };
+
+/** Ask the artist for the area of `part` (Agent: the card, proposing the found outline when there is one), or in Autopilot
+ * use the found outline by itself. ask_for_selection and the studio's element steps both come here. */
+export async function askForArea(host: SelectionHost, given: string, { request }: { request?: string } = {}): Promise<AskOutcome> {
+  const goal = host.goal, part = given.trim().slice(0, NAME_LIMIT);
+  if (!goal) throw new Error('There is no chat to ask in.');
+  if (goal.paint_only_here) return { asked: false, reply: `An area is already set. ${chipLine(goal.paint_only_here)}: paint there.` };
+  if (partNegated(host.latestRequest?.() ?? '', part))
+    return { asked: false, negated: true, reply: `The artist said not to work on ${part}: do not ask for it and leave it alone.` };
+  let proposal: Proposal | null = null;
+  try { proposal = (await host.propose?.(part)) ?? null; } catch { proposal = null; }    // no outline: the plain card
+  if (host.mode !== 'agent') {
+    let failed = '';
+    if (proposal && host.adopt) {
+      try {
+        const area = await host.adopt(proposal, part), percent = Math.max(1, Math.round(area.share * 100));
+        const message = `Autopilot found ${part} with the shapes model (${percent}% of the canvas) and paints only inside it until this step ends. Clear it in the panel to paint everywhere.`;
+        host.emit({ type: 'action', seconds: 0, message });
+        return { asked: false, adopted: area, reply: `${chipLine(area)}. The shapes model found ${part}: paint it inside this area (Krita keeps every write there) and say so in your reply.` };
+      } catch (error) { failed = ` (${(error as Error).message})`; }      // the area could not be protected: none at all
+    }
+    host.emit({ type: 'action', seconds: 0, message: `Autopilot does not stop to ask for a selection: painting ${part} without an area${failed}.` });
+    return { asked: false, reply: `Autopilot does not stop for this: paint ${part} without an area, keep to it carefully, and say in your reply that no area was selected.` };
+  }
+  const question = proposal
+    ? `Is this ${part}? It is selected on your painting now. Adjust it with Freehand (Shift adds, Alt subtracts) if needed, then press Use this.`
+    : `Select ${part}: Find it for me outlines it with the shapes model, or draw around it with the Freehand Selection tool (the Magnetic one snaps to edges), then press Use my selection.`;
+  goal.question = { id: randomUUID(), question, options: [...(proposal ? PROPOSAL_OPTIONS : SELECT_OPTIONS)], asked_in: 'agent',
+    select_area: { part, ...(request ? { request: request.slice(0, 500) } : {}), ...(proposal ? { proposal } : {}) } };
+  goal.status = 'needs_input'; host.yieldTurn();
+  await host.persist(); host.publish();
+  host.emit({ type: 'question', ...(goal.question as object) });
+  return { asked: true, reply: 'Question displayed: the artist selects the part, or paints everywhere. Stop now and wait for their answer.' };
+}
 /** Whether the message mentions the part only where it says not to work on it (project-folder.ts elementsNamed's rule). */
 export function partNegated(text: string, part: string): boolean {
   const head = part.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean).at(-1);
@@ -181,26 +230,14 @@ export function selectionTools(host: SelectionHost): ToolDefinition<any, unknown
   return [{
     name: 'ask_for_selection', label: 'Asking for a selection', executionMode: 'sequential', parameters: selectSchema,
     description: 'Before work on one part of the painting ("paint the sky", "only the hair", "fix the car") when no Paint only here area '
-      + 'is set: ask the artist to select it instead of guessing where it is. The panel shows the question with Select with Freehand, '
-      + 'Use my selection and Paint everywhere; stop after this call and wait. In Autopilot it does not stop: paint without an area '
-      + 'and say so. Not for the whole picture, nor for a part the artist said to leave alone ("don\u2019t paint the sky").',
+      + 'is set: ask the artist for its area instead of guessing where it is (never a colour selection or a magic wand for it). The panel '
+      + 'shows the question, with the shapes model\u2019s outline of the part already selected when it can find it ("Is this the sky?"), '
+      + 'or Find it for me and Select with Freehand; stop after this call and wait. In Autopilot it does not stop: the found outline '
+      + 'becomes the area, or you paint without one; say which. Not for the whole picture, nor for a part the artist said to leave '
+      + 'alone ("don\u2019t paint the sky").',
     execute: async (_id: string, args: Static<typeof selectSchema>): Promise<Result> => {
-      const goal = host.goal, part = args.part.trim().slice(0, NAME_LIMIT);
-      if (!goal) throw new Error('There is no chat to ask in.');
-      if (goal.paint_only_here) return reply(`An area is already set. ${chipLine(goal.paint_only_here)}: paint there.`, { asked: false });
-      if (partNegated(host.latestRequest?.() ?? '', part))
-        return reply(`The artist said not to work on ${part}: do not ask for it and leave it alone.`, { asked: false, negated: true });
-      if (host.mode !== 'agent') {
-        host.emit({ type: 'action', seconds: 0, message: `Autopilot does not stop to ask for a selection: painting ${part} without an area.` });
-        return reply(`Autopilot does not stop for this: paint ${part} without an area, keep to it carefully, and say in your reply that no area was selected.`, { asked: false });
-      }
-      const question = `Select ${part} with the Freehand Selection tool (or the Magnetic one, which snaps to edges), then press Paint only here.`;
-      goal.question = { id: randomUUID(), question,
-        options: [...SELECT_OPTIONS], asked_in: 'agent', select_area: { part } };
-      goal.status = 'needs_input'; host.yieldTurn();
-      await host.persist(); host.publish();
-      host.emit({ type: 'question', ...(goal.question as object) });
-      return reply('Question displayed: the artist selects the part, or paints everywhere. Stop now and wait for their answer.', { asked: true });
+      const outcome = await askForArea(host, args.part, { request: host.latestRequest?.() ?? '' });
+      return reply(outcome.reply, { asked: outcome.asked, ...(outcome.negated ? { negated: true } : {}), ...(outcome.adopted ? { area: areaLabel(outcome.adopted) } : {}) });
     },
   }];
 }

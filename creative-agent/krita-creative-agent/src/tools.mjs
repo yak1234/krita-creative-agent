@@ -334,12 +334,20 @@ export function paintingTools(runtime) {
   // A flat fill anywhere in a batch is nudged before anything paints (studio.mjs fillNudge), so the batch is refused whole.
   tools.push(batchTool(tools, name => runtime.toolOffered?.(name) ?? true,
     async actions => { if (actions.some(a => a.tool === 'fill_region')) await runtime.fillNudge?.({batch:true}); return prepareBatchShapes(runtime, actions); }));
-  // Paint only here (paint-only-here.ts): for work on one part with no area set, ask the artist to select it (Agent only).
-  tools.push(...selectionTools({ get mode() { return runtime.mode; }, get goal() { return runtime.goal ?? null; }, emit: event => runtime.emit?.(event),
-    persist: () => runtime.persist?.() ?? Promise.resolve(), publish: () => runtime.publish?.(), yieldTurn: () => { runtime.yieldRequested = true; },
-    latestRequest: () => String(runtime.goal?.messages?.findLast?.(m => m.role === 'user')?.text ?? '') }));
+  // Paint only here (paint-only-here.ts): for work on one part with no area set, ask the artist for its area (Agent), with
+  // the shapes model's outline when the studio can find it (Find it for me); Autopilot uses that outline by itself.
+  tools.push(...selectionTools(selectionHostFor(runtime)));
   tools.push(...assetTools(runtime), skillReadTool());
   return tools;
+}
+
+/** The runtime as paint-only-here.ts's SelectionHost: ask_for_selection and the studio's element steps share it. */
+export function selectionHostFor(runtime) {
+  return { get mode() { return runtime.mode; }, get goal() { return runtime.goal ?? null; }, emit: event => runtime.emit?.(event),
+    persist: () => runtime.persist?.() ?? Promise.resolve(), publish: () => runtime.publish?.(), yieldTurn: () => { runtime.yieldRequested = true; },
+    latestRequest: () => String(runtime.goal?.messages?.findLast?.(m => m.role === 'user')?.text ?? ''),
+    propose: part => runtime.proposeArea?.(part) ?? Promise.resolve(null),
+    adopt: (proposal, part) => runtime.adoptFoundArea(proposal, part) };
 }
 
 /** Element shapes on the painting (element-shapes 1.5, 1.6): paint_pass inside_shape and propose_protection shape find

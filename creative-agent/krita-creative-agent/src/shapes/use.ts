@@ -156,6 +156,22 @@ export async function pruneShapes(directory: string, keep = CANVAS_SHAPES): Prom
   await Promise.all(dated.slice(keep).map(({ name }) => unlink(join(folder, name)).catch(() => {})));
 }
 
+/** A canvas view file's pixels, decoded by the plugin (the view is decoded as it is, about 1024 px) and kept for the next
+ * call on the same view; `expected` is the view's own size when the observation gives it. */
+export async function viewPixels(host: Pick<CanvasHost, 'callNative' | 'canvasPixels'>, path: string, expected?: number[]): Promise<{ sha: string; pixels: Rgba }> {
+  const file = await readFile(path), sha = createHash('sha256').update(file).digest('hex');
+  let pixels = host.canvasPixels?.sha === sha ? host.canvasPixels.pixels : null;
+  if (!pixels) {
+    const decoded = await host.callNative('trace_reference', { image_base64: file.toString('base64'), sha256: sha, max_side: CANVAS_SIDE });
+    if (decoded?.sha256 !== sha) throw new Error('Decoded canvas identity differs.');
+    if (expected?.length === 2 && expected.every(n => n > 0) && (decoded.width !== expected[0] || decoded.height !== expected[1]))
+      throw new Error(`The canvas view decoded at ${decoded.width} x ${decoded.height}, not its ${expected[0]} x ${expected[1]}: look at the canvas again.`);
+    pixels = { width: decoded.width, height: decoded.height, data: Buffer.from(decoded.rgba_base64, 'base64') };
+    host.canvasPixels = { sha, pixels };
+  }
+  return { sha, pixels };
+}
+
 /** One element's shape on the painting as the painter last saw it (the canvas view, without guide lines; a region
  * look is that region at its own scale), written at canvas resolution into the chat folder's .shapes for the plugin
  * (shape_mask.py): a mask file and its bounds. */
@@ -171,18 +187,8 @@ export async function canvasShape(host: CanvasHost, given: unknown): Promise<Can
   if (corners.some(([x = 0, y = 0]) => x < ax || y < ay || x > ax + aw || y > ay + ah))
     throw new Error(region ? `The shape prompt lies outside the region you last looked at [${region.join(', ')}]: look at the canvas `
       + 'or a region holding the whole element first, then name it.' : `The shape prompt lies outside the canvas (${width} x ${height}).`);
-  const file = await readFile(path), sha = createHash('sha256').update(file).digest('hex');
-  let pixels = host.canvasPixels?.sha === sha ? host.canvasPixels.pixels : null;
-  if (!pixels) {
-    const decoded = await host.callNative('trace_reference', { image_base64: file.toString('base64'), sha256: sha, max_side: CANVAS_SIDE });
-    if (decoded?.sha256 !== sha) throw new Error('Decoded canvas identity differs.');
-    const expected = [Number(seen?.image_width), Number(seen?.image_height)];
-    if (expected.every(n => n > 0) && (decoded.width !== expected[0] || decoded.height !== expected[1]))
-      throw new Error(`The canvas view decoded at ${decoded.width} x ${decoded.height}, not its ${expected[0]} x ${expected[1]}: look at the canvas again.`);
-    pixels = { width: decoded.width, height: decoded.height, data: Buffer.from(decoded.rgba_base64, 'base64') };
-    host.canvasPixels = { sha, pixels };
-  }
-  // view = (canvas - area.xy) * k; canvas = area.xy + view / k.
+  const { sha, pixels } = await viewPixels(host, path, [Number(seen?.image_width), Number(seen?.image_height)]);
+  // view =(canvas - area.xy) * k; canvas = area.xy + view / k.
   const kx = pixels.width / aw, ky = pixels.height / ah;
   const local: ShapePrompt = 'box' in prompt ? { box: [prompt.box[0] - ax, prompt.box[1] - ay, prompt.box[2], prompt.box[3]] }
     : { points: prompt.points.map(([x, y, label]) => [x - ax, y - ay, label]) };

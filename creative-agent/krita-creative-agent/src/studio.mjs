@@ -37,7 +37,7 @@ import { paceQuestions, paceState, paceAction, parsePace, stalled, levelledOff, 
 import { decisionId } from './decision-records.mjs';
 import { skillCommand } from './skill-commands.ts';
 import { fillNudge, massGuidance, hasGoalReference, paintedTransfers, referenceColourPassMade, referenceFirstContext } from './reference-first.ts';
-import { transferRefusal, existingPainting } from './reference-tool.mjs';
+import { transferRefusal, existingPainting, WHOLE_SHARE } from './reference-tool.mjs';
 import { typedStrokeRefusal, handPaintingRequested } from './typed-strokes.ts';
 import { scanFolder, readFolderText, defaultFolderSteps, elementStep, folderStepKind, elementsNamed, goalChoices, goalNamed, FOLDER_LIMITS } from './project-folder.ts';
 import { goalSharpener, sharpenedContext } from './goal-sharpen.ts';
@@ -1186,7 +1186,8 @@ export class StudioRuntime extends PaintingRuntime {
    * peeked (read only, without guide lines) from the chat's painting, or the active one before it is bound; the shapes model
    * asks once for its download when it is not allowed yet (chat.ts). */
   findArea(request) {
-    const directory = this.study.directory, documentId = this.study.bound ? this.study.target_document_id : undefined;
+    const directory = this.study.directory, documentId = this.study.bound ? this.study.target_document_id : undefined, studio = this;
+    let placed = null;
     return findArea({ directory, shapes:this.shapes, get shapeStudies() { return this.owner.shapeStudies ??= new Map(); }, owner:this,
       view: async () => {
         const seen = await this.bridge.call('peek', {output_dir:directory, guides:false, ...(documentId ? {document_id:documentId} : {})}, this.study.id);
@@ -1194,9 +1195,31 @@ export class StudioRuntime extends PaintingRuntime {
         this.findView = seen;
         return {path:seen.unguided_path ?? seen.image_path, width:Number(seen.width), height:Number(seen.height), revision:seen.revision ?? null};
       },
-      pixels: path => viewPixels(this, path, [Number(this.findView?.image_width), Number(this.findView?.image_height)]),
+      // The goal's pixels are decoded reduced like a view, cached apart from the canvas view's.
+      pixels: path => path === placed?.path ? viewPixels({callNative:(op, params) => this.callNative(op, params), get canvasPixels() { return studio.goalFindPixels; },
+        set canvasPixels(value) { studio.goalFindPixels = value; }}, path) : viewPixels(this, path, [Number(this.findView?.image_width), Number(this.findView?.image_height)]),
+      goal: async () => (placed = await this.placedGoal()),
       locate: decisionLocator(async () => { const client = await this.luna().catch(() => null); return client?.connected ? client : null; }),
     }, request);
+  }
+  /** The goal reference as the chat's whole-picture transfer placed it on the canvas (Find it finds named parts on it), or
+   * null: the latest transfer job from a goal (a whole picture, not a part) that painted, was not undone, and covered at
+   * least WHOLE_SHARE of its canvas. A job begun before the goal was sharpened has its source in the old pixels: scaled. */
+  async placedGoal() {
+    const goals = (this.study?.references ?? []).filter(r => r.role === 'reference' && !r.part_kind && r.width && r.height);
+    if (!goals.length) return null;
+    const folder = join(this.study.directory, 'reference-paintings'), undone = this.undoneReferenceJobs?.() ?? new Set();
+    const names = await readdir(folder).catch(() => []), jobs = [];
+    for (const name of names.filter(n => /^[a-f0-9]{32}\.json$/.test(n))) {
+      try { jobs.push(JSON.parse(await readFile(join(folder, name), 'utf8'))); } catch { /* a job being written */ }
+    }
+    const whole = jobs.filter(j => !j.recipe?.mode && j.completed > 0 && !undone.has(j.id) && j.canvas?.width > 0
+      && j.recipe.target[2] * j.recipe.target[3] >= WHOLE_SHARE * j.canvas.width * j.canvas.height && goals.some(g => g.id === j.recipe.reference_id));
+    const job = whole.sort((a, b) => b.completed - a.completed).at(0);
+    if (!job) return null;
+    const goal = goals.find(g => g.id === job.recipe.reference_id), was = goal.sharpened?.from;
+    const k = was && job.reference_hash === was.sha256 ? goal.width / was.width : 1;
+    return {path:goal.path, width:goal.width, height:goal.height, placement:{source:job.recipe.source.map(v => Math.round(v * k)), target:job.recipe.target}};
   }
   /** The panel's find_it command ({request_id, part}; by name only, no canvas click: review 2026-10-24): the found outline goes back as found_area,
    * which the panel loads as the document's selection; a failure goes back with its message. Timings in the status line. */
@@ -1209,8 +1232,8 @@ export class StudioRuntime extends PaintingRuntime {
       this.emit({type:'status', phase:this.activity ?? 'idle', message:part ? `Finding ${part}…` : 'Finding what you clicked…'});
       const found = await this.findArea({part});
       const message = timingLine(found) + (found.note ? ' ' + found.note : '');
-      this.diagnostics?.record({type:'find_it', part, cached:found.cached, ms:found.ms, share:found.share, score:found.score, prompts:found.prompts, kept:found.kept});
-      this.emit({type:'found_area', request_id, part, mask_path:found.mask_path, bounds:found.bounds, canvas:found.canvas, share:found.share,
+      this.diagnostics?.record({type:'find_it', part, cached:found.cached, ms:found.ms, share:found.share, score:found.score, prompts:found.prompts, kept:found.kept, found_on:found.found_on});
+      this.emit({type:'found_area', request_id, part, mask_path:found.mask_path, bounds:found.bounds, canvas:found.canvas, share:found.share, found_on:found.found_on,
         score:found.score, cached:found.cached, ms:found.ms, message});
       return found;
     } catch (error) {
@@ -1699,7 +1722,10 @@ export class StudioRuntime extends PaintingRuntime {
     const studio = this;
     return {
       get study() { return studio.study; },
-      canvas: () => this.decisionObservation ?? this.canvasContext?.canvas ?? this.lastObservation ?? null,
+      // The chat's painting: once bound, as it was last seen; before, a new painting's size (the rehearsal, 2026-10-24: the
+      // active document stood in for a 6000 x 4500 painting not made yet), else the canvas the chat will paint on.
+      canvas: () => this.study?.bound ? this.decisionObservation ?? this.lastObservation ?? this.canvasContext?.canvas ?? null
+        : this.study?.canvas?.mode === 'new' ? this.study.canvas : this.canvasContext?.canvas ?? null,
       setting: () => this.executionSettings?.sharpen_goal ?? 'ask',
       busy: () => !!this.busy,
       dataDir: () => this.config?.data_dir ?? this.config?.output,
@@ -1708,7 +1734,30 @@ export class StudioRuntime extends PaintingRuntime {
       publish: () => this.publish(),
       callNative: (operation, params) => this.callNative(operation, params),
       goalChanged: () => { this.likenessGoal = null; this.startMassMaps(); this.emitFolder(); },
+      settled: () => this.resumeAfterSharpen(),
     };
+  }
+  /** Whether the move about to paint is the folder plan's underpainting (the step a whole-picture transfer of the goal paints). */
+  underpaintingNext(command = {}) {
+    const steps = this.goal?.brief?.steps ?? [];
+    if (!this.study?.folder || !steps.length || !this.folderPlanApproved()) return false;
+    const retry = this.planSteps.indexOf(command.plan_step_key);
+    return folderStepKind(steps[retry >= 0 ? retry : Math.min(this.goal.current_step ?? 0, steps.length - 1)]) === 'underpainting';
+  }
+  /** Agent mode: the underpainting waits for the Sharpen goal card (goal-sharpen.ts gate); true when it is held. */
+  async holdForSharpen(text, command) {
+    if (!this.underpaintingNext(command) || await this.goalSharpen.gate({wait:true}) !== 'wait') return false;
+    this.sharpenHeld = {text, command:{...command, chat_mode:'agent', sharpen_resumed:true}};
+    this.setActivity('awaiting_user', 'Answer the Sharpen goal card first: the underpainting starts after it.');
+    return true;
+  }
+  /** The goal's sharpening settled: a held underpainting starts now (after the run that holds the studio, if any). */
+  resumeAfterSharpen() {
+    const held = this.sharpenHeld;
+    if (!held || !this.goal) return;
+    this.sharpenHeld = null;
+    if (this.busy) { this.pendingText.push(held); return; }
+    void this.prompt(held.text, held.command).catch(error => this.setActivity('error', this.redact(error.message)));
   }
   async folderGuess({name, guess} = {}) {
     const state = this.folderState(), element = this.folderIndex?.elements.find(e => e.name === name);
@@ -2260,7 +2309,8 @@ export class StudioRuntime extends PaintingRuntime {
       await this.setPaintOnlyHere(command.paint_only_here);          // an area the message brings (Use my selection, the typed phrase)
       if (this.mode !== 'autopilot') await this.clearAutoArea('the area Autopilot found ended with its run');   // e.g. left by a crash
       this.goal.canvas_selection = this.canvasSelection; this.goal.region_selection=this.regionSelection;
-      const message = await this.remember('user', text,command.message_id);
+      // A request held for the Sharpen goal card (holdForSharpen) is in the transcript already.
+      const message = command.sharpen_resumed ? this.goal.messages.findLast(m => m.role === 'user') : await this.remember('user', text,command.message_id);
       // "use 05-modern-skyline.png as the goal": the goal picker, typed. It changes the goal and paints nothing.
       const typedGoal = !command.start_plan && this.study?.folder && this.folderIndex ? goalNamed(text, goalChoices(this.folderIndex)) : null;
       if (typedGoal) { await this.setFolderGoal({name:typedGoal}, {typed:true}); this.setActivity('idle', `The goal image is now ${typedGoal}.`); return; }
@@ -2288,7 +2338,7 @@ export class StudioRuntime extends PaintingRuntime {
       // paint_accents' question: a yes is the first option (the panel sends it as typed) or a plain yes, nothing else.
       if (answered?.accents) this.goal.accents_answer = {...answered.accents,
         yes:text.trim().toLowerCase() === String(answered.options?.[0] ?? '').toLowerCase() || /^(y|yes|ok|okay|sure|go ahead|do it)\b[.!]*$/i.test(text.trim())};
-      else if (!command.start_plan) this.goal.user_updates.push(text);
+      else if (!command.start_plan && !command.sharpen_resumed) this.goal.user_updates.push(text);
       // A run's question allowance lasts until the artist starts or steers it again.
       if (answered?.asked_in !== 'agent') this.goal.run_questions = 0;
       this.goal.question = null; this.yieldRequested = false; this.startRequested = false;
@@ -2309,6 +2359,7 @@ export class StudioRuntime extends PaintingRuntime {
       // An answer to the area card paints what the artist asked for before it, with the area they chose (or none).
       const areaRequest = answered?.select_area?.request && answered.options?.includes(text.trim()) ? answered.select_area.request : null;
       const movePrompt = areaRequest ? `${areaRequest}\n\n(The artist answered "${answered.question}": ${text.trim()}.)` : modelText;
+      if (this.mode === 'agent' && !moveKind && await this.holdForSharpen(text, command)) return;
       if (this.mode === 'agent') { await this.runMove(movePrompt, images, {...command, display_text:text, ...(moveKind ? {move_kind:moveKind} : {})}); return; }
       // Autopilot works toward the brief like a goal: an answer to a question the painter asked
       // mid-run goes straight back to painting, without a planning turn.
@@ -2331,6 +2382,7 @@ export class StudioRuntime extends PaintingRuntime {
       if (this.mode === 'autopilot' && !this.cancelRequested && !this.runError && !openForArtist && this.goal.brief && proceed) {
         this.goal.approved_revision = this.goal.revision;
         this.goal.locked_requirements = [...this.goal.brief.requirements]; this.goal.character_records = structuredClone(this.goal.brief.characters ?? []);
+        if (this.underpaintingNext()) await this.goalSharpen.gate({wait:false});   // Autopilot follows the setting: nothing waits for the card
         await this.runGoal();
       }
       if (this.runError && this.goal.status !== 'limited') this.goal.status = 'paused';

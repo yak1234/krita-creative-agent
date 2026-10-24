@@ -3056,6 +3056,9 @@ async function projectFolder(elements=['01-moonlit-sky','02-historic-buildings',
  for (const name of elements) await writeFile(join(root,'assets',name+'.png'),png);
  return root;
 }
+// The fixture's goal is a 1 x 1 PNG, which the Sharpen goal card would offer before every underpainting: tests about
+// plans and steps leave it out ('Start painting a folder plan on a new painting: the Sharpen goal card first…' tests it).
+const noSharpenCard=h=>{h.runtime.goalSharpen.gate=async()=>'paint';};
 const folderSnapshot=async root=>JSON.stringify(await Promise.all((await readdir(root,{recursive:true})).sort().map(async name=>[name,(await readFile(join(root,name)).catch(()=>Buffer.from('dir'))).toString('base64')])));
 
 test('opening a folder attaches its images and tells the panel',{timeout:20000},async()=>{
@@ -3259,7 +3262,7 @@ test('after Keep the step is ticked, PLAN.md updated, NOTES.md gains a line and 
  const root=await projectFolder();
  try {
   await h.runtime.openFolder({path:root});
-  await h.start('agent','Paint this folder.');
+  await h.start('agent','Paint this folder.'); noSharpenCard(h);
   h.runtime.forkTools=true; h.runtime.guidesView=true;
   await h.runtime.prompt('',{start_plan:true});
   assert.equal(h.runtime.goal.approved_revision,h.runtime.goal.revision,'Start painting approves the plan');
@@ -3315,7 +3318,7 @@ test('the default folder plan: underpainting, accents, then the artist is asked;
  const root=await projectFolder();
  try {
   await h.runtime.openFolder({path:root});
-  await h.start('agent','Paint this folder.');
+  await h.start('agent','Paint this folder.'); noSharpenCard(h);
   assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.title),['Underpainting from the goal image','Accents']);
   await h.runtime.prompt('',{start_plan:true});
   assert.match(latestUserText(painters[0].req),/PROJECT FOLDER MOVE[^\n]*paint_from_reference/);
@@ -3348,6 +3351,42 @@ test('the default folder plan: underpainting, accents, then the artist is asked;
   assert.match(await readFile(join(root,'PLAN.md'),'utf8'),/^- \[ \] 3\. Kremlin towers \(assets\/04-kremlin-towers\.png\)/m);
   await h.runtime.prompt('Looks good, carry on with the lights.');
   assert.equal(h.runtime.goal.brief.steps.length,3,'a message naming no element adds no step');
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+// Rehearsal fix (2026-10-24, live in Toska): plan, then Start painting on a new 6000 x 4500 painting ran the underpainting
+// from the small goal with no Sharpen goal card. The card comes before the underpainting, which waits for the answer.
+test('Start painting a folder plan on a new painting: the Sharpen goal card first, the underpainting after the answer',{timeout:60000},async()=>{
+ const painters=[];
+ let h;
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(names.includes('propose_plan')) return {content:'Here is the plan.'};
+  const move=h.runtime.currentMove;
+  if(!names.includes('paint_batch') || !move || move.finished) return {content:'Done.'};
+  if(!painters.some(p=>p.move===move.number)) { painters.push({move:move.number,req}); return call('paint_batch',{summary:'Step',actions:[{tool:'paint_pass',arguments:{...pass,name:'Step '+move.number}}]}); }
+  return call('finish_move',{summary:'Painted step '+(move.step+1)});
+ },async(operation,params,_study,id)=>{
+  if(operation==='paint_pass') return paintResult(h,id);
+  return undefined;
+ });
+ const root=await projectFolder();
+ try {
+  await h.runtime.openFolder({path:root});
+  await h.start('agent','Paint this folder.',{mode:'new',width:6000,height:4500});
+  await h.runtime.prompt('',{start_plan:true});
+  const offers=h.events.filter(e=>e.type==='goal_sharpen_offer'), offer=offers[0];
+  assert.equal(offers.length,1,'the card, once, before anything paints');
+  assert.match(offer.message,/^Your goal image is 6000\.0x smaller than the canvas/,'measured against the new 6000 x 4500 painting, not whatever Krita shows');
+  assert.equal(painters.length,0,'the underpainting waits for the answer');
+  assert.ok(!h.calls.some(c=>c.operation==='begin'),'not even the new painting is made');
+  assert.equal(h.runtime.activity,'awaiting_user');
+  assert.match(h.events.filter(e=>e.type==='status').at(-1).message,/Sharpen goal card/);
+  await h.runtime.goalSharpen.answer({id:offer.id,action:'original'});
+  for (let i=0;i<300 && !(painters.length && !h.runtime.busy);i++) await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(painters.length,1,'Use as is: the underpainting starts by itself');
+  assert.match(latestUserText(painters[0].req),/PROJECT FOLDER MOVE[^\n]*paint_from_reference/);
+  assert.equal(h.runtime.goal.messages.filter(m=>m.role==='user' && /Start painting|Paint step 1/.test(m.text)).length<=1,true,'the held request is not remembered twice');
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
 });
 
@@ -3470,6 +3509,7 @@ async function folderMoves({finish=true, root}={}) {
  // These tests are about Keep and ticks: their element moves paint typed strokes with no area. The element step's card and
  // refusals are tested on their own ('a folder element step with its area set…', 'after Keep the step is ticked…').
  h.runtime.elementAreaQuestion=async()=>false; h.runtime.refuseInElementStep=()=>{};
+ noSharpenCard(h);
  return {h,offered};
 }
 

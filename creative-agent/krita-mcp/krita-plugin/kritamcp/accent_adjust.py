@@ -38,8 +38,13 @@ LINE_REACH = 1.5                              # a detail line's mask is this man
 BLOOM_GROW = 2.5                              # the bloom's mask reaches this many times the light's
 BLOOM_OPACITY = 0.35
 BLOOM_BLUR = 1.5                              # the bloom's blur, in light sizes (a Gaussian sigma of half of it)
-EXPOSURE = (0.15, 0.6)                        # Dodge/Burn exposure for the weakest and the strongest accent
+# Rehearsal in Toska (2026-10-24, New Moscow): (0.15, 0.6) with the mask at the strength itself and an unamplified high
+# pass changed almost nothing at preview scale; measured offline on that canvas view these values are noticeable with the
+# ring just outside the masks unchanged (no halo). MASK_FLOOR: a mask's value is at least this, the strength adds the rest.
+EXPOSURE = (0.3, 0.9)                         # Dodge/Burn exposure for the weakest and the strongest accent
+MASK_FLOOR = 0.5
 HIGH_PASS = 1.5                               # the high pass's sigma, in detail line widths
+DETAIL_GAIN = 2.5                             # the high pass's gain before it is Overlaid
 DODGE, BURN = 'dodge', 'burn'                 # Krita's Dodge and Burn filters (plugins/filters/dodgeburn)
 SHADOWS, HIGHLIGHTS = 0, 2                    # their "type" (KisFilterDodgeBurn::Type)
 
@@ -104,8 +109,8 @@ def tiles(accents, width, height, grow=1.0):
 
 def mask(accents, rect, grow=1.0):
     """A soft mask (rect's h x w, float32 0-1) of the accents: each a disc (lights, darks) or a band along its line
-    (detail), reaching `grow` times its usual reach, at full value (the accent's strength) inside and fading to nothing
-    over its outer FEATHER share; the strongest wins where they overlap."""
+    (detail), reaching `grow` times its usual reach, at full value inside and fading to nothing
+    over its outer FEATHER share (inside: MASK_FLOOR plus the strength's share of the rest); the strongest wins where they overlap."""
     import cv2
     x0, y0, w, h = rect
     out = np.zeros((h, w), np.float32)
@@ -126,7 +131,8 @@ def mask(accents, rect, grow=1.0):
             d = cv2.distanceTransform(centre, cv2.DIST_L2, 3)
         else:
             d = np.hypot(xs - accent['x'], ys - accent['y'])
-        soft = np.clip((reach - d) / max(0.5, FEATHER * reach), 0, 1) * float(accent['strength'])
+        level = MASK_FLOOR + (1 - MASK_FLOOR) * float(accent['strength'])
+        soft = np.clip((reach - d) / max(0.5, FEATHER * reach), 0, 1) * level
         view = out[top - y0:bottom - y0, left - x0:right - x0]
         np.maximum(view, soft.astype(np.float32), out=view)
     return out
@@ -184,7 +190,7 @@ def bake(how, setting, source, inner, opacity):
     own = source[..., :3].astype(np.float32) / 255
     blur = cv2.GaussianBlur(own, (0, 0), max(0.5, setting))
     if how == 'overlay':
-        out = overlay(own, np.clip(own - blur + 0.5, 0, 1))
+        out = overlay(own, np.clip((own - blur) * DETAIL_GAIN + 0.5, 0, 1))
     else:
         out = own + (screen(own, blur) - own) * opacity
     pixels = source.copy()

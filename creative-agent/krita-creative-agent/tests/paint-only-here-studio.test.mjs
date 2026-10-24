@@ -5,7 +5,8 @@ import { recordingTracing } from './fake-langfuse.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
@@ -250,5 +251,30 @@ test('a bridge failure leaves no area and no file: Autopilot paints without an a
     assert.match(outcome.reply, /without an area/);
     assert.match(h.events.filter(e => e.type === 'action').at(-1).message, /painting the sky without an area \(The found area could not be protected/);
     h.runtime.mode = 'agent';
+  } finally { await h.close(); }
+});
+
+// Rehearsal finding 4 (Toska, 2026-10-24): with the goal placed by the chat's whole-picture underpainting, a named part is
+// found on the goal and mapped onto the canvas through that transfer; an undone underpainting places nothing.
+test('find_it on a chat whose underpainting placed the goal: found on the goal, through the transfer placement', { timeout: 30000 }, async () => {
+  const { h } = await agentChat(() => ({ content: 'Done.' }));
+  try {
+    fakeFinder(h);
+    const traced = [];
+    const call1 = h.runtime.bridge.call.bind(h.runtime.bridge);
+    h.runtime.bridge.call = async (operation, params, ...rest) => { if (operation === 'trace_reference') traced.push(params.sha256); return call1(operation, params, ...rest); };
+    const goal = h.runtime.study.references.find(r => r.role === 'reference');
+    Object.assign(goal, { width: 384, height: 512 });
+    const folder = join(h.runtime.study.directory, 'reference-paintings'); await mkdir(folder, { recursive: true });
+    const job = { id: 'a'.repeat(32), recipe: { reference_id: goal.id, source: [0, 0, 384, 512], target: [0, 0, 768, 1024] }, canvas: { width: 768, height: 1024 }, completed: 5000, status: 'complete' };
+    await writeFile(join(folder, job.id + '.json'), JSON.stringify(job));
+    assert.deepEqual(await h.runtime.placedGoal(), { path: goal.path, width: 384, height: 512, placement: { source: [0, 0, 384, 512], target: [0, 0, 768, 1024] } });
+    await h.runtime.findIt({ request_id: 'g1', part: 'the sky' });
+    const event = h.events.filter(e => e.type === 'found_area').at(-1);
+    assert.equal(event.error, undefined); assert.equal(event.found_on, 'goal');
+    assert.deepEqual(traced, [createHash('sha256').update(await readFile(goal.path)).digest('hex')], 'the goal is segmented, not the canvas view');
+    assert.deepEqual(event.bounds, [0, 0, 768, 256]);
+    h.runtime.goal.reference_jobs = { [job.id]: [1] }; h.runtime.goal.moves = [{ number: 1, status: 'undone' }];
+    assert.equal(await h.runtime.placedGoal(), null, 'an undone underpainting places nothing: the canvas again');
   } finally { await h.close(); }
 });

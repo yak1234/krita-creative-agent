@@ -1,6 +1,6 @@
 // @ts-check
 import { resizeBilinear } from './shapes/image.ts';
-import { REFERENCE_PIXELS, PLUGIN_DECODE_PIXELS, STEP_MAX, EDGE_SPACING_MAX, SURFACE_SPACING_MAX, SURFACE_LENGTH_MAX } from './reference-limits.ts';
+import { REFERENCE_PIXELS, PLUGIN_DECODE_PIXELS, STEP_MAX, EDGE_SPACING_MAX, SURFACE_SPACING_MAX, SURFACE_LENGTH_MAX, PLAN_STROKES_MAX } from './reference-limits.ts';
 import {Type} from 'typebox';
 import {Value} from 'typebox/value';
 /** @template {import('typebox').TProperties} T @param {T} p */
@@ -15,7 +15,7 @@ export const PATCH_FEATHER=.15;
 export const referenceSchema=object({
  name:Type.String({minLength:1,maxLength:100}),reference_id:Type.String({minLength:1}),preset:Type.String({minLength:1,maxLength:200}),
  source:rect(),target:rect(),focal_regions:Type.Optional(Type.Array(rect(),{maxItems:12})),
- steps:Type.Optional(Type.Array(Type.Number({minimum:.75,maximum:STEP_MAX}),{minItems:3,maxItems:3,description:'Source-pixel sampling steps: coarse, fine, focal. Default [6,2.5,1.2]. Must decrease.'})),
+ steps:Type.Optional(Type.Array(Type.Number({minimum:.75,maximum:STEP_MAX}),{minItems:3,maxItems:3,description:'Source-pixel sampling steps: coarse, fine, focal. Default [6,2.5,1.2]. Must decrease. The whole-picture underpainting\'s are set by the host on the canvas.'})),
  seed:Type.Optional(Type.Integer({minimum:0,maximum:4294967295})),
 });
 export const DEFAULT_STEPS=[6,2.5,1.2];
@@ -51,7 +51,7 @@ export function generateReferencePlan(recipe,image,canvas){
  if(!(steps[0]>steps[1]&&steps[1]>steps[2]))throw new Error('Sampling steps must decrease from coarse to fine to focal.');
  for(const r of recipe.focal_regions??[])if(!rectInside(r,image.width,image.height)||r[0]<sx||r[1]<sy||r[0]+r[2]>sx+sw||r[1]+r[3]>sy+sh)throw new Error('Focal regions must fit the source crop.');
  // Bound work before allocating or scanning potentially enormous grids.
- if(estimateReferenceStrokes(recipe)>200000)throw new Error('Recipe exceeds 200,000 samples. Increase steps or reduce the crop.');
+ if(estimateReferenceStrokes(recipe)>PLAN_STROKES_MAX)throw new Error(`Recipe exceeds ${PLAN_STROKES_MAX.toLocaleString('en-US')} samples. Increase steps or reduce the crop.`);
  const sample=(x,y,r)=>{let sum=[0,0,0],alpha=0,n=0;for(let yy=Math.max(sy,Math.floor(y)-r);yy<=Math.min(sy+sh-1,Math.floor(y)+r);yy++)for(let xx=Math.max(sx,Math.floor(x)-r);xx<=Math.min(sx+sw-1,Math.floor(x)+r);xx++){const i=(yy*image.width+xx)*4,a=image.data[i+3]/255;alpha+=a;n++;for(let k=0;k<3;k++)sum[k]+=image.data[i+k]*a;}return {rgb:sum.map(v=>alpha?v/alpha:0),alpha:n?alpha/n:0};};
  const luminance=(x,y)=>{const {rgb,alpha}=sample(Math.max(sx,Math.min(sx+sw-1,x)),Math.max(sy,Math.min(sy+sh-1,y)),0);return(rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722)*alpha;};
  const inner=[tx>0,ty>0,tx+tw<canvas.width,ty+th<canvas.height],band=PATCH_FEATHER*Math.min(tw,th);

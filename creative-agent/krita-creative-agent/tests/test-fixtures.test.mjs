@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile, access, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { copyProjectFolder, copyReferences, TestAssets } from '../src/test-fixtures.ts';
+import { copyProjectFolder, copyReferences, TestAssets, assetsSource } from '../src/test-fixtures.ts';
 
 async function project(root) {
   const folder = join(root, 'artist', 'moscow-painting-assets');
@@ -84,5 +84,24 @@ test('test assets: a fixture is prepared once from its source (images and prompt
     assert.deepEqual(await assets.remove('moscow-painting-assets'), { status: 'ok', removed: 'moscow-painting-assets' });
     await assert.rejects(access(fixture));
     assert.deepEqual(await tree(source), before);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+// Rehearsal fix (2026-10-24): in Toska the panel config's project root is Toska's own paintings folder, so prepare with no
+// source looked for new_moscow/moscow-painting-assets there ("is not a folder"). The default is the first of the panel
+// configs' project roots that holds it.
+test('the default test-assets source: the first panel config whose project root holds new_moscow/moscow-painting-assets', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'assets-source-'));
+  try {
+    const toska = join(root, 'toska-paintings'), artist = join(root, 'digital_art');
+    await mkdir(join(artist, 'new_moscow', 'moscow-painting-assets'), { recursive: true });
+    await mkdir(toska, { recursive: true });
+    const configs = [join(root, 'toska.json'), join(root, 'missing.json'), join(root, 'stock.json')];
+    await writeFile(configs[0], JSON.stringify({ project_root: toska }));
+    await writeFile(configs[2], JSON.stringify({ project_root: artist }));
+    assert.equal(await assetsSource({ configs }), join(artist, 'new_moscow', 'moscow-painting-assets'));
+    assert.equal(await assetsSource({ override: '/named/by/hand', configs }), '/named/by/hand', 'TEST_ASSETS_SOURCE wins');
+    assert.equal(await assetsSource({ configs: [configs[0]] }), join(toska, 'new_moscow', 'moscow-painting-assets'), 'none holds it: the first, so the refusal names it');
+    assert.equal(await assetsSource({ configs: [] }), undefined);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

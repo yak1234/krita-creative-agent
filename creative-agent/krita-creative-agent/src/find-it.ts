@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Find it for me (openspec element-scoped-painting goal 1, "Select object"; the artist, 2026-10-24): the artist names a part
 // ("the sky") or clicks a point on it, and the shapes model (SAM 2.1 base-plus, src/shapes) finds that object's outline on
-// the CURRENT painting (the canvas view, never a reference). The panel loads it as a normal Krita selection (marching ants)
+// the painting. A named part is found on the goal image when a whole-picture transfer placed it on the canvas, and the
+// mask mapped through that placement (rehearsal 2026-10-24: on a dabbed underpainting "the sky" found the moon, the towers
+// and a spire, 4%; on the sharp goal, the sky, 21%); without a goal, and for a click, on the canvas view. The panel loads it as a normal Krita selection (marching ants)
 // the artist can still change with Freehand (Shift adds, Alt subtracts) before pressing Paint only here or Use this.
 //
 //   const found = await findArea(host, { part: 'the sky' });         // or { points: [[x, y, 1]] } in canvas pixels
@@ -27,7 +29,7 @@ import { decodePlane, encodePlane } from './shapes/png.ts';
 import { SHAPES_MODEL } from './shapes/model.ts';
 import { cellRect, type Cells, type PartLocator, type Rgba } from './find-it-locate.ts';
 
-export const FINDER_VERSION = 1;
+export const FINDER_VERSION = 2;                         // 2: a named part is found on the goal when it is placed (goal())
 /** A cell at or above this probability is the part; at or below NEGATIVE it is not (a negative point). */
 export const POSITIVE = 0.6, NEGATIVE = 0.15;
 /** A cell's mask is dropped when more than this share of it lies in "not" cells: it leaked into another object. */
@@ -45,7 +47,11 @@ export type View = { path: string; width: number; height: number; revision?: str
 export type FindRequest = { part?: string | null; points?: number[][] | null };
 export type FindTiming = { view: number; locate: number; shapes: number; total: number };
 export type FoundArea = { part: string | null; mask_path: string; bounds: Rect; canvas: [number, number]; share: number; score: number;
-  prompts: number; kept: number; cached: boolean; ms: FindTiming; revision: string | null; note?: string; located_by?: string };
+  prompts: number; kept: number; cached: boolean; ms: FindTiming; revision: string | null; note?: string; located_by?: string;
+  /** Where the outline was found: the canvas view, or the goal image mapped onto the canvas through its placement. */
+  found_on: 'canvas' | 'goal' };
+/** The goal image as a whole-picture transfer placed it: `source` [x,y,w,h] of the goal's pixels lies on `target` of the canvas. */
+export type PlacedGoal = { path: string; width: number; height: number; placement: { source: Rect; target: Rect } };
 export type FindHost = ShapeHost & {
   /** The chat folder: found areas go to its .shapes. */
   directory: string;
@@ -53,6 +59,9 @@ export type FindHost = ShapeHost & {
   pixels(path: string): Promise<{ sha: string; pixels: Rgba }>;
   /** Where a named part is (find-it-locate.ts); absent or null: only a clicked point can be found. */
   locate?: PartLocator | null;
+  /** The goal placed on the canvas by a whole-picture transfer, or null (rehearsal 2026-10-24: on a dabbed underpainting
+   * "the sky" found the moon and the towers; on the sharp goal, the sky). A named part is found on it when there is one. */
+  goal?: (() => Promise<PlacedGoal | null>) | null;
   signal?: AbortSignal;
 };
 export type FindErrorCode = 'invalid' | 'no_locator' | 'not_found';
@@ -155,19 +164,34 @@ const covers = (found: { bounds: Rect; data: Uint8Array }, x: number, y: number)
 
 /** The merged mask (view pixels) resampled to the canvas (bilinear, so the edge stays soft) and cut to its bounds. */
 export function toCanvas(union: Uint8Array, view: { width: number; height: number }, canvas: { width: number; height: number }): { bounds: Rect; data: Uint8Array; inside: number } | null {
+  return mapToCanvas(union, view, canvas, { ax: view.width / canvas.width, bx: 0, ay: view.height / canvas.height, by: 0 }, [0, 0, canvas.width, canvas.height]);
+}
+
+/** The view pixels of a goal's mask as a placement puts the goal on the canvas: view = a * canvas + b on each axis. */
+export function goalMapping(goal: PlacedGoal, view: { width: number; height: number }): { ax: number; bx: number; ay: number; by: number } {
+  const [sx, sy, sw] = goal.placement.source, [tx, ty, tw] = goal.placement.target, scale = tw / sw;
+  const kx = view.width / goal.width, ky = view.height / goal.height;
+  return { ax: kx / scale, bx: kx * (sx - tx / scale), ay: ky / scale, by: ky * (sy - ty / scale) };
+}
+
+/** The mask (view pixels) on the canvas under `map` (view = a * canvas + b), inside `clip` (the canvas, or the placement's
+ * target), resampled bilinearly and cut to its bounds; null when nothing of it lands there. */
+export function mapToCanvas(union: Uint8Array, view: { width: number; height: number }, canvas: { width: number; height: number },
+  map: { ax: number; bx: number; ay: number; by: number }, clip: Rect): { bounds: Rect; data: Uint8Array; inside: number } | null {
   let x0 = view.width, y0 = view.height, x1 = -1, y1 = -1;
   for (let y = 0; y < view.height; y++) for (let x = 0; x < view.width; x++) if (union[y * view.width + x]) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
   if (x1 < 0) return null;
-  const kx = view.width / canvas.width, ky = view.height / canvas.height;
-  const left = Math.max(0, Math.floor(x0 / kx)), top = Math.max(0, Math.floor(y0 / ky));
-  const right = Math.min(canvas.width, Math.ceil((x1 + 1) / kx)), bottom = Math.min(canvas.height, Math.ceil((y1 + 1) / ky));
+  const { ax, bx, ay, by } = map;
+  const left = Math.max(0, clip[0], Math.floor((x0 - bx) / ax)), top = Math.max(0, clip[1], Math.floor((y0 - by) / ay));
+  const right = Math.min(canvas.width, clip[0] + clip[2], Math.ceil((x1 + 1 - bx) / ax)), bottom = Math.min(canvas.height, clip[1] + clip[3], Math.ceil((y1 + 1 - by) / ay));
+  if (right <= left || bottom <= top) return null;
   const w = right - left, h = bottom - top, data = new Uint8Array(w * h);
   const at = (i: number, j: number) => i < 0 || j < 0 || i >= view.width || j >= view.height ? 0 : union[j * view.width + i] ?? 0;
   let inside = 0;
   for (let y = 0; y < h; y++) {
-    const sy = (top + y + 0.5) * ky - 0.5, j = Math.floor(sy), fy = sy - j;
+    const sy = (top + y + 0.5) * ay + by - 0.5, j = Math.floor(sy), fy = sy - j;
     for (let x = 0; x < w; x++) {
-      const sx = (left + x + 0.5) * kx - 0.5, i = Math.floor(sx), fx = sx - i;
+      const sx = (left + x + 0.5) * ax + bx - 0.5, i = Math.floor(sx), fx = sx - i;
       const value = Math.round((at(i, j) * (1 - fx) + at(i + 1, j) * fx) * (1 - fy) + (at(i, j + 1) * (1 - fx) + at(i + 1, j + 1) * fx) * fy);
       data[y * w + x] = value; if (value >= 128) inside++;
     }
@@ -193,16 +217,19 @@ export async function findArea(host: FindHost, request: FindRequest): Promise<Fo
   const view = await host.view();
   if (!(view.width > 0 && view.height > 0) || typeof view.path !== 'string') throw new FindError('invalid', 'Open your painting first: Find it looks at the painting.');
   const checked = checkRequest(request, view);
-  const { sha, pixels } = await host.pixels(view.path);
+  // A named part on the goal when a whole-picture transfer placed it (a click is on the canvas itself).
+  const goal = 'part' in checked ? await host.goal?.().catch(() => null) ?? null : null;
+  const { sha, pixels } = await host.pixels(goal ? goal.path : view.path);
   const viewMs = elapsed(started);
   const folder = join(host.directory, '.shapes');
-  const key = createHash('sha256').update(JSON.stringify([FINDER_VERSION, SHAPES_MODEL.revision, sha, checked])).digest('hex').slice(0, 24);
+  const key = createHash('sha256').update(JSON.stringify([FINDER_VERSION, SHAPES_MODEL.revision, sha, checked,
+    ...(goal ? [goal.placement, [view.width, view.height]] : [])])).digest('hex').slice(0, 24);
   const mask_path = join(folder, 'found-' + key + '.png'), record = join(folder, 'found-' + key + '.json');
   const part = 'part' in checked ? String(request.part).trim().slice(0, NAME_LIMIT) : null;
   try {                                                   // the same request on the same view: at once, no model
     const kept = JSON.parse(await readFile(record, 'utf8'));
     await stat(mask_path);
-    return { ...kept, part, mask_path, cached: true, ms: { view: viewMs, locate: 0, shapes: 0, total: elapsed(started) } };
+    return { found_on: 'canvas', ...kept, part, mask_path, cached: true, ms: { view: viewMs, locate: 0, shapes: 0, total: elapsed(started) } };
   } catch { /* not found before */ }
 
   const view_w = pixels.width, view_h = pixels.height, kx = view_w / view.width, ky = view_h / view.height;
@@ -219,7 +246,7 @@ export async function findArea(host: FindHost, request: FindRequest): Promise<Fo
     if (!prompts.length) throw new FindError('not_found', `I could not see ${part} on the painting. Click it on the canvas instead.`);
   }
   const shaping = performance.now(), union = new Uint8Array(view_w * view_h), scores: number[] = [];
-  const studyKey = `canvas:${sha.slice(0, 24)}`;           // the key canvasShape uses: one study per view
+  const studyKey = `${goal ? 'goal' : 'canvas'}:${sha.slice(0, 24)}`;   // canvasShape's key for the view: one study per picture
   for (const prompt of prompts) {
     host.signal?.throwIfAborted();
     let found: Found;
@@ -236,14 +263,15 @@ export async function findArea(host: FindHost, request: FindRequest): Promise<Fo
   }
   cleanMask(union, view_w, view_h, prompts.flatMap(prompt => prompt.filter(point => point[2] === 1)));
   const shapesMs = elapsed(shaping);
-  const merged = toCanvas(union, { width: view_w, height: view_h }, view);
+  const merged = goal ? mapToCanvas(union, { width: view_w, height: view_h }, view, goalMapping(goal, { width: view_w, height: view_h }), goal.placement.target)
+    : toCanvas(union, { width: view_w, height: view_h }, view);
   if (!merged) throw new FindError('not_found', part ? `No outline of ${part} was found. Click it on the canvas instead.` : 'No shape was found there. Click on the part itself.');
   await mkdir(folder, { recursive: true });
   await writeFile(mask_path, encodePlane({ width: merged.bounds[2], height: merged.bounds[3], data: merged.data }));
   const score = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length * 100) / 100;
   const result: Omit<FoundArea, 'part' | 'mask_path' | 'cached' | 'ms'> = { bounds: merged.bounds, canvas: [view.width, view.height],
     share: Math.round(merged.inside / (view.width * view.height) * 10000) / 10000, score, prompts: prompts.length, kept: scores.length,
-    revision: view.revision ?? null, ...(cells?.model ? { located_by: cells.model } : {}),
+    revision: view.revision ?? null, found_on: goal ? 'goal' : 'canvas', ...(cells?.model ? { located_by: cells.model } : {}),
     ...(!cells && score < UNSURE ? { note: `The outline is uncertain (score ${score}): adjust it with Freehand (Shift adds, Alt subtracts), or click again.` } : {}) };
   const temporary = record + '.' + process.pid;
   await writeFile(temporary, JSON.stringify(result)); await rename(temporary, record);

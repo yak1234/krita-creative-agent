@@ -5,7 +5,8 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash} from 'node:crypto';
 import {generateReferencePlan,generateEdgePlan,generateSurfacePlan,estimateReferenceStrokes,EDGE_LIMIT,SURFACE_LIMIT} from '../src/reference-generator.mjs';
-import {referenceTools,transferRefusal,stretchRefusal,partShare,existingPainting,PAINTED_SHARE,fitStepsToTime,fitStepsToBudget,AGENT_MOVE_STROKES,wholeReferenceRefusal,groundStops,STROKES_PER_SECOND,TRANSFER_TIME_SHARE} from '../src/reference-tool.mjs';
+import {referenceTools,transferRefusal,stretchRefusal,partShare,existingPainting,PAINTED_SHARE,fitStepsToTime,fitStepsToBudget,AGENT_MOVE_STROKES,wholeReferenceRefusal,groundStops,STROKES_PER_SECOND,TRANSFER_TIME_SHARE,canvasSteps,underpaintingBudget,UNDERPAINTING_CANVAS_STEPS,UNDERPAINTING_STROKES,UNDERPAINTING_MINUTES,MEASURED_STROKES_PER_SECOND} from '../src/reference-tool.mjs';
+import {PLAN_STROKES_MAX} from '../src/reference-limits.ts';
 const recipe={name:'Portrait',reference_id:'ref',preset:'Basic',source:[0,0,24,24],target:[2,2,48,48],steps:[6,3,1.5],focal_regions:[[6,6,12,12]],seed:42};
 const canvas={width:64,height:64,revision:'r0'};
 const image={width:24,height:24,data:Buffer.alloc(24*24*4)};
@@ -18,7 +19,8 @@ test('reference generation preserves spatial colors, mapping, deterministic refi
  assert.throws(()=>generateReferencePlan({...recipe,steps:[3,6,1]},image,canvas),/decrease/);
  assert.throws(()=>generateReferencePlan({...recipe,focal_regions:[[20,20,12,12]]},image,canvas),/Focal/);
  const transparent={...image,data:Buffer.alloc(image.data.length)};assert.throws(()=>generateReferencePlan(recipe,transparent,canvas),/transparent/);
- const large={width:2000,height:2000,data:Buffer.alloc(16000000)};assert.throws(()=>generateReferencePlan({...recipe,source:[0,0,2000,2000],target:[0,0,2000,2000],steps:[3,2,1]},large,{width:2000,height:2000}),/200,000/);
+ const large={width:2000,height:2000,data:Buffer.alloc(16000000)};assert.throws(()=>generateReferencePlan({...recipe,source:[0,0,2000,2000],target:[0,0,2000,2000],steps:[1.5,1,.75]},large,{width:2000,height:2000}),/280,000/);
+ assert.equal(PLAN_STROKES_MAX,280000,'room for the whole-picture underpainting budget');
 });
 async function harness(){const directory=await mkdtemp(join(tmpdir(),'reference-job-'));const ref=join(directory,'ref.png');await writeFile(ref,'fixture');let revision='r0',layer=0;const calls=[],receipts=new Map();
  const runtime={config:{reference_batch:128},mode:'agent',executionPhase:'agent',study:{directory,references:[{id:'ref',path:ref}]},decisionObservation:canvas,emit(){},
@@ -245,7 +247,8 @@ test('under a time allowance a transfer widens its steps to fit; without one, or
 test('a job sized to the time left records what was asked, tells the painter, and replays under the same ID',async()=>{
  const h=await harness();try{
   h.runtime.goal={revision:1,current_step:0,brief:{steps:[{},{},{}]}};h.runtime.timeLeftMs=()=>3000;
-  const asked={...recipe,source:[0,0,24,24],target:[0,0,64,64],steps:[2,1.5,1]};
+  const native=h.runtime.callNative.bind(h.runtime);h.runtime.study.canvas={mode:'current'};h.runtime.callNative=async(op,p)=>op==='observe'?{...await native(op,p),layers:[{name:'Background'}],painted_share:.6,filename:'/art/a.kra'}:native(op,p);
+  const asked={...recipe,source:[0,0,24,24],target:[0,0,24,24],steps:[2,1.5,1]};
   const first=await h.tools[0].execute('sized',asked);
   assert.match(first.details.fitted,/Steps widened from \[2,1.5,1\]/);
   const job=JSON.parse(await readFile(join(h.runtime.study.directory,'reference-paintings',first.details.job_id+'.json')));
@@ -263,7 +266,9 @@ test('an Agent move sizes a transfer to one move: a traced clouds move planned 1
 test('in an Agent move a transfer is sized to the move even without a time allowance, and the painter is told',async()=>{
  const h=await harness();try{
   h.runtime.goal={revision:1,current_step:0,brief:{steps:[{},{},{}]}};h.runtime.mode='agent';h.runtime.config={...h.runtime.config,agent_transfer_strokes:500};
-  const asked={...recipe,source:[0,0,24,24],target:[0,0,64,64],steps:[2,1.5,1]};
+  // Over an existing painting (not the whole-picture underpainting, which has its own budget: the tests below).
+  const native=h.runtime.callNative.bind(h.runtime);h.runtime.study.canvas={mode:'current'};h.runtime.callNative=async(op,p)=>op==='observe'?{...await native(op,p),layers:[{name:'Background'}],painted_share:.6,filename:'/art/a.kra'}:native(op,p);
+  const asked={...recipe,source:[0,0,24,24],target:[0,0,24,24],steps:[2,1.5,1]};
   const first=await h.tools[0].execute('move-sized',asked);
   assert.match(first.details.fitted,/Steps widened from \[2,1.5,1\].*one Agent move/);
   assert.ok(first.details.total_strokes<=550,first.details.total_strokes);
@@ -465,4 +470,47 @@ test('edges and surface analyse a very large crop from a reduced copy, spacing a
  assert.deepEqual([surface.recipe.spacing,surface.recipe.length],[4,20]);
  assert.equal(analysisCopy({...edges,source:[0,0,1000,1000]},big,1_500_000).image,big,'a crop within the limit is read as it is');
  assert.equal(analysisCopy({...edges,mode:undefined},big,1_500_000).image,big,'the dab transfer reads it whole');
+});
+
+// Rehearsal finding 2 (Toska, 2026-10-24): the New Moscow underpainting (goal 1448 x 1086 onto 6000 x 4500) was fitted to
+// the 40,000-stroke move budget, from [5,2,1] to [16.89,6.76,3.38] source px: 28 canvas px between fine dabs, 39,958
+// strokes in 57 s. The whole-picture underpainting has its own budget, and its steps are set on the canvas.
+test('the whole-picture underpainting: steps set in canvas pixels, so a sharpened goal is not given 4x larger steps',()=>{
+ assert.deepEqual(UNDERPAINTING_CANVAS_STEPS,[24,5,2.5]);
+ const original={source:[0,0,1448,1086],target:[0,0,6000,4500]},sharpened={source:[0,0,5792,4344],target:[0,0,6000,4500]};
+ assert.deepEqual(canvasSteps(original),[5.79,1.21,.75],'a source pixel is 4.1 canvas px: the focal step stops at the schema minimum');
+ assert.deepEqual(canvasSteps(sharpened),[23.17,4.83,2.41]);
+ for(const r of [original,sharpened]){const k=r.target[2]/r.source[2];assert.ok(Math.abs(canvasSteps(r)[1]*k-5)<.05,'5 canvas px between fine dabs, whatever the goal’s size');}
+ assert.deepEqual(canvasSteps({source:[0,0,600,450],target:[0,0,6000,4500]}),[2.4,1,.75],'a tiny goal: fine dabs a source pixel apart, never finer (no detail there)');
+ const [a,b,c]=canvasSteps({source:[0,0,24,24],target:[0,0,6000,6000]});assert.ok(a>b&&b>c,'still coarse to fine');
+});
+test('the underpainting budget: five minutes at the measured rate, at most 250,000 strokes; New Moscow 2.4x finer than the rehearsal',()=>{
+ assert.equal(MEASURED_STROKES_PER_SECOND,700,'39,958 strokes in 57 s in Toska');
+ assert.equal(UNDERPAINTING_MINUTES,5);assert.equal(UNDERPAINTING_STROKES,250000);
+ assert.equal(underpaintingBudget(),210000);assert.equal(underpaintingBudget(700),210000);
+ assert.equal(underpaintingBudget(5000),250000,'a fast machine: the plan size cap');
+ assert.equal(underpaintingBudget(100),30000,'a slow machine: still about five minutes');
+ const fine=r=>{const fit=fitStepsToBudget({...r,steps:canvasSteps(r)},underpaintingBudget());return {canvas:fit.recipe.steps[1]*r.target[2]/r.source[2],strokes:estimateReferenceStrokes(fit.recipe)};};
+ const original=fine({source:[0,0,1448,1086],target:[0,0,6000,4500]}),sharpened=fine({source:[0,0,5792,4344],target:[0,0,6000,4500]});
+ assert.ok(original.canvas>11&&original.canvas<12.5,'about 11.7 canvas px between fine dabs, against 28 in the rehearsal: '+original.canvas);
+ assert.ok(Math.abs(sharpened.canvas-original.canvas)<.5,'the sharpened goal paints the same dab grid, with sharper colours in each dab');
+ for(const r of [original,sharpened])assert.ok(r.strokes<=underpaintingBudget()*1.02&&r.strokes>underpaintingBudget()*.9,String(r.strokes));
+});
+test('an Agent move’s whole-picture transfer takes the underpainting budget and canvas steps; the painter is told, patches keep the move budget',async()=>{
+ const h=await harness();try{
+  h.runtime.goal={revision:1,current_step:0,brief:{steps:[{},{},{}]}};h.runtime.mode='agent';
+  const asked={...recipe,source:[0,0,24,24],target:[0,0,64,64],steps:[5,2,1]};delete asked.focal_regions;
+  const first=await h.tools[0].execute('whole',asked);
+  const job=JSON.parse(await readFile(join(h.runtime.study.directory,'reference-paintings',first.details.job_id+'.json')));
+  assert.deepEqual(job.requested.steps,[5,2,1]);
+  assert.deepEqual(job.recipe.steps,canvasSteps(asked),'the host sets the underpainting’s steps on the canvas');
+  assert.match(first.details.fitted,/whole-picture underpainting/);assert.match(first.details.fitted,/5 canvas px between fine dabs/);
+ }finally{await h.close();}
+ const small=await harness();try{
+  small.runtime.goal={revision:1,current_step:0,brief:{steps:[{},{},{}]}};small.runtime.mode='agent';small.runtime.config={...small.runtime.config,underpainting_strokes:60};
+  const asked={...recipe,source:[0,0,24,24],target:[0,0,64,64],steps:[5,2,1]};delete asked.focal_regions;
+  const first=await small.tools[0].execute('whole-small',asked);
+  assert.match(first.details.fitted,/widened to fit the underpainting budget \(about 60 strokes/);
+  assert.ok(first.details.total_strokes<=66,String(first.details.total_strokes));
+ }finally{await small.close();}
 });

@@ -10,7 +10,7 @@ const view = (more = {}) => ({ testFolder: folder, mode: 'agent', planSteps: [{ 
 const found = { request_id: 'f1', part: 'the sky', mask_path: folder + '/data/chat/.shapes/found-0123456789abcdef01234567.png', bounds: [0, 0, 10, 5], canvas: [10, 10] };
 
 test('only the allowlisted panel commands, with known parameters', () => {
-  assert.deepEqual([...TEST_COMMANDS].sort(), ['answer', 'closeup_answer', 'find_it', 'folder_guess', 'paint_only_here', 'plan_step', 'set_mode', 'start_plan', 'stop']);
+  assert.deepEqual([...TEST_COMMANDS].sort(), ['answer', 'closeup_answer', 'find_it', 'folder_guess', 'paint_only_here', 'plan_step', 'set_mode', 'sharpen_answer', 'start_plan', 'stop']);
   for (const type of ['shutdown', 'end', 'open_folder', 'configure_provider', 'delete_chat', 'import_archive', 'shapes_model', 'prompt', '', 7])
     assert.throws(() => panelCommand(type, {}, view()), /not a test command|Allowed/, String(type));
   assert.throws(() => panelCommand('stop', { now: true }, view()), /unknown parameter now/);

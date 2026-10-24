@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { toolCallsFromEntries, type Call } from './tool-choice.ts';
 import { copyProjectFolder, copyReferences } from './test-fixtures.ts';
-import { panelCommand, type AreaCommand, type FoundEvent, type Question } from './test-commands.ts';
+import { panelCommand, type AreaCommand, type FoundEvent, type Question, type SharpenCard } from './test-commands.ts';
 import type { StepView } from './plan-steps.ts';
 
 /** The installed companion's settings (the panel's creative-agent-config.json). */
@@ -35,6 +35,8 @@ export type TestState = { folder: string; chat_id: string | null; ready: boolean
   shape_timings: ShapeTiming[]; shapes_model_needed: string | null; mode: string | null;
   project_folder: FolderCard | null; references: string[]; plan: { title: string | null; status: string | null; steps: string[] } | null;
   plan_steps: StepView[]; now: NowCard | null; closeup_question: Question | null; paint_only_here: AreaView | null; found_areas: FoundEvent[];
+  /** The part a find_it sent is looking for until its found_area arrives (the companion is not busy meanwhile). */
+  finding: string | null; sharpen: SharpenCard | null;
   painting_target: { document_id?: string | null; filename?: string | null } | null };
 const CAPTIONS: Record<string, string> = { painting: 'Now painting', finishing: 'Finishing', finished: 'Finished · keep it?', open: 'Up next' };
 const FOUND_KEPT = 10;
@@ -64,6 +66,7 @@ export class TestCompanion {
   private idleSince = Date.now();
   private readonly waiters = new Set<() => void>();
   private readonly status: TestState;
+  private findRequest: string | null = null;
 
   constructor(base: Base, folder: string, { bridge, spawn = spawnProcess as unknown as Spawn, quietMs = 4000, startMs = 120000, closeRetryMs = 5000 }:
     { bridge: Bridge; spawn?: Spawn; quietMs?: number; startMs?: number; closeRetryMs?: number }) {
@@ -71,7 +74,7 @@ export class TestCompanion {
     this.closeRetryMs = closeRetryMs;
     this.status = { folder, chat_id: null, ready: false, busy: false, activity: null, moves: [], question: null, canvas: null, copy: null, errors: [], exited: false,
       shape_timings: [], shapes_model_needed: null, mode: null, project_folder: null, references: [], plan: null, plan_steps: [], now: null,
-      closeup_question: null, paint_only_here: null, found_areas: [], painting_target: null };
+      closeup_question: null, paint_only_here: null, found_areas: [], finding: null, sharpen: null, painting_target: null };
   }
 
   /** Start a test chat in Agent mode. With `painting` (relative to the project root) a copy is opened in Krita;
@@ -186,7 +189,8 @@ export class TestCompanion {
 
   /** Wait until the companion has been idle for a moment (a move finished), or `ms` pass; returns the state either way. */
   async waitIdle(ms: number): Promise<TestState> {
-    await this.until(() => this.status.exited || (!this.status.busy && Date.now() - this.idleSince >= this.quietMs), ms, 'the move').catch(() => {});
+    // A find runs while the companion is not busy (Find it for me): its outline is waited for like a move.
+    await this.until(() => this.status.exited || (!this.status.busy && !this.findRequest && Date.now() - this.idleSince >= this.quietMs), ms, 'the move').catch(() => {});
     return this.state();
   }
 
@@ -219,26 +223,30 @@ export class TestCompanion {
       this.send({ type: 'shutdown' });
       await this.until(() => this.status.exited, 20000, 'the companion to exit').catch(() => this.child?.kill());
     }
-    let krita = 'Krita: nothing to close (the test chat made its own painting).';
-    if (this.status.copy) {
-      // What Krita has open from the run folder: the copy, or the .kra the session saved it as (an image copy is saved as one).
-      const open = await this.bridge('creative', { operation: 'context', params: {} }, 30).then(c => (c?.documents ?? []).map((d: { filename?: string }) => d.filename)
-        .filter((f: unknown): f is string => typeof f === 'string' && f.startsWith(this.folder + sep))).catch(() => [] as string[]);
-      const targets: string[] = open.length ? open : [this.status.copy];
-      for (const target of targets) {
-        // The session may take a moment to let go of the painting after End: retry while Krita says it is still open.
-        let closed = await this.bridge('creative', { operation: 'close_benchmark_copy', params: { path: target } }, 300);
-        for (let attempt = 0; attempt < 12 && /painting session is open/.test(String(closed.error ?? '')); attempt++) {
-          await new Promise(resolve => setTimeout(resolve, this.closeRetryMs));
-          closed = await this.bridge('creative', { operation: 'close_benchmark_copy', params: { path: target } }, 300);
-        }
-        if (!closed.closed) throw new Error(`Krita did not close the copy ${target}: ${closed.error ?? 'still open'}. Close it by hand.`);
+    // What Krita has open from the run folder: the copy, the .kra the session saved it as (an image copy is saved as one), or
+    // the test chat's own new painting (the rehearsal, 2026-10-24: Test chat.kra was left open). Never anything else.
+    const open = await this.bridge('creative', { operation: 'context', params: {} }, 30).then(c => (c?.documents ?? []).map((d: { filename?: string }) => d.filename)
+      .filter((f: unknown): f is string => typeof f === 'string' && f.startsWith(this.folder + sep))).catch(() => [] as string[]);
+    const copy = this.status.copy;
+    const targets: string[] = open.length ? open : copy ? [copy] : [];
+    for (const target of targets) {
+      // The session may take a moment to let go of the painting after End: retry while Krita says it is still open.
+      let closed = await this.bridge('creative', { operation: 'close_benchmark_copy', params: { path: target } }, 300);
+      for (let attempt = 0; attempt < 12 && /painting session is open/.test(String(closed.error ?? '')); attempt++) {
+        await new Promise(resolve => setTimeout(resolve, this.closeRetryMs));
+        closed = await this.bridge('creative', { operation: 'close_benchmark_copy', params: { path: target } }, 300);
       }
-      for (const file of new Set([this.status.copy, ...targets])) { await rm(file, { force: true }); await rm(file + '~', { force: true }); }
-      const copy = this.status.copy;
+      if (!closed.closed) throw new Error(`Krita did not close ${copy ? 'the copy ' : 'the test chat’s painting '}${target}: ${closed.error ?? 'still open'}. Close it by hand.`);
+    }
+    let krita = 'Krita: nothing to close (the test chat made its own painting and Krita no longer has it open).';
+    if (copy) {
+      for (const file of new Set([copy, ...targets])) { await rm(file, { force: true }); await rm(file + '~', { force: true }); }
       krita = targets.length === 1 && targets[0] === copy ? `Krita: closed the copy ${copy} unsaved and deleted it.`
         : `Krita: closed ${targets.join(', ')} (the session's save of the copy ${copy}) unsaved and deleted them.`;
       this.status.copy = null;
+    } else if (targets.length) {
+      // The test chat's own painting is its record: closed unsaved, its saved file stays in the test folder.
+      krita = `Krita: closed the test chat’s painting ${targets.join(', ')} unsaved (its saved file stays in the test folder).`;
     }
     const folders = !!this.status.project_folder || this.status.references.length > 0;
     await this.discardFolders();
@@ -251,12 +259,15 @@ export class TestCompanion {
   async command(type: unknown, params: unknown): Promise<Record<string, unknown>> {
     const s = this.status;
     const planned = panelCommand(type, params, { testFolder: this.folder, mode: s.mode, planSteps: s.plan_steps, question: s.question,
-      closeupQuestion: s.closeup_question, foundAreas: s.found_areas, folderElements: (s.project_folder?.elements ?? []).map(e => e.name) });
+      closeupQuestion: s.closeup_question, foundAreas: s.found_areas, folderElements: (s.project_folder?.elements ?? []).map(e => e.name), sharpen: s.sharpen });
     const result: Record<string, unknown> = { status: 'ok', type };
     if (planned.area) result.krita = await this.applyArea(planned.area);
     if (planned.command) {
       this.send(planned.command);
       if (planned.command.request_id) result.request_id = planned.command.request_id;
+      if (planned.command.type === 'find_it') { this.findRequest = String(planned.command.request_id); s.finding = String(planned.command.part); }
+      // Answered: the panel's card goes; Sharpen keeps it, with the progress, until the side by side replaces it.
+      if (planned.command.type === 'goal_sharpen' && ['original', 'use', 'keep'].includes(String(planned.command.action))) s.sharpen = null;
     }
     return result;
   }
@@ -310,7 +321,16 @@ export class TestCompanion {
       if (event.type === 'canvas' && event.path) s.canvas = event.path;
       if (event.type === 'folder' && event.index) s.project_folder = { root: String(event.index.root), name: String(event.index.name ?? ''),
         goal: event.index.goal?.name ?? null, elements: (event.index.elements ?? []).map((e: { name: string; guess?: string }) => ({ name: e.name, guess: e.guess ?? '' })) };
-      if (event.type === 'found_area') { s.found_areas.push(event); s.found_areas.splice(0, Math.max(0, s.found_areas.length - FOUND_KEPT)); }
+      if (event.type === 'found_area') {
+        s.found_areas.push(event); s.found_areas.splice(0, Math.max(0, s.found_areas.length - FOUND_KEPT));
+        if (event.message || event.error) s.activity = String(event.message ?? event.error);   // the panel's status line after a find
+        if (!this.findRequest || event.request_id === this.findRequest) { this.findRequest = null; s.finding = null; this.idleSince = Date.now(); }
+      }
+      if (event.type === 'goal_sharpen_offer' || event.type === 'goal_sharpen_review')
+        s.sharpen = { kind: event.type === 'goal_sharpen_offer' ? 'offer' : 'review', id: String(event.id), options: (event.options ?? []).map(String),
+          text: String(event.message ?? event.question ?? ''), ...(event.image_path ? { image_path: String(event.image_path) } : {}) };
+      const card = s.sharpen;
+      if (event.type === 'goal_sharpen_progress' && card && card.id === event.id && !event.finished) card.progress = String(event.message ?? '');
       if (event.type === 'goal') {
         s.question = event.goal?.question ?? null;
         s.closeup_question = event.goal?.closeup_question ?? null;

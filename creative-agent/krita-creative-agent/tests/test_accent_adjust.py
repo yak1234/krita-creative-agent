@@ -19,16 +19,25 @@ def light(x, y, size=1.5, strength=0.8):
 
 
 class MaskTests(unittest.TestCase):
-    def test_a_light_is_a_soft_disc_its_value_the_strength_and_a_line_a_soft_band(self):
+    def test_a_light_is_a_soft_disc_its_value_from_the_strength_and_a_line_a_soft_band(self):
         rect = [0, 0, 64, 64]
         m = adjust.mask([dict(light(32, 32, size=16, strength=0.6))], rect)
-        self.assertAlmostEqual(float(m[32, 32]), 0.6, places=2)
+        # Rehearsal (2026-10-24): a mask at the strength itself halved an already gentle Dodge: at least MASK_FLOOR.
+        self.assertAlmostEqual(float(m[32, 32]), adjust.MASK_FLOOR + (1 - adjust.MASK_FLOOR) * 0.6, places=2)
+        self.assertAlmostEqual(float(adjust.mask([dict(light(32, 32, size=16, strength=0.0))], rect)[32, 32]), adjust.MASK_FLOOR, places=2)
         self.assertEqual(float(m[2, 2]), 0.0, 'nothing far from it')
         edge = m[32, 32 + 7]
-        self.assertTrue(0.0 < edge < 0.6, 'feathered, not a hard cut')
+        self.assertTrue(0.0 < edge < float(m[32, 32]), 'feathered, not a hard cut')
+
         band = adjust.mask([{'kind': 'detail', 'x': 32, 'y': 32, 'size': 2, 'strength': 1, 'points': [[10, 32], [54, 32]]}], rect)
         self.assertGreater(float(band[32, 30]), 0.8); self.assertEqual(float(band[10 + 0, 10]), 0.0)
         self.assertEqual(adjust.rect_of([light(-50, -50)], 64, 64), None, 'off the canvas: nothing')
+
+    def test_the_rehearsal_defaults_are_noticeable(self):
+        # Measured on the rehearsal canvas view (New Moscow, 140 accents): mean ΔE inside the masks lights 13.3 -> 16.3,
+        # darks 9.9 -> 17.5, detail 2.7 -> 5.5, the ring just outside unchanged (no halo).
+        self.assertEqual((adjust.EXPOSURE, adjust.MASK_FLOOR, adjust.DETAIL_GAIN, adjust.BLOOM_OPACITY), ((0.3, 0.9), 0.5, 2.5, 0.35))
+
 
     def test_the_plan_dodges_lights_with_a_bloom_burns_darks_and_high_passes_detail(self):
         accents = [light(5, 5, strength=1.0), light(9, 9, strength=0.0), {'kind': 'darks', 'x': 2, 'y': 2, 'size': 2, 'strength': 0.5},

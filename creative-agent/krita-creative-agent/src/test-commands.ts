@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { extname, isAbsolute, resolve, sep } from 'node:path';
 import { PLAN_STEP_ACTIONS, type StepView } from './plan-steps.ts';
 
-export const TEST_COMMANDS = ['start_plan', 'plan_step', 'find_it', 'paint_only_here', 'answer', 'closeup_answer', 'folder_guess', 'set_mode', 'stop'] as const;
+export const TEST_COMMANDS = ['start_plan', 'plan_step', 'find_it', 'paint_only_here', 'answer', 'closeup_answer', 'folder_guess', 'sharpen_answer', 'set_mode', 'stop'] as const;
 export type TestCommand = typeof TEST_COMMANDS[number];
 const MODES = ['ask', 'plan', 'agent', 'autopilot'];
 
@@ -18,8 +18,12 @@ export type Rect = [number, number, number, number];
 /** The companion's found_area event: an outline (or the error of a find). */
 export type FoundEvent = { request_id?: string; part?: string | null; mask_path?: string; bounds?: number[]; canvas?: number[]; error?: string };
 export type Question = { id: string; question?: string; options?: string[]; select_area?: { part?: string; proposal?: { mask_path?: string; bounds?: number[]; canvas?: number[] } } };
+/** The Sharpen goal card the panel shows (goal-sharpen.ts): the offer, or the side by side after sharpening. */
+export type SharpenCard = { kind: 'offer' | 'review'; id: string; options: string[]; text: string; image_path?: string; progress?: string };
 export type CommandView = { testFolder: string; mode?: string | null; planSteps: StepView[]; question: Question | null;
-  closeupQuestion: Question | null; foundAreas: FoundEvent[]; folderElements: string[] };
+  closeupQuestion: Question | null; foundAreas: FoundEvent[]; folderElements: string[]; sharpen?: SharpenCard | null };
+/** The panel's buttons on the Sharpen goal card: Sharpen / Use as is on the offer, Use sharpened / Keep original after. */
+const SHARPEN_ACTIONS = { offer: ['sharpen', 'original'], review: ['use', 'keep'] } as const;
 export type AreaCommand = { action: 'clear' } | { action: 'set'; mask_path: string; bounds: Rect; canvas: [number, number]; name: string | null };
 /** What to do: the area first (sent, adopted, then protected on the test copy), then the command. */
 export type Planned = { area?: AreaCommand; command?: Record<string, unknown> };
@@ -128,6 +132,14 @@ export function panelCommand(type: unknown, params: unknown, view: CommandView):
       const options = asked.options ?? [];
       if (typeof input.answer !== 'string' || (options.length && !options.includes(input.answer))) refuse(`answer is one of ${options.join(', ') || 'the options'}.`);
       return { command: { type: 'closeup_answer', question_id: asked.id, answer: input.answer } };
+    }
+    case 'sharpen_answer': {                        // the Sharpen goal card's buttons, or Stop while it sharpens
+      const { action } = fields(params, ['action']);
+      const card = view.sharpen;
+      if (!card) return refuse('The test chat shows no Sharpen goal card now.');
+      const allowed: readonly string[] = [...SHARPEN_ACTIONS[card.kind], 'cancel'];
+      if (typeof action !== 'string' || !allowed.includes(action)) refuse(`action is ${SHARPEN_ACTIONS[card.kind].join(' or ')} (or cancel while it sharpens).`);
+      return { command: { type: 'goal_sharpen', id: card.id, action } };
     }
     case 'folder_guess': {                           // the folder card: the artist names an element
       const input = fields(params, ['name', 'guess']);

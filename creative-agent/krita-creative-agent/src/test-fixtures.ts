@@ -3,7 +3,7 @@
 // deleted when it ends. Test assets are fixtures the driver keeps in its own folder (test-assets/<name>), prepared once
 // from a source folder that is only ever read, and copied again for each test chat (folder 'test-assets:<name>').
 // Development only.
-import { copyFile, lstat, mkdir, readdir, realpath, rm } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /** How much one copy may hold: a project folder of references, not a disk. */
@@ -14,6 +14,23 @@ const IMAGE = new Set(['.png', '.jpg', '.jpeg', '.gif']);
 const FIXTURE_SKIP = /^(PLAN([.-].*)?\.md|NOTES([.-].*)?\.md)$/i;
 export const ASSETS_PREFIX = 'test-assets:';
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,99}$/;
+
+/** The folder creative_test_assets 'prepare' copies when it names none, relative to a panel config's project root. */
+export const ASSETS_SOURCE = join('new_moscow', 'moscow-painting-assets');
+
+/** The default test-assets source: `override` (TEST_ASSETS_SOURCE) when set, else ASSETS_SOURCE under the first of the
+ * panel configs' project roots that has it (the fork's own config first, then stock Krita's: in Toska the project root is
+ * Toska's paintings folder, the artist's folder is stock Krita's), else under the first root, so a refusal names it. */
+export async function assetsSource({ override, configs }: { override?: string; configs: readonly string[] }): Promise<string | undefined> {
+  if (override) return override;
+  const roots: string[] = [];
+  for (const config of configs) {
+    try { const root = JSON.parse(await readFile(config, 'utf8')).project_root; if (typeof root === 'string' && isAbsolute(root)) roots.push(root); }
+    catch { /* no such Krita on this computer */ }
+  }
+  for (const root of roots) if (await stat(join(root, ASSETS_SOURCE)).then(info => info.isDirectory(), () => false)) return join(root, ASSETS_SOURCE);
+  return roots[0] ? join(roots[0], ASSETS_SOURCE) : undefined;
+}
 
 const inside = (child: string, parent: string) => child === parent || child.startsWith(parent + sep);
 

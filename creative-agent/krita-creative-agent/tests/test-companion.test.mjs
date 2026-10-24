@@ -42,7 +42,7 @@ let chatFolder = '/nowhere';
 function folderEvents(command, emit) {
   if (command.type === 'open_folder') emit({ type: 'folder', index: { root: command.path, name: 'moscow-painting-assets', goal: { name: 'final_goal.png' },
     elements: [{ name: '01-moonlit-sky.png', guess: 'moonlit sky' }], others: [], texts: [], skipped: [] }, references: {} });
-  if (command.type === 'find_it') emit({ type: 'found_area', request_id: command.request_id, part: command.part,
+  if (command.type === 'find_it' && !/moon|river/.test(command.part)) emit({ type: 'found_area', request_id: command.request_id, part: command.part,
     mask_path: join(chatFolder, 'data', 'chat', '.shapes', 'found-0123456789abcdef01234567.png'), bounds: [0, 0, 8, 4], canvas: [8, 8], share: 0.5 });
   if (command.type === 'paint_only_here') emit({ type: 'goal', goal: { moves: [], paint_only_here: command.action === 'set' ? { name: command.name, bounds: command.bounds,
     mask_path: join(chatFolder, 'data', 'chat', '.shapes', 'paint-only-0123456789abcdef01234567.png'), share: 0.5, set_at: new Date().toISOString() + Math.random() } : null } });
@@ -328,5 +328,78 @@ test('panel commands drive the rehearsal: the plan and Now card in the state, Fi
     assert.deepEqual(last.map(c => c.type), ['paint_only_here', 'prompt'], 'the area is taken and protected before the answer goes');
     assert.equal(last[1].text, 'Use this');
     await companion.end();
+  } finally { await s.cleanup(); }
+});
+
+// Rehearsal fixes (2026-10-24, live in Toska).
+test('end closes the test chat’s own new painting unsaved (it lives in the test folder), never another document', async () => {
+  const s = await setup();
+  try {
+    const closes = [];
+    const own = join(s.companion.folder, 'Test chat.kra');
+    const companion = new TestCompanion(s.companion.base, s.companion.folder, { quietMs: 20, spawn: () => fakeCompanion([]), bridge: async (action, params = {}) => {
+      if (params.operation === 'health') return { build: { build_id: 'build-1' }, session_active: false };
+      if (params.operation === 'context') return { documents: [{ filename: own }, { filename: '/art/new_moscow_finished.kra' }] };
+      if (params.operation === 'close_benchmark_copy') { closes.push(params.params.path); return { status: 'ok', closed: true }; }
+      return { status: 'ok' };
+    } });
+    await companion.start({ prompt: 'Paint New Moscow.', width: 6000, height: 4500 });
+    await writeFile(own, 'kra');
+    const ended = await companion.end();
+    assert.deepEqual(closes, [own], 'the test chat’s painting, not the artist’s');
+    assert.match(ended.krita, /closed the test chat’s painting .*Test chat\.kra unsaved/);
+    assert.equal(await readFile(own, 'utf8'), 'kra', 'its saved file stays in the test folder for the record');
+  } finally { await s.cleanup(); }
+});
+
+test('a find in progress: the state waits for its outline, and the activity moves on when it arrives', async () => {
+  const s = await setup();
+  try {
+    await s.companion.start({ prompt: 'Plan it.', width: 8, height: 8 });
+    await s.companion.waitIdle(5000);
+    const emit = event => s.companion.child.stdout.write(JSON.stringify(event) + '\n');
+    s.commands.length = 0;
+    // The real companion answers find_it a few seconds later, while it is not busy.
+    const find = await s.companion.command('find_it', { part: 'the moon' });
+    emit({ type: 'status', phase: 'idle', message: 'Finding the moon…' });
+    const late = setTimeout(() => emit({ type: 'found_area', request_id: find.request_id, part: 'the moon', mask_path: '/m.png', bounds: [0, 0, 1, 1], canvas: [8, 8],
+      share: 0.1, message: 'Found the moon in 5.7 s (locating 1.7 s, shapes model 3.7 s): 4% of the canvas.' }), 200);
+    const state = await s.companion.waitIdle(5000);
+    clearTimeout(late);
+    assert.equal(state.found_areas.filter(f => f.request_id === find.request_id).length, 1, 'waited for the outline');
+    assert.match(state.activity, /^Found the moon in 5\.7 s/);
+    assert.equal(state.finding, null);
+    await s.companion.command('find_it', { part: 'the river' });
+    const failed = s.commands.at(-1);
+    emit({ type: 'found_area', request_id: failed.request_id, error: 'I could not see the river on the painting.' });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(s.companion.state().activity, 'I could not see the river on the painting.');
+    await s.companion.end();
+  } finally { await s.cleanup(); }
+});
+
+test('the Sharpen goal card is in the state and is answered as the panel answers it', async () => {
+  const s = await setup();
+  try {
+    await s.companion.start({ prompt: 'Plan it.', width: 6000, height: 4500 });
+    await s.companion.waitIdle(5000);
+    const emit = event => s.companion.child.stdout.write(JSON.stringify(event) + '\n');
+    await assert.rejects(s.companion.command('sharpen_answer', { action: 'sharpen' }), /no Sharpen goal card/);
+    emit({ type: 'goal_sharpen_offer', id: 'offer-1', factor: 4.1, options: ['Sharpen', 'Use as is'], message: 'Your goal image is 4.1x smaller than the canvas…' });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.deepEqual(s.companion.state().sharpen, { kind: 'offer', id: 'offer-1', options: ['Sharpen', 'Use as is'], text: 'Your goal image is 4.1x smaller than the canvas…' });
+    await assert.rejects(s.companion.command('sharpen_answer', { action: 'use' }), /action is sharpen or original/);
+    await s.companion.command('sharpen_answer', { action: 'sharpen' });
+    assert.deepEqual(s.commands.at(-1), { type: 'goal_sharpen', id: 'offer-1', action: 'sharpen' });
+    emit({ type: 'goal_sharpen_progress', id: 'offer-1', done: 2, total: 4, message: 'Sharpening the goal image: 50%…' });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(s.companion.state().sharpen.progress, 'Sharpening the goal image: 50%…');
+    emit({ type: 'goal_sharpen_review', id: 'offer-1', image_path: '/c.png', options: ['Use sharpened', 'Keep original'], question: 'Use the sharpened goal?' });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.deepEqual(s.companion.state().sharpen, { kind: 'review', id: 'offer-1', options: ['Use sharpened', 'Keep original'], text: 'Use the sharpened goal?', image_path: '/c.png' });
+    await s.companion.command('sharpen_answer', { action: 'use' });
+    assert.deepEqual(s.commands.at(-1), { type: 'goal_sharpen', id: 'offer-1', action: 'use' });
+    assert.equal(s.companion.state().sharpen, null, 'answered: the card is gone');
+    await s.companion.end();
   } finally { await s.cleanup(); }
 });

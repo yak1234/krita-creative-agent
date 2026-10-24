@@ -182,3 +182,32 @@ test('found areas are kept to the newest eight in .shapes, each with its record'
     assert.ok(plane.width > 0);
   } finally { await h.close(); }
 });
+
+// Rehearsal finding 4 (Toska, 2026-10-24): "the sky" on the dabbed canvas found the moon, the towers and a spire (4%); on
+// the sharp goal the same request found the sky (21%). With a goal placed by a whole-picture transfer, a named part is
+// found on the GOAL and its mask mapped onto the canvas through that transfer's source -> target placement.
+test('a named part is found on the goal and mapped through its transfer placement; without a goal, on the canvas', async () => {
+  const h = await harness();
+  try {
+    const goal = join(h.directory, 'goal.png'); await writeFile(goal, 'goal');
+    const seen = [];
+    h.host.pixels = async path => { seen.push(path); return { sha: (path === goal ? 'g' : 'a').repeat(64), pixels: { width: VW, height: VH, data: new Uint8Array(VW * VH * 4) } }; };
+    // The goal is 256 x 192 (its view 64 x 48); a crop of it [64,48,128,96] was transferred onto the whole 128 x 96 canvas.
+    h.host.goal = async () => ({ path: goal, width: 256, height: 192, placement: { source: [64, 48, 128, 96], target: [0, 0, CW, CH] } });
+    const found = await findArea(h.host, { part: 'the sky' });
+    assert.deepEqual(seen, [goal], 'the goal is read, never the canvas view');
+    assert.equal(found.found_on, 'goal');
+    // The sky (view y < 20) is goal y < 80, canvas y < 32 under this placement; the tower (view x 40-47) is canvas x 96-127.
+    const plane = await readFound(h.directory, found);
+    assert.deepEqual(found.canvas, [CW, CH]);
+    assert.equal(at(plane, found.bounds, 10, 20), 255, 'the sky');
+    assert.equal(found.bounds[1] + found.bounds[3] <= 33, true, 'nothing below the goal’s sky: ' + found.bounds);
+    assert.equal(at(plane, found.bounds, 100, 20), 0, 'not the tower');
+    assert.ok(found.share > 0.2 && found.share < 0.3, String(found.share));
+    const clicked = await findArea(h.host, { points: [[10, 10, 1]] });
+    assert.equal(clicked.found_on, 'canvas', 'a click is on the canvas itself');
+    h.host.goal = async () => null;
+    const plain = await findArea(h.host, { part: 'the ground' });
+    assert.equal(plain.found_on, 'canvas', 'no goal placement: the canvas');
+  } finally { await h.close(); }
+});

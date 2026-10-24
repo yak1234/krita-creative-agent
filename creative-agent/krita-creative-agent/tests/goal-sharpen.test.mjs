@@ -290,3 +290,61 @@ test('stale source rects: the old whole picture, or a rect an old transfer used,
   assert.match(told.note, /now 5792 x 4344 \(they were 1448 x 1086\).*multiply any earlier rect by 4/);
   assert.equal(sharpenedContext({ width: 10, height: 10 }), undefined);
 });
+
+// Rehearsal fix (2026-10-24, live in Toska): Start painting ran the underpainting from the small goal with no card. The
+// underpainting waits for the offer: gate() before the move that transfers the goal.
+test('gate: Agent mode waits for the artist’s answer before the underpainting; the answer settles it', async t => {
+  const h = await setup(t);
+  const settled = [];
+  h.host.settled = () => settled.push(h.sharpener.status()?.state);
+  assert.equal(await h.sharpener.gate({ wait: true }), 'wait', 'the card first: nothing paints');
+  const offer = last(h.events, 'goal_sharpen_offer');
+  assert.ok(offer, 'the card is shown by the gate itself');
+  assert.equal(await h.sharpener.gate({ wait: true }), 'wait', 'still waiting, the card is not shown twice');
+  assert.equal(h.events.filter(e => e.type === 'goal_sharpen_offer').length, 1);
+  await h.sharpener.answer({ id: offer.id, action: 'sharpen' });
+  assert.equal(await h.sharpener.gate({ wait: true }), 'wait', 'while it sharpens');
+  await settle(h.sharpener);
+  assert.equal(await h.sharpener.gate({ wait: true }), 'wait', 'the side by side waits for Use sharpened or Keep original');
+  assert.deepEqual(settled, []);
+  await h.sharpener.answer({ id: last(h.events, 'goal_sharpen_review').id, action: 'use' });
+  assert.deepEqual(settled, ['used'], 'the answer lets the underpainting start');
+  assert.equal(await h.sharpener.gate({ wait: true }), 'paint');
+  assert.equal(h.study.references[0].width, 2309, 'from the sharpened goal');
+});
+
+test('gate: Use as is, a failure, and a goal that needs no sharpening paint at once or after the answer', async t => {
+  const h = await setup(t);
+  const settled = [];
+  h.host.settled = () => settled.push('settled');
+  assert.equal(await h.sharpener.gate({ wait: true }), 'wait');
+  await h.sharpener.answer({ id: last(h.events, 'goal_sharpen_offer').id, action: 'original' });
+  assert.deepEqual(settled, ['settled']);
+  assert.equal(await h.sharpener.gate({ wait: true }), 'paint');
+
+  const f = await setup(t, { fail: new UpscaleError('failed', 'It broke') });
+  let failed = 0; f.host.settled = () => failed++;
+  await f.sharpener.gate({ wait: true });
+  await f.sharpener.answer({ id: last(f.events, 'goal_sharpen_offer').id, action: 'sharpen' }); await settle(f.sharpener);
+  assert.equal(failed, 1, 'a failure keeps the original and lets the move start');
+  assert.equal(await f.sharpener.gate({ wait: true }), 'paint');
+
+  for (const options of [{ goal: { width: 3000, height: 2250 } }, { setting: 'never' }, { canvas: null }]) {
+    const n = await setup(t, options);
+    assert.equal(await n.sharpener.gate({ wait: true }), 'paint', JSON.stringify(options));
+  }
+});
+
+test('gate: Autopilot follows the setting: Ask shows the card and paints; Always sharpens first and paints from it', async t => {
+  const ask = await setup(t, { busy: true });
+  assert.equal(await ask.sharpener.gate({ wait: false }), 'paint');
+  assert.ok(last(ask.events, 'goal_sharpen_offer'), 'the card is there for later');
+  assert.equal(ask.jobs.length, 0);
+
+  const always = await setup(t, { setting: 'always', busy: true });  // inside the run: busy, but nothing paints yet
+  assert.equal(await always.sharpener.gate({ wait: false }), 'paint');
+  assert.equal(always.study.references[0].width, 2309, 'the underpainting reads the sharpened goal');
+  const agent = await setup(t, { setting: 'always', busy: true });
+  assert.equal(await agent.sharpener.gate({ wait: true }), 'paint', 'Always in Agent mode: sharpened without asking, then painted');
+  assert.equal(agent.study.references[0].width, 2309);
+});

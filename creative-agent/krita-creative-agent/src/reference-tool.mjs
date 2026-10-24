@@ -16,13 +16,18 @@ import {referenceSchema,edgeSchema,surfaceSchema,generateReferencePlan,generateE
 export const REFERENCE_BATCH=1024;
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const atomic=async(path,value)=>{await writeFile(path+'.tmp',JSON.stringify(value)+'\n');await rename(path+'.tmp',path);};
+// What the painter is told of the whole-picture underpainting's steps (underpaintingSteps).
+const underpaintingNote=j=>{const f=j.fitted,timing=`${j.total} strokes, about ${f.minutes} min`;
+ return (f.widened?`Steps for the whole-picture underpainting set on the canvas and widened to fit the underpainting budget (about ${f.underpainting} strokes, ${UNDERPAINTING_MINUTES} min at the measured rate): [${j.recipe.steps}] source px`
+  :`Steps for the whole-picture underpainting set on the canvas: [${j.recipe.steps}] source px`)
+  +`, ${f.canvas_px} canvas px between fine dabs (${timing}; you asked for [${f.from}]). Make the picture crisp with paint_accents after it.`;};
 // Jobs belong to a plan revision. Older jobs also recorded a stage; steps no longer gate work.
 const scope=r=>r.goal?JSON.stringify([r.goal.revision]):null;
 const sameScope=(job,r)=>{if(job.scope===scope(r))return true;try{return !!r.goal&&JSON.parse(job.scope)[0]===r.goal.revision;}catch{return false;}};
 const allowed=r=>{if(!isPaintingMode(r.mode)||r.executionPhase!=='agent'||r.cancelRequested||r.faulted)throw new Error('Reference painting requires active Agent execution without pending recovery.');};
 const summary=j=>({job_id:j.id,name:j.recipe.name,status:j.status,completed_strokes:j.completed,total_strokes:j.total,pass:j.pass+1,pass_count:j.pass_count,
  ...(j.closeup?{closeup:j.closeup}:{}),
- ...(j.fitted?{fitted:`Steps widened from [${j.fitted.from}] to [${j.recipe.steps}] so the transfer fits ${j.fitted.move?`one Agent move (about ${j.fitted.move} strokes)`:`about ${j.fitted.minutes} of the ${j.fitted.left} minutes left`}; the dabs are larger, so refine focal areas by hand, and make the picture crisp with paint_accents.`}:{}),
+ ...(j.fitted?{fitted:j.fitted.underpainting?underpaintingNote(j):`Steps widened from [${j.fitted.from}] to [${j.recipe.steps}] so the transfer fits ${j.fitted.move?`one Agent move (about ${j.fitted.move} strokes)`:`about ${j.fitted.minutes} of the ${j.fitted.left} minutes left`}; the dabs are larger, so refine focal areas by hand, and make the picture crisp with paint_accents.`}:{}),
  ...(j.inside_label?{inside:j.inside_label+'. Only the dabs inside it were planned; Krita keeps every write there.'}:{}),
  ...(j.ground?{ground:'A toned ground layer in the reference\u2019s colours, top to bottom, lies under the transfer, so gaps between dabs show its tone, not white canvas.'}:{}),
  next_action:j.status==='complete'?'Review the finished canvas.':j.status==='awaiting_review'?'Inspect this pass image, then continue_reference_painting for the next refinement pass.':'Resume with continue_reference_painting after inspecting any interruption.'});
@@ -94,6 +99,29 @@ export function fitStepsToTime(recipe,seconds,rate=STROKES_PER_SECOND){
 // and painted for ten minutes (with a checkpoint save every chunk) before Luna could look at it. Its
 // transfer gets about two minutes at the 300 strokes a second measured there.
 export const AGENT_MOVE_STROKES=40000;
+// The whole-picture underpainting (rehearsal in Toska, 2026-10-24, New Moscow: a 1448 x 1086 goal onto 6000 x 4500):
+// under the move budget its steps were widened from [5,2,1] to [16.89,6.76,3.38] source px, 28 canvas px between fine
+// dabs, coarse at preview scale (39,958 strokes in 57 s, 700 a second). It is the picture's foundation and a move of its
+// own, so it has its own budget: what UNDERPAINTING_MINUTES take at the rate this chat measured (else
+// MEASURED_STROKES_PER_SECOND), at most UNDERPAINTING_STROKES. Its steps are set on the canvas (canvasSteps), then
+// widened to that budget: the dab grid follows the canvas, and the goal's resolution decides only how sharp each dab's
+// colour is, so a goal sharpened 4x is no longer given 4x larger source steps for the same strokes.
+// New Moscow: about 11.7 canvas px between fine dabs (2.4x finer), 210,000 strokes, about 5 minutes.
+export const UNDERPAINTING_CANVAS_STEPS=[24,5,2.5];      // coarse, fine, focal: canvas px between dabs
+export const UNDERPAINTING_MINUTES=5;
+export const UNDERPAINTING_STROKES=250000;
+export const MEASURED_STROKES_PER_SECOND=700;
+export const underpaintingBudget=(rate=MEASURED_STROKES_PER_SECOND)=>Math.min(UNDERPAINTING_STROKES,Math.round((rate>0?rate:MEASURED_STROKES_PER_SECOND)*UNDERPAINTING_MINUTES*60));
+const round2=v=>Math.round(v*100)/100;
+/** Source-pixel steps for canvas-pixel spacings px (coarse, fine, focal) of a source→target transfer. A fine dab is never
+ * closer than a source pixel (finer adds no detail: that is where a sharpened goal paints finer), a focal one never under
+ * the schema's .75, and the steps still decrease. */
+export function canvasSteps({source,target},px=UNDERPAINTING_CANVAS_STEPS){
+ const scale=target[2]/source[2],fine=Math.min(STEP_MAX/2,Math.max(1,round2(px[1]/scale)));
+ const coarse=Math.min(STEP_MAX,Math.max(round2(px[0]/scale),round2(fine*2)));
+ let focal=Math.max(.75,round2(px[2]/scale));if(focal>=fine)focal=Math.max(.75,round2(fine*.5));
+ return [coarse,fine,focal];
+}
 export function fitStepsToBudget(recipe,budget){
  const from=recipe.steps??DEFAULT_STEPS,strokes=estimateReferenceStrokes({...recipe,steps:from});
  if(strokes<=budget)return null;
@@ -201,9 +229,19 @@ export function referenceTools(runtime,executePass,fillRegion){
    const refusal=transferRefusal(runtime.goal,recipe,observation,painted,{established,protectedAreas:observation.protected_areas?.length??0,part,inside:scoped})
     ??(!painted&&!established&&!area?wholeReferenceRefusal(recipe,{...ref,width:pixels.width,height:pixels.height},observation):null);
    if(refusal)throw new Error(refusal);
-   const left=runtime.timeLeftMs?.();
-   if(Number.isFinite(left)){const fit=fitStepsToTime(recipe,left/1000,runtime.referenceStrokeRate);if(fit){recipe=fit.recipe;fitted={from:fit.from,minutes:Math.round(left*TRANSFER_TIME_SHARE/6000)/10,left:Math.round(left/6000)/10};}}
-   if(runtime.mode==='agent'){const budget=runtime.config?.agent_transfer_strokes??AGENT_MOVE_STROKES,fit=fitStepsToBudget(recipe,budget);if(fit){recipe=fit.recipe;fitted={from:fitted?.from??fit.from,move:budget};}}
+   const left=runtime.timeLeftMs?.(),[,,ttw,tth]=recipe.target;
+   const whole=!painted&&!established&&!area&&ttw*tth>=WHOLE_SHARE*observation.width*observation.height;
+   const from=recipe.steps??DEFAULT_STEPS;
+   if(whole)recipe={...recipe,steps:canvasSteps(recipe)};          // the underpainting's dab grid follows the canvas
+   if(Number.isFinite(left)){const fit=fitStepsToTime(recipe,left/1000,runtime.referenceStrokeRate);if(fit){recipe=fit.recipe;fitted={from,minutes:Math.round(left*TRANSFER_TIME_SHARE/6000)/10,left:Math.round(left/6000)/10};}}
+   if(whole){
+    const budget=runtime.config?.underpainting_strokes??underpaintingBudget(runtime.referenceStrokeRate),fit=fitStepsToBudget(recipe,budget);
+    if(fit)recipe=fit.recipe;
+    const rate=runtime.referenceStrokeRate>0?runtime.referenceStrokeRate:MEASURED_STROKES_PER_SECOND;
+    if(!fitted)fitted={from,underpainting:budget,widened:!!fit,canvas_px:Math.round(recipe.steps[1]*ttw/recipe.source[2]*10)/10,
+     minutes:Math.max(1,Math.round(estimateReferenceStrokes(recipe)/rate/6)/10)};
+   }
+   else if(runtime.mode==='agent'){const budget=runtime.config?.agent_transfer_strokes??AGENT_MOVE_STROKES,fit=fitStepsToBudget(recipe,budget);if(fit){recipe=fit.recipe;fitted={from:fitted?.from??fit.from,move:budget};}}
    const [tx,ty,tw,th]=recipe.target,stops=fillRegion&&!painted&&!established&&tw*th>REGION_SHARE*observation.width*observation.height?groundStops(pixels,recipe.source):null;
    if(stops)ground={status:'pending',args:{name:recipe.name+' \u00b7 ground',area:[{shape:'rectangle',bounds:recipe.target}],gradient:{type:'linear',start:[tx+tw/2,ty],end:[tx+tw/2,ty+th],stops}}};
   }
@@ -254,7 +292,8 @@ export function referenceTools(runtime,executePass,fillRegion){
      if(!job.pending){job.pending={id:'reference-'+job.id+'-'+job.pass+'-'+job.offset,count};await save();}
      const args={name:job.recipe.name+' · '+pass.name,preset:pass.preset??job.recipe.preset,region:job.recipe.target,
        strokes:pass.strokes.slice(job.offset,job.offset+count),...(pass.smudge_rate?{smudge_overlay:true,smudge_rate:pass.smudge_rate}:{}),...(job.layer_id?{continue_layer_id:job.layer_id}:{})};
-     runtime.emit({type:'status',phase:'painting',message:job.recipe.name+' · '+pass.name+' · '+job.completed+'/'+job.total+' strokes'});
+     const rate=runtime.referenceStrokeRate,eta=rate>0&&job.total>=20000?Math.ceil((job.total-job.completed)/rate/60):0;   // a long underpainting says how long is left
+     runtime.emit({type:'status',phase:'painting',message:job.recipe.name+' · '+pass.name+' · '+job.completed.toLocaleString('en-US')+'/'+job.total.toLocaleString('en-US')+' strokes'+(eta?` · about ${eta} min left`:'')});
      const began=Date.now(),result=await executePass(job.pending.id,args,signal);accept(result.details,job.pending);current=result.details;await save();
      // The rate this machine paints at, for sizing the next transfer to the time left.
      if(count>=256&&Date.now()>began)runtime.referenceStrokeRate=count/((Date.now()-began)/1000);
@@ -268,7 +307,7 @@ export function referenceTools(runtime,executePass,fillRegion){
  }
  return [
   defineTool({name:'paint_from_reference',label:'Painting from a reference',executionMode:'sequential',parameters:referenceSchema,
-   description:'Underpainting only: start faithful reference-assisted reconstruction with locally sampled native brush strokes (small dabs, no edges or materials). One full transfer per plan, and on a fresh canvas it goes first: a reference with the canvas\u2019s proportions is transferred whole, onto the whole canvas, over a toned ground the host lays from its colours. Under a time allowance the host widens the steps so the job fits; then only patches of a missing region, stretched at most 2x; a patch fades out over its outer edge, so extend the target about 15% past the damage on each side that meets existing paint; off in the second half of the plan, except a focal patch of one face or hand (at most 3% of the canvas), also stretched at most 2x, so from an attached close-up reference. Source/target/focal rectangles are [x,y,width,height]; aspect ratios must match. Plans coarse, fine and optional focal passes, with one editable layer per pass. Defaults: steps [6,2.5,1.2], seed 714. Paints the whole job (all passes) in one call and returns the finished canvas; use continue_reference_painting only to resume a job that was stopped or interrupted. Returns a job ID and actual canvas at a saved boundary; if it is paused, inspect and use continue_reference_painting until complete. Keep all refinement within the current planned stage. This transfers reference colors and positions; it is not independent drawing. Does not change the reference.',
+   description:'Underpainting only: start faithful reference-assisted reconstruction with locally sampled native brush strokes (small dabs, no edges or materials). One full transfer per plan, and on a fresh canvas it goes first: a reference with the canvas\u2019s proportions is transferred whole, onto the whole canvas, over a toned ground the host lays from its colours; the host sets that whole-picture underpainting\u2019s steps on the canvas (fine dabs a few canvas px apart, widened to its own budget of a few minutes), whatever steps you give. Under a time allowance the host widens the steps so the job fits; then only patches of a missing region, stretched at most 2x; a patch fades out over its outer edge, so extend the target about 15% past the damage on each side that meets existing paint; off in the second half of the plan, except a focal patch of one face or hand (at most 3% of the canvas), also stretched at most 2x, so from an attached close-up reference. Source/target/focal rectangles are [x,y,width,height]; aspect ratios must match. Plans coarse, fine and optional focal passes, with one editable layer per pass. Defaults: steps [6,2.5,1.2], seed 714. Paints the whole job (all passes) in one call and returns the finished canvas; use continue_reference_painting only to resume a job that was stopped or interrupted. Returns a job ID and actual canvas at a saved boundary; if it is paused, inspect and use continue_reference_painting until complete. Keep all refinement within the current planned stage. This transfers reference colors and positions; it is not independent drawing. Does not change the reference.',
    execute:(id,recipe,signal)=>start(id,recipe,signal)}),
   defineTool({name:'continue_reference_painting',label:'Continuing reference painting',executionMode:'sequential',parameters:Type.Object({job_id:Type.String({pattern:'^[a-f0-9]{32}$'})},{additionalProperties:false}),
    description:'Resume a saved reference job in its original stage. Reconciles a pending chunk against Krita receipts before painting, checks reference/plan identity and canvas revision, and preserves one layer per refinement pass. Paints all remaining passes (coarse, fine, focal) in one call; it returns early only if painting was stopped. Unknown/partial native outcomes require recovery and are never blindly repainted.',

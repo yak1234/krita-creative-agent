@@ -119,8 +119,9 @@ def register_test_tools(mcp):
         """The test chat's state: moves, busy, the latest canvas image path (read it to see the painting), the painter's
         tool calls with their Krita methods, a pending question (with its options; select_area for a Paint only here
         card) and close-up question, the plan and its plan_steps (keys for creative_test_command), the Now card,
-        the Paint only here area, the latest found_areas (Find it), the project folder copy and errors.
-        wait_seconds (0-55) waits for the current move to finish first; poll again for longer moves."""
+        the Paint only here area, the latest found_areas (Find it; `finding` names a find still running), the Sharpen
+        goal card (`sharpen`: offer or review, with its progress), the project folder copy and errors.
+        wait_seconds (0-55) waits for the current move, or a find in progress, to finish first; poll again for longer."""
         return _call('GET', '/state', params={'wait': wait_seconds})
 
     @mcp.tool()
@@ -137,14 +138,16 @@ def register_test_tools(mcp):
         {action: clear} or {action: set, found?: request_id (default the latest), name?} or {action: set, mask_path,
         bounds, canvas, name?} with a mask inside the test chat's folder; answer {text, question_id?, area?: proposal
         | found} (a question card: 'Use this' with area proposal, 'Paint everywhere', or typed); closeup_answer
-        {answer}; folder_guess {name, guess}; set_mode {mode}; stop {}. An area is protected in Krita only on the test
+        {answer}; folder_guess {name, guess}; sharpen_answer {action: sharpen|original on the offer, use|keep on the
+        side by side, cancel while it sharpens}; set_mode {mode}; stop {}. An area is protected in Krita only on the test
         chat's own document (the result says so)."""
         return _call('POST', '/command', {'type': type, 'params': params or {}})
 
     @mcp.tool()
     def creative_test_assets(action: str, source: str = "", name: str = "") -> dict:
         """The test driver's own test assets (benchmark-runs/test-assets, never the artist's folders).
-        action 'prepare' copies `source` (default: new_moscow/moscow-painting-assets) once, read only: its images and
+        action 'prepare' copies `source` (default: new_moscow/moscow-painting-assets under the first panel config's
+        project root that has it, this Krita's then stock Krita's) once, read only: its images and
         generation-prompts.json, no PLAN.md, its backups or NOTES.md (a fresh plan); then creative_test_start(folder=
         'test-assets:<name>') works on a fresh copy of it per test chat. 'list' shows them; 'remove' deletes `name`."""
         body = {'action': action}
@@ -154,6 +157,7 @@ def register_test_tools(mcp):
 
     @mcp.tool()
     def creative_test_end() -> dict:
-        """End the test chat: stop its companion, close the painting copy unsaved and delete it, and delete the project
-        folder and reference copies (the result says what it closed)."""
+        """End the test chat: stop its companion, close the painting copy unsaved and delete it (or close the test
+        chat's own new painting unsaved; its file stays in the test folder), and delete the project folder and
+        reference copies (the result says what it closed)."""
         return _call('POST', '/end', timeout=360)

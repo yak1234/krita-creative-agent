@@ -52,6 +52,8 @@ export type SharpenHost = {
   callNative(operation: string, params: Record<string, unknown>): Promise<unknown>;
   /** The goal reference's pixels changed: the likeness grid, mass map and folder card follow. */
   goalChanged(): void;
+  /** The goal's sharpening is settled (used, kept, or failed and the original used): an underpainting gate() held may start. */
+  settled?(): void;
   platform?: NodeJS.Platform;
 };
 type Download = (options: { directory: string; spec: ModelSpec; onProgress?: (done: number, total: number) => void; signal?: AbortSignal }) => Promise<void>;
@@ -115,6 +117,7 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
   const size_mb = Math.round(downloadBytes(spec) / 1e6);
   const hashes = new Map<string, { stamp: string; sha: string }>();
   let running: { sha: string; controller: AbortController; done: Promise<void> } | null = null, shown = new Set<string>(), shownFor: Study | null = null;
+  let gating = false;                                        // gate() waits for a sharpening: nothing paints, so the swap may happen
 
   const dataDir = () => host.dataDir();
   const modelDir = () => { const dir = dataDir(); if (!dir) throw new UpscaleError('model', 'Sharpening needs the companion’s data folder, and none is set.'); return modelDirectory(dir, spec); };
@@ -262,7 +265,7 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
         say('Sharpening stopped: the original goal image is used. You can sharpen it later from the card.');
         const saved = await choices().catch(() => ({ choices: {} }));
         show(study, record.id, offerEvent(record, goal, await modelReady(modelDir(), spec).catch(() => false), (saved as { ms_per_tile?: number }).ms_per_tile));
-      } else say(`${(error as Error).message.replace(/\.?$/, '.')} The original goal image is used.`);
+      } else { say(`${(error as Error).message.replace(/\.?$/, '.')} The original goal image is used.`); host.settled?.(); }
     }
   }
 
@@ -284,7 +287,7 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
       say('The goal image changed since it was sharpened, so the sharpened copy was not used.');
       return;
     }
-    if (host.busy()) {
+    if (host.busy() && !gating) {
       record.pending_use = true; await host.persist();
       say('The sharpened goal is used as soon as this move ends.');
       return;
@@ -296,6 +299,7 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
     record.state = 'used'; delete record.pending_use;
     await remember({ sha, choice: 'sharpened' });
     await host.persist(); host.goalChanged(); host.publish();
+    host.settled?.();
     say(`The goal image is now the sharpened one (${result.full.width} x ${result.full.height}${result.reference.width === result.full.width ? '' : `; the painter reads it at ${result.reference.width} x ${result.reference.height}`}).`);
   }
 
@@ -311,13 +315,37 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
     if (action === 'original' && ['offered', 'cancelled'].includes(record.state)) {
       record.state = 'kept'; await remember({ sha, choice: 'original' }); await host.persist();
       say('The goal image is used as it is. You won’t be asked again for this goal.');
+      host.settled?.();
       return;
     }
     if (action === 'use' && record.state === 'review') { await use(study, sha, record); return; }
     if (action === 'keep' && record.state === 'review') {
       record.state = 'kept'; await remember({ sha, choice: 'original' }); await host.persist();
       say('Kept the original goal image. The sharpened copy stays in the chat folder.');
+      host.settled?.();
     }
+  }
+
+  /** Before the move that transfers the goal (the underpainting): offers or sharpens as check() does, then says whether the
+   * move may paint now. `wait` (Agent mode) holds it while the card, the sharpening or the side by side waits for the
+   * artist; settled() says when it may start. Without `wait` (Autopilot) nothing waits for an answer: the card stays for
+   * later. A sharpening that runs by itself (Always, or this goal sharpened before) is awaited in both, so the
+   * underpainting reads the sharpened goal. Never throws: on any doubt the move paints from the goal as it is. */
+  async function gate({ wait }: { wait: boolean }): Promise<'paint' | 'wait'> {
+    try {
+      await check();
+      const study = host.study, goal = folderGoal(study?.references);
+      if (!study || !goal || goal.sharpened) return 'paint';
+      const sha = await hashOf(goal.path), record = study.goal_sharpen?.[sha];
+      if (!record) return 'paint';
+      if (record.state === 'running' || running?.sha === sha) {
+        if (wait && !record.auto) return 'wait';
+        gating = true;
+        try { await running?.done; } finally { gating = false; }
+        if (record.pending_use) { gating = true; try { await use(study, sha, record); } finally { gating = false; } }
+      }
+      return wait && ['offered', 'cancelled', 'review'].includes(record.state) ? 'wait' : 'paint';
+    } catch { return 'paint'; }
   }
 
   /** After a run: a swap the artist approved while it painted happens now; then a goal the canvas now shows small is offered. */
@@ -337,6 +365,6 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
       if (all && (['offered', 'running', 'review', 'cancelled'].includes(record.state) || record.pending_use)) delete all[sha];
   }
 
-  return { check, answer, settle, status, goalChanged, stop() { running?.controller.abort(); }, running: () => running?.done ?? null };
+  return { check, gate, answer, settle, status, goalChanged, stop() { running?.controller.abort(); }, running: () => running?.done ?? null };
 }
 export type GoalSharpener = ReturnType<typeof goalSharpener>;

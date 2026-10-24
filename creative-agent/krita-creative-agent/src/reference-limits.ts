@@ -12,3 +12,6 @@ export const PLUGIN_DECODE_PIXELS = 4_000_000;
 /** Recipe sizes in source pixels, 4x their bounds for a 1500-pixel goal: a goal sharpened 4x needs four times the source
  * pixels for the same stroke on the canvas (a 24-pixel step on the original is a 96-pixel one on the sharpened goal). */
 export const STEP_MAX = 256, EDGE_SPACING_MAX = 64, SURFACE_SPACING_MAX = 128, SURFACE_LENGTH_MAX = 800;
+/** The most strokes one dab-transfer plan holds (reference-generator.mjs): the whole-picture underpainting's budget
+ * (reference-tool.mjs UNDERPAINTING_STROKES) with room for the estimate's rounding. About 80 MB of plan in memory. */
+export const PLAN_STROKES_MAX = 280_000;

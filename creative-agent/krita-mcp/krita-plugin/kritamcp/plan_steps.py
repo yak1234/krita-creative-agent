@@ -25,7 +25,7 @@ import os
 import uuid
 import weakref
 
-from .qt_compat import (Qt, QEvent, QSize, QRect, QColor, QPainter, QImageReader, QPixmap, QToolTip, QFrame, QWidget, QLabel, QPushButton,
+from .qt_compat import (pyqtSignal, Qt, QEvent, QSize, QRect, QColor, QPainter, QImageReader, QPixmap, QToolTip, QFrame, QWidget, QLabel, QPushButton,
                         QLineEdit, QVBoxLayout, QHBoxLayout, QSizePolicy)
 
 # (action, label, object name for the colour, tooltip)
@@ -150,8 +150,11 @@ def thumbnail(path, size, ratio=1.0):
 
 
 class StepStrip(QWidget):
-    """One segment per plan step, coloured by its state. Each segment's title shows as its tooltip (Qt's help event) and
-    on a tap; the whole strip has an accessible name that says the same as the colours."""
+    """One segment per plan step, coloured by its state. Each segment's title shows as its tooltip (Qt's help event); a
+    tap emits `tapped(index)` (the panel opens that step in the Plan tab). A press never opens a tooltip window: one shown
+    under a pressed button on macOS could keep the mouse. The whole strip has an accessible name that says the same as
+    the colours."""
+    tapped = pyqtSignal(int)
 
     def __init__(self):
         super().__init__()
@@ -195,11 +198,15 @@ class StepStrip(QWidget):
             return True
         return super().event(event)
 
-    def mousePressEvent(self, event):                         # a tap shows the same title (pens and touch have no hover)
+    def index_at(self, point):
+        return next((i for i in range(len(self.segments)) if self.segment_rect(i).adjusted(-1, -4, 1, 4).contains(point)), None)
+
+    def mouseReleaseEvent(self, event):                       # a tap (pens and touch have no hover): that step, in the Plan tab
+        QToolTip.hideText()
         point = event.position().toPoint() if hasattr(event, 'position') else event.pos()
-        tip = self.tip_at(point)
-        if tip: QToolTip.showText(self.mapToGlobal(point), tip, self)
-        super().mousePressEvent(event)
+        index = self.index_at(point)
+        if index is not None and event.button() == Qt.MouseButton.LeftButton: self.tapped.emit(self.segments[index]['index'])
+        super().mouseReleaseEvent(event)
 
     def paintEvent(self, _event):
         painter = QPainter(self); painter.setRenderHint(QPainter.RenderHint.Antialiasing)

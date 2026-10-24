@@ -8,6 +8,7 @@ import threading
 import uuid
 from .qt_compat import sip, enum_value
 from .product_name import product_name
+from .crash_diagnostics import record as record_error
 from .panel_theme import panel_colors
 from .plan_steps import PlanStepsList, plan_steps_stylesheet, thumbnail
 from krita import DockWidget, DockWidgetFactory, DockWidgetFactoryBase, Krita, Selection
@@ -24,6 +25,7 @@ from .protection import ProtectionCraft
 from .feature_guard import FeatureCraft
 from .reference_parts import part_image, crop_image, opaque_bounds
 from .qt_compat import Qt, QProcess, QProcessEnvironment, QUrl, QTimer, pyqtSignal, QEvent, QSize, QRectF, scoped, QCoreApplication, QStandardPaths
+from .qt_compat import QToolTip
 from .qt_compat import QDesktopServices, QPixmap, QTextCursor, QTextDocument, QTextBlockFormat, QTextCharFormat, QFont, QIcon, QKeySequence, QPalette, QColor, QPainter, QPen
 from .qt_compat import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QInputDialog,
                             QComboBox, QLineEdit, QPlainTextEdit, QTextBrowser,
@@ -906,14 +908,21 @@ class ChatTranscript(QScrollArea):
         label.setObjectName('messageRole')
         body = MessageBody()
         body.setAccessibleDescription(role + ' message')
-        body.set_rendered(self.render(text))
-        if action:
-            toggle = QPushButton('›  ' + text.split('\n')[0][:90])
+        title, _, details = text.partition('\n')
+        details = details.strip()
+        # An activity row: its first line is the row; the body opens on the details, never the title again.
+        body.set_rendered(self.render(details if action and details else text))
+        if action and not details:
+            line = QLabel('·  ' + title[:200]); line.setObjectName('activityDisclosure'); line.setTextFormat(Qt.TextFormat.PlainText)
+            line.setWordWrap(True); line.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            body.hide(); layout.addWidget(line)
+        elif action:
+            toggle = QPushButton('›  ' + title[:90])
             toggle.setObjectName('activityDisclosure'); toggle.setCheckable(True)
-            toggle.setAccessibleName('Expand ' + role.lower() + ' details')
+            toggle.setAccessibleName('Expand ' + role.lower() + ' details'); toggle.setToolTip(title if len(title) > 90 else '')
             body.hide()
             toggle.toggled.connect(body.setVisible)
-            toggle.toggled.connect(lambda checked: toggle.setText(('⌄  ' if checked else '›  ') + text.split('\n')[0][:90]))
+            toggle.toggled.connect(lambda checked: toggle.setText(('⌄  ' if checked else '›  ') + title[:90]))
             layout.addWidget(toggle)
         elif role != ASSISTANT:                                  # the agent's replies need no name over each one
             layout.addWidget(label)
@@ -1278,7 +1287,7 @@ class CreativeAgentDocker(DockWidget):
         self.history_button.clicked.connect(self.show_history); header.addWidget(self.history_button)
         self.options_button = QPushButton('···'); self.options_button.setObjectName('headerAction')
         self.options_button.setAccessibleName('Settings'); self.options_button.setToolTip('Painting settings and connections')
-        self.options_button.clicked.connect(lambda: self.options_dialog.show())
+        self.options_button.clicked.connect(lambda: self.show_settings())
         header.addWidget(self.options_button)
         layout.addLayout(header)
         self.workspace_label = QLabel('Your painting, in conversation'); self.workspace_label.setObjectName('muted')
@@ -1305,6 +1314,9 @@ class CreativeAgentDocker(DockWidget):
         self.card_start.setAccessibleName('Start painting the plan'); self.card_start.clicked.connect(lambda: self.start_plan())
         self.card_start.hide(); self.plan_steps.caption_row.addWidget(self.card_start, 0, Qt.AlignmentFlag.AlignTop)
         self.revealed_step = None
+        self.card_reason = QLabel(''); self.card_reason.setObjectName('muted'); self.card_reason.setWordWrap(True)
+        self.card_reason.setTextFormat(Qt.TextFormat.PlainText); self.card_reason.hide(); self.plan_steps.now_layout.addWidget(self.card_reason)
+        self.plan_steps.strip.tapped.connect(self.show_step)
         top_area = QVBoxLayout(); top_area.setContentsMargins(0, 0, 0, 0); top_area.setSpacing(6); layout.addLayout(top_area)
         self.tabs = QTabWidget(); self.tabs.setObjectName('panelTabs'); self.tabs.setDocumentMode(True); self.tabs.setUsesScrollButtons(False)
         self.tabs.tabBar().setDrawBase(False); self.tabs.tabBar().setExpanding(False)
@@ -1741,7 +1753,9 @@ class CreativeAgentDocker(DockWidget):
             QPushButton#stopAction { font-size: 12px; }
             QPushButton#primaryAction { background: %(button)s; color: %(buttonText)s; }
             QPushButton#footerAction { background: transparent; color: %(muted)s; font-size: 10px; padding: 0 2px; min-height: 17px; }
-            QPushButton#activityDisclosure { background: transparent; color: %(muted)s; text-align: left; padding: 0; font-size: 11px; }
+            QPushButton#activityDisclosure { background: transparent; color: %(muted)s; text-align: left; padding: 0; font-size: 11px; border: none; }
+            QPushButton#activityDisclosure:focus { color: %(text)s; }
+            QLabel#activityDisclosure { color: %(muted)s; font-size: 11px; }
             QPushButton#referencePurpose { background: transparent; color: %(muted)s; padding: 0; min-height: 17px; font-size: 10px; }
             QPushButton#referenceRemove { background: %(raised)s; color: %(text)s; padding: 0; min-height: 12px; border-radius: 6px; font-size: 12px; }
             QPushButton#receipt { background: transparent; color: %(muted)s; text-align: left; padding: 0; font-size: 10px; }
@@ -2460,8 +2474,19 @@ class CreativeAgentDocker(DockWidget):
         if not self.process and not os.environ.get('KRITA_CREATIVE_NO_AUTOSTART'):
             QTimer.singleShot(100, self.start_companion)
 
+    def hideEvent(self, event):
+        QToolTip.hideText()                                    # no tooltip or command list outlives the hidden panel
+        if hasattr(self, 'slash_menu'): self.slash_menu.hide()
+        super().hideEvent(event)
+
     def update_elapsed(self):
-        self.poll_canvas_metadata()
+        try:
+            self.poll_canvas_metadata()
+        except Exception:                                  # the clock and every status go on whatever the canvas poll meets
+            if not getattr(self, 'poll_failed', False): record_error('the panel, polling the canvas')
+            self.poll_failed = True
+        else:
+            self.poll_failed = False
         if not self.busy:
             self.elapsed.setText('')
             return
@@ -2569,13 +2594,51 @@ class CreativeAgentDocker(DockWidget):
         super().resizeEvent(event)
         if hasattr(self, 'canvas_button'): self.render_context()
 
+    def start_blocked_reason(self):
+        """Why the plan cannot start now, in the artist's words (the card says it instead of showing no button)."""
+        goal = self.goal or {}
+        if self.painting_target.get('missing'): return 'Locate the painting to start: use Locate painting above.'
+        if goal.get('question'): return 'Answer the question in the chat to start.'
+        if goal.get('target_needs_review'): return 'The canvas changed: review the plan in the chat to start.'
+        if self.uncertain_operations: return 'Check the unfinished painting operations first (see the activity line).'
+        return ''
+
+    def show_step(self, index):
+        """A tap on the progress strip: that step in the Plan tab."""
+        rows = self.plan_steps.list_rows
+        if not 0 <= index < len(rows) or not self.tabs.isTabVisible(self.plan_tab): return
+        self.tabs.setCurrentIndex(self.plan_tab)
+        row = rows[index]
+        if row.parentWidget() is self.plan_steps.done_box and not self.plan_steps.expanded: self.plan_steps.fold.setChecked(True)
+        self.step_to_reveal = index; self.reveal_timer.start()
+
+    def show_settings(self):
+        """The settings, modeless, on the panel's own screen, raised and active (a dialog left off screen looked like a
+        frozen app)."""
+        dialog = self.options_dialog
+        dialog.setModal(False)
+        screen = (self.screen() if hasattr(self, 'screen') else None) or QApplication.primaryScreen()
+        area = screen.availableGeometry()
+        frame = QSize(16, 40)                                 # the title bar and borders, which geometry() leaves out
+        size = dialog.size().boundedTo(area.size() - frame)
+        dialog.resize(size); size = size + frame
+        centre = self.mapToGlobal(self.rect().center()) if self.isVisible() else area.center()
+        x = min(max(area.left(), centre.x() - size.width() // 2), area.right() - size.width())
+        y = min(max(area.top(), centre.y() - size.height() // 2), area.bottom() - size.height())
+        dialog.move(x, y)
+        dialog.show(); dialog.raise_(); dialog.activateWindow()
+
     def tab_changed(self, index):
+        QToolTip.hideText(); self.slash_menu.hide()          # nothing of another tab stays open over this one
         if index == self.plan_tab: self.reveal_timer.start()
         if index == self.folder_tab: self.fit_folder_elements()   # its rows' heights are known once it shows
 
     def reveal_current_step(self):
-        """The Plan tab scrolled to the step that paints (QScrollArea.ensureWidgetVisible), once it is laid out."""
-        row = self.plan_steps.current_list_row()
+        """The Plan tab scrolled to the step that paints, or to the one tapped on the strip (QScrollArea.ensureWidgetVisible),
+        once it is laid out."""
+        index, self.step_to_reveal = getattr(self, 'step_to_reveal', None), None
+        rows = self.plan_steps.list_rows
+        row = rows[index] if index is not None and 0 <= index < len(rows) else self.plan_steps.current_list_row()
         if row is not None and not sip.isdeleted(row) and self.tabs.currentIndex() == self.plan_tab:
             self.plan_scroll.ensureWidgetVisible(row, 0, 40)
 
@@ -2712,10 +2775,14 @@ class CreativeAgentDocker(DockWidget):
         self.buffer += bytes(self.process.readAllStandardOutput())
         while b'\n' in self.buffer:
             line, self.buffer = self.buffer.split(b'\n', 1)
+            # One bad event must never stop the panel: an error escaping here left every later line (idle, busy false)
+            # unread in the buffer until the companion wrote again, and the panel showed a run that had ended.
             try:
                 self.handle_event(json.loads(line.decode('utf-8')))
-            except (ValueError, KeyError, TypeError):
-                self.status.setText('An assistant message could not be displayed.')
+            except Exception:
+                record_error('the panel, handling a companion event')
+                try: self.status.setText('An assistant message could not be displayed (details in the error log).')
+                except Exception: pass
 
     def handle_event(self, event):
         kind = event['type']
@@ -3557,7 +3624,11 @@ class CreativeAgentDocker(DockWidget):
         self.execute_button.setVisible(can_start and not self.busy)
         self.execute_button.setEnabled(running and can_start and not self.busy and getattr(self, 'bridge_compatible', True))
         self.execute_button.setText('Resume' if self.goal and self.goal.get('status') == 'paused' else 'Start painting')
-        self.card_start.setVisible(can_start and not self.busy and self.plan_steps.current_index() is None)
+        idle_plan = bool(self.goal and self.goal.get('brief') and not self.busy and self.plan_steps.current_index() is None
+                         and self.goal.get('status') in ('draft', 'ready', 'paused', 'limited', 'needs_input'))
+        self.card_start.setVisible(can_start and idle_plan)
+        reason = '' if can_start or not idle_plan else self.start_blocked_reason()
+        self.card_reason.setText(reason); self.card_reason.setVisible(bool(reason))
         self.card_start.setEnabled(self.execute_button.isEnabled()); self.card_start.setText(self.execute_button.text())
         self.card_start.setAccessibleName('Resume painting the plan' if self.execute_button.text() == 'Resume' else 'Start painting the plan')
         self.compare_button.setVisible(bool(self.goal and self.goal.get('passes', 0)))

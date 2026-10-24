@@ -3251,6 +3251,38 @@ test('resume with a hand-edited PLAN.md shows the difference and waits; a new ch
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
 });
 
+test('a new chat on another painting starts the folder plan fresh: PLAN.md\'s ticks are another painting\'s',{timeout:60000},async()=>{
+ const h=await harness(()=>({content:'Noted.'}));
+ const root=await projectFolder();
+ const ticked=painting=>'# Plan · New Moscow\n\nA snowy night.\n'+(painting ? 'Painting: '+painting+'\n' : '')+'\n## Moves\n\n'
+  +'- [x] 1. Underpainting from the goal image · layer "Underpainting from the goal image" · met by the artist\n'
+  +'- [ ] 2. Moonlit sky (assets/01-moonlit-sky.png) · layer "Moonlit sky" · skipped\n'
+  +'- [ ] 3. Kremlin towers (assets/04-kremlin-towers.png) · layer "Kremlin towers"\n';
+ try {
+  await h.start('ask','Hello');
+  for (const painting of ['Creative painting 18.kra · another-document', null]) {
+   await writeFile(join(root,'PLAN.md'),ticked(painting)); h.events.length=0;
+   await h.runtime.openFolder({path:root});
+   assert.deepEqual(h.runtime.goal.done_steps,[],'nothing is done on this painting: '+painting);
+   assert.deepEqual(Object.values(h.runtime.goal.step_marks),[{skipped:true}],'the artist\'s skips are the plan\'s; met is the other painting\'s');
+   assert.equal(h.runtime.goal.current_step,0,'it starts at step 1');
+   const said=h.events.filter(e=>e.type==='action').map(e=>e.message).join('\n');
+   assert.match(said,/another painting/); assert.match(said,/0 of 3 done/);
+   const plan=await readFile(join(root,'PLAN.md'),'utf8');
+   assert.doesNotMatch(plan,/- \[x\]/,'PLAN.md is rewritten without the other painting\'s ticks');
+   assert.ok((await readdir(root)).some(n=>n.startsWith('PLAN.backup-')),'the old PLAN.md is kept as a backup');
+   await h.runtime.end(); await h.start('ask','Hello');
+   for (const name of await readdir(root)) if (name.startsWith('PLAN')) await rm(join(root,name));
+  }
+  const here=h.runtime.folderPainting();
+  assert.ok(here?.id,'the harness canvas has an identity');
+  await writeFile(join(root,'PLAN.md'),ticked(here.name+' · '+here.id));
+  await h.runtime.openFolder({path:root});
+  assert.deepEqual(h.runtime.goal.done_steps,[0],'the same painting resumes from its ticks');
+  assert.equal(h.runtime.goal.current_step,2);
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
 // Project folder review fixes.
 async function folderMoves({finish=true, root}={}) {
  const turns=new Map(), offered=[]; let h;

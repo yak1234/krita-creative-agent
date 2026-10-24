@@ -17,7 +17,7 @@ import importlib.util
 
 PLUGIN = Path(__file__).resolve().parents[2] / 'krita-mcp/krita-plugin/kritamcp'
 package = types.ModuleType('panel_steps_test'); package.__path__ = [str(PLUGIN)]; sys.modules['panel_steps_test'] = package
-from panel_steps_test.qt_compat import QApplication, QDockWidget, QStandardPaths, QPushButton, QLineEdit, QColor, QAbstractScrollArea
+from panel_steps_test.qt_compat import QApplication, QDockWidget, QStandardPaths, QPushButton, QLineEdit, QColor, QAbstractScrollArea, Qt
 from panel_steps_test import plan_steps
 QStandardPaths.setTestModeEnabled(True)
 
@@ -433,6 +433,80 @@ class PanelNowPainting(unittest.TestCase):
         self.assertIn('&lt;b&gt;Kremlin', strip.tip_at(strip.segment_rect(4).center()))
         tips = [l.toolTip() for l in self.panel.plan_steps.now.findChildren(module.QLabel) if l.toolTip()]
         self.assertTrue(tips and all('&lt;i&gt;' in t for t in tips), tips)
+
+    def replay(self, events):
+        """The companion's stdout as the panel reads it: one chunk of JSON lines."""
+        data = b''.join(json.dumps(e).encode() + b'\n' for e in events)
+        self.panel.process.readAllStandardOutput = lambda: data
+        self.panel.process_ui_alive = lambda: True
+        self.panel.read_output(); app.processEvents()
+
+    def test_one_bad_event_or_canvas_poll_never_freezes_the_panel(self):
+        """The artist's chat c00a7f52 (2026-10-23): the panel stayed on "Preparing the next painting action…" with Stop
+        active and no Start painting after the companion had sent idle and busy false."""
+        errors = []; original = module.record_error
+        module.record_error = lambda where: errors.append(where)
+        def broken(*_args, **_kwargs): raise IndexError('features of a new blank painting')
+        self.panel.refresh_features = broken                 # every canvas poll (and every status) raised
+        self.panel.show_move = broken                        # and one event's own handler
+        try:
+            rows = [dict(r, state='open') for r in painting_step_five()]; rows[0]['state'] = 'done'
+            self.replay([{'type': 'busy', 'busy': True},
+                         {'type': 'status', 'phase': 'planning', 'message': 'Preparing the next painting action…'},
+                         {'type': 'move', 'move': {'number': 1, 'status': 'ready'}},
+                         {'type': 'goal', 'goal': {'status': 'ready', 'brief': BIG_BRIEF, 'current_step': 1, 'done_steps': [0]}, 'mode': 'agent',
+                          'references': [], 'plan_steps': rows, 'painting_target': {'document_id': None, 'name': 'Unnamed', 'mode': 'current', 'bound': False}},
+                         {'type': 'status', 'phase': 'idle', 'message': 'Ready for your next message.'},
+                         {'type': 'status', 'phase': 'idle', 'message': 'Plan ready: 13 moves, one element each. Review or edit it, then press Start painting.'},
+                         {'type': 'busy', 'busy': False}])
+            self.panel.update_elapsed()                      # the clock's tick too
+        finally:
+            module.record_error = original
+        self.assertEqual(self.panel.buffer, b'', 'every line was read')
+        self.assertFalse(self.panel.busy)
+        self.assertIn('Start painting', self.panel.status.text())
+        self.assertTrue(self.shown(self.panel.card_start), 'Start painting is offered')
+        self.assertTrue(errors, 'the errors are logged')
+
+    def test_the_card_says_why_it_cannot_start(self):
+        rows = [dict(r, state='open') for r in painting_step_five()]
+        self.paint(rows, status='ready', busy=False, question={'id': 'q', 'question': '?', 'options': []})
+        self.assertFalse(self.panel.card_start.isVisible())
+        self.assertTrue(self.panel.card_reason.isVisible()); self.assertIn('question', self.panel.card_reason.text().lower())
+        self.panel.painting_target = {'missing': True, 'filename': '/p/a.kra'}
+        self.paint(rows, status='ready', busy=False)
+        self.panel.painting_target = {'missing': True, 'filename': '/p/a.kra'}; self.panel.update_controls()
+        self.assertIn('locate', self.panel.card_reason.text().lower())
+        self.panel.painting_target = {}; self.panel.update_controls()
+        self.assertFalse(self.panel.card_reason.isVisible()); self.assertTrue(self.panel.card_start.isVisible())
+
+    def test_a_tap_on_the_strip_opens_that_step_without_a_popup(self):
+        self.paint()
+        strip = self.panel.plan_steps.strip
+        from panel_steps_test.qt_compat import QToolTip, QT6
+        QTest = __import__('PyQt6.QtTest' if QT6 else 'PyQt5.QtTest', fromlist=['QTest']).QTest
+        QTest.mouseClick(strip, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, strip.segment_rect(8).center())
+        for _ in range(3): app.processEvents()
+        self.assertFalse(QToolTip.isVisible(), 'no tooltip window opened by a press (it could keep the mouse)')
+        self.assertEqual(self.panel.tabs.currentIndex(), self.panel.plan_tab)
+        self.assertTrue(self.shown(self.panel.plan_steps.list_rows[8]))
+
+    def test_the_settings_open_modeless_on_the_panel_screen(self):
+        self.panel.options_button.click(); app.processEvents()
+        dialog = self.panel.options_dialog
+        self.assertTrue(dialog.isVisible()); self.assertFalse(dialog.isModal())
+        screen = (self.panel.screen() or app.primaryScreen()).availableGeometry()
+        self.assertTrue(screen.contains(dialog.frameGeometry()) or screen.contains(dialog.geometry()), (screen, dialog.geometry()))
+        dialog.hide()
+
+    def test_an_activity_row_shows_its_details_not_its_title_again(self):
+        one = self.panel.transcript.add_message('Activity', 'Painted: Underpainting — goal image', True)
+        self.assertEqual(one['card'].findChildren(QPushButton), [], 'one line: nothing to open')
+        self.assertIn('Painted: Underpainting', one['label'].toPlainText())
+        more = self.panel.transcript.add_message('Activity', 'Painted: Moonlit sky\nThree passes of dry brush over the cloud band.', True)
+        toggle = more['card'].findChild(QPushButton); toggle.click(); app.processEvents()
+        self.assertIn('Three passes', more['label'].toPlainText())
+        self.assertNotIn('Painted: Moonlit sky', more['label'].toPlainText(), 'the title is the row, not the body')
 
     def test_no_duplicate_titles(self):
         self.paint()

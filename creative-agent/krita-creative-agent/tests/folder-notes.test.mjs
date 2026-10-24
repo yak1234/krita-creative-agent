@@ -201,3 +201,12 @@ test('marks written by hand anywhere in a step line are read, and met or unmet b
   const edited = lines.map(l => l.includes('Moonlit sky') ? l.replace(' · met by the artist', '') : l.includes('Kremlin towers') ? l + ' · met by the artist' : l);
   assert.deepEqual(planDifference(brief, edited, [1], { [keys[1]]: { met: 'artist' } }), ['Unmarked met: Moonlit sky', 'Marked met: Kremlin towers']);
 });
+
+test('PLAN.md names the painting its ticks belong to, and reads it back', () => {
+  const brief = { title: 'T', objective: 'o', requirements: [], freedom: [], completion: ['c'], steps: [{ title: 'Sky', done_when: 'd' }] };
+  const text = planText(brief, [0], { painting: { id: 'doc-42', name: 'Creative painting 18.kra' } });
+  assert.match(text, /^Painting: Creative painting 18\.kra · doc-42$/m);
+  assert.deepEqual(parsePlan(text).painting, { id: 'doc-42', name: 'Creative painting 18.kra' });
+  assert.equal(parsePlan(planText(brief, [0])).painting, null, 'an older PLAN.md names none');
+});
+

@@ -10,23 +10,41 @@ import sys
 import traceback
 
 
+def log_path():
+    return Path.home() / 'Library' / 'Logs' / 'Creative Agent' / 'krita-python-errors.log'
+
+
+def _write(lines):
+    path = log_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > 2 * 1024 * 1024:
+            path.replace(path.with_suffix('.previous.log'))
+        with path.open('a', encoding='utf-8') as stream:
+            stream.write('\n%s pid=%s\n' % (datetime.now().isoformat(), os.getpid()))
+            stream.writelines(lines)
+    except OSError:
+        pass                                              # a logging failure must not replace the original exception
+
+
+def record(where):
+    """Log the exception being handled, with where it happened, and go on: for the panel's own catch-alls (one bad
+    event or canvas poll must never stop the panel), which never reach the excepthook."""
+    lines = ['Handled in %s:\n' % where] + traceback.format_exception(*sys.exc_info())
+    _write(lines)
+    try:
+        sys.stderr.write(''.join(lines))
+    except Exception:
+        pass
+
+
 def install():
     if getattr(sys.excepthook, '_creative_persistent_capture', False):
         return
     previous = sys.excepthook
-    log_path = Path.home() / 'Library' / 'Logs' / 'Creative Agent' / 'krita-python-errors.log'
 
     def capture(exc_type, exc_value, tb):
-        try:
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            if log_path.exists() and log_path.stat().st_size > 2 * 1024 * 1024:
-                log_path.replace(log_path.with_suffix('.previous.log'))
-            with log_path.open('a', encoding='utf-8') as stream:
-                stream.write('\n%s pid=%s\n' % (datetime.now().isoformat(), os.getpid()))
-                traceback.print_exception(exc_type, exc_value, tb, file=stream)
-        except OSError:
-            # A logging failure must not replace the original exception.
-            pass
+        _write(traceback.format_exception(exc_type, exc_value, tb))
         previous(exc_type, exc_value, tb)
 
     capture._creative_persistent_capture = True

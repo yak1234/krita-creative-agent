@@ -1558,7 +1558,7 @@ export class StudioRuntime extends PaintingRuntime {
     const folder = this.study?.folder;
     if (!folder || !this.goal?.brief) return;
     try {
-      const result = await writePlan(folder.root, this.goal.brief, this.goal.done_steps ?? [], {expected:folder.plan_text, goal:this.folderIndex?.goal?.name, marks:this.goal.step_marks});
+      const result = await writePlan(folder.root, this.goal.brief, this.goal.done_steps ?? [], {expected:folder.plan_text, goal:this.folderIndex?.goal?.name, marks:this.goal.step_marks, painting:this.folderPainting()});
       folder.plan_text = result.text;
       if (result.backup) this.emit({type:'action', seconds:0, message:`PLAN.md had changes made outside this chat: saved as ${result.backup} before writing the plan.`});
     } catch (error) { this.emit({type:'action', seconds:0, message:'PLAN.md was not written: '+this.redact(error.message)}); }
@@ -1621,7 +1621,17 @@ export class StudioRuntime extends PaintingRuntime {
     const step = this.goal?.brief?.steps?.[this.goal.current_step ?? 0], file = step ? stepFile(step) : undefined;
     return references.filter(r => !(r.source === 'folder' && r.role === 'asset') || r.folder_name === file);
   }
-  /** On opening or resuming a folder: a new chat takes PLAN.md as its plan; a PLAN.md edited by hand is shown and asked about. */
+  /** The painting a folder plan's ticks belong to: the chat's target, else the canvas it looks at; null when unknown. */
+  folderPainting() {
+    const canvas = this.canvasContext?.canvas;
+    const id = this.study?.target_document_id ?? this.goal?.plan_target?.document_id ?? canvas?.document_id;
+    if (!id) return null;
+    const name = (canvas?.document_id === id ? (canvas.filename ? basename(canvas.filename) : canvas.name) : null) || this.study?.name || 'painting';
+    return {id:String(id), name:String(name)};
+  }
+  /** On opening or resuming a folder: a new chat takes PLAN.md as its plan; a PLAN.md edited by hand is shown and asked about.
+   * Its ticks and met marks count only on the painting PLAN.md names: on another (or an older file naming none) the plan
+   * starts at step 1, the artist's skips kept, and PLAN.md is rewritten (the old one kept as a backup). */
   async checkFolderPlan() {
     const folder = this.study.folder;
     let plan;
@@ -1633,10 +1643,17 @@ export class StudioRuntime extends PaintingRuntime {
       if (!Value.Check(briefSchema, brief)) return;
       this.goal.revisions ??= []; this.goal.revisions.push({revision:this.goal.revision,brief:null,at:stamp(),source:'folder'});
       this.goal.brief = brief; this.goal.locked_requirements = [...brief.requirements]; this.goal.revision++; this.goal.approved_revision = null;
-      this.goal.status = 'ready'; this.goal.done_steps = plan.ticked.filter(i => i < brief.steps.length); this.goal.step_marks = plan.marks;
+      const here = this.folderPainting(), same = !!(plan.painting && here && plan.painting.id === here.id);
+      const progress = plan.ticked.length || Object.values(plan.marks).some(mark => mark.met || mark.redone);
+      this.goal.status = 'ready';
+      this.goal.done_steps = same ? plan.ticked.filter(i => i < brief.steps.length) : [];
+      this.goal.step_marks = same ? plan.marks : Object.fromEntries(Object.entries(plan.marks).filter(([, mark]) => mark.skipped).map(([key]) => [key, {skipped:true}]));
       this.goal.current_step = Math.min(this.firstOpenStep(), brief.steps.length - 1);
       this.goal.folder_plan_root = folder.root;                   // plan_text stays what this chat writes: the artist's file is backed up first
-      await this.persist(); this.publish();
+      if (!same && progress) {
+        this.emit({type:'action', seconds:0, message:`PLAN.md's ticks belong to another painting${plan.painting ? ` (${plan.painting.name})` : ''}: this painting starts at step 1. The old PLAN.md is kept as a backup.`});
+        await this.syncFolderPlan();                              // rewritten without them; the old file backed up first
+      } else { await this.persist(); this.publish(); }
     } else if (typeof folder.plan_text === 'string' && plan.text !== folder.plan_text) {
       const differences = planDifference(this.goal.brief, plan.lines, this.goal.done_steps ?? [], this.goal.step_marks);
       if (differences.length) {

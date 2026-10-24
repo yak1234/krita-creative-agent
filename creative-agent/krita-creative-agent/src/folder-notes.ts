@@ -16,7 +16,11 @@ export type Brief = { title: string; objective: string; requirements: string[]; 
 export type StepMark = { skipped?: boolean; met?: 'artist' | 'good_enough'; redone?: number };
 export type StepMarks = Record<string, StepMark>;
 export type PlanStep = { title: string; file?: string; layer?: string; done: boolean; mark?: StepMark };
-export type Plan = { title: string | null; text: string; lines: string[]; steps: PlanStep[]; ticked: number[]; marks: StepMarks };
+/** painting: the painting its ticks and met marks belong to ("Painting: <name> · <document id>"), null in an older file. */
+export type PaintingIdentity = { id: string; name: string };
+export type Plan = { title: string | null; text: string; lines: string[]; steps: PlanStep[]; ticked: number[]; marks: StepMarks;
+  painting: PaintingIdentity | null };
+const PAINTING_LINE = /^Painting: (.*) · ([A-Za-z0-9_.:-]{1,128})\s*$/m;
 
 export const PLAN_FILE = 'PLAN.md';
 export const NOTES_FILE = 'NOTES.md';
@@ -75,8 +79,10 @@ function stepLine(step: Step, index: number, done: boolean, mark?: StepMark): st
 }
 
 /** PLAN.md's text: a few lines of intent, then the checklist. */
-export function planText(brief: Brief, ticked: readonly number[], { goal, marks = {} }: { goal?: string | null; marks?: StepMarks } = {}): string {
+export function planText(brief: Brief, ticked: readonly number[], { goal, marks = {}, painting }: { goal?: string | null; marks?: StepMarks;
+  painting?: PaintingIdentity | null } = {}): string {
   const intent = [plainLine(brief.objective), ...(goal ? [`Goal image: ${oneLine(goal)} (it decides the layout).`] : []),
+    ...(painting?.id ? [`Painting: ${oneLine(painting.name || 'painting').replace(/ · /g, ' - ')} · ${painting.id}`] : []),
     ...brief.requirements.map(r => `- ${plainLine(r)}`)];
   const keys = stepKeys(brief.steps);
   return [`# Plan · ${oneLine(brief.title)}`, '', ...intent, '', '## Moves', '',
@@ -147,8 +153,8 @@ async function backup(path: string): Promise<string> {
  * by another session) is backed up first, unless it already says what is about to be written.
  */
 export async function writePlan(root: string, brief: Brief, ticked: readonly number[],
-  { expected, goal, marks }: { expected?: string | null; goal?: string | null; marks?: StepMarks } = {}): Promise<{ text: string; backup?: string }> {
-  const path = await markdownPath(root, PLAN_FILE), text = planText(brief, ticked, { goal, marks });
+  { expected, goal, marks, painting }: { expected?: string | null; goal?: string | null; marks?: StepMarks; painting?: PaintingIdentity | null } = {}): Promise<{ text: string; backup?: string }> {
+  const path = await markdownPath(root, PLAN_FILE), text = planText(brief, ticked, { goal, marks, painting });
   const before = await existing(path);
   const saved = before !== null && (before.text === null || (before.text !== expected && before.text !== text)) ? await backup(path) : undefined;
   await writeNoFollow(path, text, constants.O_CREAT, true);
@@ -197,7 +203,9 @@ export function parsePlan(text: string): Plan {
   const title = /^#\s+(?:Plan\s*·\s*)?(.+)$/m.exec(text)?.[1]?.trim() ?? null;
   const keys = stepKeys(steps), marks: StepMarks = {};
   steps.forEach((step, i) => { if (step.mark) marks[keys[i]] = step.mark; });
-  return { title, text, lines, steps, ticked: steps.flatMap((s, i) => s.done ? [i] : []), marks };
+  const named = PAINTING_LINE.exec(text);
+  return { title, text, lines, steps, ticked: steps.flatMap((s, i) => s.done ? [i] : []), marks,
+    painting: named ? { id: named[2]!, name: named[1]!.trim() } : null };
 }
 
 /** What changed between the agent's plan (and its ticks) and PLAN.md's lines, in words for the artist. */

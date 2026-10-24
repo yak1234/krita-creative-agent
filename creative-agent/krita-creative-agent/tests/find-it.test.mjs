@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { findArea, promptsFromCells, cleanMask, leakShare, toCanvas, timingLine, readFound, foundPath, checkRequest, FindError, POSITIVE, NEGATIVE } from '../src/find-it.ts';
 import { decisionLocator, gridPicture, gridSize, cellRect, unanswered, GRID_CELLS, LOCATE_PIXELS } from '../src/find-it-locate.ts';
 import { decodePlane, encodePlane } from '../src/shapes/png.ts';
-import { pngSize } from '../src/png-rgba.ts';
+import { decodeRgba, pngSize } from '../src/png-rgba.ts';
 
 // The scene, in view pixels (64 x 48; the canvas is 128 x 96): the sky above y 20, a tower x 40-47 from y 8 down, ground.
 const VW = 64, VH = 48, CW = 128, CH = 96;
@@ -75,7 +75,7 @@ test('the grid is about 48 cells on the canvas\'s proportions, numbered in yello
   assert.ok(yellow > 4, 'cell 1 carries its number');
 });
 
-test('the decision locator asks one question a cell in one request with the numbered picture, and gives up on a fallback', async () => {
+test('the decision locator asks two questions a cell in one request with the numbered picture, and gives up on a fallback', async () => {
   const requests = [];
   const decider = { async decide(request) {
     requests.push(request);
@@ -84,8 +84,9 @@ test('the decision locator asks one question a cell in one request with the numb
   const locate = decisionLocator(async () => decider);
   const cells = await locate('the sky.', { width: 64, height: 48, data: new Uint8Array(64 * 48 * 4) });
   assert.equal(requests.length, 1); assert.equal(requests[0].purpose, 'find-it');
-  assert.equal(Object.keys(requests[0].questions).length, 48);
+  assert.equal(Object.keys(requests[0].questions).length, 96, 'mostly the part, and any part of it');
   assert.match(requests[0].questions.cell_12.instructions, /^Is cell 12 \(the yellow-outlined cell labelled 12\) mostly the sky\?$/);
+  assert.match(requests[0].questions.any_12.instructions, /^Does cell 12 \(the yellow-outlined cell labelled 12\) show any part of the sky\?$/);
   assert.equal(requests[0].parts.filter(p => typeof p === 'object').length, 1, 'one picture');
   assert.match(requests[0].parts[0], /8 columns and 6 rows/);
   assert.deepEqual([cells.cols, cells.rows, cells.p.length, cells.p[0], cells.p[47], cells.model], [8, 6, 48, 0.9, 0.05, 'luna']);
@@ -119,7 +120,7 @@ test('one point a confident cell, strongest first; the confident "not" cells gua
   const p = Array(48).fill(0.5); p[3] = 0.7; p[1] = 0.95; p[40] = 0.1; p[47] = NEGATIVE;
   const { prompts, negatives } = promptsFromCells({ cols: 8, rows: 6, p, ms: 0 }, 1024, 768);
   assert.deepEqual(prompts, [[[192, 64, 1]], [[448, 64, 1]]]);
-  assert.deepEqual(negatives, [40, 47]);
+  assert.deepEqual(negatives, [[0, 640, 128, 768], [896, 640, 1024, 768]], 'the "not" cells, in view pixels');
   assert.equal(POSITIVE, 0.6);
   assert.deepEqual(promptsFromCells({ cols: 8, rows: 6, p: Array(48).fill(0.3), ms: 0 }, 1024, 768).prompts, []);
 });
@@ -133,7 +134,8 @@ test('cleaning keeps the pieces holding a seed and fills small holes', () => {
   assert.equal(mask[4 * w + 20], 255, 'the hole is filled');
   assert.equal(mask[25 * w + 5], 0, 'the speck goes');
   assert.equal(mask[0], 255);
-  assert.equal(leakShare({ bounds: [0, 0, 4, 4], data: new Uint8Array(16).fill(255) }, { cols: 2, rows: 2 }, [0], 8, 8), 1);
+  assert.equal(leakShare({ bounds: [0, 0, 4, 4], data: new Uint8Array(16).fill(255) }, [[0, 0, 4, 4]], 8, 8), 1);
+  assert.equal(leakShare({ bounds: [0, 0, 4, 4], data: new Uint8Array(16).fill(255) }, [[0, 0, 2, 4]], 8, 8), 0.5);
   const canvas = toCanvas(mask, { width: w, height: h }, { width: 80, height: 60 });
   assert.deepEqual(canvas.bounds, [0, 0, 80, 20]);
 });
@@ -237,4 +239,87 @@ test('a named part is found on the goal and mapped through its transfer placemen
     const plain = await findArea(h.host, { part: 'the ground' });
     assert.equal(plain.found_on, 'canvas', 'no goal placement: the canvas');
   } finally { await h.close(); }
+});
+
+// LIVE in Toska (2026-10-24): "the bridge" on New Moscow's goal failed in 1.5 s, "I could not see the bridge". The bridge is
+// long and thin (about 7% of the height), so no cell of the grid is mostly bridge: the real model scored every cell 0.13 or
+// less for "mostly the bridge", and 0.9-1.0 along the bridge for "any part of the bridge". A seeing fake: it reads the
+// grid picture it is sent and answers from the share of the part's red pixels in each cell (grid and numbers left out).
+const PART = [200, 30, 30], GROUND = [100, 100, 100];
+function paintedView(width, height, inside) {
+  const data = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) data.set([...(inside(x, y) ? PART : GROUND), 255], (y * width + x) * 4);
+  return { width, height, data };
+}
+function seeingDecider() {
+  const requests = [];
+  return { requests, async decide(request) {
+    requests.push(request);
+    const [, c, r] = request.parts[0].match(/(\d+) columns and (\d+) rows/).map(Number);
+    const picture = decodeRgba(Buffer.from(request.parts[1].data, 'base64'));
+    const answers = {};
+    for (const name of Object.keys(request.questions)) {
+      const [kind, n] = name.split('_'), [x0, y0, x1, y1] = cellRect(Number(n) - 1, c, r, picture.width, picture.height);
+      let part = 0, ground = 0;
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+        const k = (y * picture.width + x) * 4, red = picture.data[k] === PART[0] && picture.data[k + 1] === PART[1];
+        if (red) part++; else if (picture.data[k] === GROUND[0] && picture.data[k + 1] === GROUND[0]) ground++;
+      }
+      const share = part / Math.max(1, part + ground);
+      answers[name] = { type: 'noul', noul: (kind === 'cell' ? share > 0.5 : share > 0) ? 0.95 : 0.02 };
+    }
+    return { answers, model: 'seeing' };
+  } };
+}
+// The bridge in a 1024 x 768 view: y 400-439 (5% of the height), x 240-879; the grid's cells are 128 px.
+const onBridge = (x, y) => y >= 400 && y < 440 && x >= 240 && x < 880;
+
+test('a thin part that fills no cell: the cells showing any of it are looked at again, enlarged, until cells are mostly it', async () => {
+  const decider = seeingDecider(), view = paintedView(1024, 768, onBridge);
+  const cells = await decisionLocator(async () => decider)('the bridge', view);
+  assert.equal(decider.requests.length, 2, 'the whole view, then the cells showing the bridge');
+  assert.ok(decider.requests.every(r => r.purpose === 'find-it'));
+  assert.match(decider.requests[0].questions.any_12.instructions, /^Does cell 12 \(the yellow-outlined cell labelled 12\) show any part of the bridge\?$/);
+  const zoomed = pngSize(Buffer.from(decider.requests[1].parts[1].data, 'base64'));
+  assert.deepEqual([zoomed.width, zoomed.height], [768, 128], 'row 4, columns 2-7 of the first grid, at the view\'s own pixels');
+  assert.deepEqual(cells.area, [128 / 1024, 384 / 768, 896 / 1024, 512 / 768]);
+  assert.equal(cells.looks, 2);
+  const { prompts, negatives } = promptsFromCells(cells, 1024, 768);
+  assert.ok(prompts.length >= 8, String(prompts.length));
+  assert.ok(prompts.every(([[x, y]]) => onBridge(x, y)), 'every point is on the bridge: ' + JSON.stringify(prompts));
+  // The guard is where no part of it shows (a cell can show the bridge without being mostly bridge).
+  const blocked = (x, y) => negatives.some(([x0, y0, x1, y1]) => x >= x0 && x < x1 && y >= y0 && y < y1);
+  assert.ok(!blocked(400, 420) && !blocked(400, 450), 'the bridge\'s cells are not guarded');
+  assert.ok(blocked(400, 100) && blocked(400, 600) && blocked(400, 500), 'the cells showing none of it are');
+  // A part that is nowhere: one look, nothing confident.
+  const none = seeingDecider(), empty = await decisionLocator(async () => none)('the bridge', paintedView(1024, 768, () => false));
+  assert.equal(none.requests.length, 1); assert.equal(promptsFromCells(empty, 1024, 768).prompts.length, 0);
+});
+
+test('a thin part is found end to end: points on it, its outline merged, not "I could not see it"', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'find-it-'));
+  try {
+    const W = 1024, H = 768, shapes = [];
+    const service = {
+      async study() { return { ms: 1, load_ms: 0, peak_mb: 1, provider: 'cpu', studied: true, attempt: 1 }; },
+      async shape(_id, prompt) {
+        shapes.push(prompt);
+        const [x, y] = prompt.points[0], bridge = onBridge(x, y), w = bridge ? 640 : W, h = bridge ? 40 : H, crop = new Uint8Array(w * h);
+        for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) if (bridge || !onBridge(i, j)) crop[j * w + i] = 255;
+        const mask_path = join(directory, `mask-${shapes.length}.png`);
+        await writeFile(mask_path, encodePlane({ width: w, height: h, data: crop }));
+        return { bounds: bridge ? [240, 400, w, h] : [0, 0, w, h], score: 0.95, mask_path, model: 'fake', revision: 'r', ms: 2, peak_mb: 1, provider: 'cpu', cached: false };
+      },
+      async forget() {}, async close() {},
+    };
+    const view = join(directory, 'view.png'); await writeFile(view, 'view');
+    const host = { directory, shapes: service, shapeStudies: new Map(),
+      view: async () => ({ path: view, width: 2 * W, height: 2 * H, revision: 'rev-1' }),
+      pixels: async () => ({ sha: 'b'.repeat(64), pixels: paintedView(W, H, onBridge) }),
+      locate: decisionLocator(async () => seeingDecider()) };
+    const found = await findArea(host, { part: 'the bridge' });
+    assert.deepEqual(found.bounds, [480, 800, 1280, 80], 'the bridge on the 2048 x 1536 canvas');
+    assert.equal(found.locate_looks, 2);
+    assert.ok(shapes.length >= 8 && found.kept === shapes.length, `${found.kept} of ${shapes.length}`);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

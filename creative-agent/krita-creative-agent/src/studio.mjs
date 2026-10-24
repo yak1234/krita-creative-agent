@@ -1310,7 +1310,8 @@ export class StudioRuntime extends PaintingRuntime {
       const found = await this.findArea({part});
       const message = timingLine(found) + (found.note ? ' ' + found.note : '');
       this.diagnostics?.record({type:'find_it', part, cached:found.cached, ms:found.ms, share:found.share, score:found.score, prompts:found.prompts, kept:found.kept, found_on:found.found_on,
-        ...(found.looked_at ? {looked_at:found.looked_at} : {}), ...(found.locate_picture ? {locate_picture:found.locate_picture} : {})});
+        ...(found.looked_at ? {looked_at:found.looked_at} : {}), ...(found.locate_picture ? {locate_picture:found.locate_picture} : {}),
+        ...(found.locate_looks ? {locate_looks:found.locate_looks} : {})});
       this.emit({type:'found_area', request_id, part, mask_path:found.mask_path, bounds:found.bounds, canvas:found.canvas, share:found.share, found_on:found.found_on,
         score:found.score, cached:found.cached, ms:found.ms, message});
       return found;

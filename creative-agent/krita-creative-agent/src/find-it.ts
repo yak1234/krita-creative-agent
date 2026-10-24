@@ -27,15 +27,15 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { findShape, type Found, type ShapeHost } from './shapes/use.ts';
 import { decodePlane, encodePlane } from './shapes/png.ts';
 import { SHAPES_MODEL } from './shapes/model.ts';
-import { cellRect, unanswered, type Cells, type PartLocator, type Rgba, type Unanswered } from './find-it-locate.ts';
+import { boxPixels, cellBox, NEGATIVE, POSITIVE, unanswered, type Cells, type PartLocator, type Rgba, type Unanswered } from './find-it-locate.ts';
 
-export const FINDER_VERSION = 2;                         // 2: a named part is found on the goal when it is placed (goal())
+export { NEGATIVE, POSITIVE };
+export const FINDER_VERSION = 3;                         // 2: a named part is found on the goal when it is placed (goal());
+                                                         // 3: a thin part is looked at again, enlarged (find-it-locate.ts)
 /** The goal is looked at as a copy of at most this many pixels (the studio's host.pixels, bounded-image.ts): the shapes
  * model works at 1024 a side and the locator's grid at LOCATE_PIXELS, so a goal sharpened 4x (25 million pixels) is
  * never decoded whole for Find it (LIVE rehearsal 2, 2026-10-24: 4.7 s of trace_reference on Krita's GUI thread). */
 export const FIND_PIXELS = 2_000_000;
-/** A cell at or above this probability is the part; at or below NEGATIVE it is not (a negative point). */
-export const POSITIVE = 0.6, NEGATIVE = 0.15;
 /** A cell's mask is dropped when more than this share of it lies in "not" cells: it leaked into another object. */
 export const LEAK = 0.25;
 /** A clicked point's mask below this score is still loaded (the artist sees it and adjusts), with a note. */
@@ -55,7 +55,9 @@ export type FoundArea = { part: string | null; mask_path: string; bounds: Rect; 
   /** Where the outline was found: the canvas view, or the goal image mapped onto the canvas through its placement. */
   found_on: 'canvas' | 'goal';
   /** The picture the outline was found on (the view, or the goal's bounded copy), and the grid picture the locator sent. */
-  looked_at?: [number, number]; locate_picture?: { width: number; height: number; bytes: number } };
+  looked_at?: [number, number]; locate_picture?: { width: number; height: number; bytes: number };
+  /** The locator's requests when it took more than one (a thin part, looked at again enlarged). */
+  locate_looks?: number };
 /** The goal image as a whole-picture transfer placed it: `source` [x,y,w,h] of the goal's pixels lies on `target` of the canvas. */
 export type PlacedGoal = { path: string; width: number; height: number; placement: { source: Rect; target: Rect } };
 export type FindHost = ShapeHost & {
@@ -105,24 +107,27 @@ export function checkRequest(request: FindRequest, canvas: { width: number; heig
 
 type Point = [number, number, number];
 /** The prompts for a named part from its cells, in view pixels: one point at the centre of each confident cell (strongest
- * first), and the "not" cells for the leak check. Empty when no cell is confident.
+ * first), and where the part is not, [x0, y0, x1, y1) in view pixels, for the leak check: the locator's guard when it gave
+ * one (a thin part: the cells showing none of it), else the "not" cells. Empty when no cell is confident.
  * Why one point a prompt: on New Moscow's sky (real SAM 2.1 base-plus, 2026-10-24) single points scored 0.96-0.99 and
  * merged into a clean sky; adding the two nearest "not" cells as negative points dropped scores to 0.28-0.94 and left
  * holes, four of them to 0.31-0.86, and all the cells in one prompt missed the moon. "Not" cells guard instead: a mask
  * that leaks into them is dropped. */
-export function promptsFromCells(cells: Cells, width: number, height: number): { prompts: Point[][]; negatives: number[] } {
-  const centre = (i: number): [number, number] => { const [x0, y0, x1, y1] = cellRect(i, cells.cols, cells.rows, width, height); return [(x0 + x1) / 2, (y0 + y1) / 2]; };
+export function promptsFromCells(cells: Cells, width: number, height: number): { prompts: Point[][]; negatives: Rect[] } {
+  const cell = (i: number) => boxPixels(cellBox(i, cells.cols, cells.rows, cells.area), width, height);
+  const centre = (i: number): [number, number] => { const [x0, y0, x1, y1] = cell(i); return [(x0 + x1) / 2, (y0 + y1) / 2]; };
   const yes = cells.p.map((p, i) => [p, i] as const).filter(([p]) => p >= POSITIVE).sort((a, b) => b[0] - a[0] || a[1] - b[1]).map(([, i]) => i);
-  const no = cells.p.map((p, i) => [p, i] as const).filter(([p]) => p <= NEGATIVE).map(([, i]) => i);
+  const no = cells.guard ? cells.guard.map(box => boxPixels(box, width, height))
+    : cells.p.map((p, i) => [p, i] as const).filter(([p]) => p <= NEGATIVE).map(([, i]) => cell(i));
   return { prompts: yes.map(i => [[...centre(i), 1] as Point]), negatives: no };
 }
 
-/** The share of a found mask (view pixels) lying in the given cells. */
-export function leakShare(found: { bounds: Rect; data: Uint8Array }, cells: { cols: number; rows: number }, indices: number[], width: number, height: number): number {
+/** The share of a found mask (view pixels) lying in the given rectangles, [x0, y0, x1, y1) in view pixels. */
+export function leakShare(found: { bounds: Rect; data: Uint8Array }, rects: Rect[], width: number, height: number): number {
   const [bx, by, bw, bh] = found.bounds;
   let inside = 0, leaked = 0;
   const blocked = new Uint8Array(width * height);
-  for (const i of indices) { const [x0, y0, x1, y1] = cellRect(i, cells.cols, cells.rows, width, height); for (let y = y0; y < y1; y++) blocked.fill(1, y * width + x0, y * width + x1); }
+  for (const [x0, y0, x1, y1] of rects) for (let y = Math.max(0, y0); y < Math.min(height, y1); y++) blocked.fill(1, y * width + Math.max(0, x0), y * width + Math.min(width, x1));
   for (let j = 0; j < bh; j++) for (let i = 0; i < bw; i++) {
     if ((found.data[j * bw + i] ?? 0) < 128) continue;
     inside++;
@@ -247,7 +252,7 @@ export async function findArea(host: FindHost, request: FindRequest): Promise<Fo
 
   const view_w = pixels.width, view_h = pixels.height, kx = view_w / view.width, ky = view_h / view.height;
   const data = pixels.data instanceof Uint8Array ? pixels.data : new Uint8Array(pixels.data);
-  let prompts: Point[][], negatives: number[] = [], cells: Cells | null = null, locateMs = 0;
+  let prompts: Point[][], negatives: Rect[] = [], cells: Cells | null = null, locateMs = 0;
   if ('points' in checked) prompts = [checked.points.map(([x = 0, y = 0, label = 1]) => [Math.min(view_w, x * kx), Math.min(view_h, y * ky), label] as Point)];
   else {
     if (!host.locate) throw new FindError('no_locator', `Finding ${part} by name needs a decision model that reads images (Settings › Decisions). Select it with the Freehand tool instead.`);
@@ -270,7 +275,7 @@ export async function findArea(host: FindHost, request: FindRequest): Promise<Fo
     const [px = 0, py = 0] = prompt[0]!;
     if (cells) {
       if (!covers(found, px, py)) continue;                                                 // it found something else
-      if (negatives.length && leakShare(found, cells, negatives, view_w, view_h) > LEAK) continue;
+      if (negatives.length && leakShare(found, negatives, view_w, view_h) > LEAK) continue;
     }
     const [bx, by, bw, bh] = found.bounds;
     for (let j = 0; j < bh; j++) for (let i = 0; i < bw; i++) if ((found.data[j * bw + i] ?? 0) >= 128) union[(by + j) * view_w + bx + i] = 255;
@@ -287,7 +292,7 @@ export async function findArea(host: FindHost, request: FindRequest): Promise<Fo
   const result: Omit<FoundArea, 'part' | 'mask_path' | 'cached' | 'ms'> = { bounds: merged.bounds, canvas: [view.width, view.height],
     share: Math.round(merged.inside / (view.width * view.height) * 10000) / 10000, score, prompts: prompts.length, kept: scores.length,
     revision: view.revision ?? null, found_on: goal ? 'goal' : 'canvas', ...(cells?.model ? { located_by: cells.model } : {}),
-    looked_at: [view_w, view_h], ...(cells?.picture ? { locate_picture: cells.picture } : {}),
+    looked_at: [view_w, view_h], ...(cells?.picture ? { locate_picture: cells.picture } : {}), ...((cells?.looks ?? 1) > 1 ? { locate_looks: cells!.looks! } : {}),
     ...(!cells && score < UNSURE ? { note: `The outline is uncertain (score ${score}): adjust it with Freehand (Shift adds, Alt subtracts), or click again.` } : {}) };
   const temporary = record + '.' + process.pid;
   await writeFile(temporary, JSON.stringify(result)); await rename(temporary, record);

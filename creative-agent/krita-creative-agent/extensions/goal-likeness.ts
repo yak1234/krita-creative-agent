@@ -7,10 +7,16 @@
 // whole-picture transfer to protect (frame.protect). A project folder's element step is judged like any other batch once
 // its goal is underpainted (the artist, 2026-10-23). Runs before Luna review, which skips a batch this undid or capped
 // (host_undone).
+// Luna's goal comparison (luna-goal-reviewer goal 1, src/goal-comparison.ts): when ΔE does not find the batch clearly worse
+// and nothing exempts it, Luna compares the goal's crop with the canvas's before and after it. With Luna on Guide its
+// "further" (good confidence) counts as clearly worse: the same undo, the same note and the same shared cap. With Evaluate
+// it is recorded after the result (compared), never delaying the painter. Luna is not asked when its answer could not
+// change what happens: ΔE already decided, an exemption, measure only, or no goal underpainting to protect.
 // A shipped Pi extension registered inline (src/extensions.mjs). It knows the studio only through LikenessHost.
 import type { ExtensionAPI, ToolResultEvent, ToolResultEventResult } from '@earendil-works/pi-coding-agent';
 import type { BatchPass, Undone } from './luna-review.ts';
 import { measure, clearlyWorse, describeWorse, exemption, type Grid, type Measure, type Exemption, type Rect } from '../src/goal-likeness.ts';
+import { furtherFromGoal, describeFurther, type Comparison } from '../src/goal-comparison.ts';
 
 export type LikenessMode = 'off' | 'measure' | 'protect';
 export type GoalFrame = { goal: Grid; target: Rect; protect: boolean };
@@ -18,7 +24,9 @@ export type GoalFrame = { goal: Grid; target: Rect; protect: boolean };
 export type UndoCounter = { count(move: number): number; add(move: number): void };
 export type LikenessRecord = { move: number; call_id: string; tool: string; status: 'kept' | 'undone' | 'worse_kept' | 'fallback';
   exempt?: Exemption; whole?: Measure['whole']; area?: Measure['area']; worse?: Measure['worse']; ms: number;
-  undone_pass_ids?: string[]; partial?: boolean; reason?: string; summary?: string };
+  undone_pass_ids?: string[]; partial?: boolean; reason?: string; summary?: string;
+  luna?: Comparison; by?: 'delta_e' | 'luna' };       // Luna's goal comparison when it was asked; which check found it worse
+export type ComparisonInput = { before: string; after: string; passes: BatchPass[]; measure: Measure; target: Rect };
 /** What the studio provides (studio.mjs likenessHost). */
 export interface LikenessHost {
   active(): LikenessMode;               // read on every call: the artist may change the setting between moves
@@ -33,6 +41,9 @@ export interface LikenessHost {
   undo(passes: BatchPass[]): Promise<Undone | null>;
   record(entry: LikenessRecord): void;
   stop(message: string): void;          // end the move after this turn
+  lunaMode?(): 'off' | 'evaluate' | 'guide';   // the Decision checks setting, read on every call
+  compare?(input: ComparisonInput): Promise<Comparison | null>;      // Luna's goal comparison of this batch (goal-comparison.ts)
+  compared?(entry: { move: number; call_id: string; luna: Comparison }): void;   // Evaluate's comparison, after the result
 }
 /** Automatic undos per move: past this a worse batch is reported and the move stops, so a move is never undone empty. */
 export const UNDO_CAP = 2;
@@ -41,6 +52,11 @@ const WHY: Record<Exemption, string> = { accents: 'accents are small by design',
   finish: 'the finish repaints the underpainting from the goal by design (the artist approved its look)', transfer: 'it is a colour transfer from a reference',
   departure: 'the artist asked for a change from the reference', layer_settings: 'it changes layer settings, not only paint' };
 const UNPROTECTED = 'this chat has no kept whole-picture transfer of the goal to protect';
+/** ΔE finds the batch clearly better (review, 2026-10-24): its changed area got closer to the goal by a just-noticeable
+ * difference or more, or more of its cells got clearly better than clearly worse. Luna is not asked: never undone. */
+const clearlyBetter = (m: Measure): boolean => m.area.change <= -1 || m.area.better_cells > m.area.worse_cells;
+/** A comparison that could not be made (the host threw or had nothing): no verdict, never an undo. */
+const FAILED: Comparison = { verdict: null, confidence: 0, crops: 0, per_crop: [], elapsed_ms: 0, cost: 0, input_tokens: 0, fallback: 'service_or_response_error' };
 
 export default function goalLikeness(host: LikenessHost): (pi: ExtensionAPI) => void {
   const own = new Map<number, number>();
@@ -66,32 +82,49 @@ export default function goalLikeness(host: LikenessHost): (pi: ExtensionAPI) => 
         return undefined;
       }
       const measured = { ...base, whole: m.whole, area: m.area, worse: m.worse, ms: Date.now() - started };
-      if (!clearlyWorse(m)) { host.record({ ...measured, status: 'kept' }); return undefined; }
-      const what = describeWorse(m);
       const exempt = exemption(toolName, event.input as Record<string, any>, { departure: host.departure() }) ?? undefined;
       const why = exempt ? WHY[exempt] : mode === 'measure' ? host.why?.() ?? 'the artist\u2019s Reference colours setting is off' : !frame.protect ? UNPROTECTED : null;
+      let what: string, by: 'delta_e' | 'luna', luna: Comparison | undefined;
+      if (clearlyWorse(m)) { what = describeWorse(m); by = 'delta_e'; }
+      else {
+        // ΔE keeps it: Luna's comparison may still find it further from the goal (structure, style), when that could count.
+        const luna_mode = host.lunaMode?.() ?? 'off';
+        const ask = (): Promise<Comparison> => Promise.resolve().then(() => host.compare!({ before: passes[0].before_path, after, passes, measure: m, target: frame!.target }))
+          .then(c => c ?? FAILED).catch(() => FAILED);
+        if (why || !host.compare || luna_mode === 'off' || clearlyBetter(m)) { host.record({ ...measured, status: 'kept' }); return undefined; }
+        if (luna_mode === 'evaluate') {
+          host.record({ ...measured, status: 'kept' });
+          void ask().then(c => { if (c !== FAILED) host.compared?.({ move, call_id: event.toolCallId, luna: c }); });
+          return undefined;
+        }
+        luna = await ask();
+        if (!furtherFromGoal(luna)) { host.record({ ...measured, status: 'kept', luna }); return undefined; }
+        what = describeFurther(luna); by = 'luna';
+      }
+      const found = { ...measured, by, ...(luna ? { luna } : {}) };
       if (why) {
-        host.record({ ...measured, status: 'worse_kept', ...(exempt ? { exempt } : {}), summary: what, reason: why });
+        host.record({ ...found, status: 'worse_kept', ...(exempt ? { exempt } : {}), summary: what, reason: why });
         return { content: [...event.content, line({ note: `This batch made the canvas less like the goal image (${what}); it is kept because ${why}.`, ...m })] };
       }
       const undos = counter();
       if (undos.count(move) >= UNDO_CAP) {
-        host.record({ ...measured, status: 'worse_kept', summary: what, reason: 'undo cap' });
+        host.record({ ...found, status: 'worse_kept', summary: what, reason: 'undo cap' });
         host.stop(`The host undid ${UNDO_CAP} batches in this move; this one also made the canvas less like the goal (${what}).`);
         return { content: [...event.content, line({ note: `This batch made the canvas less like the goal image (${what}), but the host already undid ${UNDO_CAP} batches in this move, so this one stays. Stop here: the artist decides.`, ...m })],
           details: { ...details, host_undone: 'goal_likeness_cap' } };
       }
       const undone = await host.undo(passes).catch(() => null);
       if (!undone) {
-        host.record({ ...measured, status: 'worse_kept', reason: 'undo failed', summary: what });
+        host.record({ ...found, status: 'worse_kept', reason: 'undo failed', summary: what });
         return { content: [...event.content, line({ note: `This batch made the canvas less like the goal image (${what}); it could not be undone. Repair it in the next batch.`, ...m })] };
       }
       undos.add(move);                                    // a partial undo counts too: the host acted on this batch
       const left = passes.map(p => p.id).filter(id => !undone.pass_ids.includes(id));
-      host.record({ ...measured, status: 'undone', undone_pass_ids: undone.pass_ids, ...(left.length ? { partial: true } : {}), summary: what });
+      host.record({ ...found, status: 'undone', undone_pass_ids: undone.pass_ids, ...(left.length ? { partial: true } : {}), summary: what });
+      const reason = by === 'luna' ? what : `it made the canvas clearly less like the goal image, ${what}`;
       const note = (left.length
-        ? `The host undid part of this batch: it made the canvas clearly less like the goal image, ${what}. ${left.join(', ')} could not be undone; repair what remains. `
-        : `The host undid this batch: it made the canvas clearly less like the goal image, ${what}. `) + 'The attached image is the canvas now. '
+        ? `The host undid part of this batch: ${reason}. ${left.join(', ')} could not be undone; repair what remains. `
+        : `The host undid this batch: ${reason}. `) + 'The attached image is the canvas now. '
         + 'Keep to the goal’s colours and values there: refine what the underpainting already has rather than repainting it, '
         + 'and if the artist wants a change from the reference, they say so.';
       return {

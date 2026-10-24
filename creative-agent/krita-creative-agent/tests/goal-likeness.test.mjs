@@ -3,7 +3,7 @@
 // Grids are made here in memory; a fake `pi` and a fake host (the studio's port); writes no files.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { measure, clearlyWorse, gridSize, decodeGrid, departureRequested, returnToReference, classifyDeparture, exemption, goalMapping, likenessLine, describeWorse,
+import { measure, clearlyWorse, gridSize, decodeGrid, departureRequested, returnToReference, exemption, goalMapping, likenessLine, describeWorse,
   AREA_WORSE, WHOLE_WORSE, MIN_CELLS, GRID_SIDE, CELL_CLEARLY, NET_WORSE_SHARE } from '../src/goal-likeness.ts';
 import goalLikeness, { UNDO_CAP } from '../extensions/goal-likeness.ts';
 
@@ -51,6 +51,10 @@ test('a batch that darkens and greys a passage is clearly worse, and says what a
   assert.deepEqual(m.worse.what, ['darker', 'greyer']);
   assert.match(describeWorse(m), /lower left .*\[\d+,\d+,\d+,\d+\].*darker and greyer than the goal/);
   assert.match(describeWorse(m), /changed area .*ΔE \d+\.\d → \d+\.\d/);
+  // Where the batch changed anything at this scale (goal-comparison.ts compares there when no pass has an area).
+  const [cx, cy, cw, ch] = m.changed;
+  assert.ok(cx < 300 && cy >= 2900 && cx + cw <= 3400 && cy + ch === 4500, `changed ${m.changed}`);
+  assert.equal(measure(goal, under, under, frame).changed, null, 'nothing changed: no area');
 });
 
 // The real case (34deca0e move 2, 2 batches over the underpainting): its changed cells moved +1.1 on average, because
@@ -117,19 +121,6 @@ test('a message that points back to the reference ends a departure; one against 
   assert.equal(returnToReference('Soften the foreground'), null);
 });
 
-test('Luna classifies a message the phrases do not decide: yes, no, or unknown when it cannot answer', async () => {
-  const asked = [];
-  const client = answer => ({ decide: async request => { asked.push(request); return answer; } });
-  assert.equal(await classifyDeparture({ client: client({ answers: { departure: { type: 'noul', noul: 0.92 } } }), text: 'Mets un chat sur le capot' }), true);
-  assert.equal(await classifyDeparture({ client: client({ answers: { departure: { type: 'noul', noul: 0.08 } } }), text: 'Soften the foreground' }), false);
-  assert.equal(await classifyDeparture({ client: client({ fallback: 'service_or_response_error' }), text: 'x' }), null);
-  assert.equal(await classifyDeparture({ client: { decide: async () => { throw new Error('offline'); } }, text: 'x' }), null);
-  assert.equal(asked[0].purpose, 'classify-departure');
-  assert.equal(asked[0].questions.departure.type, 'noul');
-  assert.match(asked[0].questions.departure.instructions, /differs from or adds to the reference/);
-  assert.ok(asked[0].parts.some(p => p === 'Mets un chat sur le capot'), 'the artist\u2019s own words, any language');
-});
-
 test('accents and colour transfers are measured, never undone; a departure the artist asked for too', () => {
   assert.equal(exemption('paint_accents', {}), 'accents');
   assert.equal(exemption('paint_batch', { actions: [{ tool: 'paint_accents', arguments: {} }, { tool: 'paint_accents', arguments: {} }] }), 'accents');
@@ -171,15 +162,20 @@ test('the move line: likeness before and after, and what was undone', () => {
   assert.equal(likenessLine({ batches: 3, before: 6.04, after: 5.71, undone: 0, kept_worse: 0 }), 'Goal likeness: ΔE 6.0 → 5.7 over 3 batches');
   assert.equal(likenessLine({ batches: 7, before: 5.9, after: 6.1, undone: 2, kept_worse: 1, last_undone: 'darker than the goal, lower left' }),
     'Goal likeness: ΔE 5.9 → 6.1 over 7 batches; undid 2 (darker than the goal, lower left); 1 less like the goal kept (accents, an asked-for change or free colours)');
+  // Luna's goal comparison (luna-goal-reviewer goal 1) on the same line: how many batches it compared, how many were further.
+  assert.equal(likenessLine({ batches: 3, before: 6, after: 5.5, undone: 1, kept_worse: 0, luna: { compared: 3, further: 1, closer: 1, undone: 1 } }),
+    'Goal likeness: ΔE 6.0 → 5.5 over 3 batches; undid 1; Luna compared 3 with the goal: 1 further (undone), 1 closer');
+  assert.equal(likenessLine({ batches: 2, before: 6, after: 5.5, undone: 0, kept_worse: 0, luna: { compared: 2, further: 0, closer: 0, undone: 0 } }),
+    'Goal likeness: ΔE 6.0 → 5.5 over 2 batches; Luna compared 2 with the goal: none further');
 });
 
 // The extension, through a fake host.
 const before = { type: 'image', data: 'YmVmb3Jl', mimeType: 'image/png' };
 const undoneImage = { type: 'image', data: 'dW5kb25l', mimeType: 'image/png' };
 const damaged = paint(under, foreground, ([l, a, b]) => [l - 18, a * 0.3, b * 0.3]);
-function setup({ grids = { 'before.png': under, 'after.png': damaged }, active = 'protect', why = null, departure = null, undo = passes => ({ pass_ids: passes.map(p => p.id), image: undoneImage, image_path: 'undone.png', revision: 'r-undone' }), frameOf = { goal, target: frame, protect: true }, shared = new Map(), passes = id => [{ id: id + '-0', before_path: 'before.png', title: 'Foreground' }] } = {}) {
+function setup({ grids = { 'before.png': under, 'after.png': damaged }, active = 'protect', why = null, departure = null, undo = passes => ({ pass_ids: passes.map(p => p.id), image: undoneImage, image_path: 'undone.png', revision: 'r-undone' }), frameOf = { goal, target: frame, protect: true }, shared = new Map(), passes = id => [{ id: id + '-0', before_path: 'before.png', title: 'Foreground' }], luna = null, compare = null } = {}) {
   const handlers = {};
-  const calls = { grid: [], undo: [], record: [], stop: [] };
+  const calls = { grid: [], undo: [], record: [], stop: [], compare: [], compared: [] };
   const host = {
     active: () => host.activeValue, activeValue: active,
     why: () => why,
@@ -193,6 +189,9 @@ function setup({ grids = { 'before.png': under, 'after.png': damaged }, active =
     undo: async passes => { calls.undo.push(passes); return undo(passes); },
     record: entry => { calls.record.push(entry); },
     stop: message => { calls.stop.push(message); },
+    ...(luna ? { lunaMode: () => host.lunaValue, lunaValue: luna,
+      compare: async input => { calls.compare.push(input); return typeof compare === 'function' ? compare(input) : compare; },
+      compared: entry => { calls.compared.push(entry); } } : {}),
   };
   goalLikeness(host)({ on: (name, handler) => { handlers[name] = handler; } });
   let n = 0;
@@ -290,4 +289,77 @@ test('past UNDO_CAP undos in a move the batch stays and the move stops for the a
   assert.equal(calls.record.at(-1).status, 'worse_kept');
   assert.match(third.note, /already undid 2 batches/);
   assert.equal(calls.stop.length, 1);
+});
+
+// Luna's goal comparison (luna-goal-reviewer goal 1): "further" with good confidence counts as clearly worse beside the ΔE
+// rule, under the same exemptions and the same shared undo cap. Blobs in the right colours: the ΔE grid barely moves.
+const further = { verdict: 'further', confidence: 0.9, crops: 1, per_crop: [{ verdict: 'further', confidence: 0.9 }], elapsed_ms: 1100, cost: 0.0006, input_tokens: 2500, area: [600, 3000, 2400, 1200] };
+const same = { ...further, verdict: 'same', confidence: 0.8, per_crop: [{ verdict: 'same', confidence: 0.8 }] };
+const blobbed = { 'before.png': under, 'after.png': under };      // the right colours: no change the grid can see
+
+test('guide: a batch Luna finds further from the goal is undone even when ΔE is not worse, and the painter is told', async () => {
+  const { calls, result } = setup({ grids: blobbed, luna: 'guide', compare: further });
+  const changed = await result();
+  assert.equal(calls.compare.length, 1);
+  const [asked] = calls.compare;
+  assert.deepEqual([asked.before, asked.after, asked.target], ['before.png', 'after.png', frame]);
+  assert.ok(asked.measure && Array.isArray(asked.passes));
+  assert.equal(calls.undo.length, 1);
+  const note = noteOf(changed);
+  assert.match(note.note, /^The host undid this batch: Luna compared the batch\u2019s area \[600,3000,2400,1200\] with the goal image: further from it than before \(confidence 0\.90\)/);
+  assert.equal(changed.details.host_undone, 'goal_likeness');
+  const [entry] = calls.record;
+  assert.equal(entry.status, 'undone'); assert.equal(entry.by, 'luna'); assert.deepEqual(entry.luna, further);
+});
+
+test('guide: Luna\u2019s same or an unsure further keeps the batch, recorded with Luna\u2019s answer', async () => {
+  for (const answer of [same, { ...further, confidence: 0.6 }, { ...further, verdict: null, fallback: 'timeout' }]) {
+    const { calls, result } = setup({ grids: blobbed, luna: 'guide', compare: answer });
+    assert.equal(await result(), undefined);
+    assert.equal(calls.undo.length, 0); assert.equal(calls.record[0].status, 'kept'); assert.deepEqual(calls.record[0].luna, answer);
+  }
+});
+
+test('Luna is not asked when ΔE already decides, when the batch is exempt or measured only, or when Luna is off', async () => {
+  const worse = setup({ luna: 'guide', compare: further });                     // ΔE is clearly worse: no call needed
+  await worse.result();
+  assert.equal(worse.calls.compare.length, 0); assert.equal(worse.calls.record[0].by, 'delta_e');
+  for (const options of [{ departure: 'warmer than the reference' }, { active: 'measure' }, { frameOf: { goal, target: frame, protect: false } }]) {
+    const { calls, result } = setup({ grids: blobbed, luna: 'guide', compare: further, ...options });
+    await result();
+    assert.equal(calls.compare.length, 0, JSON.stringify(options)); assert.equal(calls.undo.length, 0);
+  }
+  const accents = setup({ grids: blobbed, luna: 'guide', compare: further });
+  await accents.result('paint_accents');
+  assert.equal(accents.calls.compare.length, 0, 'accents are exempt');
+  const off = setup({ grids: blobbed, luna: 'off', compare: further });
+  await off.result();
+  assert.equal(off.calls.compare.length, 0); assert.equal(off.calls.undo.length, 0);
+  const thrown = setup({ grids: blobbed, luna: 'guide', compare: () => { throw new Error('no crops'); } });
+  assert.equal(await thrown.result(), undefined, 'a failed comparison never fails the painting call');
+  assert.equal(thrown.calls.record[0].status, 'kept'); assert.equal(thrown.calls.record[0].luna.fallback, 'service_or_response_error');
+});
+
+test('evaluate: Luna\u2019s comparison is recorded after the result, never delaying the painter or undoing', async () => {
+  let release; const pending = new Promise(resolve => { release = resolve; });
+  const { calls, result } = setup({ grids: blobbed, luna: 'evaluate', compare: () => pending.then(() => further) });
+  assert.equal(await result(), undefined);
+  assert.equal(calls.record[0].status, 'kept'); assert.equal(calls.compared.length, 0);
+  release(); await new Promise(resolve => setImmediate(resolve)); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.compared.length, 1); assert.deepEqual(calls.compared[0].luna, further); assert.equal(calls.compared[0].move, 1);
+  assert.equal(calls.undo.length, 0);
+});
+
+test('Luna\u2019s undo shares the move\u2019s cap: past it the batch stays and the move stops', async () => {
+  const shared = new Map([[1, 2]]);
+  const { calls, result } = setup({ grids: blobbed, luna: 'guide', compare: further, shared });
+  const capped = await result();
+  assert.equal(calls.undo.length, 0); assert.equal(capped.details.host_undone, 'goal_likeness_cap');
+  assert.equal(calls.stop.length, 1); assert.equal(calls.record[0].by, 'luna');
+});
+
+test('a batch ΔE finds clearly better is never compared or undone by Luna (review, 2026-10-24)', async () => {
+  const { calls, result } = setup({ grids: { 'before.png': damaged, 'after.png': under }, luna: 'guide', compare: further });
+  assert.equal(await result(), undefined);
+  assert.equal(calls.compare.length, 0); assert.equal(calls.undo.length, 0); assert.equal(calls.record[0].status, 'kept');
 });

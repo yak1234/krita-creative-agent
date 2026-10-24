@@ -245,6 +245,14 @@ class DrawGuideTests(GuideSetup, unittest.TestCase):
         self.assertTrue(self.h._creative_session['unguided_views'])
         with self.assertRaises(ValueError):
             run(self.h, 'view_options', {'unguided_views': 'yes'})
+        # luna-goal-reviewer goal 3: the views' long side, set by the companion (what the painter's model reads).
+        self.assertIs(self.h.cmd_creative({'operation': 'health', 'params': {}}).get('view_side'), True)
+        self.assertEqual(run(self.h, 'view_options', {'view_side': 2048})['view_side'], 2048)
+        self.assertEqual(self.h._creative_session['view_side'], 2048)
+        self.assertTrue(self.h._creative_session['unguided_views'], 'one option set leaves the other as it was')
+        for bad in (100, 9000, '2048', True):
+            with self.assertRaises(ValueError):
+                run(self.h, 'view_options', {'view_side': bad})
 
     def test_merge_passes_and_merge_agent_ignore_guides(self):
         a, b = self.stroke('Walls'), self.stroke('Towers')
@@ -461,7 +469,7 @@ class ObserveWithoutGuidesTests(GuideSetup, unittest.TestCase):
         projection = Image('with guides')
         h.doc.projection = lambda *args: projection
         shown, asked = [], []
-        h._creative_view_image = lambda doc, image, region=None, scaled_read=True: shown.append(image.tag) or image
+        h._creative_view_image = lambda doc, image, region=None, scaled_read=True, side=None: shown.append(image.tag) or image
         h._creative_painted_share = lambda image, *context: 0.5
         h._view_artist_focus = lambda doc: None
         h._guide_unguided = lambda doc, image, region=None, session=None: asked.append(region) or (Image('without guides'), None)

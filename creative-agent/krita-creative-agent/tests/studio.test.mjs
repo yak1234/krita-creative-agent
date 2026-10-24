@@ -979,7 +979,7 @@ test('parallel preparation runs two isolated model requests beside one painter t
     assert.equal(peak,2);assert.equal(proposals,2);assert.equal(h.runtime.goal.status,'complete');
     assert.equal(h.calls.filter(c=>c.operation==='paint_pass').length,1);
     const id=h.runtime.study.id;await h.runtime.end();await h.runtime.resume(id);
-    assert.deepEqual(h.runtime.executionSettings,{concurrency:2,reasoning:'high',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,guides:true,reference_first:true,assets:'codex',ai_images:0,keep_screen_awake:false,sharpen_goal:'ask',decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
+    assert.deepEqual(h.runtime.executionSettings,{concurrency:2,reasoning:'high',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,guides:true,reference_first:true,assets:'codex',ai_images:0,keep_screen_awake:false,sharpen_goal:'ask',view_size:'auto',decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
     assert.equal(h.runtime.session.thinkingLevel,'off');
     assert.equal(h.runtime.goal.status,'paused');
   } finally {await h.close();}
@@ -1129,6 +1129,17 @@ function fakeLuna(answer=()=>({fallback:'service_or_response_error'})) {
  return {requests,async decide(request){requests.push(request);return {elapsed_ms:1,usage:{cost:0,input_tokens:0},...answer(request)};}};
 }
 const hasImage=parts=>parts.some(part=>typeof part==='object');
+// Luna reading the artist's messages (message-reading.ts): `element` names the folder element the message asks for (by a
+// word of its guess), `reference` the answer about the reference; the rest no. Other decisions fall back.
+function readingLuna({element=null, reference=()=>'neither', one_part=0.1, hand=0.1, other=()=>({fallback:'service_or_response_error'})}={}) {
+ return fakeLuna(request=>{
+  if(request.purpose!=='read-message') return other(request);
+  const text=request.parts.at(-1), q=request.questions, name=typeof element==='function' ? element(text) : element;
+  const key=q.element && (name ? Object.keys(q.element.criteria).find(k=>q.element.criteria[k].includes(name)) : 'none');
+  return {answers:{...(q.element ? {element:{type:'choice',choice:key,confidence:.93}} : {}),one_part:{type:'noul',noul:one_part},negation:{type:'noul',noul:.05},
+   reference:{type:'choice',choice:reference(text),confidence:.9},hand_painting:{type:'noul',noul:hand}},usage:{cost:.00008,input_tokens:400,output_tokens:6},elapsed_ms:600};
+ });
+}
 
 test('Luna routing sends the canvas image while attached and is text-only when detached',async()=>{
  const h=await harness(()=>({content:'Ready.'}));
@@ -2559,6 +2570,28 @@ test('review and pass checks observe without guides',{timeout:30000},async()=>{
  } finally {await h.close();}
 });
 
+// Sharper eyes (luna-goal-reviewer goal 3): the views' long side follows the view_size setting and the painter model's
+// probe result, sent with view_options only to a plugin that takes it; a model not measured keeps today's 1568 px.
+test('the canvas view size: Auto is the painter model’s probed side, else today’s; a chosen size is sent as it is',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}));
+ try {
+  await h.start('ask','Hello'); h.runtime.study.bound=true;
+  const sides=()=>h.calls.filter(c=>c.operation==='view_options').map(c=>c.params.view_side);
+  h.runtime.viewSideOption=false; await h.runtime.syncViewOptions();
+  assert.deepEqual(sides(),[],'an older plugin is not sent a view side (and no guides capability: nothing at all)');
+  h.runtime.viewSideOption=true; h.runtime.probeRecords={};
+  await h.runtime.syncViewOptions();
+  assert.equal(sides().at(-1),1568,'not measured: today’s size');
+  h.runtime.probeRecords={[`${h.runtime.study.provider}:${h.runtime.study.model}`]:{view_side:2048,crop_side:1024},'openrouter:openai/gpt-6-luna-decisions':{crop_side:1536}};
+  await h.runtime.syncViewOptions();
+  assert.equal(sides().at(-1),2048,'the painter model reads 2048 px');
+  assert.equal(h.runtime.comparisonCropSide(),1536,'Luna’s crops: the decision model’s own measured side');
+  await h.runtime.setExecutionSettings({view_size:1024});
+  assert.equal(sides().at(-1),1024,'the artist’s choice');
+  await assert.rejects(h.runtime.setExecutionSettings({view_size:999}),/canvas view size/);
+ } finally {await h.close();}
+});
+
 test('the painter’s own observe still shows guides; a move with a guide: Keep merges the paint and leaves the guide',{timeout:30000},async()=>{
  let turn=0; let h;
  h=await harness(req=>{
@@ -3365,8 +3398,13 @@ test('the default folder plan: underpainting, finish, accents, then the artist i
   assert.equal(h.runtime.goal.status,'complete');
   const asked=h.events.filter(e=>e.type==='status').at(-1).message;
   assert.match(asked,/What should I refine next\?/); assert.match(asked,/Kremlin towers/); assert.match(asked,/Moonlit sky/);
-  // The artist names an element: its step is added to the plan (and PLAN.md) and painted now.
+  // The artist names an element: with Decision checks off the keywords find it and the card asks before its step is added
+  // (luna-goal-reviewer goal 2: nothing irreversible without Luna); yes adds it to the plan (and PLAN.md), painted now.
   await h.runtime.prompt('Refine the Kremlin towers.');
+  assert.equal(h.runtime.goal.brief.steps.length,3,'not added before the yes');
+  assert.deepEqual(h.events.filter(e=>e.type==='question').at(-1).options,['Add the step','Not now']);
+  assert.equal(painters.length,3,'nothing paints before the answer');
+  await h.runtime.prompt('Add the step');
   assert.deepEqual(h.runtime.goal.brief.steps.map(s=>[s.title,s.scope]).at(-1),['Kremlin towers','assets/04-kremlin-towers.png']);
   assert.equal(h.runtime.goal.approved_revision,h.runtime.goal.revision,'the artist asked for it: no second approval');
   // No Paint only here area yet: the card asks for the element's area first (the artist, 2026-10-24), nothing paints before.
@@ -3433,13 +3471,187 @@ test('naming an element while the underpainting is still open adds its step but 
   h.runtime.goal.approved_revision=h.runtime.goal.revision;
   await h.runtime.folderElementRequest('Don\u2019t paint the sky, leave the towers alone.');
   assert.equal(h.runtime.goal.brief.steps.length,3,'negated mentions add no step');
-  await h.runtime.folderElementRequest('Refine the Kremlin towers.');
+  assert.equal(h.runtime.goal.question,null,'and ask nothing');
+  // Decision checks off (luna-goal-reviewer goal 2): the keywords find the element, but the step waits for the artist's yes.
+  assert.equal(await h.runtime.folderElementRequest('Refine the Kremlin towers.'),'asked');
+  assert.equal(h.runtime.goal.brief.steps.length,3,'no step added without Luna');
+  assert.deepEqual(h.runtime.goal.question.options,['Add the step','Not now']);
+  assert.deepEqual(h.runtime.goal.question.add_elements,{names:['assets/04-kremlin-towers.png'],target:null,request:'Refine the Kremlin towers.'});
+  h.runtime.goal.question=null;
+  await h.runtime.folderElementRequest('Refine the Kremlin towers.',{approved:['assets/04-kremlin-towers.png']});
   assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.title),['Underpainting from the goal image','Finish','Accents','Kremlin towers']);
   assert.equal(h.runtime.goal.current_step,0,'the underpainting is still open: it comes first');
   h.runtime.goal.done_steps=[0];
   await h.runtime.folderElementRequest('Now the towers.');
   assert.equal(h.runtime.goal.current_step,3,'once the underpainting is done, the named element is painted next');
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+// The proposal's done-when (luna-goal-reviewer goal 2), with Luna on Guide answering as it should: negations and general
+// remarks add nothing; the towers named in English, French or German are targeted; "paint the sky" with no area asks for
+// its Paint only here area (the sky is a folder element). Luna's reading is what the host acts on, not the keywords.
+test('Luna reads the artist’s messages: negations add nothing, the towers in any language are targeted, the sky asks for its area',{timeout:60000},async()=>{
+ const painters=[];
+ let h;
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(names.includes('propose_plan')) return {content:'Here is the plan.'};
+  if(names.includes('paint_batch') && h.runtime.currentMove) painters.push(req);
+  return {content:'Done.'};
+ });
+ const root=await projectFolder();
+ try {
+  await h.runtime.openFolder({path:root});
+  await h.start('agent','Paint this folder.');
+  h.runtime.goal.approved_revision=h.runtime.goal.revision; h.runtime.goal.done_steps=[0,1,2];
+  const answers={'Don’t paint the sky.':null,'Leave the towers alone.':null,'The light is too harsh.':null,
+   'Work on the Kremlin towers.':'Kremlin towers','Travaille sur les tours du Kremlin.':'Kremlin towers','Arbeite an den Türmen des Kreml.':'Kremlin towers','Paint the sky.':'Moonlit sky'};
+  const luna=readingLuna({element:text=>answers[text] ?? null});
+  h.runtime.lunaClient=luna; await h.runtime.setExecutionSettings({routing:'guide'});
+  for (const text of ['Don’t paint the sky.','Leave the towers alone.','The light is too harsh.']) {
+   await h.runtime.folderElementRequest(text);
+   assert.equal(h.runtime.goal.brief.steps.length,3,text); assert.equal(h.runtime.goal.question,null,text);
+  }
+  for (const text of ['Work on the Kremlin towers.','Travaille sur les tours du Kremlin.','Arbeite an den Türmen des Kreml.']) {
+   h.runtime.goal.current_step=0;
+   await h.runtime.folderElementRequest(text);
+   const steps=h.runtime.goal.brief.steps;
+   assert.equal(steps[h.runtime.goal.current_step].scope,'assets/04-kremlin-towers.png',text);
+   assert.equal(steps.filter(s=>s.scope==='assets/04-kremlin-towers.png').length,1,'added once, then targeted');
+  }
+  await h.runtime.prompt('Paint the sky.');
+  const card=h.events.filter(e=>e.type==='question').at(-1);
+  assert.equal(card.select_area?.part,'Moonlit sky','the sky’s area is asked for before it paints');
+  assert.equal(painters.length,0);
+  const readings=luna.requests.filter(r=>r.purpose==='read-message');
+  assert.equal(readings.length,7,'one Luna reading a message');
+  assert.ok(readings.every(r=>r.parts.every(p=>typeof p==='string')),'text only');
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('no folder: a message Luna reads as about one part asks the painter to ask for its area; a negated one does not',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Done.'}));
+ try {
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  h.runtime.lunaClient=readingLuna({one_part:.9}); await h.runtime.setExecutionSettings({routing:'guide'});
+  await h.runtime.prompt('Paint the sky.');
+  assert.match(latestUserText(h.requests.at(-1)),/THE ARTIST’S MESSAGE is about one part of the picture[^\n]*ask_for_selection/);
+  h.runtime.lunaClient=readingLuna({one_part:.4});
+  await h.runtime.prompt('Make it all a bit softer.');
+  assert.doesNotMatch(latestUserText(h.requests.at(-1)),/ask_for_selection for that part/);
+ } finally {await h.close();}
+});
+
+// Review fixes (2026-10-24) to the message reading.
+test('a matched departure or hand-painting phrase wins over Luna’s neither or no: Luna only adds them',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Done.'}));
+ try {
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  h.runtime.lunaClient=readingLuna({reference:()=>'neither',hand:0}); await h.runtime.setExecutionSettings({routing:'guide'});
+  assert.equal((await h.runtime.noteDeparture({},'Make the sky warmer.')).departure,'warmer','the phrase decides: kept, never undone');
+  assert.ok(h.runtime.noteHandPainting({},'Paint the towers by hand.'),'the phrase asks for hand painting');
+  h.runtime.lunaClient=readingLuna({reference:()=>'change',hand:0.95});
+  h.runtime.goal.departure=null;
+  assert.equal((await h.runtime.noteDeparture({},'Les tours, comme sur une carte postale.')).departure,'a change from the reference (Luna)','Luna adds one');
+  assert.equal(h.runtime.noteHandPainting({},'Les tours, comme sur une carte postale.'),'hand-painted work (Luna)');
+ } finally {await h.close();}
+});
+
+test('the message reading is cached by text and Decision checks mode, and a failed reading is not cached',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Done.'}));
+ try {
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  let fail=true; const luna=readingLuna({other:()=>({fallback:'timeout'})});
+  const decide=luna.decide.bind(luna); luna.decide=async request=>fail ? (luna.requests.push(request),{fallback:'timeout',elapsed_ms:4000}) : decide(request);
+  h.runtime.lunaClient=luna; await h.runtime.setExecutionSettings({routing:'guide'});
+  await h.runtime.readArtistMessage('Paint the sky.');
+  fail=false; await h.runtime.readArtistMessage('Paint the sky.');
+  assert.equal(luna.requests.length,2,'a timed-out reading is asked again');
+  await h.runtime.readArtistMessage('Paint the sky.');
+  assert.equal(luna.requests.length,2,'a good one is kept');
+  await h.runtime.setExecutionSettings({routing:'evaluate'});
+  assert.equal((await h.runtime.readArtistMessage('Paint the sky.')).policy.source,'keywords','Evaluate: the same reading, the keywords act');
+ } finally {await h.close();}
+});
+
+test('the add-step card: the held request is the move’s and the one read; panel texts never go to Luna; Not now still targets a planned element',{timeout:60000},async()=>{
+ const painters=[];
+ let h;
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(names.includes('propose_plan')) return {content:'Here is the plan.'};
+  if(names.includes('paint_batch') && h.runtime.currentMove) painters.push(req);
+  return {content:'Done.'};
+ });
+ const root=await projectFolder();
+ try {
+  await h.runtime.openFolder({path:root});
+  await h.start('agent','Paint this folder.');
+  h.runtime.goal.approved_revision=h.runtime.goal.revision; h.runtime.goal.done_steps=[0,1,2];
+  // Luna on Guide but failing: the keywords find the towers and the card asks, saying Luna could not read it.
+  const luna=fakeLuna(()=>({fallback:'timeout',elapsed_ms:4000}));
+  h.runtime.lunaClient=luna; await h.runtime.setExecutionSettings({routing:'guide'});
+  await h.runtime.prompt('Refine the Kremlin towers, by hand.');
+  const card=h.runtime.goal.question;
+  assert.deepEqual(card.options,['Add the step','Not now']);
+  assert.doesNotMatch(card.question,/not on Guide/); assert.match(card.question,/could not read/);
+  await h.runtime.prompt('Add the step');
+  assert.equal(h.runtime.goal.brief.steps.at(-1).scope,'assets/04-kremlin-towers.png');
+  await h.runtime.prompt('Paint everywhere');
+  const move=h.runtime.goal.moves.at(-1);
+  assert.equal(move.request,'Refine the Kremlin towers, by hand.','the move is the artist’s request, not a button');
+  assert.ok(move.hand_painting,'its hand painting is read from the request');
+  const read=luna.requests.filter(r=>r.purpose==='read-message').map(r=>r.parts.at(-1));
+  assert.ok(!read.some(t=>['Add the step','Not now','Paint everywhere'].includes(t)),JSON.stringify(read));
+  // Not now: the planned element the message also named is still painted.
+  h.runtime.goal.done_steps=[0,1,2,3]; h.runtime.goal.current_step=0;
+  await h.runtime.prompt('Now the towers and the historic buildings.');
+  assert.deepEqual(h.runtime.goal.question.add_elements.names,['assets/02-historic-buildings.png']);
+  await h.runtime.prompt('Not now');
+  assert.equal(h.runtime.goal.brief.steps[h.runtime.goal.current_step].scope,'assets/04-kremlin-towers.png','the towers are targeted');
+  assert.ok(!h.runtime.goal.brief.steps.some(s=>s.scope==='assets/02-historic-buildings.png'),'nothing added on Not now');
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('the add-step card says when the plan is full; the refine question says the step waits for a yes without Guide',{timeout:60000},async()=>{
+ const h=await harness(req=>req.tools.some(t=>t.function.name==='propose_plan') ? {content:'Here is the plan.'} : {content:'Done.'});
+ const root=await projectFolder();
+ try {
+  await h.runtime.openFolder({path:root});
+  await h.start('agent','Paint this folder.');
+  h.runtime.goal.approved_revision=h.runtime.goal.revision;
+  assert.match(h.runtime.refineNextQuestion(),/I ask before adding its step/);
+  const steps=h.runtime.goal.brief.steps;
+  h.runtime.goal.brief.steps=[...steps,...Array.from({length:13},(_,i)=>({title:'Extra '+i,done_when:'x',scope:'whole composition'}))];
+  await h.runtime.folderElementRequest('Refine the Kremlin towers.');
+  assert.equal(h.runtime.goal.question,null,'no card for a step that cannot be added');
+  assert.ok(h.events.some(e=>e.type==='action' && /plan is full/.test(e.message)),'the artist is told the plan is full');
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('Luna’s goal comparison has one deadline: a slow Luna never holds the painter longer',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Done.'}),async(op,params)=>{
+  if(op==='comparison_crop') return {status:'ok',ms:1,images:params.crops.map(c=>({mime_type:'image/jpeg',width:c.out[0],height:c.out[1],image_base64:'AA=='}))};
+  return undefined;
+ });
+ try {
+  const goalPath=join(h.output,'goal.png'); await writeFile(goalPath,sizedPng(30,40));
+  await h.start('ask','Hello',{references:[{path:goalPath,purpose:'composition'}]});
+  const view=join(h.runtime.study.directory,'v.png'); await writeFile(view,sizedPng(3,4));
+  h.runtime.likenessPlaced={reference:h.runtime.study.references[0],mapping:{source:[0,0,30,40],target:[0,0,768,1024]}};
+  h.runtime.likenessCanvas={width:768,height:1024}; h.runtime.comparisonDeadlineMs=150;
+  h.runtime.lunaClient={decide:()=>new Promise(()=>{})};
+  const started=Date.now();
+  const result=await h.runtime.goalComparison({before:view,after:view,passes:[{id:'p',before_path:view,area:[700,1000,60,20]}],measure:{changed:null},target:[0,0,768,1024]});
+  assert.ok(Date.now()-started<2000); assert.equal(result.fallback,'timeout'); assert.equal(result.verdict,null);
+  const crops=h.calls.filter(c=>c.operation==='comparison_crop');
+  assert.equal(crops.length,3,'the goal, before and after: one call each, every crop in it');
+  const goal=crops.find(c=>JSON.stringify(c.params.size)==='[30,40]');
+  const [x,y,w,hh]=goal.params.crops[0].source;
+  assert.ok(x>=0 && y>=0 && x+w<=30 && y+hh<=40,'inside the goal: '+goal.params.crops[0].source);
+  const [, , cw, ch]=crops.find(c=>c!==goal).params.crops[0].source;
+  assert.ok(cw>=256 && ch>=256,'a tiny batch gets context');
+ } finally {await h.close();}
 });
 
 test('resume with a hand-edited PLAN.md shows the difference and waits; a new chat on the folder picks the plan up',{timeout:60000},async()=>{
@@ -4001,9 +4213,9 @@ test('34deca0e replay: the underpainting move closes when its transfer completes
   const goalPath=join(h.output,'final_goal.png'); await writeFile(goalPath,goalBytes);
   await h.start('ask','Hello',{references:[{path:goalPath,purpose:'composition'}]});
   // Luna classifies the artist's messages the phrases do not decide (a plain "soften" is no departure).
-  const luna=fakeLuna(({purpose})=>purpose==='classify-departure' ? {answers:{departure:{type:'noul',noul:.05}}} : {fallback:'service_or_response_error'});
+  const luna=readingLuna({reference:text=>/than the reference/.test(text) ? 'change' : /closer to the reference/.test(text) ? 'return' : 'neither'});
   h.runtime.lunaClient=luna; await h.runtime.setExecutionSettings({routing:'evaluate'}); await h.runtime.setMode('agent');
-  const classified=()=>luna.requests.filter(r=>r.purpose==='classify-departure').map(r=>r.parts.at(-1));
+  const classified=()=>luna.requests.filter(r=>r.purpose==='read-message').map(r=>r.parts.at(-1));
   await h.runtime.prompt('Underpainting from the goal image.');
   const [first]=h.runtime.goal.moves;
   assert.equal(painter[1],1,'move 1 ended with its transfer: the painter was not asked again');
@@ -4034,7 +4246,68 @@ test('34deca0e replay: the underpainting move closes when its transfer completes
   await h.runtime.prompt('Now bring the foreground closer to the reference again.');
   assert.equal(h.runtime.goal.moves[4].departure,undefined);
   assert.equal(h.calls.filter(c=>c.operation==='review_pass').length,2,'back to the reference: a batch that leaves it is undone again');
-  assert.deepEqual(classified(),['Underpainting from the goal image.','Soften the foreground into readable masses.'],'Luna only for messages the phrases do not decide, never while a departure holds');
+  assert.deepEqual(classified(),['Underpainting from the goal image.','Soften the foreground into readable masses.','Make the foreground darker than the reference.','Soften the railing.','Now bring the foreground closer to the reference again.'],
+   'one Luna reading a typed message (luna-goal-reviewer goal 2): it decides the reference answer, the phrases are the fallback');
+ } finally {await h.close();}
+});
+
+// Luna's goal comparison (luna-goal-reviewer goal 1): hand strokes that blob the underpainting in the right colours. The ΔE
+// grid sees no change; Luna, shown the goal's crop and the canvas's before and after it at one scale, finds it further
+// from the goal, and with Guide the host undoes it as it undoes a ΔE regression, the move's line saying so.
+test('blobs in the right colours: Luna’s goal comparison undoes the batch ΔE keeps, and the move card says so',{timeout:30000},async()=>{
+ const tc=(i,name,args)=>({index:i,id:'call-'+Math.random().toString(36).slice(2),type:'function',function:{name,arguments:JSON.stringify(args)}});
+ const hand=(name)=>({summary:name,actions:[{tool:'paint_pass',arguments:{...pass,name,strokes:pass.strokes.map(s=>({...s,size:12}))}}]});
+ const goalBytes=sizedPng(30,40), underBytes=sizedPng(3,4), blobBytes=sizedPng(6,8);
+ const G=[48,64], sha=b=>createHash('sha256').update(b).digest('hex');
+ const lab=(f)=>{const out=new Float32Array(G[0]*G[1]*3);for(let y=0;y<G[1];y++)for(let x=0;x<G[0];x++)out.set(f(x,y),(y*G[0]+x)*3);return Buffer.from(out.buffer).toString('base64');};
+ const goalLab=(x,y)=>y<32?[30,5,-25]:[55,15,35];
+ const near=lab((x,y)=>goalLab(x,y).map((v,k)=>k ? v : v+((x+y)%3)-1));
+ const grids={[sha(goalBytes)]:lab(goalLab),[sha(underBytes)]:near,[sha(blobBytes)]:near,[sha(png)]:lab(()=>[100,0,0])};
+ let h, revision='revision-0', painted=0; const painter={1:0,2:0}, crops=[];
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(!names.includes('paint_batch')) return {content:'Hello.'};
+  const move=h.runtime.currentMove?.number, n=++painter[move];
+  if(move===1) return {tool_calls:[tc(0,'paint_from_reference',{name:'Underpainting — whole Moscow night from goal',reference_id:h.runtime.study.references[0].id,preset:'Test brush',source:[0,0,30,40],target:[0,0,768,1024],steps:[64,32,16]})]};
+  return n===1 ? call('paint_batch',hand('Tower blobs')) : call('finish_move',{summary:'Tower blobs'});
+ },async(op,params,_study,id)=>{
+  const dir=h.runtime.study.directory, file=name=>join(dir,name);
+  const view=extra=>({status:'ok',document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,layers:[],content_id:'c-'+revision,...extra});
+  if(op==='decode_reference') return {width:30,height:40,sha256:params.sha256,rgba_base64:Buffer.alloc(30*40*4,128).toString('base64')};
+  if(op==='likeness_grid') return {status:'ok',grid:G,ms:3,lab_base64:grids[params.sha256]};
+  if(op==='comparison_crop'){crops.push(params);return {status:'ok',ms:2,images:params.crops.map(c=>({mime_type:'image/jpeg',width:c.out[0],height:c.out[1],image_base64:Buffer.from('crop-'+crops.length).toString('base64')}))};}
+  if(op==='observe') return view({revision,image_path:file(painted ? 'under.png' : 'view.png')});
+  if(op==='fill_region'){revision='ground';return view({revision,layer_id:'ground',image_path:file('view.png')});}
+  if(op==='review_pass'){await writeFile(file('under.png'),underBytes);revision='undo-'+id;return view({revision,image_path:file('under.png'),affected_pass_ids:[params.pass_id],passes:[]});}
+  if(op!=='paint_pass') return undefined;
+  const transfer=/Underpainting/.test(params.name), after=transfer ? 'under.png' : 'blobbed.png', beforePath=file(transfer ? 'view.png' : 'under.png');
+  await writeFile(file(after),transfer ? underBytes : blobBytes); painted++; revision='paint-'+painted;
+  return view({revision,layer_id:params.continue_layer_id ?? 'layer-'+painted,image_path:file(after),
+   passes:[{id,kind:'paint',title:params.name,layer_id:'layer-'+painted,area:[100,500,300,200],before_path:beforePath,after_path:file(after)}]});
+ });
+ try {
+  const goalPath=join(h.output,'final_goal.png'); await writeFile(goalPath,goalBytes);
+  await h.start('ask','Hello',{references:[{path:goalPath,purpose:'composition'}]});
+  const luna=fakeLuna(({purpose,questions})=>purpose==='compare-with-goal'
+   ? {answers:Object.fromEntries(Object.keys(questions).map(k=>[k,{type:'choice',choice:'further',confidence:.9,probabilities:{closer:.02,same:.08,further:.9}}])),usage:{cost:.0007,input_tokens:2600,output_tokens:4},elapsed_ms:1300}
+   : purpose==='read-message' ? {answers:{reference:{type:'choice',choice:'neither',confidence:.9}}} : {fallback:'service_or_response_error'});
+  h.runtime.lunaClient=luna; await h.runtime.setExecutionSettings({routing:'guide'}); await h.runtime.setMode('agent');
+  await h.runtime.prompt('Underpainting from the goal image.');
+  assert.equal(luna.requests.filter(r=>r.purpose==='compare-with-goal').length,0,'a transfer is exempt: Luna is not asked');
+  await h.runtime.prompt('Refine the towers.');
+  const [compare]=luna.requests.filter(r=>r.purpose==='compare-with-goal');
+  assert.ok(compare,'Luna compared the batch with the goal');
+  assert.equal(compare.parts.filter(p=>typeof p==='object').length,3,'GOAL, BEFORE and AFTER of one crop');
+  assert.equal(crops.length,3); assert.deepEqual(new Set(crops.map(c=>JSON.stringify(c.crops[0].out))).size,1,'all three at one size');
+  const goalCrop=crops.find(c=>JSON.stringify(c.size)==='[30,40]'), [beforeCrop,afterCrop]=crops.filter(c=>c!==goalCrop).map(c=>c.crops[0]);
+  assert.deepEqual(beforeCrop.source,afterCrop.source);
+  assert.deepEqual(beforeCrop.source,[70,472,360,256],'the pass’s area, padded a tenth each side, at least 256 view px');
+  const rejects=h.calls.filter(c=>c.operation==='review_pass');
+  assert.equal(rejects.length,1,'Luna’s further undid the batch ΔE kept');
+  const second=h.runtime.goal.moves[1];
+  assert.match(second.likeness_line,/Luna compared 1 with the goal: 1 further \(undone\)/);
+  assert.equal(second.likeness.luna.cost,.0007);
+  assert.ok(JSON.stringify(h.requests).includes('The host undid this batch: Luna compared the batch’s area'),'the painter is told');
  } finally {await h.close();}
 });
 
@@ -4292,7 +4565,12 @@ test('a folder element step with its area set: the scoped transfer then accents,
   await h.runtime.openFolder({path:root});
   await h.start('agent','Paint this folder.');
   h.runtime.goal.approved_revision=h.runtime.goal.revision; h.runtime.goal.done_steps=[0,1,2];
-  await h.runtime.prompt('Refine the Kremlin towers.');
+  // Luna on Guide reads the message in any language (luna-goal-reviewer goal 2): the towers' step is added and targeted.
+  const luna=readingLuna({element:text=>/Kremlin/.test(text) ? 'Kremlin towers' : null});
+  h.runtime.lunaClient=luna; await h.runtime.setExecutionSettings({routing:'guide'});
+  await h.runtime.prompt('Travaille sur les tours du Kremlin.');
+  assert.equal(luna.requests.filter(r=>r.purpose==='read-message').length,1,'one reading for the message');
+  assert.deepEqual(h.runtime.goal.brief.steps.at(-1).scope,'assets/04-kremlin-towers.png');
   assert.equal(painters.length,0,'the card first');
   const mask=join(h.output,'panel-mask.png');
   await writeFile(mask,encodePlane({width:200,height:300,data:new Uint8Array(200*300).fill(255)}));

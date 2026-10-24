@@ -625,12 +625,20 @@ class GuideCraft:
 
     @staticmethod
     def _guide_view_options(session, params):
-        """unguided_views: also save the view without guides with every look (for Luna's checks), while it is true."""
-        fields(params, ('unguided_views',), ('unguided_views',))
-        if not isinstance(params['unguided_views'], bool):
-            raise ValueError('unguided_views must be true or false')
-        session['unguided_views'] = params['unguided_views']
-        return {'status': 'ok', 'unguided_views': session['unguided_views']}
+        """unguided_views: also save the view without guides with every look (for Luna's checks), while it is true.
+        view_side: the views' long side (luna-goal-reviewer goal 3: what the painter's model reads). Either or both."""
+        fields(params, ('unguided_views', 'view_side'))
+        if 'unguided_views' in params:
+            if not isinstance(params['unguided_views'], bool):
+                raise ValueError('unguided_views must be true or false')
+            session['unguided_views'] = params['unguided_views']
+        if 'view_side' in params:
+            from .creative_tools import VIEW_SIDE_RANGE
+            side = params['view_side']
+            if isinstance(side, bool) or not isinstance(side, int) or not VIEW_SIDE_RANGE[0] <= side <= VIEW_SIDE_RANGE[1]:
+                raise ValueError('view_side must be %d-%d pixels' % VIEW_SIDE_RANGE)
+            session['view_side'] = side
+        return {'status': 'ok', 'unguided_views': bool(session.get('unguided_views')), 'view_side': session.get('view_side')}
 
     # ----- the painting without its guides ------------------------------------------------------------------------------
     def _guide_on_top(self, doc, group):

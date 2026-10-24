@@ -29,7 +29,7 @@ export const STEP_ID = /^[A-Za-z0-9_-]{1,40}$/;
 
 type PlanStep = { title: string; scope?: string; done_when?: string; id?: string };
 export type Move = { number: number; status: string; step?: number; step_key?: string; calls?: number; finished?: boolean;
-  guides_only?: boolean; review?: { verdict?: string }; review_line?: string };
+  guides_only?: boolean; review?: { verdict?: string }; review_line?: string; likeness?: { luna?: Record<string, number> } };
 export type Goal = { brief: { steps: PlanStep[] } | null; status?: string; current_step?: number; done_steps?: number[];
   step_marks?: StepMarks; step_batches?: Record<string, number>; moves?: Move[]; reference_jobs?: Record<string, number[]>;
   pace_history?: { step: number; progress?: number | null; action?: string }[]; reviews?: { verdict?: string }[] };
@@ -233,7 +233,8 @@ export function planStepControls(host: PlanStepHost) {
       : null;
     try {
       await recordLesson(directory, { kind, at: new Date().toISOString(), mode: host.mode(), step: { number: index + 1, title: layerName(steps[index].title), key },
-        batches: goal.step_batches?.[key] ?? 0, ...(move ? { move: move.number } : {}), luna, goal_likeness: host.goalLikeness(), ...(text ? { text } : {}) });
+        batches: goal.step_batches?.[key] ?? 0, ...(move ? { move: move.number } : {}), luna, goal_likeness: host.goalLikeness(),
+        ...(move?.likeness?.luna ? { goal_comparison: move.likeness.luna } : {}), ...(text ? { text } : {}) });
     } catch (error) { host.say('The lesson was not recorded: ' + (error as Error).message); }
   }
 

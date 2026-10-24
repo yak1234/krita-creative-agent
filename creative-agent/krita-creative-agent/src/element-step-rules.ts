@@ -61,9 +61,10 @@ const WHAT: Record<Kind, string> = {
   material: 'materials (make_material, stamp_material)', typed_strokes: 'typed strokes',
 };
 /** Why this call is refused in an element step, or null. `part` names the element ("Moonlit sky"); `area` says whether
- * its Paint only here area is set. */
-export function elementStepRefusal(call: Call, { part, area, request }: { part: string; area: boolean; request: string }): string | null {
-  const refused = callKinds(call).filter(kind => !askedFor(kind, request));
+ * its Paint only here area is set. `handPainting`, when known, is whether the artist's latest message asked for hand-painted
+ * work as the studio read it (Luna's reading, else the phrases: luna-goal-reviewer goal 2); it decides typed strokes. */
+export function elementStepRefusal(call: Call, { part, area, request, handPainting }: { part: string; area: boolean; request: string; handPainting?: boolean }): string | null {
+  const refused = callKinds(call).filter(kind => !(kind === 'typed_strokes' && handPainting !== undefined ? handPainting : askedFor(kind, request)));
   if (!refused.length) return null;
   const sequence = area
     ? `paint_from_reference of the goal image, the whole goal over the whole canvas: only the dabs inside the area are painted; then paint_finish and paint_accents, which work in the area by default`

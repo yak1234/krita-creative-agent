@@ -106,5 +106,53 @@ print(json.dumps(errors))
         self.assertRegex(out[4], 'changed')
 
 
+class ComparisonCropTests(unittest.TestCase):
+    """comparison_crop (luna-goal-reviewer goal 1): one area of an image, in the pixels the companion lists it at, at a
+    given output size, as a JPEG for Luna. The goal's crop and the canvas views' crops come out at one size, so BEFORE,
+    AFTER and GOAL have the same scale; a JPEG view is decoded here, as the companion cannot."""
+    def test_the_crop_is_the_listed_area_at_the_output_size(self):
+        out = run('''
+img = flat(600, 450, (200, 200, 200)); img[150:300, 300:450] = (200, 30, 30)   # a red square, listed at 6000 x 4500 (10x)
+data = encode(img, '.jpg')
+got = g.comparison_crop({'image_base64': base64.b64encode(data).decode(), 'sha256': hashlib.sha256(data).hexdigest(),
+    'source': [3000, 1500, 1500, 1500], 'size': [6000, 4500], 'out': [300, 300]})
+raw = base64.b64decode(got['image_base64'])
+crop = cv2.cvtColor(cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
+print(json.dumps([got['status'], got['mime_type'], got['width'], got['height'], list(crop.shape), [int(v) for v in crop[150, 150]], got['ms'] >= 0]))
+''')
+        self.assertEqual(out[0:5], ['ok', 'image/jpeg', 300, 300, [300, 300, 3]])
+        self.assertTrue(out[5][0] > 170 and out[5][1] < 70, 'the red square fills the crop: %s' % out[5])
+
+    def test_several_crops_of_one_image_in_one_call(self):
+        # Review, 2026-10-24: the goal is sent and decoded once a comparison, not once a crop.
+        out = run('''
+img = flat(600, 450, (200, 200, 200)); img[0:225, 0:300] = (30, 30, 200)
+data = encode(img)
+got = g.comparison_crop({'image_base64': base64.b64encode(data).decode(), 'sha256': hashlib.sha256(data).hexdigest(), 'size': [6000, 4500],
+    'crops': [{'source': [0, 0, 3000, 2250], 'out': [64, 48]}, {'source': [3000, 2250, 3000, 2250], 'out': [32, 24]}]})
+def rgb(b):
+    c = cv2.cvtColor(cv2.imdecode(np.frombuffer(base64.b64decode(b), np.uint8), cv2.IMREAD_COLOR), cv2.COLOR_BGR2RGB)
+    return [list(c.shape), [int(v) for v in c[c.shape[0] // 2, c.shape[1] // 2]]]
+print(json.dumps([got['status'], [[i['width'], i['height']] for i in got['images']], [rgb(i['image_base64']) for i in got['images']]]))
+''')
+        self.assertEqual(out[0:2], ['ok', [[64, 48], [32, 24]]])
+        self.assertTrue(out[2][0][1][2] > 170 and out[2][1][1][2] < 220 and out[2][1][1][0] > 170, out[2])
+
+    def test_bad_requests_are_refused(self):
+        out = run('''
+data = encode(flat(64, 48, (1, 2, 3)))
+errors = []
+for extra in ({'source': [0, 0, 10, 10], 'size': [64, 48], 'out': [8, 8]}, {'source': [60, 0, 10, 10], 'size': [64, 48], 'out': [32, 32]},
+              {'source': [0, 0, 10, 10], 'size': [64, 48], 'out': [5000, 32]}):
+    try:
+        g.comparison_crop(dict({'image_base64': base64.b64encode(data).decode(), 'sha256': hashlib.sha256(data).hexdigest()}, **extra)); errors.append(None)
+    except ValueError as error:
+        errors.append(str(error))
+print(json.dumps(errors))
+''')
+        self.assertTrue(all(out), out)
+        self.assertRegex(out[1], 'source')
+
+
 if __name__ == '__main__':
     unittest.main()

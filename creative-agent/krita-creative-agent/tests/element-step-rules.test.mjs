@@ -46,3 +46,12 @@ test('the refusal names what was refused and the sequence to use, with or withou
   assert.equal(elementStepRefusal(wand, { part: 'Moonlit sky', area: true, request: 'Select the sky with the magic wand.' }), null);
   assert.equal(elementStepRefusal({ tool: 'apply_filter', args: {} }, { part: 'Moonlit sky', area: true, request: '' }), null);
 });
+
+// Luna's reading of the artist's message (luna-goal-reviewer goal 2): when the studio knows whether the message asked for
+// hand-painted work (Luna's sure answer, else the phrases), that decides typed strokes, in any language.
+test('typed strokes follow the studio’s reading of hand painting when it has one', () => {
+  const typed = { tool: 'paint_pass', args: { strokes: [stroke] } };
+  assert.equal(elementStepRefusal(typed, { part: 'Kremlin towers', area: true, request: 'Peins les tours à la main, avec des coups de pinceau visibles.', handPainting: true }), null);
+  assert.match(elementStepRefusal(typed, { part: 'Kremlin towers', area: true, request: 'Paint the towers by hand.', handPainting: false }), /typed strokes is not used/);
+  assert.equal(elementStepRefusal(typed, { part: 'Kremlin towers', area: true, request: 'Paint the towers by hand.' }), null, 'unknown: the phrases decide');
+});

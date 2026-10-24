@@ -162,7 +162,7 @@ export function paintingTools(runtime) {
   /** @type {import('@earendil-works/pi-coding-agent').ToolDefinition<any, any>[]} */
   const tools = [
     tool('observe_canvas', 'Looking at the painting',
-      'See the current canvas image, document dimensions and layer IDs. Canvas coordinates use width/height, not the resized preview. Inspect before deciding on a change. Optional region [x,y,width,height] returns actual-resolution material detail up to 1568 px on its long side; a larger region comes back shrunk, and scale in the result says by how much (1 = actual pixels).', object({region:Type.Optional(Type.Array(Type.Integer({minimum:0,maximum:8192}),{minItems:4,maxItems:4}))}), 'observe'),
+      'See the current canvas image, document dimensions and layer IDs. Canvas coordinates use width/height, not the resized preview. Inspect before deciding on a change. Optional region [x,y,width,height] returns actual-resolution material detail up to the view size on its long side (1568 px unless the Canvas view size setting or the model\'s measured size sets another); a larger region comes back shrunk, and scale in the result says by how much (1 = actual pixels).', object({region:Type.Optional(Type.Array(Type.Integer({minimum:0,maximum:8192}),{minItems:4,maxItems:4}))}), 'observe'),
     tool('sample_canvas_colors','Sampling canvas colors',
       'Sample the exact visible canvas colors at up to 16 document-pixel points. Use destination colors for texture and corrections; sampling does not paint. Returns colors, alpha and the sampled revision.',
       object({points:Type.Array(Type.Array(Type.Integer({minimum:0,maximum:8191}),{minItems:2,maxItems:2}),{minItems:1,maxItems:16})}),'sample_colors'),

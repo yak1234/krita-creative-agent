@@ -14,7 +14,6 @@
 // wrong-colour strokes, greying and broad scrubbing: 100 to 700. Smears hardly register: those are Luna's.
 // Pure functions: the studio fetches grids (studio.mjs likenessHost), extensions/goal-likeness.ts decides.
 
-import type { DecisionMaker } from './decisions/types.ts';
 
 export const GRID_SIDE = 64;
 /** A cell the batch changed: delta E between before and after at this scale (texture-only noise is about 1-2). */
@@ -42,6 +41,8 @@ export type Measure = {
   area: { before: number; after: number; change: number; cells: number; share: number; p90: number; worse_cells: number; better_cells: number };
   grid_cells: number;
   worse: Worse | null;
+  /** Where the batch changed anything at this scale (the moved cells' bounds, canvas px); null when nothing moved. */
+  changed: Rect | null;
 };
 export type Exemption = 'accents' | 'finish' | 'transfer' | 'departure' | 'layer_settings';
 
@@ -88,12 +89,12 @@ export function measure(goal: Grid, before: Grid, after: Grid, target: Rect | nu
   if (before.width !== goal.width || after.width !== goal.width || before.lab.length !== goal.lab.length || after.lab.length !== goal.lab.length)
     throw new Error('Likeness grids of different sizes.');
   let wholeBefore = 0, wholeAfter = 0, areaBefore = 0, areaAfter = 0, cells = 0, better = 0;
-  const worse: number[] = [], clearly: number[] = [], changes: number[] = [];
+  const worse: number[] = [], clearly: number[] = [], changes: number[] = [], moved: number[] = [];
   for (let c = 0; c < n; c++) {
     const i = c * 3, db = de(before.lab, goal.lab, i), da = de(after.lab, goal.lab, i);
     wholeBefore += db; wholeAfter += da;
     if (de(before.lab, after.lab, i) < MOVED_DE) continue;
-    cells++; areaBefore += db; areaAfter += da; changes.push(da - db);
+    cells++; moved.push(c); areaBefore += db; areaAfter += da; changes.push(da - db);
     if (da - db >= CELL_WORSE) worse.push(c);
     if (da - db >= CELL_CLEARLY) clearly.push(c);
     if (da - db <= -CELL_CLEARLY) better++;
@@ -110,6 +111,11 @@ export function measure(goal: Grid, before: Grid, after: Grid, target: Rect | nu
     const cx = xs.reduce((s, v) => s + v + 0.5, 0) / xs.length, cy = ys.reduce((s, v) => s + v + 0.5, 0) / ys.length;
     where = { rect, where: WHERE[thirds(cy, goal.height)][thirds(cx, goal.width)], what: whatChanged(goal, before, after, worse) };
   }
+  const bounds = (list: number[]): Rect => {
+    const xs = list.map(c => c % goal.width), ys = list.map(c => Math.floor(c / goal.width));
+    const [left, top, right, bottom] = [Math.min(...xs), Math.min(...ys), Math.max(...xs) + 1, Math.max(...ys) + 1];
+    return [Math.round(x0 + left * cw), Math.round(y0 + top * ch), Math.round((right - left) * cw), Math.round((bottom - top) * ch)];
+  };
   return {
     whole: { before: round(wholeBefore / n), after: round(wholeAfter / n), change: round((wholeAfter - wholeBefore) / n) },
     area: cells ? { before: round(areaBefore / cells), after: round(areaAfter / cells), change: round((areaAfter - areaBefore) / cells), cells, share: round(cells / n, 4),
@@ -117,6 +123,7 @@ export function measure(goal: Grid, before: Grid, after: Grid, target: Rect | nu
       : { before: 0, after: 0, change: 0, cells: 0, share: 0, p90: 0, worse_cells: 0, better_cells: 0 },
     grid_cells: n,
     worse: where,
+    changed: moved.length ? bounds(moved) : null,
   };
 }
 
@@ -162,17 +169,8 @@ export function returnToReference(text: string): string | null {
   return AGAINST_REFERENCE.test(said) ? null : said.match(BACK_TO_REFERENCE)?.[0] ?? null;
 }
 
-/** Luna's answer for a message the phrases do not decide, in any language: does it ask for something that differs
- * from or adds to the reference? True or false, or null when Luna cannot answer (never a guess). */
-export async function classifyDeparture({ client, text, signal }: { client: DecisionMaker; text: string; signal?: AbortSignal }): Promise<boolean | null> {
-  try {
-    const result = await client.decide({ signal, purpose: 'classify-departure', parts: ['THE ARTIST\u2019S MESSAGE to the painter, about a painting made from a goal reference image:', String(text).slice(0, 2000)],
-      questions: { departure: { type: 'noul', instructions: 'Does this message ask for something that differs from or adds to the reference (another colour, light, mood, atmosphere, grade or style, an added or removed object, a changed shape)? Painting, refining, softening or finishing what the reference shows is not.',
-        criteria: { true: 'It asks for a change from the reference or an addition to it.', false: 'It asks to paint, refine or finish what the reference shows.' } } } });
-    const answer = result.fallback ? undefined : result.answers?.departure;
-    return answer?.type === 'noul' && Number.isFinite(answer.noul) ? answer.noul >= 0.5 : null;
-  } catch { return null; }
-}
+// Luna's reading of a message the phrases do not decide (any language) is message-reading.ts's, one decision a message
+// (luna-goal-reviewer goal 2); these phrases are its offline fallback.
 
 type Args = Record<string, unknown> & { actions?: { tool?: string }[] };
 /** Why a batch is measured but never undone: accents are small by design; the finish repaints the whole underpainting from
@@ -219,10 +217,15 @@ export function goalMapping({ references, transfers, canvas }: { references: Ref
   return { reference_id: goal.id, source, target: [0, 0, canvas.width, canvas.height], from: 'proportions' };
 }
 
-export type MoveLikeness = { batches: number; before: number; after: number; undone: number; kept_worse: number; last_undone?: string };
+/** Luna's goal comparisons in a move (luna-goal-reviewer goal 1): batches compared, found further (of which undone), closer. */
+export type MoveComparisons = { compared: number; further: number; closer: number; undone: number; cost?: number; ms?: number };
+export type MoveLikeness = { batches: number; before: number; after: number; undone: number; kept_worse: number; last_undone?: string; luna?: MoveComparisons };
 /** The move card's line: the whole canvas's distance to the goal before the move's first batch and after its last. */
-export function likenessLine({ batches, before, after, undone, kept_worse, last_undone }: MoveLikeness): string {
+export function likenessLine({ batches, before, after, undone, kept_worse, last_undone, luna }: MoveLikeness): string {
+  const compared = luna?.compared ? `; Luna compared ${luna.compared} with the goal: ` + (luna.further || luna.closer
+    ? [luna.further ? `${luna.further} further${luna.undone ? luna.undone === luna.further ? ' (undone)' : ` (${luna.undone} undone)` : ''}` : '', luna.closer ? `${luna.closer} closer` : ''].filter(Boolean).join(', ')
+    : 'none further') : '';
   return `Goal likeness: ΔE ${before.toFixed(1)} → ${after.toFixed(1)} over ${batches} batch${batches === 1 ? '' : 'es'}`
     + (undone ? `; undid ${undone}${last_undone ? ` (${last_undone})` : ''}` : '')
-    + (kept_worse ? `; ${kept_worse} less like the goal kept (accents, an asked-for change or free colours)` : '');
+    + (kept_worse ? `; ${kept_worse} less like the goal kept (accents, an asked-for change or free colours)` : '') + compared;
 }

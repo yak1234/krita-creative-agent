@@ -1,0 +1,72 @@
+{
+  "openrouter:openai/gpt-6-luna-decisions": {
+    "view_side": 2048,
+    "crop_side": 1536,
+    "reads": 2048,
+    "measured_at": "2026-10-24T20:10:17.142Z",
+    "probe": {
+      "crops": 0.9,
+      "sizes": {
+        "1024": {
+          "accuracy": 1,
+          "ms": 723,
+          "cost": 0.0002768,
+          "input_tokens": 2768
+        },
+        "1536": {
+          "accuracy": 1,
+          "ms": 584,
+          "cost": 0.0003729,
+          "input_tokens": 3729
+        },
+        "2048": {
+          "accuracy": 0.9,
+          "ms": 1256,
+          "cost": 0.0005073,
+          "input_tokens": 5073
+        },
+        "2560": {
+          "accuracy": 0.7,
+          "ms": 1561,
+          "cost": 0.0006801,
+          "input_tokens": 6801
+        }
+      }
+    }
+  },
+  "deepseek:deepseek-flash": {
+    "view_side": 1536,
+    "crop_side": 1536,
+    "reads": 1536,
+    "measured_at": "2026-10-24T20:10:46.057Z",
+    "probe": {
+      "crops": 0.7,
+      "sizes": {
+        "1024": {
+          "accuracy": 1,
+          "ms": 1839,
+          "cost": 0.0004503,
+          "input_tokens": 1085
+        },
+        "1536": {
+          "accuracy": 1,
+          "ms": 2190,
+          "cost": 0.0005829,
+          "input_tokens": 1591
+        },
+        "2048": {
+          "accuracy": 0.9,
+          "ms": 2063,
+          "cost": 0.0005829,
+          "input_tokens": 1591
+        },
+        "2560": {
+          "accuracy": 0.5,
+          "ms": 6790,
+          "cost": 0.0005829,
+          "input_tokens": 1591
+        }
+      }
+    }
+  }
+}

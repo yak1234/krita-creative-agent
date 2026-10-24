@@ -9,7 +9,10 @@ import { panelSchema } from './settings-schema.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS } from './craft.mjs';
 import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension } from './extensions.mjs';
 import { transferJobId, underpaintingState, underpaintingRefusal, closedNote, UNDERPAINTING_MOVE_NOTE } from './underpainting-move.ts';
-import { classifyDeparture, decodeGrid, departureRequested, goalMapping, gridSize, likenessLine, measure, returnToReference } from './goal-likeness.ts';
+import { readMessage, messagePolicy } from './message-reading.ts';
+import { resolvedViewSide, resolvedCropSide, modelKey, VIEW_SIDE_TODAY } from './view-size.ts';
+import { comparisonArea, cropPlan, goalSource, compareWithGoal, withContext, CROP_SIDE } from './goal-comparison.ts';
+import { decodeGrid, departureRequested, goalMapping, gridSize, likenessLine, measure, returnToReference } from './goal-likeness.ts';
 import { layerNeedCheck, paintedRole } from './layer-need.mjs';
 import { mayBeDone, askWhenDoneNote } from './ask-when-done.ts';
 import { unifyActions, unifyRefusal, WHOLE_CANVAS_SHARE } from './unify-pass.ts';
@@ -235,6 +238,7 @@ function moveReviewLine({verdict,findings,undone_batches,batches}) {
 }
 // Likeness grids kept per chat (goal-likeness.ts): the goal, and the latest canvas views (one batch's after is the next's before).
 const LIKENESS_CACHE=8;
+const COMPARISON_DEADLINE_MS=6000;   // Luna's goal comparison, crops included: past this the batch is kept (review, 2026-10-24)
 // Tools whose calls an element step checks (element-step-rules.ts): colour splits and selections, typed strokes, and a batch of them.
 const ELEMENT_STEP_GUARDED=['select','split_by_color','paint_pass','paint_batch','painting_toolbox','paint_contours','paint_recipe','bucket_fill','enclose_and_fill','fill_region','apply_filter','create_layer'];
 const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer','painting_toolbox','stamp_material',...CRAFT_OPERATIONS,'letter','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_finish','paint_accents'];
@@ -668,8 +672,34 @@ export class StudioRuntime extends PaintingRuntime {
   /** Whether the artist's latest typed message asks for hand-painted work: its phrase, or null. Keep, retry and plan
    * steps inherit it, as they inherit a departure (noteDeparture). */
   noteHandPainting(command, text) {
-    if (!command.start_plan && !['continue','retry'].includes(command.move_kind)) this.goal.hand_painting = handPaintingRequested(String(command.display_text ?? text ?? ''));
+    if (!command.start_plan && !['continue','retry'].includes(command.move_kind)) {
+      const said = String(command.display_text ?? text ?? ''), luna = this.messageReading?.text === said ? this.messageReading.policy.hand_painting : null;
+      // Luna may only add hand painting: a matched phrase wins over its no (review, 2026-10-24).
+      this.goal.hand_painting = handPaintingRequested(said) ?? (luna === true ? 'hand-painted work (Luna)' : null);
+    }
     return this.goal.hand_painting ?? null;
+  }
+  /** Luna's reading of a typed Agent message (message-reading.ts): one text decision, made once a message and kept with
+   * the policy it gives (the keyword rules' when Luna is off, failed or not on Guide). Null outside a chat. */
+  async readArtistMessage(text) {
+    const said=String(text ?? ''), mode=this.lunaMode();
+    // Kept for this text and Decision checks mode; a failed or timed-out reading is asked again (review, 2026-10-24).
+    if (this.messageReading?.text===said && this.messageReading.study===this.study && this.messageReading.mode===mode && !this.messageReading.reading?.fallback) return this.messageReading;
+    if (!this.goal) return null;
+    const index=this.study?.folder ? this.folderIndex : null;
+    const elements=(index?.elements ?? []).map(e=>({name:e.name, guess:String(this.folderGuessOf(e) || e.name)}));
+    const planned=(this.goal.brief?.steps ?? []).map(step=>stepFile(step)).filter(Boolean);
+    let reading=null;
+    if (mode!=='off') {
+      const client=await this.luna().catch(()=>null);
+      reading=client ? await readMessage({client, text:said, elements, signal:this.lunaSignal()}) : null;
+      this.diagnostics?.record({type:'message_reading', mode, ...(reading ? {element:reading.element, one_part:reading.one_part, negation:reading.negation,
+        reference:reading.reference, hand_painting:reading.hand_painting, elapsed_ms:reading.elapsed_ms, cost:reading.cost, input_tokens:reading.input_tokens,
+        ...(reading.fallback ? {fallback:reading.fallback} : {})} : {fallback:'not_connected'})});
+    }
+    const policy=messagePolicy({reading, act:mode==='guide', text:said, elements, planned});
+    this.messageReading={study:this.study, text:said, mode, reading, policy};
+    return this.messageReading;
   }
   /** One unify pass (unify-pass.ts): after a whole-picture underpainting, the chat's first whole-canvas softening call is
    * returned to be remembered; a later one (or a second in the same call) is refused. A pass whose move was undone is spent no more. */
@@ -784,7 +814,87 @@ export class StudioRuntime extends PaintingRuntime {
       },
       record: entry => this.recordLikeness(entry),
       stop: message => { if (this.currentMove) this.currentMove.luna_stopped=message; this.yieldRequested=true; },
+      // Luna's goal comparison (goal-comparison.ts): asked by the extension only when its answer can count.
+      lunaMode: () => this.lunaMode(),
+      compare: input => this.goalComparison(input),
+      compared: entry => this.noteComparison(entry.move, entry.luna, {call_id:entry.call_id, late:true}),
     };
+  }
+  /** Luna's goal comparison of one batch (luna-goal-reviewer goal 1): the batch's area (its passes', else the cells it
+   * changed) cut from the goal and from the canvas views before and after it, at the views' scale and at most the crop
+   * size Luna reads (the plugin's comparison_crop decodes the views' JPEGs), then one decision. The goal and its placement
+   * are likenessFrame's. Null when there is nothing to compare (no placed goal, an area off the goal). */
+  async goalComparison({before, after, passes, measure:m, target}) {
+    const placed=this.likenessPlaced, canvas=this.likenessCanvas;
+    if (!placed || !canvas) return null;
+    const scale=Math.min(1, this.viewSide()/Math.max(canvas.width, canvas.height));
+    const found=comparisonArea(passes.map(p=>p.area), m?.changed ?? null, target);
+    if (!found) return null;
+    // A tiny batch is judged with some context around it; the whole comparison has one deadline, crops included, so a slow
+    // one never holds the painter longer than that (review, 2026-10-24): past it the batch is kept, never undone.
+    const area=withContext(found, scale, target), plans=cropPlan(area, scale, this.comparisonCropSide());
+    const deadline=this.comparisonDeadlineMs ?? COMPARISON_DEADLINE_MS, started=Date.now();
+    const timer=new AbortController(), clock=setTimeout(()=>timer.abort(), deadline);
+    const late=new Promise(resolve=>timer.signal.addEventListener('abort',()=>resolve(null),{once:true}));
+    try {
+      const work=(async()=>{
+        const directory=this.study.directory, reference=placed.reference, goalSize=[reference.width,reference.height];
+        const goalFile=await boundedImage(directory, await containedFile(directory, reference.path), WORKING_PIXELS);
+        const file=async path=>{ const data=await readFile(await containedFile(directory, path)); return {data, sha256:createHash('sha256').update(data).digest('hex')}; };
+        // One plugin call an image, every crop in it: the goal is sent and decoded once a comparison.
+        const cut=async ({data,sha256},size,sources)=>{
+          const answer=await super.callNative('comparison_crop',{image_base64:data.toString('base64'),sha256,size,crops:plans.map((p,i)=>({source:sources[i],out:p.out}))});
+          return answer.images.map(image=>({type:'image',data:image.image_base64,mimeType:image.mime_type ?? 'image/jpeg'}));
+        };
+        const [b,a]=await Promise.all([file(before), file(after)]);
+        const size=[canvas.width,canvas.height], rects=plans.map(p=>p.rect);
+        const [goals,befores,afters]=await Promise.all([cut(goalFile,goalSize,rects.map(r=>goalSource(r,placed.mapping,goalSize))), cut(b,size,rects), cut(a,size,rects)]);
+        const crop_ms=Date.now()-started;
+        const signal=AbortSignal.any([this.lunaSignal(), timer.signal]);
+        return {crop_ms, result:await compareWithGoal({client:await this.luna(), crops:plans.map((_,i)=>({goal:goals[i],before:befores[i],after:afters[i]})), signal})};
+      })();
+      work.catch(()=>{});
+      const done=await Promise.race([work, late]);
+      const result=done && !timer.signal.aborted ? {...done.result, area}
+        : {verdict:null, confidence:0, crops:plans.length, per_crop:[], elapsed_ms:Date.now()-started, cost:0, input_tokens:0, fallback:'timeout', area};
+      this.diagnostics?.record({type:'goal_comparison', move:this.currentMove?.number ?? null, verdict:result.verdict, confidence:result.confidence,
+        crops:result.crops, out:plans.map(p=>p.out), crop_ms:done?.crop_ms ?? null, total_ms:Date.now()-started, elapsed_ms:result.elapsed_ms, cost:result.cost, input_tokens:result.input_tokens, ...(result.fallback ? {fallback:result.fallback} : {})});
+      return result;
+    } finally { clearTimeout(clock); }
+  }
+  /** One Luna goal comparison into its move's likeness (the card's line counts them; lessons carry them). */
+  noteComparison(number, luna, {undone=false}={}) {
+    const move=(this.goal?.moves ?? []).find(m=>m.number===number);
+    if (!move || !luna || luna.fallback) return;
+    const likeness=move.likeness ??= {batches:0,before:0,after:0,undone:0,kept_worse:0};
+    const c=likeness.luna ??= {compared:0,further:0,closer:0,undone:0,cost:0,ms:0};
+    c.compared++; c.cost=Math.round((c.cost+(luna.cost ?? 0))*1e6)/1e6; c.ms+=luna.elapsed_ms ?? 0;
+    if (luna.verdict==='further') c.further++;
+    if (luna.verdict==='closer') c.closer++;
+    if (undone) c.undone++;
+    move.likeness_line=likenessLine(likeness);
+  }
+  /** The long side of the painter's canvas views (view-size.ts): the view_size setting, Auto the painter model's probed
+   * side. The plugin only takes it when it says so (view_side); an older one keeps its own VIEW_SIDE, today's size. */
+  viewSide() {
+    if (!this.viewSideOption) return VIEW_SIDE_TODAY;
+    const record=this.study?.provider ? this.probeRecords?.[modelKey(this.study.provider, this.study.model)] : null;
+    return resolvedViewSide(this.executionSettings?.view_size ?? 'auto', record);
+  }
+  /** The longest side of one crop Luna's goal comparison sends (the decision model's probed 1:1 size, view-size.ts). */
+  comparisonCropSide() {
+    const d=this.executionSettings?.decisions;
+    return resolvedCropSide(d ? this.probeRecords?.[modelKey(d.endpoint, d.model)] : null, CROP_SIDE);
+  }
+  /** The probe results (view-size.ts): the shipped model-resolutions.json, then the artist's own resolution-probe.json in
+   * the data folder (scripts/resolution-probe.ts --record-to), which wins. Read once; a missing or broken file is no record. */
+  async loadProbeRecords() {
+    if (this.probeRecords) return this.probeRecords;
+    const read=async url=>{ try { return JSON.parse(await readFile(url,'utf8')); } catch { return {}; } };
+    const shipped=await read(new URL('./model-resolutions.json', import.meta.url));
+    const own=this.store?.stateDirectory ? await read(join(this.store.stateDirectory,'resolution-probe.json')) : {};
+    this.probeRecords={...shipped, ...own};
+    return this.probeRecords;
   }
   /** Why the goal-likeness check only measures this move (never undoes), or null. The artist's Reference colours off; a
    * typed message Luna could not classify (it might ask for a change from the reference: never undo on an unclassified
@@ -804,17 +914,15 @@ export class StudioRuntime extends PaintingRuntime {
     if (!command.start_plan && !['continue','retry'].includes(command.move_kind)) {
       const said=String(command.display_text ?? text ?? '');
       goal.departure_unclassified=false;
-      if (returnToReference(said)) goal.departure=null;
-      else {
-        const phrase=departureRequested(said);
-        if (phrase) goal.departure=phrase;
-        else if (!goal.departure) {
-          let asked=null;
-          if (this.lunaMode()!=='off') asked=await classifyDeparture({client:await this.luna().catch(()=>({decide:async()=>({fallback:'not_connected'})})),text:said,signal:this.lunaSignal()});
-          if (asked===true) goal.departure='a change from the reference (Luna)';
-          else if (asked===null) goal.departure_unclassified=true;
-        }
-      }
+      // Luna's reading of this message (luna-goal-reviewer goal 2, readArtistMessage) may only add a departure or a return:
+      // a matched phrase still wins over Luna's neither (review, 2026-10-24: "make the sky warmer" must never be undone);
+      // a message neither decides leaves the move measured only.
+      const luna=(await this.readArtistMessage(said))?.policy.departure ?? null;
+      const phrase=departureRequested(said);
+      if (phrase) goal.departure=phrase;
+      else if (luna==='departure') goal.departure='a change from the reference (Luna)';
+      else if (luna==='return' || returnToReference(said)) goal.departure=null;
+      else if (luna!=='neither' && !goal.departure) goal.departure_unclassified=true;
     }
     return {departure:goal.departure ?? null, unclassified:!!goal.departure_unclassified};
   }
@@ -833,6 +941,7 @@ export class StudioRuntime extends PaintingRuntime {
     const placed=await this.goalPlacement(canvas);
     if (!placed) return null;
     const {mapping, reference}=placed;
+    this.likenessPlaced=placed;                          // Luna's goal comparison crops the same goal (goalComparison)
     this.likenessCanvas={width:canvas.width, height:canvas.height};
     // An attached reference never changes (the chat keeps its own copy), so the goal is read once for its crop.
     const key=[reference.id,reference.path,mapping.source,mapping.target].join(':');
@@ -929,6 +1038,7 @@ export class StudioRuntime extends PaintingRuntime {
     if (entry.status==='worse_kept') likeness.kept_worse++;
     move.likeness=likeness;
     move.likeness_line=likenessLine(likeness);
+    if (entry.luna) this.noteComparison(move.number, entry.luna, {undone:entry.status==='undone' && entry.by==='luna'});
     this.persist().then(()=>this.publish()).catch(()=>{});
   }
   /** One batch's verdict into the move: review {verdict, findings, undone_batches, batches} and the card's line. */
@@ -1368,7 +1478,9 @@ export class StudioRuntime extends PaintingRuntime {
     const part = this.elementStepPart();
     if (!part) return;
     const request = String(this.goal?.messages?.findLast?.(m => m.role === 'user')?.text ?? '');
-    const refusal = elementStepRefusal(call, {part, area:!!this.goal?.paint_only_here, request});
+    // Hand painting as the artist's latest typed message asked it (Luna's reading or the phrases, noteHandPainting).
+    const handPainting = this.goal && 'hand_painting' in this.goal ? !!this.goal.hand_painting : undefined;
+    const refusal = elementStepRefusal(call, {part, area:!!this.goal?.paint_only_here, request, handPainting});
     if (!refusal) return;
     this.diagnostics?.record({type:'element_step_refused', tool:call.tool, part, move:this.currentMove?.number ?? null});
     throw new Error(refusal);
@@ -1993,14 +2105,36 @@ export class StudioRuntime extends PaintingRuntime {
   /** The artist's message names folder elements (project-folder.ts elementsNamed) while the plan is approved: each one not
    * yet in the plan gets its step at the end (a plan holds the underpainting and FOLDER_PLAN_ELEMENTS more), and the
    * first one named is the step this message paints (after an open underpainting step). Asking for it is the approval. */
-  async folderElementRequest(text) {
+  async folderElementRequest(text, {approved=null, target=null}={}) {
     const index = this.folderIndex, brief = this.goal?.brief;
     if (!index?.elements?.length || !brief?.steps?.length) return;
-    const named = elementsNamed(text, index.elements.map(e => ({name:e.name, guess:String(this.folderGuessOf(e) || e.name)})));
+    // Luna's reading decides (luna-goal-reviewer goal 2): on Guide and sure, the element it names is added and painted; off,
+    // failed or unsure, nothing is added (the keywords may target a planned step, and the artist is asked before adding).
+    // The add-step card's answer: approved, the elements to add (none on Not now); target, the planned element the message
+    // named (the keywords'), still painted either way (review, 2026-10-24).
+    const policy = approved ? {target:target ?? approved[0] ?? null, add:approved, ask_add:[]} : (await this.readArtistMessage(text)).policy;
+    const guess = name => String(this.folderGuessOf(index.elements.find(e => e.name === name)) || name);
+    const both = names => names.length > 1 ? names.slice(0, -1).join(', ') + ' and ' + names.at(-1) : names[0];
+    const full = names => this.emit({type:'action', seconds:0, message:`The plan is full (${brief.steps.length} steps): no step can be added for ${both(names.map(guess))}. Remove a step, or ask for it in a new plan.`});
+    if (policy.ask_add.length && this.mode === 'agent' && !this.goal.question) {
+      if (FOLDER_PLAN_ELEMENTS + 1 - brief.steps.length <= 0) full(policy.ask_add);
+      else {
+        const why = this.lunaMode() === 'guide' ? 'Luna could not read your message, so the step waits for your yes.'
+          : 'Typed names are matched by keywords while Decision checks are not on Guide, so the step waits for your yes.';
+        this.goal.question = {id:randomUUID(), question:`Add a step for ${both(policy.ask_add.map(guess))} to the plan? ${why}`,
+          options:['Add the step', 'Not now'], asked_in:'agent', add_elements:{names:policy.ask_add, target:policy.target, request:String(text).slice(0,500)}};
+        this.goal.status = 'needs_input'; await this.persist(); this.publish();
+        this.emit({type:'question', ...this.goal.question});
+        return 'asked';
+      }
+    }
+    const named = [...new Set([...(policy.target ? [policy.target] : []), ...policy.add])];
     if (!named.length) return;
     const planned = brief.steps.map(step => stepFile(step));
     const room = Math.max(0, FOLDER_PLAN_ELEMENTS + 1 - brief.steps.length);
-    const added = named.filter(name => !planned.includes(name)).slice(0, room);
+    const added = policy.add.filter(name => !planned.includes(name)).slice(0, room);
+    const left = policy.add.filter(name => !planned.includes(name) && !added.includes(name));
+    if (left.length) full(left);
     if (added.length) {
       const before = structuredClone(brief);
       this.goal.revisions ??= []; this.goal.revisions.push({revision:this.goal.revision,brief:before,at:stamp(),source:'user'});
@@ -2012,15 +2146,16 @@ export class StudioRuntime extends PaintingRuntime {
     // The element is painted next, but never before an open underpainting step: refining needs the underpainting first.
     const steps = this.goal.brief.steps, done = new Set(this.goal.done_steps ?? []);
     if (steps.some((step, i) => folderStepKind(step) === 'underpainting' && !done.has(i) && !this.planSteps.isClosed(i))) return;
-    const target = steps.findIndex(step => stepFile(step) === named.find(name => steps.some(s => stepFile(s) === name)));
-    if (target >= 0 && target !== this.goal.current_step) { this.goal.current_step = target; await this.persist(); this.publish(); }
+    const chosen = steps.findIndex(step => stepFile(step) === named.find(name => steps.some(s => stepFile(s) === name)));
+    if (chosen >= 0 && chosen !== this.goal.current_step) { this.goal.current_step = chosen; await this.persist(); this.publish(); }
   }
   /** A folder plan ends by asking the artist what to refine next (the artist, 2026-10-23): the elements not yet done, by
    * name; naming one adds its step (folderElementRequest). Empty outside a folder chat. */
   refineNextQuestion() {
     if (!this.study?.folder || !this.folderIndex?.elements?.length) return '';
     const offer = this.elementsToOffer();
-    return ' What should I refine next?' + (offer.length ? ' ' + listOr(offer) + ': name one and I add its step, or type what to change.' : ' Type what to change.');
+    const add = this.lunaMode() === 'guide' ? 'name one and I add its step' : 'name one and I ask before adding its step';
+    return ' What should I refine next?' + (offer.length ? ' ' + listOr(offer) + `: ${add}, or type what to change.` : ' Type what to change.');
   }
   /** The references the painter is sent as images: a folder chat sends its goal and the current step's element only. */
   painterReferences() {
@@ -2439,16 +2574,24 @@ export class StudioRuntime extends PaintingRuntime {
         if (command.start_plan && !command.keep_follow && this.goal.brief && this.goal.folder_plan_root === this.study.folder.root) { this.goal.approved_revision = this.goal.revision; this.goal.done_steps ??= []; }
         else { await this.planFolder(modelText, images); return; }
       }
-      if (this.mode === 'agent' && this.folderPlanning() && !command.start_plan && !command.move_kind && !moveKind) await this.folderElementRequest(text);
+      // The add-step card's answer: yes adds the steps asked about; either way the request it held is painted next.
+      // A panel option (a card's button) is never read as the artist's message (review, 2026-10-24).
+      const optionAnswer = !!answered?.options?.includes(text.trim());
+      const addAnswer = answered?.add_elements && optionAnswer ? answered.add_elements : null;
+      if (this.mode === 'agent' && this.folderPlanning() && addAnswer)
+        await this.folderElementRequest(addAnswer.request, {approved:text.trim() === answered.options[0] ? addAnswer.names : [], target:addAnswer.target ?? null});
+      else if (this.mode === 'agent' && this.folderPlanning() && !command.start_plan && !command.move_kind && !moveKind && !optionAnswer
+        && await this.folderElementRequest(text) === 'asked') { this.setActivity('awaiting_user', 'Your answer will guide the next step.'); return; }
       // A folder element step with no area: the card asks for it first (Find it for me's outline proposed when it can be had).
-      if (this.mode === 'agent' && command.move_kind !== 'guides' && moveKind !== 'guides' && await this.elementAreaQuestion(text, answered)) {
+      if (this.mode === 'agent' && command.move_kind !== 'guides' && moveKind !== 'guides' && await this.elementAreaQuestion(addAnswer ? addAnswer.request : text, addAnswer ? null : answered)) {
         this.setActivity('awaiting_user', 'Your answer will guide the next step.'); return;
       }
       // An answer to the area card paints what the artist asked for before it, with the area they chose (or none).
-      const areaRequest = answered?.select_area?.request && answered.options?.includes(text.trim()) ? answered.select_area.request : null;
+      const areaRequest = answered?.select_area?.request && answered.options?.includes(text.trim()) ? answered.select_area.request : addAnswer?.request ?? null;
       const movePrompt = areaRequest ? `${areaRequest}\n\n(The artist answered "${answered.question}": ${text.trim()}.)` : modelText;
       if (this.mode === 'agent' && !moveKind && await this.holdForSharpen(text, command)) return;
-      if (this.mode === 'agent') { await this.runMove(movePrompt, images, {...command, display_text:text, ...(moveKind ? {move_kind:moveKind} : {})}); return; }
+      // The move is the artist's held request when a card answered it (its button is no request: review, 2026-10-24).
+      if (this.mode === 'agent') { await this.runMove(movePrompt, images, {...command, display_text:areaRequest ?? text, ...(moveKind ? {move_kind:moveKind} : {})}); return; }
       // Autopilot works toward the brief like a goal: an answer to a question the painter asked
       // mid-run goes straight back to painting, without a planning turn.
       const resumeRun = this.mode === 'autopilot' && answered?.asked_in === 'agent' && this.goal.brief && this.goal.approved_revision === this.goal.revision;
@@ -2954,7 +3097,11 @@ export class StudioRuntime extends PaintingRuntime {
       const folderMove = this.folderMoveInstructions(move);
       const underpaintingNote = state?.transfer && !folderMove ? '\n' + UNDERPAINTING_MOVE_NOTE + '\n' : '';
       const detailNote = guidesOnly || command.move_kind ? '' : await this.goalDetailNote(String(command.display_text ?? text ?? ''), canvas);
-      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + underpaintingNote + folderMove + detailNote + (move.ask_next ? askWhenDoneNote(move.ask_next.reason, this.layerNeed.area, move.ask_next.elements) : '') + '\nArtist:\n' + text, images);
+      // Luna read the message as about one part of the picture that is no folder element (message-reading.ts): its area first.
+      const reading = this.messageReading?.text === String(command.display_text ?? text ?? '') ? this.messageReading.policy : null;
+      const partNote = reading?.part && !this.goal.paint_only_here && !command.move_kind && !guidesOnly
+        ? '\nTHE ARTIST\u2019S MESSAGE is about one part of the picture (Luna read it so) and no Paint only here area is set: call ask_for_selection for that part, named as the artist named it, before painting it.\n' : '';
+      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + underpaintingNote + folderMove + detailNote + partNote + (move.ask_next ? askWhenDoneNote(move.ask_next.reason, this.layerNeed.area, move.ask_next.elements) : '') + '\nArtist:\n' + text, images);
     } finally {
       this.goal.used_ms += Date.now() - this.goalStartedAt; this.goalStartedAt = undefined;
       const guidesOnly = !move.actions && move.guides > 0;
@@ -3314,8 +3461,11 @@ export class StudioRuntime extends PaintingRuntime {
   }
   /** While Luna checks the painting, the plugin also saves each look without guide lines (view_options). */
   async syncViewOptions() {
-    if (!this.guidesView || !this.study?.bound) return;
-    try { await this.bridge.call('view_options', {unguided_views:this.lunaMode() !== 'off'}, this.study.id); }
+    if (!(this.guidesView || this.viewSideOption) || !this.study?.bound) return;
+    if (this.viewSideOption) await this.loadProbeRecords();
+    // The views' long side follows the setting and the painter's model (view-size.ts; luna-goal-reviewer goal 3).
+    const params={...(this.guidesView ? {unguided_views:this.lunaMode() !== 'off'} : {}), ...(this.viewSideOption ? {view_side:this.viewSide()} : {})};
+    try { await this.bridge.call('view_options', params, this.study.id); }
     catch (error) { this.diagnostics?.record({type:'view_options_failed', message:this.redact(error.message)}); }
   }
   async reviewCanvas() {

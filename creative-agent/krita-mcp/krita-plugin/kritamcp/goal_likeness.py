@@ -74,3 +74,62 @@ def likeness_grid(params):
     lab = lab_grid(rgba[top:bottom, left:right], grid)
     return {'status': 'ok', 'grid': grid, 'ms': int((time.monotonic() - started) * 1000),
             'lab_base64': base64.b64encode(lab.astype('<f4').tobytes()).decode('ascii')}
+
+
+CROP_OUT = (16, 4096)     # output pixels a side
+CROP_JPEG_QUALITY = 92
+
+
+def comparison_crop(params):
+    """Luna's goal comparison (luna-goal-reviewer goal 1): `source` ([x, y, w, h]) of an image, in the pixels the companion
+    lists it at (`size` [w, h]), resampled to `out` [w, h] and flattened onto white, as a JPEG; or several at once,
+    `crops` [{source, out}], returned as `images` (the goal decoded once a comparison: review, 2026-10-24). The goal's crop
+    and the canvas views' crops of one area are asked at one output size, so Luna sees them at the same scale. The views
+    are JPEGs the companion does not decode; the bytes are checked against their hash and decoded reduced while read
+    (never more than the outputs need). Nothing here touches a document."""
+    fields(params, ('image_base64', 'sha256', 'source', 'size', 'out', 'crops'), ('image_base64', 'sha256', 'size'))
+    started = time.monotonic()
+    size = _ints(params['size'], 'size', 2, 1, 100000)
+    many = 'crops' in params
+    if many:
+        if not isinstance(params['crops'], list) or not 1 <= len(params['crops']) <= 8 or 'source' in params or 'out' in params:
+            raise ValueError('crops must be 1-8 {source, out}, without a source or out of their own')
+        asked = params['crops']
+        for crop in asked:
+            if not isinstance(crop, dict) or set(crop) != {'source', 'out'}:
+                raise ValueError('each crop is {source, out}')
+    else:
+        if 'source' not in params or 'out' not in params:
+            raise ValueError('source and out are required')
+        asked = [{'source': params['source'], 'out': params['out']}]
+    wanted = []
+    for crop in asked:
+        x, y, w, h = _ints(crop['source'], 'source', 4, 0, 100000)
+        out = _ints(crop['out'], 'out', 2, *CROP_OUT)
+        if not (w > 0 and h > 0 and x + w <= size[0] and y + h <= size[1]):
+            raise ValueError('The source crop must fit the image.')
+        wanted.append(([x, y, w, h], out))
+    # Decoded at the scale the largest output needs (at least), never enlarged while read.
+    side = max(16, max(math.ceil(max(out[0] / s[2], out[1] / s[3]) * max(size)) for s, out in wanted))
+    from .creative_reference import _trace_decode
+    image, _width, _height = _trace_decode(params, side)
+    from .qt_compat import QBuffer, QIODevice, QImage, QPainter, QRect, QSize, Qt
+    dw, dh = image.width(), image.height()
+    kx, ky = dw / size[0], dh / size[1]
+    images = []
+    for (x, y, w, h), out in wanted:
+        left, top = min(dw - 1, int(x * kx)), min(dh - 1, int(y * ky))
+        right, bottom = max(left + 1, min(dw, math.ceil((x + w) * kx))), max(top + 1, min(dh, math.ceil((y + h) * ky)))
+        crop = image.copy(QRect(left, top, right - left, bottom - top)).scaled(
+            QSize(out[0], out[1]), Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        flat = QImage(crop.size(), QImage.Format.Format_RGB32); flat.fill(Qt.GlobalColor.white)
+        painter = QPainter(flat); painter.drawImage(0, 0, crop); painter.end()
+        buffer = QBuffer(); buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        if not flat.save(buffer, 'JPEG', CROP_JPEG_QUALITY):
+            raise ValueError('Could not encode the crop.')
+        images.append({'mime_type': 'image/jpeg', 'width': flat.width(), 'height': flat.height(),
+                       'image_base64': base64.b64encode(bytes(buffer.data())).decode('ascii')})
+    ms = int((time.monotonic() - started) * 1000)
+    if many:
+        return {'status': 'ok', 'images': images, 'ms': ms}
+    return dict(images[0], status='ok', ms=ms)

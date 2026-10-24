@@ -412,6 +412,16 @@ class ObservationViewTests(StubSetup, unittest.TestCase):
         self.assertEqual((image.source, image.width()), ('full crop', 800))
         self.assertEqual(self.h.doc.__dict__.get('reads', []), [])
 
+    def test_the_view_side_the_companion_set_is_the_long_side(self):
+        # luna-goal-reviewer goal 3: the companion sets the view's long side (view_options view_side) to what the painter's
+        # model reads; a region no larger than it stays at its own pixels.
+        build(self.h.doc, Fork)
+        image = self.h._creative_view_image(self.h.doc, View(6000, 4500, 'full'), None, side=2048)
+        self.assertEqual((image.width(), image.height()), (2048, 1536))
+        self.assertAlmostEqual(self.h.doc.reads[0][1], 2048 / 6000)
+        small = self.h._creative_view_image(self.h.doc, View(6000, 4500, 'full'), [0, 0, 1800, 1200], side=2048)
+        self.assertEqual((small.source, small.width()), ('full crop', 1800))
+
     def test_on_stock_the_full_size_canvas_is_scaled_with_qt_as_before(self):
         build(self.h.doc, Stock); full = View(6000, 4500, 'full')
         image = self.h._creative_view_image(self.h.doc, full, None)

@@ -103,6 +103,9 @@ VIEW_JPEG_QUALITY = 90
 # so it is the most detail a view can carry. 1024 showed a 6000 px canvas at 1/6 scale, too small
 # to see the dab texture the painter was meant to fix.
 VIEW_SIDE = 1568
+# The long side the companion may set instead (view_options view_side; luna-goal-reviewer goal 3, the artist 2026-10-24):
+# what the painter's model actually reads, measured by the companion's resolution probe, up to 2048 by default there.
+VIEW_SIDE_RANGE = (512, 4096)
 
 try:
     with open(os.path.join(os.path.dirname(__file__), 'build-info.json')) as _build_stream:
@@ -133,7 +136,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             return {'status': 'ok', 'creative_version': '1.0.0', 'protocol_version': 2, 'build': CREATIVE_BUILD, 'krita_version': Krita.instance().version(),
                     'capabilities': self._creative_adapter_capabilities(), 'native_paths': True, 'session_active': bool(getattr(self, '_creative_session', None)),
                     'krita_actions': len(self._native_actions(Krita.instance().version())), 'python_packages': vendor.versions(),
-                    'fork_tools': tool_functions_available(), 'guides_view': True}
+                    'fork_tools': tool_functions_available(), 'guides_view': True, 'view_side': True}
         if operation == 'context':
             fields(params, ('document_id',))
             doc = self._creative_document(params.get('document_id'))
@@ -170,6 +173,10 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             # The goal-likeness check's blurred Lab grid of an image crop (goal_likeness.py): only numbers go back.
             from .goal_likeness import likeness_grid
             return likeness_grid(params)
+        if operation == 'comparison_crop':
+            # Luna's goal comparison: one area of the goal or a canvas view at a given size (goal_likeness.py), as a JPEG.
+            from .goal_likeness import comparison_crop
+            return comparison_crop(params)
         if operation == 'model_image':
             from .creative_reference import model_image
             return model_image(params)
@@ -2187,7 +2194,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 guides_note = 'The guide lines could not be left out of this view: ' + str(error)
         lap('guides')
         shown = unguided if unguided is not None and not guides else projection
-        image = self._creative_view_image(doc, shown, region, scaled_read=shown is projection)
+        side = session.get('view_side') or VIEW_SIDE
+        image = self._creative_view_image(doc, shown, region, scaled_read=shown is projection, side=side)
         lap('scale')
         scale = round(image.width() / (region[2] if region else doc.width()), 3)
         previews = os.path.join(session['output'], '.previews')
@@ -2195,7 +2203,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         filename = self._creative_save_view(previews, image, region)
         unguided_path = None
         if unguided is not None and guides:
-            unguided_path = self._creative_save_view(previews, self._creative_view_image(doc, unguided, region, scaled_read=False), region)
+            unguided_path = self._creative_save_view(previews, self._creative_view_image(doc, unguided, region, scaled_read=False, side=side), region)
         lap('view')
         # The details, each timed: on merged New Moscow they took 270 ms an observation together (runs 5-8).
         layers = self._creative_layer_list(doc); lap('layers')
@@ -2244,22 +2252,23 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             raise ValueError('guides must be true or false')
         return {} if guides else {'guides': False}
 
-    def _creative_view_image(self, doc, projection, region=None, scaled_read=True):
-        """The view the model sees: the canvas, or `region` of it, shrunk to VIEW_SIDE when larger. A larger crop would
+    def _creative_view_image(self, doc, projection, region=None, scaled_read=True, side=VIEW_SIDE):
+        """The view the model sees: the canvas, or `region` of it, shrunk to `side` (VIEW_SIDE unless the companion set
+        view_side) when larger. A larger crop would
         be shrunk by the model API anyway, without the model knowing: shrink it here and report the scale, so "actual
         pixels" is only claimed when it is true. On the fork one scaled read of the area (canvas_projection.read_scaled,
         area-averaged as Qt's smooth scale); else the full-size projection already read for the revision, cropped and
         scaled with Qt. scaled_read=False: `projection` is an image the plugin made (the painting without guides), so it is
         always the one scaled."""
         area = list(region) if region else [0, 0, doc.width(), doc.height()]
-        side = max(area[2], area[3])
-        if side > VIEW_SIDE and scaled_read:
-            image = canvas_projection.read_scaled(doc, area, VIEW_SIDE / side)
+        longest = max(area[2], area[3])
+        if longest > side and scaled_read:
+            image = canvas_projection.read_scaled(doc, area, side / longest)
             if image is not None:
                 return image
         image = projection.copy(*region) if region else projection
-        if side > VIEW_SIDE:
-            image = image.scaled(VIEW_SIDE, VIEW_SIDE, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        if longest > side:
+            image = image.scaled(side, side, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         return image
 
     def _creative_stroke_rect(self, params):

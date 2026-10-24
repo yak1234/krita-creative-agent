@@ -44,6 +44,12 @@ export const SETTINGS = Object.freeze([
   { key: 'sharpen_goal', type: 'choice', default: 'ask', panel: 'generic', label: 'Sharpen small goal images', accessible: 'Sharpen small goal images',
     error: 'Sharpen small goal images: choose Ask, Always or Never.', options: [['ask', 'Ask'], ['always', 'Always: sharpen and use it'], ['never', 'Never']],
     tooltip: 'When a project folder\'s goal image is more than 2x smaller than the canvas, detail blurs. Toska can sharpen it 4x on this computer with Real-ESRGAN (nothing is uploaded; a one-time 62 MB model download). Ask shows the result side by side before it is used.' },
+  // Sharper eyes (view-size.ts; luna-goal-reviewer goal 3, the artist 2026-10-24): the canvas view's long side. Auto is
+  // what the painter's model reads, measured by the resolution probe (at most 2048 px), else the size used before.
+  { key: 'view_size', type: 'choice', default: 'auto', panel: 'generic', label: 'Canvas view size', accessible: 'Canvas view size',
+    error: 'Choose a canvas view size: Auto, 1024, 1568 or 2048 pixels.',
+    options: [['auto', 'Auto: what the model reads'], [1024, '1024 px'], [1568, '1568 px'], [2048, '2048 px']],
+    tooltip: 'How large the painter sees the canvas (the long side). Auto uses the size the painter\'s model was measured to read in full, up to 2048 px, and 1568 px for a model not measured yet. Larger views show finer detail but cost more per look.' },
   { key: 'routing', type: 'choice', default: 'off', panel: 'generic', label: 'Decision checks', accessible: 'Decision checks',
     error: 'Unknown decisions mode.', options: [['off', 'Off'], ['evaluate', 'Evaluate only'], ['guide', 'Guide agent']],
     note: 'Fast typed decisions: request routing, artifacts a pass introduced, progress between reviews and run pacing. When on, the canvas, pass images and your direction go to the decision endpoint below. Evaluate only records results; Guide agent also acts on them. The painter still decides and edits the image.' },

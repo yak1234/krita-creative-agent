@@ -169,7 +169,8 @@ test('Start painting with no open step left finishes instead of painting; pacing
 
 test('Agent mode: Good enough lets the batch finish, refuses more painting except the move\'s own reference job, then keeps the move and starts the next open step', () => chatFolder(async dir => {
   const host = fakeHost({ busy: true, dir, goal: { status: 'active', step_marks: { [keys[1]]: { skipped: true } }, reference_jobs: { ['a'.repeat(32)]: [1], ['b'.repeat(32)]: [0] } } });
-  const move = { number: 1, status: 'painting', step: 0, step_key: keys[0], calls: 2, review: { verdict: 'warned' }, review_line: 'Luna warned: seam' };
+  const move = { number: 1, status: 'painting', step: 0, step_key: keys[0], calls: 2, review: { verdict: 'warned' }, review_line: 'Luna warned: seam',
+    likeness: { luna: { compared: 2, further: 1, closer: 0, undone: 1, cost: 0.0012, ms: 2100 } } };
   host.state.move = move; host.goal.moves = [move];
   const controls = planStepControls(host);
   await assert.rejects(controls.command(command('good_enough', 2), reviewer(controls)), /not painting/);
@@ -197,6 +198,7 @@ test('Agent mode: Good enough lets the batch finish, refuses more painting excep
   assert.equal(lesson.batches, 1); assert.equal(lesson.move, 1);
   assert.deepEqual(lesson.luna, { verdict: 'warned', line: 'Luna warned: seam' });
   assert.equal(lesson.goal_likeness, null);
+  assert.deepEqual(lesson.goal_comparison, { compared: 2, further: 1, closer: 0, undone: 1, cost: 0.0012, ms: 2100 }, 'Luna\u2019s goal comparisons of the move (luna-goal-reviewer goal 1)');
   assert.ok(Date.parse(lesson.at) > 0);
 }));
 

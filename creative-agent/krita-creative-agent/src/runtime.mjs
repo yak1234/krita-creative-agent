@@ -85,6 +85,7 @@ export class PaintingRuntime {
     this.kritaActions=bridgeStatus.krita_actions ?? 0;          // vetted Krita actions; none: krita_action is not offered
     this.forkTools=bridgeStatus.fork_tools;                    // false: stock Krita has no Node.fill and the rest, so those tools are not offered
     this.guidesView=bridgeStatus.guides_view===true;            // the plugin can show the painting without guide lines (observe guides:false)
+    this.viewSideOption=bridgeStatus.view_side===true;          // the plugin takes the views' long side (view_options view_side)
     this.bridgeCompatible = bridgeStatus.protocol_version === PROTOCOL_VERSION &&
       (BUILD_INFO.build_id === 'development-unverified' || bridgeStatus.build?.build_id === BUILD_INFO.build_id);
     this.emit({ type: 'ready', models: this.listModels(),providers:this.listProviders(), bridge: bridgeStatus, build:BUILD_INFO, compatible:this.bridgeCompatible });

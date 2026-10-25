@@ -226,6 +226,7 @@ def bundle_companion(root, dependency_root, companion, lock, arch):
     shutil.copy2(root / 'src/visual-check-questions.json', companion / 'src/visual-check-questions.json')
     shutil.copy2(root / 'src/brush-catalog.json', companion / 'src/brush-catalog.json')
     shutil.copy2(root / 'src/downloaded-models.json', companion / 'src/downloaded-models.json')   # the notices list them
+    shutil.copy2(root / 'src/texture-catalogue.json', companion / 'src/texture-catalogue.json')   # texture-library.ts reads it
     # Python for image assets: the sandbox runner beside main.mjs, Pyodide itself, the bundled skills
     # and the wheels the scripts import, fetched now so an artist's Mac never downloads them.
     shutil.copy2(root / 'src/pyodide-runner.mjs', companion / 'src/pyodide-runner.mjs')

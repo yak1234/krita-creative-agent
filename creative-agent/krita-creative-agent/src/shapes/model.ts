@@ -12,7 +12,8 @@ import { mkdir, open, readFile, rename, rm, stat, statfs, writeFile, type FileHa
 import { basename, join } from 'node:path';
 import { extractEntry, zipEntries } from '../model-archive.ts';
 
-export type ModelFile = { name: string; size: number; sha256: string };
+/** url: where this one file comes from, when not from Hugging Face (a texture map published file by file). */
+export type ModelFile = { name: string; size: number; sha256: string; url?: string };
 /** A model its publisher ships as one zip (the sharpening model): the archive is pinned by its URL, size and SHA-256, and
  * each file is taken from `folder` inside it and checked against its own pinned size and SHA-256. */
 export type ModelArchive = { url: string; size: number; sha256: string; folder: string };
@@ -145,7 +146,7 @@ export async function downloadModel({ directory, spec = SHAPES_MODEL, baseUrl = 
     for (const file of spec.files) {
       const target = join(directory, file.name);
       if (!(await complete(target, file)))
-        await fetchPinned(`${baseUrl}/${spec.repo}/resolve/${spec.revision}/onnx/${encodeURIComponent(file.name)}`, target, file, done => onProgress?.(before + done, total), fetching);
+        await fetchPinned(file.url ?? `${baseUrl}/${spec.repo}/resolve/${spec.revision}/onnx/${encodeURIComponent(file.name)}`, target, file, done => onProgress?.(before + done, total), fetching);
       before += file.size; onProgress?.(before, total);
     }
   }

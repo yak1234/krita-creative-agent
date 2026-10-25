@@ -74,7 +74,7 @@ test('actual Pi compaction may omit character facts while durable rules survive 
     }
     throw new Error('Read-only compaction test attempted a native mutation: ' + operation);
   } };
-  const makeRuntime = () => new StudioRuntime({ root: output, config: { output }, models, bridge, tracing: recordingTracing(), emit: event => events.push(event) });
+  const makeRuntime = () => new StudioRuntime({defaultPlanner:null, root: output, config: { output }, models, bridge, tracing: recordingTracing(), emit: event => events.push(event) });
   let runtime = makeRuntime();
   try {
     await runtime.start({ provider: 'local-compaction-test', model: 'before-compaction', chat_mode: 'ask', prompt: 'Discuss an initial portrait idea.' });

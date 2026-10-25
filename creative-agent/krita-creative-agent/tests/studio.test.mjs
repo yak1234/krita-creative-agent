@@ -65,7 +65,7 @@ async function harness(respond, bridgeHook) {
   }};
   const capabilities={async initialize(){},status(){return {status:'verified',route_verified:true,images_supported:true,tools_supported:true};},async verify(){return {route_verified:true,cached:true};},async invalidate(){}};
   // No folder study reader (folder-study-studio.test.mjs tests the study): opening a folder sends no study requests here.
-  const runtime=new StudioRuntime({root:output,config:{output},models,bridge,capabilities,tracing:recordingTracing(),emit:e=>events.push(e),studyReader:null});
+  const runtime=new StudioRuntime({defaultPlanner:null,root:output,config:{output},models,bridge,capabilities,tracing:recordingTracing(),emit:e=>events.push(e),studyReader:null});
   return {runtime,requests,calls,events,output,start:(mode,prompt='Help me plan',extra={})=>runtime.start({provider:'local-test',model:'vision-test',chat_mode:mode,prompt,mode:'copy',...extra}),
     async close(){if(runtime.busy) runtime.stop(); await runtime.writeQueue; await runtime.end().catch(()=>{}); runtime.dispose(); server.closeAllConnections(); await new Promise(r=>server.close(r)); await rm(output,{recursive:true,force:true});}};
 }
@@ -1007,7 +1007,7 @@ test('Stop cancels background preparation together with the painter', {timeout:1
 });
 
 test('parallel proposals for a step the plan has left are discarded; worker failures leave nothing to deliver', async()=>{
-  const runtime=new StudioRuntime({config:{output:'/tmp/creative-store-placeholder'},tracing:recordingTracing(),emit:()=>{}});
+  const runtime=new StudioRuntime({defaultPlanner:null,config:{output:'/tmp/creative-store-placeholder'},tracing:recordingTracing(),emit:()=>{}});
   runtime.study={id:'study',provider:'test',model:'model'};runtime.goal={revision:1,current_step:0};
   runtime.executionSettings={concurrency:2,reasoning:'auto'};
   runtime.bridge={call:async()=>({brushes:[]})};

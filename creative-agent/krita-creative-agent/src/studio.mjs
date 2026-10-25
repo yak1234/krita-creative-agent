@@ -276,6 +276,7 @@ function planStepRequest(goal) {
 export class StudioRuntime extends PaintingRuntime {
   constructor(options) {
     super(options);
+    this.defaultPlanner=options?.defaultPlanner;            // the Planner model's Default (DEFAULT_PLANNER); null in tests with fake models
     this.executionSettings=executionSettings();
     this.mode = 'ask'; this.executionPhase = 'ask'; this.systemInstructions = STUDIO_INSTRUCTIONS;
     this.writeQueue = Promise.resolve(); this.pendingText = []; this.replyText = '';
@@ -965,7 +966,9 @@ export class StudioRuntime extends PaintingRuntime {
     const painter=this.models.getModel(this.study.provider,this.study.model), route=this.executionSettings?.planner_model;
     if (!route || route==='painter') return painter;
     if (route==='default') {                       // Qwen3 VL when connected, else the painter, without a message
-      const slash=DEFAULT_PLANNER.indexOf('/'), model=this.models.getModel(DEFAULT_PLANNER.slice(0,slash),DEFAULT_PLANNER.slice(slash+1));
+      const fallback=this.defaultPlanner===undefined ? DEFAULT_PLANNER : this.defaultPlanner;   // a test's fake chat sets null: the painter plans
+      if (!fallback) return painter;
+      const slash=fallback.indexOf('/'), model=this.models.getModel(fallback.slice(0,slash),fallback.slice(slash+1));
       return model && isInteractiveModel(model) && this.models.hasConfiguredAuth(model.provider) ? model : painter;
     }
     const slash=route.indexOf('/'), model=slash>0 ? this.models.getModel(route.slice(0,slash),route.slice(slash+1)) : null;

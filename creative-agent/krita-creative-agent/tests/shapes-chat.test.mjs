@@ -188,7 +188,7 @@ test('shapes need an open chat', LIMIT, async t => {
 test('the studio carries the chat’s shapes, the panel’s answer reaches them, and a chat’s end stops the worker', LIMIT, async () => {
   const { readFile } = await import('node:fs/promises');
   const { StudioRuntime } = await import('../src/studio.mjs');
-  const runtime = new StudioRuntime({ config: { output: '/tmp/creative-store-placeholder' }, emit: () => {} });
+  const runtime = new StudioRuntime({defaultPlanner:null, config: { output: '/tmp/creative-store-placeholder' }, emit: () => {} });
   try {
     for (const method of ['study', 'shape', 'close', 'answer']) assert.equal(typeof runtime.shapes[method], 'function', method);
     assert.equal(runtime.shapes.answer('accept'), false, 'nothing waits for an answer');
@@ -201,7 +201,7 @@ test('the studio carries the chat’s shapes, the panel’s answer reaches them,
   assert.match(studio.slice(studio.indexOf('async _end()')), /this\.shapeStudies = undefined; this\.canvasPixels = null;/,
     'the chat’s studies (use.ts) go with its worker');
   let stopped = 0;
-  const other = new StudioRuntime({ config: { output: '/tmp/creative-store-placeholder' }, emit: () => {}, shapes: { stop: () => stopped++, close: async () => {} } });
+  const other = new StudioRuntime({defaultPlanner:null, config: { output: '/tmp/creative-store-placeholder' }, emit: () => {}, shapes: { stop: () => stopped++, close: async () => {} } });
   try { other.stop(); } finally { other.dispose(); }
   assert.equal(stopped, 1, 'the panel’s Stop reaches the shapes (a pending download question or download)');
 });

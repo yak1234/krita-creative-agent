@@ -9,7 +9,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { goalSharpener, enlargement, estimateSeconds, ENLARGEMENT, OFFER_PIXELS, staleGoalSource, goalSourceFile, sharpenedContext, noMoreDetailNote, refineRequested, pictureGoal, MATCHED_DE } from '../src/goal-sharpen.ts';
+import { goalSharpener, enlargement, estimateSeconds, duration, DEFAULT_SECONDS_PER_MP, ENLARGEMENT, OFFER_PIXELS, staleGoalSource, goalSourceFile, sharpenedContext, noMoreDetailNote, refineRequested, pictureGoal, MATCHED_DE } from '../src/goal-sharpen.ts';
 import { UPSCALE_MODEL } from '../src/upscale/model.ts';
 import { modelDirectory } from '../src/shapes/model.ts';
 import { UpscaleError } from '../src/upscale/index.ts';
@@ -81,15 +81,97 @@ test('enlargement and the time estimate', () => {
   assert.equal(enlargement({ width: 3000, height: 2000 }, { width: 6000, height: 4500 }), 2.25);
   assert.equal(enlargement({ width: 10, height: 10 }, null), 0);
   assert.equal(ENLARGEMENT, 2);
-  assert.equal(estimateSeconds(1448, 1086, { msPerTile: 51 }), 15);
-  assert.ok(estimateSeconds(1448, 1086, { platform: 'linux' }) > 200, 'the CPU is far slower');
+  // Always sharpen (2026-10-25): "about 20 s" took 3.5-4 min live; the estimate is the goal's megapixels at this computer's
+  // measured seconds per megapixel, else a conservative default from that live run (1.6 MP in ~220 s: 140 s/MP).
+  assert.equal(DEFAULT_SECONDS_PER_MP, 140);
+  assert.equal(estimateSeconds(1448, 1086), 225, '1.57 MP at 140 s/MP and the model load');
+  assert.equal(estimateSeconds(1448, 1086, { secondsPerMp: 7.6 }), 15, 'a measured speed');
+  assert.equal(estimateSeconds(100, 100, { secondsPerMp: 1 }), 5, 'at least 5 s');
+  assert.equal(duration(225), 'about 4 min');
+  assert.equal(duration(15), 'about 15 s');
+});
+
+test('Always: no card; the time is estimated from this computer\u2019s measured speed, recorded after each run', async t => {
+  const h = await setup(t, { setting: 'always' });
+  await h.sharpener.check(); await settle(h.sharpener);
+  assert.equal(h.events.filter(e => e.type === 'goal_sharpen_offer' || e.type === 'goal_sharpen_review').length, 0, 'no offer, no review');
+  assert.match(h.events.find(e => e.type === 'action').message, /sharpening it 4x on this Mac \(about 4 min; Settings: Sharpen the goal\)\. Painting from the goal waits for it\./);
+  assert.equal(h.study.references[0].width, 2309, 'used by itself');
+  const saved = JSON.parse(await readFile(join(h.data, 'goal-sharpen.json'), 'utf8'));
+  assert.equal(Math.round(saved.seconds_per_mp * 10) / 10, 7.6, '12 s for 1.57 MP');
+  const next = await setup(t);
+  await writeFile(join(next.data, 'goal-sharpen.json'), JSON.stringify({ version: 1, choices: {}, seconds_per_mp: 7.6 }));
+  await next.sharpener.check();
+  assert.match(last(next.events, 'goal_sharpen_offer').message, /\(about 15 s, nothing uploaded\)/, 'Ask: the card shows the measured time');
+});
+
+test('Always in an existing chat: a card offered before (or a result waiting for review) is taken without asking', async t => {
+  const h = await setup(t);
+  await h.sharpener.check();
+  assert.ok(last(h.events, 'goal_sharpen_offer'));
+  const offers = h.events.length;
+  h.state.setting = 'always';
+  await h.sharpener.check(); await settle(h.sharpener);
+  assert.equal(h.events.slice(offers).filter(e => e.type === 'goal_sharpen_offer' || e.type === 'goal_sharpen_review').length, 0);
+  assert.equal(h.study.references[0].width, 2309);
+
+  const r = await setup(t);
+  await r.sharpener.check();
+  await r.sharpener.answer({ id: last(r.events, 'goal_sharpen_offer').id, action: 'sharpen' }); await settle(r.sharpener);
+  assert.ok(last(r.events, 'goal_sharpen_review'));
+  r.state.setting = 'always';
+  await r.sharpener.check();
+  assert.equal(r.study.references[0].width, 2309, 'the waiting review is used');
+});
+
+test('waitForGoal: a move that reads the goal waits for the sharpening, with progress on the status line, then reads it', async t => {
+  const h = await setup(t, { setting: 'always', slow: true, busy: true });
+  await h.sharpener.check();
+  assert.ok(h.sharpener.running(), 'started as soon as the goal is known');
+  const result = await h.sharpener.waitForGoal({ forWhat: 'underpainting' });
+  assert.equal(result, 'swapped', 'the goal changed while it waited: the move is told to read it again');
+  assert.equal(h.study.references[0].width, 2309, 'swapped although a run is busy: nothing painted while it waited');
+  assert.ok(h.events.some(e => e.type === 'goal_sharpen_progress' && /^Sharpening the goal for the underpainting: \d+%/.test(e.message)), 'progress names what waits');
+  assert.equal(await h.sharpener.waitForGoal({ forWhat: 'underpainting' }), 'ready', 'nothing to wait for now');
+  const none = await setup(t, { goal: { width: 3000, height: 2250 } });
+  assert.equal(await none.sharpener.waitForGoal({}), 'ready');
+});
+
+test('waitForGoal: Stop ends the wait (the sharpening goes on); a failure paints from the original, said once', async t => {
+  const h = await setup(t, { setting: 'always', slow: true, busy: true });
+  await h.sharpener.check();
+  let stop = false;
+  setTimeout(() => { stop = true; }, 20);
+  assert.equal(await h.sharpener.waitForGoal({ forWhat: 'underpainting', cancelled: () => stop }), 'stopped');
+  assert.equal(h.study.references[0].width, 1448);
+  assert.ok(h.sharpener.running(), 'the sharpening goes on');
+  const controller = new AbortController();
+  const waited = h.sharpener.waitForGoal({ signal: controller.signal });
+  controller.abort();
+  assert.equal(await waited, 'stopped', 'the tool call\u2019s signal stops it too');
+  await settle(h.sharpener);
+
+  const f = await setup(t, { setting: 'always', fail: new UpscaleError('failed', 'It broke'), busy: true });
+  await f.sharpener.check();
+  assert.equal(await f.sharpener.waitForGoal({ forWhat: 'underpainting' }), 'ready');
+  assert.equal(f.study.references[0].width, 1448, 'the original');
+  assert.equal(f.events.filter(e => e.type === 'action' && /It broke\. The original goal image is used\./.test(e.message)).length, 1, 'said once');
+});
+
+test('gate: Always waits for the sharpening, and a Stop while it waits holds the move', async t => {
+  const h = await setup(t, { setting: 'always', slow: true, busy: true });
+  let stop = false;
+  setTimeout(() => { stop = true; }, 20);
+  assert.equal(await h.sharpener.gate({ wait: true, cancelled: () => stop, forWhat: 'underpainting' }), 'stopped');
+  assert.equal(await h.sharpener.gate({ wait: true, forWhat: 'underpainting' }), 'paint');
+  assert.equal(h.study.references[0].width, 2309);
 });
 
 test('a goal enlarged more than 2x is offered once, with the size, the time and nothing uploaded', async t => {
   const h = await setup(t);
   await h.sharpener.check();
   const offer = last(h.events, 'goal_sharpen_offer');
-  assert.match(offer.message, /^Your goal image is 4\.1x smaller than the canvas, so detail will blur\. Sharpen it 4x on this Mac \(about \d+ s, nothing uploaded\)\?$/);
+  assert.match(offer.message, /^Your goal image is 4\.1x smaller than the canvas, so detail will blur\. Sharpen it 4x on this Mac \(about \d+ (?:s|min), nothing uploaded\)\?$/);
   assert.deepEqual(offer.options, ['Sharpen', 'Use as is']);
   assert.equal(offer.download_mb, 0);
   await h.sharpener.check(); await h.sharpener.check();
@@ -155,7 +237,7 @@ test('Sharpen: progress, then the side by side; Use sharpened makes the goal ref
   assert.equal(goal.source_path, '/artist/final_goal.png', 'still the folder’s goal image');
   assert.equal(h.state.changed, 1);
   const saved = JSON.parse(await readFile(join(h.data, 'goal-sharpen.json'), 'utf8'));
-  assert.equal(saved.choices[sha(GOAL)].choice, 'sharpened'); assert.equal(saved.ms_per_tile, 51);
+  assert.equal(saved.choices[sha(GOAL)].choice, 'sharpened'); assert.equal(Math.round(saved.seconds_per_mp * 10) / 10, 7.6, 'the speed: seconds per megapixel');
   assert.deepEqual(h.sharpener.status().state, 'used');
   await h.sharpener.check();
   assert.equal(h.jobs.length, 1, 'a sharpened goal is not offered again');

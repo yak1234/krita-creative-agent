@@ -32,7 +32,7 @@ test('with "Keep the screen awake", the hold also keeps the display on, and each
 
 test('stage context sends a large observed layer tree once while preserving document revision',()=>{
   const layers=Array.from({length:158},(_,i)=>({id:'unique-layer-'+i,name:'Layer '+i,depth:0,visible:true,opacity:255,editable_by_agent:true,type:'paintlayer'}));
-  const runtime=new StudioRuntime({defaultPlanner:null,config:{output:'/tmp/creative-performance-test',prevent_idle_sleep:false},tracing:recordingTracing(),emit:()=>{},models:{getModel:()=>({input:['image']})}});
+  const runtime=new StudioRuntime({defaultPlanner:null,sharpenModel:{download:async()=>{throw new Error('No model downloads in tests.');},service:{upscale:async()=>{throw new Error('No sharpening in tests.');}}},config:{output:'/tmp/creative-performance-test',prevent_idle_sleep:false},tracing:recordingTracing(),emit:()=>{},models:{getModel:()=>({input:['image']})}});
   runtime.study={id:'study',provider:'test',model:'test',references:[]};
   runtime.goal={brief:null,current_step:0,stage_operations:0,character_records:[],revision:1,user_updates:[],locked_requirements:[],reviews:[],progress:[],messages:[]};
   runtime.decisionObservation={document_id:'doc',revision:'revision-123',content_id:'content-123',layers,width:600,height:600};
@@ -148,7 +148,7 @@ test('paint_batch validates every action before painting, runs them in order and
 });
 
 test('painting runs have no fixed time cap; chat turns keep the 10-minute cap',()=>{
-  const runtime=new StudioRuntime({defaultPlanner:null,config:{output:'/tmp/creative-deadline-test',prevent_idle_sleep:false},tracing:recordingTracing(),emit:()=>{},models:{getModel:()=>({input:['image']})}});
+  const runtime=new StudioRuntime({defaultPlanner:null,sharpenModel:{download:async()=>{throw new Error('No model downloads in tests.');},service:{upscale:async()=>{throw new Error('No sharpening in tests.');}}},config:{output:'/tmp/creative-deadline-test',prevent_idle_sleep:false},tracing:recordingTracing(),emit:()=>{},models:{getModel:()=>({input:['image']})}});
   for (const mode of ['autopilot','agent']) { runtime.mode=mode; runtime.executionPhase='agent'; assert.equal(runtime.runDeadlineMs(),null,mode+' painting is bounded by allowances, not a timer'); }
   runtime.mode='ask'; runtime.executionPhase='ask'; assert.equal(runtime.runDeadlineMs(),600000);
   runtime.mode='autopilot'; runtime.executionPhase='plan'; assert.equal(runtime.runDeadlineMs(),600000,'planning turns stay capped');

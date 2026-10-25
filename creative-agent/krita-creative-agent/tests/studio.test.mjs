@@ -65,7 +65,7 @@ async function harness(respond, bridgeHook) {
   }};
   const capabilities={async initialize(){},status(){return {status:'verified',route_verified:true,images_supported:true,tools_supported:true};},async verify(){return {route_verified:true,cached:true};},async invalidate(){}};
   // No folder study reader (folder-study-studio.test.mjs tests the study): opening a folder sends no study requests here.
-  const runtime=new StudioRuntime({defaultPlanner:null,root:output,config:{output},models,bridge,capabilities,tracing:recordingTracing(),emit:e=>events.push(e),studyReader:null});
+  const runtime=new StudioRuntime({defaultPlanner:null,sharpenModel:{download:async()=>{throw new Error('No model downloads in tests.');},service:{upscale:async()=>{throw new Error('No sharpening in tests.');}}},root:output,config:{output},models,bridge,capabilities,tracing:recordingTracing(),emit:e=>events.push(e),studyReader:null});
   return {runtime,requests,calls,events,output,start:(mode,prompt='Help me plan',extra={})=>runtime.start({provider:'local-test',model:'vision-test',chat_mode:mode,prompt,mode:'copy',...extra}),
     async close(){if(runtime.busy) runtime.stop(); await runtime.writeQueue; await runtime.end().catch(()=>{}); runtime.dispose(); server.closeAllConnections(); await new Promise(r=>server.close(r)); await rm(output,{recursive:true,force:true});}};
 }
@@ -981,7 +981,7 @@ test('parallel preparation runs two isolated model requests beside one painter t
     assert.equal(peak,2);assert.equal(proposals,2);assert.equal(h.runtime.goal.status,'complete');
     assert.equal(h.calls.filter(c=>c.operation==='paint_pass').length,1);
     const id=h.runtime.study.id;await h.runtime.end();await h.runtime.resume(id);
-    assert.deepEqual(h.runtime.executionSettings,{concurrency:2,reasoning:'high',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,auto_approve:'off',guides:true,reference_first:true,assets:'codex',ai_images:0,preview_additions:false,keep_screen_awake:false,sharpen_goal:'ask',view_size:'auto',planner_model:'default',study_folder:true,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
+    assert.deepEqual(h.runtime.executionSettings,{concurrency:2,reasoning:'high',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,auto_approve:'off',guides:true,reference_first:true,assets:'codex',ai_images:0,preview_additions:false,keep_screen_awake:false,sharpen_goal:'always',view_size:'auto',planner_model:'default',study_folder:true,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
     assert.equal(h.runtime.session.thinkingLevel,'off');
     assert.equal(h.runtime.goal.status,'paused');
   } finally {await h.close();}
@@ -1008,7 +1008,7 @@ test('Stop cancels background preparation together with the painter', {timeout:1
 });
 
 test('parallel proposals for a step the plan has left are discarded; worker failures leave nothing to deliver', async()=>{
-  const runtime=new StudioRuntime({defaultPlanner:null,config:{output:'/tmp/creative-store-placeholder'},tracing:recordingTracing(),emit:()=>{}});
+  const runtime=new StudioRuntime({defaultPlanner:null,sharpenModel:{download:async()=>{throw new Error('No model downloads in tests.');},service:{upscale:async()=>{throw new Error('No sharpening in tests.');}}},config:{output:'/tmp/creative-store-placeholder'},tracing:recordingTracing(),emit:()=>{}});
   runtime.study={id:'study',provider:'test',model:'model'};runtime.goal={revision:1,current_step:0};
   runtime.executionSettings={concurrency:2,reasoning:'auto'};
   runtime.bridge={call:async()=>({brushes:[]})};
@@ -3446,7 +3446,7 @@ test('a folder goal much smaller than the canvas is offered for sharpening besid
  const h=await harness(()=>({content:'Hello.'}));
  const root=await projectFolder();
  try {
-  await h.start('ask','Hello'); await h.runtime.canvas({action:'refresh'}).catch(()=>{}); await h.runtime.openFolder({path:root});
+  await h.start('ask','Hello'); await h.runtime.setExecutionSettings({sharpen_goal:'ask'}); await h.runtime.canvas({action:'refresh'}).catch(()=>{}); await h.runtime.openFolder({path:root});
   await h.runtime.goalSharpen.check();
   for (let i=0;i<50 && !h.events.some(e=>e.type==='goal_sharpen_offer');i++) await new Promise(resolve=>setTimeout(resolve,20));
   const offer=h.events.find(e=>e.type==='goal_sharpen_offer');
@@ -3682,6 +3682,7 @@ test('Start painting a folder plan on a new painting: the Sharpen goal card firs
  });
  const root=await projectFolder();
  try {
+  await h.runtime.setExecutionSettings({sharpen_goal:'ask'});   // the cards (Always is the default)
   await h.runtime.openFolder({path:root});
   await h.start('agent','Paint this folder.',{mode:'new',width:6000,height:4500});
   await h.runtime.prompt('',{start_plan:true});
@@ -3698,6 +3699,79 @@ test('Start painting a folder plan on a new painting: the Sharpen goal card firs
   assert.match(latestUserText(painters[0].req),/PROJECT FOLDER MOVE[^\n]*paint_from_reference/);
   assert.equal(h.runtime.goal.messages.filter(m=>m.role==='user' && /Start painting|Paint step 1/.test(m.text)).length<=1,true,'the held request is not remembered twice');
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+// Always sharpen (the artist, 2026-10-25: "the underpainting waits for sharpening to finish and it's by default always"):
+// no card; the sharpening starts when the folder is opened, Plan Start's underpainting waits for it with its progress on
+// the status line, and Stop ends the wait. A fake sharpener stands in for the model.
+async function alwaysSharpenHarness(){
+ const painters=[];
+ let h, release;
+ const released=new Promise(resolve=>{release=resolve;});
+ h=await harness(req=>{
+  const names=req.tools.map(t=>t.function.name);
+  if(names.includes('propose_plan')) return {content:'Here is the plan.'};
+  const move=h.runtime.currentMove;
+  if(!names.includes('paint_batch') || !move || move.finished) return {content:'Done.'};
+  if(!painters.some(p=>p.move===move.number)) { painters.push({move:move.number,req}); return call('paint_batch',{summary:'Step',actions:[{tool:'paint_pass',arguments:{...pass,name:'Step '+move.number}}]}); }
+  return call('finish_move',{summary:'Painted step '+(move.step+1)});
+ },async(operation,params,_study,id)=>{
+  if(operation==='paint_pass') return paintResult(h,id);
+  if(operation==='decode_reference') return {width:1,height:1,sha256:params.sha256,rgba_base64:Buffer.alloc(4).toString('base64')};
+  return undefined;
+ });
+ const { goalSharpener } = await import('../src/goal-sharpen.ts');
+ const { UPSCALE_MODEL } = await import('../src/upscale/model.ts');
+ const { modelDirectory } = await import('../src/shapes/model.ts');
+ const spec={...UPSCALE_MODEL, files:UPSCALE_MODEL.files.map(f=>({...f,size:0}))}, dir=modelDirectory(h.output,spec);
+ await mkdir(dir,{recursive:true});
+ for (const file of spec.files) await writeFile(join(dir,file.name),Buffer.alloc(0));
+ await writeFile(join(dir,'verified.json'),JSON.stringify({revision:spec.revision,files:Object.fromEntries(spec.files.map(f=>[f.name,f.sha256]))}));
+ const service={async upscale(input,{onProgress,signal}){
+  onProgress(1,4); await released; onProgress(4,4);
+  if (signal?.aborted) throw new Error('stopped');
+  for (const path of [input.outputs.full,input.outputs.reference,input.outputs.compare]) await writeFile(path,sizedPng(4,4));
+  return {ms:1000,load_ms:10,peak_mb:1,provider:'cpu',tiles:1,ms_per_tile:1000,full:{width:4,height:4},reference:{width:4,height:4,path:input.outputs.reference,bytes:9},compare:{width:4,height:4,crop:[0,0,1]}};
+ }};
+ h.runtime.goalSharpen=goalSharpener(h.runtime.sharpenHost(),{spec,service,download:async()=>{throw new Error('no download');}});
+ return {h,painters,release};
+}
+const until=async(check,tries=300)=>{for (let i=0;i<tries && !check();i++) await new Promise(resolve=>setTimeout(resolve,20));};
+
+test('Always sharpen: no card; Plan Start’s underpainting waits for the sharpening, its progress on the status line, then reads the sharpened goal',{timeout:60000},async()=>{
+ const {h,painters,release}=await alwaysSharpenHarness();
+ const root=await projectFolder();
+ try {
+  await h.runtime.openFolder({path:root});
+  await h.start('agent','Paint this folder.',{mode:'new',width:6000,height:4500});
+  assert.ok(h.runtime.goalSharpen.running(),'started with the chat, while the plan was made');
+  const run=h.runtime.prompt('',{start_plan:true});
+  await until(()=>h.events.some(e=>e.type==='goal_sharpen_progress' && /^Sharpening the goal for the underpainting/.test(e.message)));
+  assert.ok(h.events.some(e=>e.type==='goal_sharpen_progress' && /^Sharpening the goal for the underpainting: 25%/.test(e.message)),'progress names the underpainting');
+  assert.equal(h.events.filter(e=>e.type==='goal_sharpen_offer' || e.type==='goal_sharpen_review').length,0,'no cards');
+  assert.equal(painters.length,0,'the underpainting waits');
+  release(); await run;
+  await until(()=>painters.length && !h.runtime.busy);
+  assert.equal(painters.length,1,'then it paints');
+  const goal=h.runtime.study.references.find(r=>r.source==='folder' && r.role==='reference');
+  assert.ok(goal.sharpened,'from the sharpened goal'); assert.equal(goal.width,4);
+ } finally {release(); await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
+test('Always sharpen: Stop while the underpainting waits for the sharpening ends the wait; nothing paints',{timeout:60000},async()=>{
+ const {h,painters,release}=await alwaysSharpenHarness();
+ const root=await projectFolder();
+ try {
+  await h.runtime.openFolder({path:root});
+  await h.start('agent','Paint this folder.',{mode:'new',width:6000,height:4500});
+  assert.ok(h.runtime.goalSharpen.running(),'started with the chat, while the plan was made');
+  const run=h.runtime.prompt('',{start_plan:true});
+  await until(()=>h.events.some(e=>e.type==='goal_sharpen_progress' && /for the underpainting/.test(e.message)));
+  h.runtime.stop(); await run;
+  assert.equal(painters.length,0);
+  assert.match(h.events.filter(e=>e.type==='status').at(-1).message,/Stopped while the goal image was sharpening/);
+  release(); await h.runtime.goalSharpen.running();
+ } finally {release(); await h.close(); await rm(root,{recursive:true,force:true});}
 });
 
 test('naming an element while the underpainting is still open adds its step but paints the underpainting first; negated mentions add nothing',{timeout:30000},async()=>{
@@ -4659,6 +4733,7 @@ test('goal likeness policy: Luna off leaves a typed move measure only; a folder 
 test('paint_finish reads the goal where it is placed, and only over a kept whole underpainting',{timeout:30000},async()=>{
  const h=await harness(()=>({content:'Hello.'}),async()=>undefined);
  try {
+  await h.runtime.setExecutionSettings({sharpen_goal:'ask'});   // an unsharpened goal the Sharpen card may still be offered for
   const goalPath=join(h.output,'goal.png'); await writeFile(goalPath,sizedPng(30,40));
   await h.start('ask','Hello',{references:[{path:goalPath,purpose:'composition'}]});
   const goal=h.runtime.study.references[0], canvas={width:768,height:1024,revision:'r'};
@@ -4701,6 +4776,7 @@ test('Start painting at a folder plan\u2019s Finish step: the Sharpen goal card 
  });
  const root=await projectFolder();
  try {
+  await h.runtime.setExecutionSettings({sharpen_goal:'ask'});   // the cards (Always is the default)
   await h.runtime.openFolder({path:root});
   await h.start('agent','Paint this folder.',{mode:'new',width:6000,height:4500});
   h.runtime.goal.done_steps=[0]; h.runtime.goal.current_step=1;
@@ -4716,6 +4792,7 @@ test('a goal the artist attaches later, of the canvas’s proportions and enlarg
  const h=await harness(()=>({content:'Hello.'}),async()=>undefined);
  try {
   await h.start('ask','Hello');
+  await h.runtime.setExecutionSettings({sharpen_goal:'ask'});
   const goalPath=join(h.output,'final_goal.png'); await writeFile(goalPath,sizedPng(30,40));
   await h.runtime.addReferences([{path:goalPath,purpose:'general'}]);
   for (let i=0;i<200 && !h.events.some(e=>e.type==='goal_sharpen_offer');i++) await new Promise(resolve=>setTimeout(resolve,10));
@@ -4734,6 +4811,7 @@ test('refining a canvas that matches an enlarged, unsharpened goal: the painter 
   return {status:'ok',grid:params.grid,ms:1,lab_base64:Buffer.from(lab.buffer).toString('base64')};
  });
  try {
+  await h.runtime.setExecutionSettings({sharpen_goal:'ask'});   // an unsharpened goal the Sharpen card may still be offered for
   const goalPath=join(h.output,'goal.png'); await writeFile(goalPath,sizedPng(30,40));
   await h.start('ask','Hello',{references:[{path:goalPath,purpose:'composition'}]});
   const view=join(h.runtime.study.directory,'view.png'); await writeFile(view,sizedPng(3,4));

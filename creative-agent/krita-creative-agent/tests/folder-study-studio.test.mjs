@@ -50,7 +50,7 @@ async function harness(respond, { studyReader, studyModel } = {}) {
     return operation === 'end' ? { status: 'ok' } : observation;
   } };
   const capabilities = { async initialize() {}, status() { return { status: 'verified', route_verified: true, images_supported: true, tools_supported: true }; }, async verify() { return { route_verified: true, cached: true }; }, async invalidate() {} };
-  const runtime = new StudioRuntime({defaultPlanner:null, root: output, config: { output }, models, bridge, capabilities, tracing: recordingTracing(), emit: e => events.push(e), studyReader, studyModel });
+  const runtime = new StudioRuntime({defaultPlanner:null,sharpenModel:{download:async()=>{throw new Error('No model downloads in tests.');},service:{upscale:async()=>{throw new Error('No sharpening in tests.');}}}, root: output, config: { output }, models, bridge, capabilities, tracing: recordingTracing(), emit: e => events.push(e), studyReader, studyModel });
   return { runtime, requests, calls, events, output,
     start: (mode, prompt = 'Hello') => runtime.start({ provider: 'local-test', model: 'vision-test', chat_mode: mode, prompt, mode: 'copy' }),
     async close() { if (runtime.busy) runtime.stop(); await runtime.writeQueue; await runtime.end().catch(() => {}); runtime.dispose(); server.closeAllConnections(); await new Promise(r => server.close(r)); await rm(output, { recursive: true, force: true }); } };

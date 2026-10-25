@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { executionSettings, thinkingLevel } from '../src/execution-settings.mjs';
 import { StudioRuntime } from '../src/studio.mjs';
 test('execution defaults preserve one painter and capability-aware reasoning',()=>{
- assert.deepEqual(executionSettings(),{concurrency:1,reasoning:'auto',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,auto_approve:'off',guides:true,reference_first:true,assets:'codex',ai_images:0,preview_additions:false,keep_screen_awake:false,sharpen_goal:'ask',view_size:'auto',planner_model:'default',study_folder:true,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
+ assert.deepEqual(executionSettings(),{concurrency:1,reasoning:'auto',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,auto_approve:'off',guides:true,reference_first:true,assets:'codex',ai_images:0,preview_additions:false,keep_screen_awake:false,sharpen_goal:'always',view_size:'auto',planner_model:'default',study_folder:true,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
  assert.equal(thinkingLevel(executionSettings(),{reasoning:true}),'low');
  assert.equal(thinkingLevel(executionSettings({reasoning:'high'}),{reasoning:true}),'high');
  assert.equal(thinkingLevel(executionSettings({reasoning:'high'}),{reasoning:false}),'off');
@@ -61,14 +61,15 @@ test('Auto reasons at medium for the plan and the review and at low while painti
  assert.deepEqual(set,['medium','low']);
 });
 
-test('Sharpen small goal images: Ask by default, Always or Never; one schema entry the panel builds from',async()=>{
+test('Sharpen the goal: Always by default (the artist, 2026-10-25), Ask or Never; one schema entry the panel builds from',async()=>{
  const { panelSchema } = await import('../src/settings-schema.mjs');
- assert.equal(executionSettings().sharpen_goal,'ask');
+ assert.equal(executionSettings().sharpen_goal,'always');
+ assert.equal(executionSettings({sharpen_goal:'ask'}).sharpen_goal,'ask');
  assert.equal(executionSettings({sharpen_goal:'never'}).sharpen_goal,'never');
- assert.throws(()=>executionSettings({sharpen_goal:'sometimes'}),/Sharpen small goal images: choose Ask, Always or Never/);
+ assert.throws(()=>executionSettings({sharpen_goal:'sometimes'}),/Sharpen the goal: choose Always, Ask or Never/);
  const field=panelSchema().find(f=>f.key==='sharpen_goal');
- assert.equal(field.label,'Sharpen small goal images');
- assert.deepEqual(field.options.map(o=>o.value),['ask','always','never']);
+ assert.equal(field.label,'Sharpen the goal');
+ assert.deepEqual(field.options.map(o=>o.value),['always','ask','never']);
  assert.match(field.tooltip,/nothing is uploaded/i);
 });
 

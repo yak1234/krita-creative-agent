@@ -52,11 +52,12 @@ export const SETTINGS = Object.freeze([
   { key: 'keep_screen_awake', type: 'boolean', default: false, panel: 'generic', control: 'checkbox', label: 'Screen', accessible: 'Keep the screen awake while painting',
     error: 'keep_screen_awake must be true or false.', options: [[false, 'Let the screen sleep'], [true, 'Keep the screen awake while painting']],
     tooltip: 'Krita can only paint while its window is active, so Autopilot pauses when the screen sleeps. With this on, the screen stays awake only while a run is painting, and the panel shows it.' },
-  // Sharpen goal (goal-sharpen.ts): a project folder's goal image enlarged more than 2x onto the canvas is offered a local 4x
-  // sharpening (Real-ESRGAN, on this computer). Ask by default: the artist sees the result before it is used.
-  { key: 'sharpen_goal', type: 'choice', default: 'ask', panel: 'generic', label: 'Sharpen small goal images', accessible: 'Sharpen small goal images',
-    error: 'Sharpen small goal images: choose Ask, Always or Never.', options: [['ask', 'Ask'], ['always', 'Always: sharpen and use it'], ['never', 'Never']],
-    tooltip: 'When a project folder\'s goal image is more than 2x smaller than the canvas, detail blurs. Toska can sharpen it 4x on this computer with Real-ESRGAN (nothing is uploaded; a one-time 62 MB model download). Ask shows the result side by side before it is used.' },
+  // Sharpen goal (goal-sharpen.ts): a goal image enlarged more than 2x onto the canvas is sharpened 4x on this computer
+  // (Real-ESRGAN). Always by default (the artist, 2026-10-25: "the underpainting waits for sharpening to finish and it's by
+  // default always"): it starts as soon as the goal is known and every move that reads the goal waits for it. Ask is the cards.
+  { key: 'sharpen_goal', type: 'choice', default: 'always', panel: 'generic', label: 'Sharpen the goal', accessible: 'Sharpen the goal',
+    error: 'Sharpen the goal: choose Always, Ask or Never.', options: [['always', 'Always'], ['ask', 'Ask'], ['never', 'Never']],
+    tooltip: 'When the goal image is more than 2x smaller than the canvas, detail blurs. Toska sharpens it 4x on this computer with Real-ESRGAN (nothing is uploaded; a one-time 62 MB model download). Always sharpens it as soon as the goal is known and the underpainting waits for it; Ask shows a card, then the result side by side before it is used; Never paints from the goal as it is.' },
   // Sharper eyes (view-size.ts; luna-goal-reviewer goal 3, the artist 2026-10-24): the canvas view's long side. Auto is
   // what the painter's model reads, measured by the resolution probe (at most 2000 px: Pi shrinks anything larger), else the size used before.
   { key: 'view_size', type: 'choice', default: 'auto', panel: 'generic', label: 'Canvas view size', accessible: 'Canvas view size',

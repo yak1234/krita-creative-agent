@@ -5,8 +5,13 @@
 // goal, else an attached goal reference of the canvas's proportions; finish-stage fix 4, approved 2026-10-24: an attached
 // final_goal.png on a canvas underpainted in an earlier chat got no card) would be enlarged more than ENLARGEMENT onto the
 // canvas, the chat offers once per goal (by content hash) to sharpen it 4x on this computer with
-// Real-ESRGAN x4plus (upscale/), nothing uploaded. The setting "Sharpen small goal images" (settings-schema.mjs
-// sharpen_goal) decides: Ask (the default) offers a card, Always sharpens and uses it without asking, Never does neither.
+// Real-ESRGAN x4plus (upscale/), nothing uploaded. The setting "Sharpen the goal" (settings-schema.mjs sharpen_goal)
+// decides: Always (the default since 2026-10-25) sharpens as soon as the goal is known and uses it without asking, Ask
+// offers a card, Never does neither.
+// Always sharpen (the artist, 2026-10-25: "the underpainting waits for sharpening to finish and it's by default always"):
+// every move that reads the goal waits for a sharpening in progress (waitForGoal, gate), with its progress on the status
+// line; Stop ends the wait; a failure paints from the original, said once. The time is the goal's megapixels at this
+// computer's measured seconds per megapixel (goal-sharpen.json), else DEFAULT_SECONDS_PER_MP.
 //   offer card [Sharpen] [Use as is]  ->  progress on the Now card (Stop cancels)  ->  side by side [Use sharpened] [Keep original]
 // - The result is cached in the chat folder (goal-sharpen/), never in the artist's folder. The goal reference becomes the
 //   sharpened picture, whole when the reference tools read it (TRANSFER_PIXELS and TRANSFER_BYTES, reference-limits.ts),
@@ -20,9 +25,8 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { TRANSFER_BYTES, TRANSFER_PIXELS } from './closeups.ts';
 import { downloadBytes, downloadModel, modelDirectory, modelReady, type ModelSpec } from './shapes/model.ts';
-import { tilePlan } from './upscale/image.ts';
-import { MAX_INPUT_PIXELS, TILE_PAD } from './upscale/core.ts';
-import { SCALE, TILE, UPSCALE_MODEL } from './upscale/model.ts';
+import { MAX_INPUT_PIXELS } from './upscale/core.ts';
+import { UPSCALE_MODEL } from './upscale/model.ts';
 import { UpscaleError, upscaleService, type UpscaleReply, type UpscaleService } from './upscale/index.ts';
 
 export type SharpenSetting = 'ask' | 'always' | 'never';
@@ -102,7 +106,7 @@ export function noMoreDetailNote({ text, distance, enlargement, sharpened, offer
   if (sharpened || !(enlargement > ENLARGEMENT) || distance === null || !(distance <= MATCHED_DE) || !refineRequested(text)) return null;
   return `GOAL RESOLUTION: the canvas already matches the goal image at the goal\u2019s own resolution (goal likeness \u0394E ${distance.toFixed(1)}), and `
     + `the goal image is drawn ${enlargement.toFixed(1)}x larger than it is, so it has no more detail to give here. Tell the artist so in a sentence`
-    + (offer ? ' and offer to sharpen the goal image 4x (the Sharpen goal card beside the chat, or Settings: Sharpen small goal images)' : '')
+    + (offer ? ' and offer to sharpen the goal image 4x (the Sharpen goal card beside the chat, or Settings: Sharpen the goal)' : '')
     + '; do not invent detail with typed strokes. paint_finish and paint_accents still work from the goal where the canvas lacks what it shows.';
 }
 
@@ -138,14 +142,19 @@ export function sharpenedContext(reference: Pick<GoalReference, 'width' | 'heigh
     note: `The goal image was sharpened: its pixels are now ${reference.width} x ${reference.height} (they were ${was.width} x ${was.height}). Give its source rects in the new pixels: multiply any earlier rect by ${scale}.` };
 }
 
-/** About how long sharpening takes, in seconds rounded to 5: tiles at the last measured speed (else a cautious guess), the
- * model's load and the files. */
-export function estimateSeconds(width: number, height: number, { msPerTile, platform = process.platform }: { msPerTile?: number; platform?: NodeJS.Platform } = {}): number {
-  const tiles = tilePlan(width, height, { tile: TILE, pad: TILE_PAD }).length;
-  const perTile = msPerTile ?? (platform === 'darwin' ? 80 : 1500);
-  const seconds = tiles * perTile / 1000 + 4 + width * height * SCALE * SCALE / 8e6;
+/** Seconds per megapixel of the goal before this computer has sharpened anything: the live run (2026-10-25, a 1448 x 1086
+ * goal, 1.6 MP, in about 220 s on a Mac) rounded up. The measured speed replaces it after the first run, whatever provider
+ * (CPU, Core ML) the run used: the measurement is of this computer and its provider. */
+export const DEFAULT_SECONDS_PER_MP = 140;
+const LOAD_SECONDS = 5;
+/** About how long sharpening takes, in seconds rounded to 5: the goal's megapixels at the measured speed (else the
+ * default) and the model's load. */
+export function estimateSeconds(width: number, height: number, { secondsPerMp }: { secondsPerMp?: number } = {}): number {
+  const seconds = width * height / 1e6 * (secondsPerMp && secondsPerMp > 0 ? secondsPerMp : DEFAULT_SECONDS_PER_MP) + LOAD_SECONDS;
   return Math.max(5, Math.round(seconds / 5) * 5);
 }
+/** "about 15 s", "about 4 min". */
+export const duration = (seconds: number) => seconds < 90 ? `about ${seconds} s` : `about ${Math.round(seconds / 60)} min`;
 
 const sha256 = (data: Buffer) => createHash('sha256').update(data).digest('hex');
 const exists = async (path: string) => !!(await stat(path).catch(() => null));
@@ -155,24 +164,28 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
   const size_mb = Math.round(downloadBytes(spec) / 1e6);
   const hashes = new Map<string, { stamp: string; sha: string }>();
   let running: { sha: string; controller: AbortController; done: Promise<void> } | null = null, shown = new Set<string>(), shownFor: Study | null = null;
-  let gating = false;                                        // gate() waits for a sharpening: nothing paints, so the swap may happen
+  let gating = 0;                                            // moves waiting for a sharpening: nothing paints, so the swap may happen
+  let waitingFor: string | null = null;                      // what waits, for the progress line ("for the underpainting")
+  let sharpening: { id: string; done: number; total: number } | null = null;   // the tiles done, said again when a move starts waiting
+  const sharpeningWords = (done: number, total: number) => `Sharpening the goal ${waitingFor ? 'for the ' + waitingFor : 'image'}: ${Math.floor(done / Math.max(1, total) * 100)}%…`;
 
   const dataDir = () => host.dataDir();
   const modelDir = () => { const dir = dataDir(); if (!dir) throw new UpscaleError('model', 'Sharpening needs the companion’s data folder, and none is set.'); return modelDirectory(dir, spec); };
   const sharpen = service ?? upscaleService({ modelDir: async () => modelDir() });
 
-  async function choices(): Promise<{ choices: Record<string, { choice: 'sharpened' | 'original'; at: string }>; ms_per_tile?: number }> {
+  type Saved = { choices: Record<string, { choice: 'sharpened' | 'original'; at: string }>; seconds_per_mp?: number };
+  async function choices(): Promise<Saved> {
     const dir = dataDir();
     if (!dir) return { choices: {} };
-    try { const saved = JSON.parse(await readFile(join(dir, CHOICES_FILE), 'utf8')); return { choices: saved.choices ?? {}, ...(Number(saved.ms_per_tile) > 0 ? { ms_per_tile: Number(saved.ms_per_tile) } : {}) }; }
+    try { const saved = JSON.parse(await readFile(join(dir, CHOICES_FILE), 'utf8')); return { choices: saved.choices ?? {}, ...(Number(saved.seconds_per_mp) > 0 ? { seconds_per_mp: Number(saved.seconds_per_mp) } : {}) }; }
     catch { return { choices: {} }; }
   }
-  async function remember(change: { sha?: string; choice?: 'sharpened' | 'original'; ms_per_tile?: number }) {
+  async function remember(change: { sha?: string; choice?: 'sharpened' | 'original'; seconds_per_mp?: number }) {
     const dir = dataDir();
     if (!dir) return;
     const saved = await choices();
     if (change.sha && change.choice) saved.choices[change.sha] = { choice: change.choice, at: new Date().toISOString() };
-    if (change.ms_per_tile) saved.ms_per_tile = change.ms_per_tile;
+    if (change.seconds_per_mp) saved.seconds_per_mp = change.seconds_per_mp;
     await mkdir(dir, { recursive: true });
     const temporary = join(dir, CHOICES_FILE + '.' + process.pid);
     await writeFile(temporary, JSON.stringify({ version: 1, ...saved }, null, 2));
@@ -193,12 +206,12 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
     if (shown.has(key)) return;
     shown.add(key); host.emit(event);
   }
-  const offerEvent = (record: SharpenRecord, goal: GoalReference, ready: boolean, msPerTile?: number) => ({
+  const offerEvent = (record: SharpenRecord, goal: GoalReference, ready: boolean, secondsPerMp?: number) => ({
     type: 'goal_sharpen_offer', id: record.id, name: goal.name ?? 'the goal image', factor: record.factor,
-    seconds: estimateSeconds(goal.width ?? 0, goal.height ?? 0, { platform, ...(msPerTile ? { msPerTile } : {}) }), download_mb: ready ? 0 : size_mb,
+    seconds: estimateSeconds(goal.width ?? 0, goal.height ?? 0, { secondsPerMp }), download_mb: ready ? 0 : size_mb,
     model: 'Real-ESRGAN x4plus', licence: spec.licence, options: [...SHARPEN_ANSWERS.offer],
     message: `Your goal image is ${(record.factor ?? 0).toFixed(1)}x smaller than the canvas, so detail will blur. Sharpen it 4x on ${where} `
-      + `(about ${estimateSeconds(goal.width ?? 0, goal.height ?? 0, { platform, ...(msPerTile ? { msPerTile } : {}) })} s, nothing uploaded)?`
+      + `(${duration(estimateSeconds(goal.width ?? 0, goal.height ?? 0, { secondsPerMp }))}, nothing uploaded)?`
       + (ready ? '' : ` The first time downloads the sharpening model, Real-ESRGAN x4plus (${spec.licence}, ${size_mb} MB).`) });
   const reviewEvent = (record: SharpenRecord) => {
     const r = record.result!;
@@ -225,9 +238,13 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
       const factor = enlargement(goal, host.canvas());
       if (!(factor > ENLARGEMENT) || (goal.width ?? 0) * (goal.height ?? 0) > OFFER_PIXELS) return;
       const sha = await hashOf(goal.path), all = records(study), saved = await choices(), known = all[sha];
-      if (known?.state === 'review' && known.result) { show(study, known.id + ':review', reviewEvent(known)); return; }
+      if (known?.state === 'review' && known.result) {
+        if (host.setting() === 'always') { known.auto = true; await use(study, sha, known); return; }
+        show(study, known.id + ':review', reviewEvent(known)); return;
+      }
+      if (known?.state === 'offered' && host.setting() === 'always' && !running) { known.auto = true; await host.persist(); void start(sha); return; }
       if (known?.state === 'offered' || known?.state === 'cancelled') {
-        show(study, known.id, offerEvent(known, goal, await modelReady(modelDir(), spec).catch(() => false), saved.ms_per_tile)); return;
+        show(study, known.id, offerEvent(known, goal, await modelReady(modelDir(), spec).catch(() => false), saved.seconds_per_mp)); return;
       }
       if (known || running) return;                               // running, used, kept or failed: once per goal in a chat
       const choice = saved.choices[sha]?.choice;
@@ -236,18 +253,20 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
       all[sha] = record;
       if (choice === 'sharpened' || host.setting() === 'always') {
         record.auto = true; await host.persist();
-        say(`Your goal image is ${record.factor!.toFixed(1)}x smaller than the canvas: sharpening it 4x on ${where} (${choice === 'sharpened' ? 'you chose this for this goal before' : 'Settings: Sharpen small goal images'}).`);
+        say(`Your goal image is ${record.factor!.toFixed(1)}x smaller than the canvas: sharpening it 4x on ${where} (${duration(estimateSeconds(goal.width ?? 0, goal.height ?? 0, { secondsPerMp: saved.seconds_per_mp }))}; `
+          + `${choice === 'sharpened' ? 'you chose this for this goal before' : 'Settings: Sharpen the goal'}). Painting from the goal waits for it.`);
         void start(sha);
         return;
       }
       await host.persist();
-      show(study, record.id, offerEvent(record, goal, await modelReady(modelDir(), spec).catch(() => false), saved.ms_per_tile));
+      show(study, record.id, offerEvent(record, goal, await modelReady(modelDir(), spec).catch(() => false), saved.seconds_per_mp));
     } catch { /* no offer: the goal is used as it is */ }
   }
 
   function start(sha: string): Promise<void> {
     const controller = new AbortController();
-    const done = run(sha, controller.signal).finally(() => { if (running?.controller === controller) running = null; });
+    // Never rejects: a chat closed meanwhile (its records closed with it) leaves nothing to say.
+    const done = run(sha, controller.signal).catch(() => {}).finally(() => { if (running?.controller === controller) { running = null; sharpening = null; } });
     running = { sha, controller, done };
     return done;
   }
@@ -283,10 +302,11 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
       const outputs = { full: stem + '.x4.png', reference: stem + '.reference.png', compare: stem + '.compare.png' };
       progress(0, 1, 'Sharpening the goal image…');
       const reply: UpscaleReply = await sharpen.upscale({ rgba: new Uint8Array(Buffer.from(decoded.rgba_base64, 'base64')), width: decoded.width, height: decoded.height,
-        outputs, max_pixels: TRANSFER_PIXELS, max_bytes: TRANSFER_BYTES }, { signal, onProgress: (done, total) => progress(done, total, `Sharpening the goal image: ${Math.floor(done / total * 100)}%…`) });
+        outputs, max_pixels: TRANSFER_PIXELS, max_bytes: TRANSFER_BYTES }, { signal, onProgress: (done, total) => { sharpening = { id: record.id, done, total }; progress(done, total, sharpeningWords(done, total)); } });
       const reference = { path: reply.reference.path, width: reply.reference.width, height: reply.reference.height, mimeType: 'image/png', bytes: reply.reference.bytes };
       record.result = { reference, full: { path: outputs.full, ...reply.full }, compare: outputs.compare, ms: reply.ms, peak_mb: reply.peak_mb, provider: reply.provider, tiles: reply.tiles };
-      await remember({ ms_per_tile: reply.ms_per_tile });
+      const megapixels = decoded.width * decoded.height / 1e6;
+      if (reply.ms > 0 && megapixels > 0) await remember({ seconds_per_mp: reply.ms / 1000 / megapixels });
       await finished(study, sha, record);
     } catch (error) {
       if (host.study !== study || study.goal_sharpen?.[sha] !== record) {   // the chat closed or the goal changed: nothing to say
@@ -302,7 +322,7 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
       if (stopped) {
         say('Sharpening stopped: the original goal image is used. You can sharpen it later from the card.');
         const saved = await choices().catch(() => ({ choices: {} }));
-        show(study, record.id, offerEvent(record, goal, await modelReady(modelDir(), spec).catch(() => false), (saved as { ms_per_tile?: number }).ms_per_tile));
+        show(study, record.id, offerEvent(record, goal, await modelReady(modelDir(), spec).catch(() => false), (saved as Saved).seconds_per_mp));
       } else { say(`${(error as Error).message.replace(/\.?$/, '.')} The original goal image is used.`); host.settled?.(); }
     }
   }
@@ -369,7 +389,7 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
    * artist; settled() says when it may start. Without `wait` (Autopilot) nothing waits for an answer: the card stays for
    * later. A sharpening that runs by itself (Always, or this goal sharpened before) is awaited in both, so the
    * underpainting reads the sharpened goal. Never throws: on any doubt the move paints from the goal as it is. */
-  async function gate({ wait }: { wait: boolean }): Promise<'paint' | 'wait'> {
+  async function gate({ wait, cancelled, signal, forWhat }: { wait: boolean } & WaitOptions): Promise<'paint' | 'wait' | 'stopped'> {
     try {
       await check();
       const study = host.study, goal = pictureGoal(study?.references, host.canvas());
@@ -378,12 +398,46 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
       if (!record) return 'paint';
       if (record.state === 'running' || running?.sha === sha) {
         if (wait && !record.auto) return 'wait';
-        gating = true;
-        try { await running?.done; } finally { gating = false; }
-        if (record.pending_use) { gating = true; try { await use(study, sha, record); } finally { gating = false; } }
+        if (await waitForGoal({ cancelled, signal, forWhat }) === 'stopped') return 'stopped';
       }
       return wait && ['offered', 'cancelled', 'review'].includes(record.state) ? 'wait' : 'paint';
     } catch { return 'paint'; }
+  }
+
+  type WaitOptions = { cancelled?: () => boolean; signal?: AbortSignal; forWhat?: string };
+  /** A move that reads the goal waits here for a sharpening in progress (Always, or one the artist started): 'ready' when
+   * there is nothing to wait for or it ended without changing the goal (a failure: the original, said once by run()),
+   * 'swapped' when the goal became the sharpened picture while it waited (a call written for the old pixels reads it
+   * again), 'stopped' when Stop (`cancelled`, `signal`) ended the wait; the sharpening goes on. Never throws. */
+  async function waitForGoal({ cancelled, signal, forWhat }: WaitOptions = {}): Promise<'ready' | 'swapped' | 'stopped'> {
+    const study = host.study, before = pictureGoal(study?.references, host.canvas()), was = before?.sharpened;
+    const swapped = () => { const now = pictureGoal(study?.references, host.canvas()); return !!now?.sharpened && now.sharpened !== was ? 'swapped' as const : 'ready' as const; };
+    try {
+      const current = running;
+      if (!study || !before || was || !current) {
+        const pending = Object.entries(study?.goal_sharpen ?? {}).find(([, r]) => r.pending_use);
+        if (study && pending) { gating++; try { await use(study, pending[0], pending[1]); } finally { gating--; } }
+        return swapped();
+      }
+      gating++; waitingFor = forWhat ?? waitingFor;
+      if (sharpening) host.emit({ type: 'goal_sharpen_progress', id: sharpening.id, done: sharpening.done, total: sharpening.total, message: sharpeningWords(sharpening.done, sharpening.total) });
+      try {
+        let timer: ReturnType<typeof setInterval> | undefined, onAbort: (() => void) | undefined;
+        const stop = new Promise<'stopped'>(resolve => {
+          if (signal?.aborted || cancelled?.()) { resolve('stopped'); return; }
+          onAbort = () => resolve('stopped');
+          signal?.addEventListener('abort', onAbort, { once: true });
+          if (cancelled) timer = setInterval(() => { if (cancelled()) resolve('stopped'); }, 50);
+        });
+        const outcome = await Promise.race([current.done.then(() => 'done' as const, () => 'done' as const), stop]);
+        if (timer) clearInterval(timer);
+        if (onAbort) signal?.removeEventListener('abort', onAbort);
+        if (outcome === 'stopped') return 'stopped';
+        const record = study.goal_sharpen?.[current.sha];
+        if (record?.pending_use) await use(study, current.sha, record);
+        return swapped();
+      } finally { gating--; if (!gating) waitingFor = null; }
+    } catch { return swapped(); }
   }
 
   /** Whether the Sharpen card may still be offered for `goal`: not with Never, not once it is sharpened, not after the artist
@@ -414,6 +468,6 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
       if (all && (['offered', 'running', 'review', 'cancelled'].includes(record.state) || record.pending_use)) delete all[sha];
   }
 
-  return { check, gate, answer, settle, status, goalChanged, offerable, stop() { running?.controller.abort(); }, running: () => running?.done ?? null };
+  return { check, gate, waitForGoal, answer, settle, status, goalChanged, offerable, stop() { running?.controller.abort(); }, running: () => running?.done ?? null };
 }
 export type GoalSharpener = ReturnType<typeof goalSharpener>;

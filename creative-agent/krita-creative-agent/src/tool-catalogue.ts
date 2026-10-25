@@ -33,7 +33,7 @@ export const MEASURED_PIXELS = 6000 * 4500;
 
 export const STAGE_TOOLS: readonly StageTool[] = Object.freeze([
   { stage: 'underpainting', tool: 'paint_from_reference', does: 'Transfers the goal image onto the whole canvas as dabs of paint: the colours and light of every element where the goal has them. The first stage.',
-    needs: 'A goal image (the folder’s). Nothing on the canvas first; the Sharpen goal card may come before it for a small goal.',
+    needs: 'A goal image (the folder’s). Nothing on the canvas first; a small goal is sharpened first (Settings: Sharpen the goal), and it waits for that.',
     measured: { seconds: [270, 600], source: 'live in Toska on the New Moscow copy, 2026-10-24 (builds c8e5851a, 9cf3db8b)' } },
   { stage: 'finish', tool: 'paint_finish', does: 'Blends the soft areas (sky, mist, water) in the underpainting’s own paint and restrokes the forms from the goal image, on the whole picture or inside an area.',
     needs: 'An underpainting on the canvas (it refuses a canvas without one).',

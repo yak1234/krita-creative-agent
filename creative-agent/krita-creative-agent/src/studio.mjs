@@ -54,7 +54,7 @@ import { openRoutesLine } from './open-routes.ts';
 import { scanFolder, readFolderText, elementStep, folderStepKind, elementsNamed, goalChoices, goalNamed, FOLDER_LIMITS, FOLDER_STEP_KINDS } from './project-folder.ts';
 import { stagePolicy, reviseStages, stagesNamed, orderStages, folderPlanSteps, shapePlan, nextStages, STAGE_CARD, stagesFromCard, PLAN_STAGES, planOrNot, PLAN_CARD, planFromCard, additionsNamed, refinePartsNamed } from './plan-stages.ts';
 import { refineGroups, partsOf, unionFound } from './refine-parts.ts';
-import { goalSharpener, sharpenedContext, noMoreDetailNote, refineRequested, ENLARGEMENT } from './goal-sharpen.ts';
+import { goalSharpener, sharpenedContext, noMoreDetailNote, refineRequested, pictureGoal, ENLARGEMENT } from './goal-sharpen.ts';
 import { sharpenFirstMessage } from './finish-tool.ts';
 import { ensureMassMaps } from './mass-map.ts';
 import { keptLayer, stackSummary } from './kept-layers.ts';
@@ -267,6 +267,8 @@ const LIKENESS_CACHE=8;
 const COMPARISON_DEADLINE_MS=6000;   // Luna's goal comparison, crops included: past this the batch is kept (review, 2026-10-24)
 // Tools whose calls an element step checks (element-step-rules.ts): colour splits and selections, typed strokes, and a batch of them.
 const ELEMENT_STEP_GUARDED=['refine_to_goal','select','split_by_color','paint_pass','paint_batch','painting_toolbox','paint_contours','paint_recipe','bucket_fill','enclose_and_fill','fill_region','apply_filter','create_layer'];
+// The moves that read the goal's pixels (the goal crops of brushwork and dabs wait in brushworkHost().goal).
+const GOAL_READING_TOOLS=['paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_finish','refine_to_goal','texture_architecture','paint_accents','paint_snow'];
 const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer','painting_toolbox','stamp_material',...CRAFT_OPERATIONS,'letter','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_finish','refine_to_goal','paint_accents','paint_snow'];
 /** Agent mode's request for "Paint this plan": the plan's current step, one move at a time. */
 // Project folder (B3): with a folder, Agent mode plans first. Nothing paints before the artist approves with Start painting.
@@ -319,7 +321,7 @@ export class StudioRuntime extends PaintingRuntime {
     // Plan step controls (plan-steps.ts): Skip / Restore, Good enough → next step, Met / Redo on the panel's plan list.
     this.planSteps = planStepControls(this.planStepHost());
     // Sharpen goal (goal-sharpen.ts): a folder goal enlarged more than 2x is offered a local 4x sharpening.
-    this.goalSharpen = options.goalSharpen ?? goalSharpener(this.sharpenHost());
+    this.goalSharpen = options.goalSharpen ?? goalSharpener(this.sharpenHost(), options.sharpenModel ?? {});   // tests fake the model
     // Folder study (folder-study-chat.ts): a note per folder image, read as text; tests give their own reader (null: none).
     this.studyReader = options.studyReader; this.studyModel = options.studyModel; this.folderStudy = new ChatFolderStudy(this.folderStudyHost());
     // /canvas-reference (canvas-reference.ts): an image model's picture of the canvas with an edit, a target only when used.
@@ -889,6 +891,7 @@ export class StudioRuntime extends PaintingRuntime {
     return {
       step: () => this.textureStep(this.paintedStepIndex()),
       goal: async () => {
+        await this.waitForSharpenedGoal('brushwork');               // a goal crop from the sharpened goal (goal-sharpen.ts)
         const canvas = this.decisionObservation ?? this.lastObservation, placed = canvas?.width ? await this.goalPlacement(canvas) : null;
         return placed ? goalSpec({reference:placed.reference, source:placed.mapping.source, target:placed.mapping.target, from:placed.mapping.from}) : null;
       },
@@ -2190,7 +2193,29 @@ export class StudioRuntime extends PaintingRuntime {
         throw new Error('This unchanged painting has already been reviewed. Address the reported visual issues with a substantial painting action before requesting another review. The available painting_toolbox can edit existing layers; do not repeat the same review request.');
       this.yieldRequested = true; return { message: 'Visual review will run after this turn.', reason: p.reason };
     });
+    // Always sharpen (goal-sharpen.ts, the artist 2026-10-25): a move that reads the goal waits for a sharpening in progress,
+    // its progress on the status line; Stop ends the wait. Outermost, so nothing (pacing, a job record) happens while it waits.
+    for (const tool of tools.filter(t=>GOAL_READING_TOOLS.includes(t.name))) {
+      const execute = tool.execute;
+      tool.execute = async (id, args, signal, ...rest) => {
+        const waited = await this.waitForSharpenedGoal(tool.name, signal);
+        if (waited === 'stopped') throw new Error('Stopped while the goal image was sharpening: nothing was painted.');
+        // A call written for the goal's old pixels: told the new size and asked again (a continued job resumes on the old picture).
+        if (waited === 'swapped' && tool.name !== 'continue_reference_painting') {
+          const goal = pictureGoal(this.study?.references, this.decisionObservation ?? this.lastObservation ?? this.canvasContext?.canvas), context = goal ? sharpenedContext(goal) : undefined;
+          const text = `Nothing was painted: the goal image was sharpened while this call waited for it. ${context?.note ?? ''} Call ${tool.name} again.`.replace(/\s+/g, ' ');
+          return { content:[{type:'text', text}], details:{goal_sharpened:true, ...(context ? {sharpened:context} : {})} };
+        }
+        return execute(id, args, signal, ...rest);
+      };
+    }
     return tools;
+  }
+  /** Waits for the goal's sharpening in progress before a move reads the goal (goal-sharpen.ts waitForGoal). */
+  waitForSharpenedGoal(name, signal) {
+    const step = this.sharpenStepNext();
+    const forWhat = step ?? ({paint_from_reference:'underpainting', paint_finish:'finish', refine_to_goal:'refinement', paint_accents:'accents'}[name] ?? 'next move');
+    return this.goalSharpen?.waitForGoal ? this.goalSharpen.waitForGoal({signal, cancelled:() => this.cancelRequested, forWhat}) : Promise.resolve('ready');
   }
   context(phase) {
     this.startMassMaps();
@@ -2518,7 +2543,7 @@ export class StudioRuntime extends PaintingRuntime {
       // active document stood in for a 6000 x 4500 painting not made yet), else the canvas the chat will paint on.
       canvas: () => this.study?.bound ? this.decisionObservation ?? this.lastObservation ?? this.canvasContext?.canvas ?? null
         : this.study?.canvas?.mode === 'new' ? this.study.canvas : this.canvasContext?.canvas ?? null,
-      setting: () => this.executionSettings?.sharpen_goal ?? 'ask',
+      setting: () => this.executionSettings?.sharpen_goal ?? 'always',
       busy: () => !!this.busy,
       dataDir: () => this.config?.data_dir ?? this.config?.output,
       emit: event => this.emit(event),
@@ -2541,7 +2566,10 @@ export class StudioRuntime extends PaintingRuntime {
   /** Agent mode: the underpainting or the finish waits for the Sharpen goal card (goal-sharpen.ts gate); true when it is held. */
   async holdForSharpen(text, command) {
     const kind = this.sharpenStepNext(command);
-    if (!kind || await this.goalSharpen.gate({wait:true}) !== 'wait') return false;
+    if (!kind) return false;
+    const gate = await this.goalSharpen.gate({wait:true, cancelled:() => this.cancelRequested, forWhat:kind});
+    if (gate === 'stopped') { this.setActivity('idle', `Stopped while the goal image was sharpening: the ${kind} did not start.`); return true; }
+    if (gate !== 'wait') return false;
     this.sharpenHeld = {text, command:{...command, chat_mode:'agent', sharpen_resumed:true}};
     this.setActivity('awaiting_user', `Answer the Sharpen goal card first: the ${kind} starts after it.`);
     return true;
@@ -3402,6 +3430,7 @@ export class StudioRuntime extends PaintingRuntime {
       this.setActivity('stopping', 'Finishing this brush action, then reading your message…'); return;
     }
     this.busy = true; this.cancelRequested = false; this.runError = undefined; this.emit({ type:'busy', busy:true });
+    void this.goalSharpen?.check().catch(() => {});      // Always: the sharpening starts as soon as the goal and the canvas are known
     if (this.mode==='autopilot') this.sleepGuard.start();
     if (command.canvas) this.setCanvasSelection(command.canvas);
     contextRequest ??= {selection:{...this.canvasSelection},region:structuredClone(this.regionSelection),ticket:this.contextTicket()};
@@ -3516,8 +3545,9 @@ export class StudioRuntime extends PaintingRuntime {
       if (this.mode === 'autopilot' && !this.cancelRequested && !this.runError && !openForArtist && this.goal.brief && proceed) {
         this.goal.approved_revision = this.goal.revision;
         this.goal.locked_requirements = [...this.goal.brief.requirements]; this.goal.character_records = structuredClone(this.goal.brief.characters ?? []);
-        if (this.sharpenStepNext()) await this.goalSharpen.gate({wait:false});   // Autopilot follows the setting: nothing waits for the card
-        await this.runGoal();
+        // Autopilot follows the setting: nothing waits for the card; a sharpening in progress is awaited (Stop ends it).
+        const kind = this.sharpenStepNext(), gate = kind ? await this.goalSharpen.gate({wait:false, cancelled:() => this.cancelRequested, forWhat:kind}) : 'paint';
+        if (gate !== 'stopped' && !this.cancelRequested) await this.runGoal();
       }
       if (this.runError && this.goal.status !== 'limited') this.goal.status = 'paused';
       if (this.goal.question) this.setActivity('awaiting_user', 'Your answer will guide the next step.');

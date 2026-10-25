@@ -10,7 +10,7 @@ import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS, mutates } 
 import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension } from './extensions.mjs';
 import { transferJobId, underpaintingState, underpaintingRefusal, closedNote, UNDERPAINTING_MOVE_NOTE } from './underpainting-move.ts';
 import { goalSpec } from './goal-spec.ts';
-import { refineToGoalNote } from './refine-goal.ts';
+import { refineToGoalNote, TOUCH_UP } from './refine-goal.ts';
 import { readMessage, messagePolicy } from './message-reading.ts';
 import { resolvedViewSide, resolvedCropSide, modelKey, VIEW_SIDE_TODAY } from './view-size.ts';
 import { addCloseupCrops, callArea, CROP_SIDE as CLOSEUP_SIDE } from './closeup-crops.ts';
@@ -264,7 +264,7 @@ const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','a
 // The plan follows the request (plan-from-request goals 1-3, approved 2026-10-24): folder_plan_draft holds the stages the
 // artist asked for, in the host's order, and the host keeps them so (plan-stages.ts shapePlan): the planner improves the
 // words, may regroup the refine steps' parts, and looks the tools up with painting_tool_help.
-const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist approves the plan with Start painting. folder_plan_draft holds the stages the artist asked for, in the order the host keeps (an underpainting before anything that needs one, Refine only after a whole-picture Finish, Accents last); plan_stages says which and why. First look up each stage tool the draft uses with painting_tool_help (no name: the catalogue with what each does, its rough time on this canvas and what it needs; a name: its full description), then call propose_plan with the draft\'s steps in its order, keeping each step\'s kind, tool and parts: the underpainting is a whole-picture reference transfer (paint_from_reference), the Finish blends the soft areas and restrokes the forms (paint_finish; keep its title exactly "Finish"), a "Refine: <parts>" step refines those elements inside their found area (refine_to_goal; keep the "Refine: " start of its title; regroup the parts by where they sit in the picture, neighbours together (the draft groups them by file order only), every element in exactly one of at most 7 groups), Accents paints the lights, darks and detail on the whole picture (paint_accents). Do not add a stage the draft does not hold: the artist asks for the next stages later. Add a step for an element (its scope is its file name, after the stages) only when the artist asks for that element by name; never repaint the elements one by one by default. The stages and their order are fixed; the wording is yours. The draft\'s done_when and checks are placeholders: before proposing, look at the goal image and each part\'s own image (view_reference; folder notes describe them), then write for every step what done looks like for those parts in this picture: done_when names the parts\' colours, light and the two or three details that must read crisply at full size, and checks (2 to 4) say what to see on the canvas, including what must stay soft or untouched (a halo, mist, a reflection). Never copy the placeholder wording. Never plan a step for an image marked excluded. Add a guides step only when the artist asks for guides. Then stop.\n';
+const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist approves the plan with Start painting. folder_plan_draft holds the stages the artist asked for, in the order the host keeps (an underpainting before anything that needs one, Refine only after a whole-picture Finish, Accents last); plan_stages says which and why. First look up each stage tool the draft uses with painting_tool_help (no name: the catalogue with what each does, its rough time on this canvas and what it needs; a name: its full description), then call propose_plan with the draft\'s steps in its order, keeping each step\'s kind, tool and parts: the underpainting is a whole-picture reference transfer (paint_from_reference), the Finish blends the soft areas and restrokes the forms (paint_finish; keep its title exactly "Finish"), "Refine to the goal" refines the whole picture once (refine_to_goal; keep its title exactly), then a "Refine: <parts>" step is a short touch-up of those elements inside their found area, only what the whole-picture refine left there (refine_to_goal; keep the "Refine: " start of its title; regroup the parts by where they sit in the picture, neighbours together (the draft groups them by file order only), every element in exactly one of at most 7 groups), Accents paints the lights, darks and detail on the whole picture (paint_accents). Do not add a stage the draft does not hold: the artist asks for the next stages later. Add a step for an element (its scope is its file name, after the stages) only when the artist asks for that element by name; never repaint the elements one by one by default. The stages and their order are fixed; the wording is yours. The draft\'s done_when and checks are placeholders: before proposing, look at the goal image and each part\'s own image (view_reference; folder notes describe them), then write for every step what done looks like for those parts in this picture: done_when names the parts\' colours, light and the two or three details that must read crisply at full size, and checks (2 to 4) say what to see on the canvas, including what must stay soft or untouched (a halo, mist, a reflection). Never copy the placeholder wording. Never plan a step for an image marked excluded. Add a guides step only when the artist asks for guides. Then stop.\n';
 // A plan step that names guides: the artist asked for them when approving it.
 const GUIDES_STEP = /\b(guides?|trac(e|ing)|block-in|construction lines?)\b/i;
 const FOLDER_ANSWERS = ['Follow the edited plan','Keep the current plan'];
@@ -1483,6 +1483,35 @@ export class StudioRuntime extends PaintingRuntime {
   /** The whole picture has had its Finish: the move that painted it (goal.whole_finish) not undone; for a chat from before,
    * a kept whole-picture Finish pass (finish_whole; a Finish pass recorded before the field existed counts: paint_finish then
    * had no detail and was called on the whole picture unless the artist had set Paint only here). */
+  /** Refine to the goal's touch-ups (refine-goal.ts; the artist, 2026-10-25): each call's levels by grid square are kept on
+   * the goal with its move; those of an undone move are forgotten. */
+  refineEntries() {
+    const undone=new Set((this.goal?.moves ?? []).filter(m=>m.status==='undone').map(m=>m.number));
+    return (this.goal?.refine_history ?? []).filter(e=>!(e.move!=null && undone.has(e.move)));
+  }
+  refineHistory() {
+    const entries=this.refineEntries();
+    if (!entries.length) return null;
+    const side=entries.at(-1).side, levels={};
+    for (const e of entries) if (e.side===side) for (const [k,v] of Object.entries(e.levels ?? {})) levels[k]=Math.max(levels[k] ?? 0, Number(v) || 0);
+    return {side, levels};
+  }
+  recordRefine(entry) {
+    if (!this.goal) return;
+    const history=(this.goal.refine_history ??= []);
+    history.push({...entry, ...(this.currentMove ? {move:this.currentMove.number} : {}), at:stamp()});
+    if (history.length > 40) history.splice(0, history.length - 40);
+    this.persist().catch(() => {});
+  }
+  /** A "Refine: <parts>" step after a kept whole-picture refine is a touch-up (TOUCH_UP); any other call has no limits. */
+  refineLimits() {
+    const index=this.mode === 'agent' ? this.currentMove?.step : this.study?.folder ? this.goal?.current_step : null;
+    return this.touchUpStep(index) ? {...TOUCH_UP} : null;
+  }
+  touchUpStep(index) {
+    const step=Number.isInteger(index) ? (this.goal?.brief?.steps ?? [])[index] : null;
+    return !!step && folderStepKind(step) === 'refine_part' && this.refineEntries().some(e=>e.whole);
+  }
   wholeFinished() {
     const mark=this.goal?.whole_finish;
     if (mark) { const move=(this.goal.moves ?? []).find(m=>m.number===mark.move); if (move?.status!=='undone') return true; }
@@ -2271,12 +2300,12 @@ export class StudioRuntime extends PaintingRuntime {
   /** The folder's elements as the plan names them (the artist's names, else the guesses). */
   folderElements() { return (this.folderIndex?.elements ?? []).filter(e => !this.folderStudy.excluded(e.name)).map(e => ({name:e.name, guess:String(this.folderGuessOf(e) || e.name)})); }   // excluded: out of the plan
   /** The plan the companion suggests for these stages (plan-stages.ts folderPlanSteps; the full plan by default): the
-   * underpainting from the goal image, the finish, a refine step per group of elements, then accents. */
+   * underpainting from the goal image, the finish, the whole-picture refine and a touch-up step per group of elements, then accents. */
   folderPlanDraft(stages = [...PLAN_STAGES]) {
     const index = this.folderIndex, name = basename(index.root);
-    const words = {underpainting:'the underpainting', finish:'the finish', refine:'refine part by part to the goal', accents:'accents'};
+    const words = {underpainting:'the underpainting', finish:'the finish', refine:'refine to the goal, then touch up part by part', accents:'accents'};
     const said = stages.map(stage => words[stage]), list = said.length > 1 ? said.slice(0, -1).join(', ') + ', then ' + said.at(-1) : said[0] ?? 'the underpainting';
-    const done = {underpainting:'underpainted from the goal image', finish:'finished (soft areas blended, forms in strokes)', refine:'refined to the goal at full size, part by part', accents:'its accents are crisp'};
+    const done = {underpainting:'underpainted from the goal image', finish:'finished (soft areas blended, forms in strokes)', refine:'refined to the goal at full size, then touched up part by part', accents:'its accents are crisp'};
     return normalizeBrief({title:name.slice(0,200), objective:`Paint ${name} from its goal image: ${list}; then the artist says what next.`, requirements:[], freedom:[],
       completion:[`The whole picture is ${stages.map(stage => done[stage]).join(', ')}.`], steps:folderPlanSteps(stages, refineGroups(this.folderElements()))});
   }
@@ -2377,7 +2406,7 @@ export class StudioRuntime extends PaintingRuntime {
     this.goal.status = 'ready'; await this.persist(); this.publish();
     const elements = this.goal.brief.steps.filter(step => folderStepKind(step) === 'element').length;
     const refines = this.goal.brief.steps.filter(step => folderStepKind(step) === 'refine_part').length;
-    const stagesSaid = stages.stages.map(stage => stage === 'refine' ? (refines ? `${refines} refine step${refines === 1 ? '' : 's'}, one a group of parts` : 'refine to the goal') : ({underpainting:'the underpainting', finish:'the finish', accents:'accents'})[stage]);
+    const stagesSaid = stages.stages.map(stage => stage === 'refine' ? (refines ? `refine to the goal, then ${refines} touch-up step${refines === 1 ? '' : 's'}, one a group of parts` : 'refine to the goal') : ({underpainting:'the underpainting', finish:'the finish', accents:'accents'})[stage]);
     this.setActivity('idle', `Plan ready: ${this.goal.brief.steps.length} move${this.goal.brief.steps.length === 1 ? '' : 's'}`
       + (elements ? `, ${elements} of them for the elements you asked for.` : `: ${listAnd(stagesSaid)}; then I ask you what next.`)
       + (stages.added.length ? ` (${stages.added.map(a => a.because).join('; ')}.)` : '')
@@ -2444,9 +2473,12 @@ export class StudioRuntime extends PaintingRuntime {
       if (guides) return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: the guides the step names (draw_guide, element "${name}") placed from ${goalText}. Paint only this step, then finish_move.\n`;
       const kind = folderStepKind(step);
       if (kind === 'finish') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: finish the underpainting on the whole picture with paint_finish (the soft areas blended in the underpainting's own paint, the forms restroked from ${goalText}). One call; then look at the canvas and finish_move. No typed strokes and no accents in this step.\n`;
-      if (kind === 'refine') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: refine the whole picture to ${goalText} with refine_to_goal (the host finds the regions still furthest from the goal at full size and refines each: a fine finish, then accents, finer where needed). One call; then look at the canvas and finish_move. No typed strokes and no other painting in this step.\n`;
+      if (kind === 'refine') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: refine the whole picture to ${goalText} with refine_to_goal (the host finds the regions still furthest from the goal at full size and refines each: a fine finish, then accents, finer where needed but not on soft areas, and never again where a pass gained nothing). One call; the "Refine: <parts>" steps after it only touch up what it leaves. Then look at the canvas and finish_move. No typed strokes and no other painting in this step.\n`;
       if (kind === 'refine_part') {
         const area = this.goal.paint_only_here;
+        // A touch-up after the whole-picture refine (refine-goal.ts TOUCH_UP); a part step of a plan without one refines in full.
+        const touchUp = this.touchUpStep(move.step);
+        if (area && touchUp) return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}": a touch-up of its parts after the whole-picture refine, with refine_to_goal inside the Paint only here area (${chipLine(area)}; refine_to_goal works in it by default). The host limits it to one round in ${TOUCH_UP.budget_minutes} minutes and paints only the regions there still above the bar, at the level the whole-picture refine has not given them; it may find nothing left. One call; then look at the canvas and finish_move. No typed strokes and no other painting in this step.\n`;
         if (area) return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}": refine its parts to ${goalText} with refine_to_goal inside the Paint only here area (${chipLine(area)}; refine_to_goal works in it by default: the regions there still furthest from the goal at full size, a fine finish, then accents, finer where needed). One call; then look at the canvas and finish_move. No typed strokes and no other painting in this step.\n`;
         return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}": the artist chose to refine without an area, so refine the whole picture to ${goalText} with refine_to_goal. One call; then look at the canvas and finish_move. No typed strokes and no other painting in this step.\n`;
       }
@@ -2568,7 +2600,7 @@ export class StudioRuntime extends PaintingRuntime {
     if (!this.study?.folder || !this.folderIndex?.elements?.length) return '';
     // The stages not in the plan yet come first (plan-from-request goal 1: "paint the underpainting", then the host asks).
     const next = nextStages(this.goal?.brief?.steps ?? []), offer = this.elementsToOffer();
-    if (next.length) return ` What next? ${listOr(next.map(stage => ({underpainting:'the underpainting', finish:'the finish', refine:'refine part by part', accents:'the accents'})[stage]))}: say which and I add it`
+    if (next.length) return ` What next? ${listOr(next.map(stage => ({underpainting:'the underpainting', finish:'the finish', refine:'refine to the goal, then part by part', accents:'the accents'})[stage]))}: say which and I add it`
       + (offer.length ? `; or name an element to refine (${listOr(offer)}).` : '.');
     const add = this.lunaMode() === 'guide' ? 'name one and I add its step' : 'name one and I ask before adding its step';
     return ' What should I refine next?' + (offer.length ? ' ' + listOr(offer) + `: ${add}, or type what to change.` : ' Type what to change.');

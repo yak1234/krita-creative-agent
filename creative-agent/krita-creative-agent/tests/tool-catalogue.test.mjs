@@ -30,7 +30,9 @@ test('the catalogue: each stage’s tool, what it does, its rough time on this c
   assert.deepEqual(catalogue.stages.map(s => [s.stage, s.tool]), [['underpainting', 'paint_from_reference'], ['finish', 'paint_finish'], ['refine', 'refine_to_goal'], ['accents', 'paint_accents']]);
   const finish = catalogue.stages[1];
   assert.match(finish.does, /blend/i); assert.match(finish.needs, /underpainting/i); assert.equal(finish.rough_time, '1-1.2 min');
-  assert.match(catalogue.stages[2].rough_time, /min/); assert.match(catalogue.stages[2].per_part, /share/);
+  assert.match(catalogue.stages[2].rough_time, /min/);
+  // The artist, 2026-10-25: one whole-picture refine, then each part step a short touch-up (at most one round, 3 minutes).
+  assert.match(catalogue.stages[2].per_part, /touch-up[^]*3 min/); assert.match(catalogue.stages[2].does, /whole picture once[^]*touch-up/);
   assert.deepEqual(catalogue.tools, [{ name: 'paint_batch', does: 'Several painting actions in one call.' }]);
   assert.match(catalogue.how, /painting_tool_help with a name/);
   assert.ok(STAGE_TOOLS.every(s => s.measured.source), 'every time says where it was measured');

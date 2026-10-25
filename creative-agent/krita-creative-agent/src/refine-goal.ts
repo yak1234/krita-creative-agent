@@ -17,6 +17,24 @@
 // Numbers, measured offline on the New Moscow 6000 x 4500 canvas export and its 4x-sharpened goal (finish-stage tasks 2):
 // regions scored 3.8-15 after the whole-picture Finish (median 7.7); the church went 8.5 -> 4.9 (fine) -> 2.7 (finer).
 // DONE_SCORE 4 is a little under what one fine pass leaves on a building, and what the soft sky already scores.
+//
+// Faster (the artist, 2026-10-25, approved "yes please"): live on New Moscow one "Refine: <parts>" step ran 7.5+ minutes
+// (a fine round over 96 squares, then finer over 83 with "14.6 → 14.6" and "4.7 → 4.7" beside "4.8 → 2.9"), so a plan of
+// six part steps would take 45-60 minutes. Three rules:
+// - No gain, no more: a region a pass took down by less than NO_GAIN, and less than NO_GAIN_SHARE of its difference, is
+//   not refined again (a finer pass repeats the same kind of strokes smaller: where fine changed nothing, it rarely does).
+// - Soft regions stop at fine: a region whose goal is mostly soft (the mean of the Finish's own soft mask over the square,
+//   finish_pass.soft_mask, at least SOFT_REGION: sky, mist, water, low structure) gets the fine pass only; finer draws
+//   1-2 px forms such a region does not have. The first map of a call asks for the shares (the goal does not change).
+// - Touch-ups: the plan refines the whole picture once ("Refine to the goal"); a "Refine: <parts>" step after it is a
+//   touch-up (the studio's refineLimits: TOUCH_UP, one round in a short budget) that starts each square at the level after
+//   the one the whole-picture refine gave it (refineHistory: the levels each call reached, by grid square, without those of
+//   undone moves), so it paints only what is still left. Fine again on a square paints the same strokes again.
+// Layers (the artist, 2026-10-25: 146 layers and 10.1 GiB after one refine step, "why does it suck at layer management
+// still"): a finish pass is a group of two baked layers and an accents pass a group of up to four, all written over whole
+// work squares. Each round ends with its finish passes flattened into one layer ("Refine N") and its accents passes into
+// another ("Refine N accents") by the plugin's flatten_passes (flatten_craft.py: the same picture, written only where it
+// holds paint), in the move's stage, so the move's Undo still hides it all. A refused flatten keeps the passes as they are.
 // The studio's native calls come in as dependencies, so this module imports no .mjs.
 import { Type, type Static } from 'typebox';
 import type { AgentToolResult, ToolDefinition } from '@earendil-works/pi-coding-agent';
@@ -46,11 +64,24 @@ export const REGION_ACCENTS = 40;
  * now a few finish passes and one accents pass. */
 export const BATCH_SHARE = 0.14;
 export const ACCENTS_A_PASS = 400;
+/** A pass that took a region's difference down by less than this, and by less than NO_GAIN_SHARE of it, did not help: the
+ * region is not refined again. The measure's own spread is about 0.1 (a square measured twice after unrelated passes nearby);
+ * 0.3 is three times that, and 5% keeps a slow but real gain on a far region (12.0 → 11.3) going. */
+export const NO_GAIN = 0.3;
+export const NO_GAIN_SHARE = 0.05;
+/** A region whose goal is at least this soft on average (the Finish's soft mask, 0-1) gets the fine pass only: mostly soft. */
+export const SOFT_REGION = 0.5;
+/** A refine step for some parts after the whole-picture refine: one round in this many minutes (the studio sets it). */
+export const TOUCH_UP = Object.freeze({ rounds: 1, budget_minutes: 3 });
 
 type Rect = [number, number, number, number];
 type Result = AgentToolResult<unknown>;
-type Cell = { rect: Rect; colour: number; edges: number; score: number };
-export type RegionRecord = { rect: Rect; detail: string; before: number; after: number; strokes: number; accents: number };
+type Cell = { rect: Rect; colour: number; edges: number; score: number; soft?: number };
+export type RegionRecord = { rect: Rect; detail: string; before: number; after: number; strokes: number; accents: number; stalled?: true };
+/** The level each grid square (column,row of `side` squares from the canvas origin) has had: LEVELS.length when it is done
+ * (every level, or a pass without gain). */
+export type RefineHistory = { side: number; levels: Record<string, number> };
+export type RefineLimits = { rounds?: number; budget_minutes?: number };
 export type RoundRecord = { round: number; seconds: number; regions: RegionRecord[] };
 
 const rect = (description: string) => Type.Array(Type.Integer({ minimum: 0, maximum: 100000 }), { minItems: 4, maxItems: 4, description });
@@ -70,14 +101,19 @@ export type RefineRuntime = {
   paintOnlyArea?(): { mask_path: string; bounds: number[] } | null;
   /** Milliseconds for the budget (tests); Date.now by default. */
   refineClock?(): number;
+  /** The studio's limits for this call (TOUCH_UP in a part's step after the whole-picture refine), or null. */
+  refineLimits?(): RefineLimits | null;
+  /** The levels earlier refines in this chat reached (kept moves only), and where this call's are recorded. */
+  refineHistory?(): RefineHistory | null;
+  recordRefine?(entry: RefineHistory & { whole: boolean }): void;
 };
 export type RefineDependencies = {
   /** The chat's placed goal and whether the whole picture is underpainted (studio.mjs finishGoal). */
   goal(canvas: { width: number; height: number }): Promise<{ goal: PlacedGoal | null; underpainted: boolean }>;
   /** The studio's Sharpen-first refusal, as paint_finish's (finish-tool.ts). */
   sharpenFirst?(goal: PlacedGoal): Promise<string | null>;
-  /** The plugin's reversible passes: `finish` and `accents`. */
-  native(operation: 'finish' | 'accents', id: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<any>;
+  /** The plugin's reversible passes: `finish` and `accents`, and flatten_passes, which joins a round's passes. */
+  native(operation: 'finish' | 'accents' | 'flatten_passes', id: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<any>;
 };
 
 // The whole picture, or a word that names it: "refine the painting", "closer to the final", "add more detail".
@@ -146,9 +182,11 @@ export function refineTools(runtime: RefineRuntime, dependencies: RefineDependen
     name: 'refine_to_goal', label: 'Refining to the goal', executionMode: 'sequential', parameters: refineSchema,
     description: 'After the whole-picture paint_finish: brings the painting to the goal image region by region, host-driven. The host '
       + 'compares the canvas with the goal at full size, takes the regions still furthest from it (colour and crispness), worst first, '
-      + 'and runs a fine finish then accents on each, a finer finish where fine was not enough, until every region is close or the '
-      + `budget is spent (${BUDGET_MINUTES} minutes by default). One call; the move's Undo removes it all. Use it for "refine", "closer `
-      + 'to the final", "finish it" on the whole picture; for one part with an area use paint_finish detail fine and paint_accents there.',
+      + 'and runs a fine finish then accents on each, a finer finish where fine was not enough (never on mostly soft areas, never again '
+      + `where a pass gained nothing), until every region is close or the budget is spent (${BUDGET_MINUTES} minutes by default); each `
+      + 'round ends as one finish layer and one accents layer. In a "Refine: <parts>" step after the whole-picture refine the host makes it '
+      + `a touch-up (one round, ${TOUCH_UP.budget_minutes} minutes, only what is left). One call; the move's Undo removes it all. Use it for `
+      + '"refine", "closer to the final", "finish it" on the whole picture; for one part with an area use paint_finish detail fine and paint_accents there.',
     execute: async (id: string, args: RefineArgs, signal?: AbortSignal): Promise<Result> => {
       signal?.throwIfAborted();
       const clock = () => (runtime.refineClock ? runtime.refineClock() : Date.now());
@@ -169,21 +207,47 @@ export function refineTools(runtime: RefineRuntime, dependencies: RefineDependen
       const side = Math.max(128, Math.round(REGION * Math.max(canvas.width, canvas.height) / 6000));
       // A batch of squares is one finish pass: at most BATCH_SHARE of the canvas (under finish_pass.py's 15% for fine).
       const batchSize = Math.max(1, Math.floor(BATCH_SHARE * canvas.width * canvas.height / (side * side)));
-      const budget = (args.budget_minutes ?? BUDGET_MINUTES) * 60000, maxStrokes = args.max_strokes ?? MAX_STROKES;
+      const limits = runtime.refineLimits?.() ?? null, touchUp = !!limits;
+      const budget = Math.min(args.budget_minutes ?? BUDGET_MINUTES, limits?.budget_minutes ?? Infinity) * 60000, maxStrokes = args.max_strokes ?? MAX_STROKES;
+      const maxRounds = limits?.rounds ?? Infinity;
       const protectedAreas = seen.protected_areas ?? [];
       // A square mostly in protected areas or outside the Paint only here area is left (Krita keeps those pixels anyway).
       const usable = (r: Rect) => share(r, areaMask) >= 0.5 && protectedAreas.every(p => overlap(r, p.bounds) <= 0.5 * r[2] * r[3]);
       const speck = speckSize(side, 1);
-      const levels = new Map<string, number>(), rounds: RoundRecord[] = [], after = new Map<string, number>();
-      let strokes = 0, passes = 0, ended = '', last: Cell[] = [];
+      // Levels by grid square: what earlier refines reached (on this grid), then this call's.
+      const grid = (r: Rect) => `${Math.floor(r[0] / side)},${Math.floor(r[1] / side)}`;
+      const history = runtime.refineHistory?.() ?? null;
+      const levels = new Map<string, number>(history?.side === side ? Object.entries(history.levels).map(([k, v]) => [k, Number(v) || 0]) : []);
+      const level = (c: Cell) => levels.get(grid(c.rect)) ?? 0;
+      const softness = new Map<string, number>(), stalled = new Set<string>();
+      const top = (c: Cell) => (softness.get(grid(c.rect)) ?? 0) >= SOFT_REGION ? 1 : LEVELS.length;
+      const open = (c: Cell, score: number) => score > DONE_SCORE && level(c) < top(c) && usable(c.rect);
+      const rounds: RoundRecord[] = [], after = new Map<string, number>();
+      let strokes = 0, passes = 0, ended = '', last: Cell[] = [], removed = 0;
+      const flattenErrors: string[] = [];
+      // A pass the plugin recorded (a finish that painted nothing leaves none).
+      const recorded = (reply: any) => { const r = reply?.details ?? reply ?? {}; return !!r.layer_id && !r.contribution_removed; };
+      /** The round's passes of one kind, flattened into one layer (see the header); a refusal keeps them. */
+      const flatten = async (ids: string[], name: string, key: string) => {
+        if (!ids.length || signal?.aborted) return;
+        try {
+          const reply = await dependencies.native('flatten_passes', key, { pass_ids: ids, name }, signal);
+          removed += Number((reply?.details ?? reply)?.removed_layers ?? 0) - 1;
+        } catch (error) { flattenErrors.push(`${name}: ${(error as Error)?.message ?? error}`); }
+      };
+      runtime.emit({ type: 'status', phase: 'painting', message: `Refine: comparing ${touchUp ? 'this area' : 'the painting'} with the goal at full size…` });
       const measure = async (r: Rect) => { const m = await runtime.callNative('area_likeness', { goal: spec, rect: r }); return round1(Number(m.colour) + Number(m.edges)); };
       const stopped = () => `Stopped by the artist after ${passes} regions: what is refined is kept.`;
-      rounds: for (let round = 1; ; round++) {
-        const map = await runtime.callNative('refine_map', { goal: spec, rect: area, cell: side }) as { cells: Cell[] };
+      rounds: for (let round = 1; round <= maxRounds; round++) {
+        // Nothing the last map showed can be refined further: no new map (each is a pass over the whole area).
+        if (round > 1 && !last.some(c => open(c, after.get(c.rect.join(',')) ?? c.score))) break;
+        const map = await runtime.callNative('refine_map', { goal: spec, rect: area, cell: side, ...(round === 1 ? { soft: true } : {}) }) as { cells: Cell[] };
+        if (round === 1) for (const c of map.cells) if (typeof c.soft === 'number') softness.set(grid(c.rect), c.soft);
         last = map.cells; after.clear();
-        const todo = map.cells.filter(c => c.score > DONE_SCORE && (levels.get(c.rect.join(',')) ?? 0) < LEVELS.length && usable(c.rect));
+        const todo = map.cells.filter(c => open(c, c.score));
         if (!todo.length) break;
         const record: RoundRecord = { round, seconds: 0, regions: [] }, roundStart = Date.now(), done: { cell: Cell; detail: string }[] = [];
+        const finishIds: string[] = [], accentIds: string[] = [];
         rounds.push(record);
         // Close what was painted: the accents the canvas still lacks in the squares done, then each square measured.
         const close = async () => {
@@ -194,13 +258,20 @@ export function refineTools(runtime: RefineRuntime, dependencies: RefineDependen
               && (a.kind !== 'darks' || a.size >= speck || a.strength >= 0.8) && (!areaMask || maskAt(areaMask, a.x, a.y)));
             found.push(...chooseAccents(kept, ACCENT_KINDS as readonly AccentKind[], REGION_ACCENTS));
           }
-          for (let k = 0; k * ACCENTS_A_PASS < found.length; k++)
-            await dependencies.native('accents', `${id}/r${round}-accents-${k + 1}`, { name: `Refine ${round} accents`,
+          for (let k = 0; k * ACCENTS_A_PASS < found.length; k++) {
+            const key = `${id}/r${round}-accents-${k + 1}`;
+            const made = await dependencies.native('accents', key, { name: `Refine ${round} accents`,
               accents: accentAdjustments(found.slice(k * ACCENTS_A_PASS, (k + 1) * ACCENTS_A_PASS), (x, y) => [x, y], 1, canvas) }, signal);
+            if (recorded(made)) accentIds.push(key);
+          }
           for (const [index, { cell, detail }] of done.entries()) {
             const score = await measure(cell.rect);
             after.set(cell.rect.join(','), score);
-            record.regions.push({ rect: cell.rect, detail, before: round1(cell.score), after: score, strokes: 0, accents: found.filter(a => inside(a.x, a.y, cell.rect)).length });
+            // No gain, no more (see the header): the square is done in this call and in later touch-ups.
+            const flat = cell.score - score < Math.max(NO_GAIN, NO_GAIN_SHARE * cell.score);
+            if (flat) { stalled.add(grid(cell.rect)); levels.set(grid(cell.rect), LEVELS.length); }
+            record.regions.push({ rect: cell.rect, detail, before: round1(cell.score), after: score, strokes: 0, accents: found.filter(a => inside(a.x, a.y, cell.rect)).length,
+              ...(flat ? { stalled: true as const } : {}) });
             runtime.emit({ type: 'status', phase: 'painting', message: `Refine: round ${round}, region ${index + 1} of ${todo.length}, difference ${cell.score.toFixed(1)} → ${score.toFixed(1)}` });
           }
         };
@@ -210,14 +281,18 @@ export function refineTools(runtime: RefineRuntime, dependencies: RefineDependen
             if (clock() - began >= budget) { ended = `The time budget (${Math.round(budget / 60000)} minutes) is spent.`; break; }
             if (strokes >= maxStrokes) { ended = `The stroke budget (${maxStrokes.toLocaleString('en-US')}) is spent.`; break; }
             const batch = todo.slice(b * batchSize, (b + 1) * batchSize);
-            for (const level of [...new Set(batch.map(c => levels.get(c.rect.join(',')) ?? 0))]) {
-              const cells = batch.filter(c => (levels.get(c.rect.join(',')) ?? 0) === level), detail = LEVELS[level]!;
-              const inside_shape = await batchMask(runtime.study.directory, `${id}/${round}/${b}/${level}`, cells.map(c => c.rect), areaMask);
+            // The batch's levels as they were before it (a square painted fine here is not painted finer in the same batch).
+            const was = new Map(batch.map(c => [c, level(c)]));
+            for (const at of [...new Set(was.values())].sort()) {
+              const cells = batch.filter(c => was.get(c) === at), detail = LEVELS[at]!;
+              const inside_shape = await batchMask(runtime.study.directory, `${id}/${round}/${b}/${at}`, cells.map(c => c.rect), areaMask);
               runtime.emit({ type: 'status', phase: 'painting', message: `Refine: round ${round}, ${cells.length} region${cells.length === 1 ? '' : 's'} (${detail})…` });
-              const painted = await dependencies.native('finish', `${id}/r${round}-${b + 1}-${detail}`, { name: `Refine ${round}`, goal: spec, inside_shape, detail }, signal);
+              const key = `${id}/r${round}-${b + 1}-${detail}`;
+              const painted = await dependencies.native('finish', key, { name: `Refine ${round}`, goal: spec, inside_shape, detail }, signal);
               const result = painted?.details ?? painted ?? {};
+              if (recorded(painted)) finishIds.push(key);
               strokes += Number(result.finish?.strokes ?? 0);
-              for (const cell of cells) { levels.set(cell.rect.join(','), level + 1); done.push({ cell, detail }); }
+              for (const cell of cells) { levels.set(grid(cell.rect), at + 1); done.push({ cell, detail }); }
               passes += cells.length;
               if (result.stopped || signal?.aborted) { ended = stopped(); break; }
             }
@@ -230,19 +305,29 @@ export function refineTools(runtime: RefineRuntime, dependencies: RefineDependen
           ended = aborted ? stopped() : `Ended after ${passes} regions: ${(error as Error)?.message ?? error}`;
           await close().catch(() => {});
         }
+        // One layer for the round's finish and one for its accents (finish below, as painted).
+        if (finishIds.length || accentIds.length) runtime.emit({ type: 'status', phase: 'painting', message: `Refine: round ${round}, joining its layers…` });
+        await flatten(finishIds, `Refine ${round}`, `${id}/r${round}-flatten`);
+        await flatten(accentIds, `Refine ${round} accents`, `${id}/r${round}-accents-flatten`);
         record.seconds = Math.round((Date.now() - roundStart) / 100) / 10;
         const mean = (key: 'before' | 'after') => round1(record.regions.reduce((sum, r) => sum + r[key], 0) / Math.max(1, record.regions.length));
         runtime.emit({ type: 'action', seconds: record.seconds, message: `Refine round ${round}: ${record.regions.length} regions, difference ${mean('before')} → ${mean('after')} on average.` });
         if (ended) break rounds;
       }
+      runtime.recordRefine?.({ side, whole: !scoped && !(args.area && typeof args.area === 'object'), levels: Object.fromEntries(levels) });
       // What is left: the last map, with the squares refined since it was made at their measured scores.
       const above = last.map(c => after.get(c.rect.join(',')) ?? c.score).filter(score => score > DONE_SCORE).length;
       const converged = !ended && above === 0;
+      const cut = !ended && last.some(c => open(c, after.get(c.rect.join(',')) ?? c.score));
       const message = converged ? `Every region is within ${DONE_SCORE} of the goal at full size.`
-        : ended || `${above} region${above === 1 ? ' is' : 's are'} still above ${DONE_SCORE} after every level: as close as the strokes get there.`;
+        : ended || (cut ? `A touch-up is ${maxRounds === 1 ? 'one round' : `${maxRounds} rounds`}: ${above} region${above === 1 ? ' is' : 's are'} still above ${DONE_SCORE}.`
+          : `${above} region${above === 1 ? ' is' : 's are'} still above ${DONE_SCORE} after every level that helps there: as close as the strokes get there.`);
+      if (!rounds.length) runtime.emit({ type: 'action', seconds: 0, message: `Refine: nothing more to refine here. ${message}` });
       const view = await runtime.callNative('observe', {}).catch(() => null);
       if (view) runtime.decisionObservation = view;
+      const soft = last.filter(c => (softness.get(grid(c.rect)) ?? 0) >= SOFT_REGION && c.score > DONE_SCORE).length;
       const report = { converged, rounds, regions: rounds.reduce((n, r) => n + r.regions.length, 0), strokes, left_above: above, done_score: DONE_SCORE, ms: Date.now() - started,
+        stalled: stalled.size, soft, ...(touchUp ? { touch_up: true } : {}), layers_removed: removed, ...(flattenErrors.length ? { flatten_errors: flattenErrors } : {}),
         ...(ended ? { ended } : {}), message, next: 'Look at the canvas; tell the artist what changed and what is left.' };
       return { content: [json(report)], details: { ...(view ?? {}), refine: report } };
     },

@@ -25,6 +25,7 @@ from .transform_craft import TransformCraft
 from .canvas_view import CanvasView
 from .comic import ComicCraft
 from .merge_craft import MergeCraft
+from .flatten_craft import FlattenCraft
 from .native_craft import NativeCraft, compact_actions
 from .protection import ProtectionCraft, PANEL_ONLY as PROTECTION_PANEL_ONLY
 from .script_steps import one_step
@@ -91,7 +92,7 @@ def wait_for_krita(seconds):
 # later results and `save_status`. Actions after the copy stay unsaved. Without the helper, before the painting is its
 # own file, and at the end of a chat, the save is synchronous as before.
 # Pass kinds that add a new agent layer or mask.
-NEW_CONTRIBUTIONS = ('paint_pass', 'guide', 'create_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp', 'accents', 'finish') + TOOL_OPERATIONS
+NEW_CONTRIBUTIONS = ('paint_pass', 'guide', 'create_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'flatten_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp', 'accents', 'finish') + TOOL_OPERATIONS
 CHECKPOINT_SECONDS = 180
 # Operations that paint as one fork stroke job: waited on by the job itself, never by Document.waitForDone.
 STROKE_JOBS = ('paint_pass', 'draw_guide')
@@ -122,7 +123,7 @@ def merge_pass_record_error(result, error):
             'error': result['error'] + ' (' + note + ')' if result.get('error') else note}
 
 
-class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, ProtectionCraft, FeatureCraft, NativeCraft, MaterialCraft, ToolCraft, GuideCraft, AccentCraft, FinishCraft, AreaCompare):
+class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, FlattenCraft, ProtectionCraft, FeatureCraft, NativeCraft, MaterialCraft, ToolCraft, GuideCraft, AccentCraft, FinishCraft, AreaCompare):
     def cmd_creative(self, request):
         fields(request, ('operation', 'session_id', 'operation_id', 'params'), ('operation', 'params'))
         operation = request['operation']
@@ -607,7 +608,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             self._creative_store_operations(session)
             return dict(self._creative_observe(doc, session), unresolved_operations=[],
                         committed_operation_count=self._creative_committed_count(session))
-        if operation not in ('paint_pass', 'adjust_layer', 'painting_toolbox', 'review_pass', 'create_layer', 'set_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp', 'accents', 'finish', 'draw_guide') + TOOL_OPERATIONS:
+        if operation not in ('paint_pass', 'adjust_layer', 'painting_toolbox', 'review_pass', 'create_layer', 'set_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'flatten_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp', 'accents', 'finish', 'draw_guide') + TOOL_OPERATIONS:
             raise ValueError('Unsupported creative operation')
         self._guide_refuse_target(doc, session, operation, params)
         operation_id = text(request.get('operation_id'), 'operation_id', 100)
@@ -696,6 +697,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             self._comic_validate_letter(doc, session, params)
         elif operation == 'merge_passes':
             self._merge_validate(doc, session, params)
+        elif operation == 'flatten_passes':
+            self._flatten_validate(doc, session, params)
         elif operation == 'krita_action':
             self._native_validate_action(doc, session, params)
         elif operation == 'clone_layer':
@@ -778,6 +781,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 result.update(self._comic_letter(doc, session, params))
             elif operation == 'merge_passes':
                 result.update(self._merge_apply(doc, session, params))
+            elif operation == 'flatten_passes':
+                result.update(self._flatten_apply(doc, session, params))
             elif operation == 'krita_action':
                 result.update(self._native_action(doc, session, params))
             elif operation == 'clone_layer':

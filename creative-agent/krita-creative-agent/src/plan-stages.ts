@@ -13,8 +13,9 @@
 // - The host keeps the order rules (orderStages): an underpainting before anything that needs one, Refine only after a
 //   whole-picture Finish, Accents last. The finish and refine tools refuse a canvas with no underpainting, and refining
 //   before the finish would refine the dabbed underpainting (finish-stage goal 8).
-// - The steps (folderPlanSteps): one a stage; the refine stage is a refine step per group of the folder's elements
-//   (refine-parts.ts), or one whole-picture "Refine to the goal" for a folder without elements. Each step records its kind
+// - The steps (folderPlanSteps): one a stage; the refine stage is one whole-picture "Refine to the goal" and then, for a
+//   folder with elements, a short touch-up step per group of them (refine-parts.ts; the artist, 2026-10-25: six part steps
+//   each refining its area fully took 45-60 minutes on New Moscow, one whole-picture refine about 6). Each step records its kind
 //   and tool; the planner may reword titles and checks and regroup the parts, but shapePlan holds the stages to what was
 //   asked, in order, and checks each tool (stepTool).
 // Mechanism only: the studio asks and applies (studio.mjs planFolder); this module imports no .mjs.
@@ -150,9 +151,9 @@ const STAGE_STEP: Record<Exclude<PlanStage, 'refine'>, () => Step> = {
 };
 const wholeRefine = (): Step => ({ title: REFINE_STEP, done_when: 'Every part of the picture is close to the goal image at full size: its forms, windows and edges as crisp as the goal shows them.', scope: WHOLE, kind: 'refine', tool: 'refine_to_goal' });
 
-/** The steps for these stages (already in order): the refine stage is one step a group of parts, or one whole-picture step. */
+/** The steps for these stages (already in order): the refine stage is the whole-picture refine, then a touch-up a group of parts. */
 export function folderPlanSteps(stages: readonly PlanStage[], groups: readonly RefineGroup[]): Step[] {
-  return stages.flatMap(stage => stage === 'refine' ? (groups.length ? groups.map(refineStep) : [wholeRefine()]) : [STAGE_STEP[stage]()]);
+  return stages.flatMap(stage => stage === 'refine' ? [wholeRefine(), ...groups.map(refineStep)] : [STAGE_STEP[stage]()]);
 }
 
 /** The stage a step of this kind belongs to, or null (an element or the artist's own whole-picture step). */

@@ -103,13 +103,16 @@ test('refine groups: the folder’s elements in their order, 4-7 groups (fewer e
     .map(g => g.label).join(' | '), 'A and b | C and d | E and f | G', 'seven: four groups');
 });
 
-test('the steps: one per stage asked, a refine step per group, each with its kind and tool', () => {
+// The artist, 2026-10-25 (approved): six part steps each refining its area fully took 45-60 minutes on New Moscow. The
+// refine stage is one whole-picture "Refine to the goal", then a short touch-up step per group of parts.
+test('the steps: one per stage asked; the refine stage is one whole-picture refine, then a touch-up step per group', () => {
   const groups = refineGroups(twelve);
   const full = folderPlanSteps(['underpainting', 'finish', 'refine', 'accents'], groups);
-  assert.deepEqual(full.map(s => s.title), ['Underpainting from the goal image', 'Finish', ...groups.map(g => 'Refine: ' + g.label), 'Accents']);
-  assert.deepEqual(full.map(s => s.kind), ['underpainting', 'finish', ...groups.map(() => 'refine_part'), 'accents']);
-  assert.deepEqual(full.map(s => s.tool), ['paint_from_reference', 'paint_finish', ...groups.map(() => 'refine_to_goal'), 'paint_accents']);
-  assert.deepEqual(full[2].parts, groups[0].parts);
+  assert.deepEqual(full.map(s => s.title), ['Underpainting from the goal image', 'Finish', 'Refine to the goal', ...groups.map(g => 'Refine: ' + g.label), 'Accents']);
+  assert.deepEqual(full.map(s => s.kind), ['underpainting', 'finish', 'refine', ...groups.map(() => 'refine_part'), 'accents']);
+  assert.deepEqual(full.map(s => s.tool), ['paint_from_reference', 'paint_finish', 'refine_to_goal', ...groups.map(() => 'refine_to_goal'), 'paint_accents']);
+  assert.deepEqual(full[3].parts, groups[0].parts);
+  assert.match(full[3].done_when, /touch-up|still/i, 'a part step says it is a touch-up after the whole-picture refine');
   assert.deepEqual(full.map(folderStepKind), full.map(s => s.kind));
   const one = folderPlanSteps(['underpainting'], groups);
   assert.deepEqual(one.map(s => s.title), ['Underpainting from the goal image']);
@@ -158,9 +161,14 @@ test('the planner’s proposal is shaped by the host: the stages asked, in order
     ...regrouped.map((parts, i) => ({ title: `Refine: group ${i + 1}`, done_when: `Group ${i + 1} close to the goal.`, kind: 'refine_part', tool: i === 0 ? 'paint_accents' : 'refine_to_goal', parts })),
     { title: 'Accents', done_when: 'Crisp.', kind: 'accents', tool: 'paint_accents' }];
   const full = shapePlan(fullProposal, { draft: fullDraft, elements: twelve, known });
-  assert.deepEqual(full.steps.map(s => s.kind), ['underpainting', 'finish', 'refine_part', 'refine_part', 'refine_part', 'refine_part', 'refine_part', 'refine_part', 'accents']);
+  assert.deepEqual(full.steps.map(s => s.kind), ['underpainting', 'finish', 'refine', 'refine_part', 'refine_part', 'refine_part', 'refine_part', 'refine_part', 'refine_part', 'accents'],
+    'the whole-picture refine stays although the planner left it out');
   assert.deepEqual(full.steps.filter(s => s.kind === 'refine_part').map(s => s.parts), regrouped, 'the planner’s groups');
-  assert.equal(full.steps[2].tool, 'refine_to_goal');
+  assert.equal(full.steps[3].tool, 'refine_to_goal');
+  // The planner's words for the whole-picture refine are kept when it proposes one.
+  const worded = shapePlan([...fullProposal.slice(0, 2), { title: 'Refine to the goal', done_when: 'Every building crisp.', kind: 'refine', tool: 'refine_to_goal' }, ...fullProposal.slice(2)],
+    { draft: fullDraft, elements: twelve, known });
+  assert.deepEqual(worded.steps.filter(s => s.kind === 'refine').map(s => [s.title, s.done_when]), [['Refine to the goal', 'Every building crisp.']]);
   assert.match(full.notes.join(' '), /paint_accents does not do a refine_part step/);
   // Groups that leave an element out, or repeat one, are not used: the host's groups.
   const missing = fullProposal.map(s => s.kind === 'refine_part' && s.title === 'Refine: group 6' ? { ...s, parts: s.parts.slice(1) } : s);

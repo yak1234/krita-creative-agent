@@ -63,6 +63,16 @@ class MeasureTests(unittest.TestCase):
         self.assertLess(mapped['cells'][-1]['score'], 0.5)
         self.assertEqual([c['rect'] for c in mapped['cells'] if c['rect'][:2] == [0, 0]], [[0, 0, 50, 50]])
 
+    def test_the_refine_map_gives_each_cell_the_goals_soft_share_when_asked(self):
+        # Refine to the goal (the artist, 2026-10-25): a mostly soft region (the Finish's own soft mask) gets the fine pass only.
+        goal = windows(600, 200); goal[:, :300] = (70, 90, 120)            # flat on the left (soft), windows on the right
+        read = lambda r: goal[r[1]:r[1] + r[3], r[0]:r[0] + r[2]]
+        mapped = compare.measure(read, read, [0, 0, 600, 200], 6000, 4500, cell=100, tile=200, soft=True)
+        soft = {tuple(c['rect'][:2]): c['soft'] for c in mapped['cells']}
+        self.assertTrue(all(soft[(x, y)] > 0.9 for x in (0, 100) for y in (0, 100)), soft)
+        self.assertTrue(all(soft[(x, y)] < 0.1 for x in (400, 500) for y in (0, 100)), soft)
+        self.assertNotIn('soft', compare.measure(read, read, [0, 0, 600, 200], 6000, 4500, cell=100)['cells'][0], 'only when asked')
+
     def test_blurs_scale_with_the_canvas(self):
         self.assertEqual(compare.blurs(6000, 4500), (2.0, 1.0))
         self.assertEqual(compare.blurs(12000, 9000), (4.0, 2.0))
@@ -134,6 +144,9 @@ class AreaOperationTests(finish_tests.SpikeScale, region_tests.RegionSetup, unit
     def test_the_refine_map_ranks_the_canvas_by_what_is_left(self):
         result = self.run_op('refine_map', cell=100)
         self.assertEqual(len(result['cells']), 24)
+        self.assertNotIn('soft', result['cells'][0])
+        soft = self.run_op('refine_map', cell=100, soft=True)
+        self.assertTrue(all(0 <= c['soft'] <= 1 for c in soft['cells']), soft['cells'])
         self.assertTrue(all(c['rect'][0] >= 300 for c in result['cells'][:12]), [c['rect'] for c in result['cells'][:12]])
 
     def test_nothing_is_written_and_guides_are_left_out(self):

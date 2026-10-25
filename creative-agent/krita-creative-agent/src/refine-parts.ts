@@ -3,6 +3,9 @@
 // A refine step per part (openspec plan-from-request goal 2, approved by the artist 2026-10-24). Refine to the goal was one
 // 6-minute step over the whole picture that the artist could not judge part by part; the full folder plan now has, after
 // the Finish, one "Refine: <group>" step per group of the folder's elements, each with Met / Redo / Skip, then Accents.
+// Touch-ups (the artist, 2026-10-25, approved): each part step refining its area fully took 7.5+ minutes live, 45-60 for the
+// plan, so the plan refines the whole picture once first ("Refine to the goal") and each part step is a short touch-up of
+// its area after it (refine-goal.ts TOUCH_UP: one round, a few minutes, only what is still above the bar there).
 //
 // The grouping rule (general: any folder, nothing New Moscow-specific). The folder's numbered element images are already
 // in the artist's order (project-folder.ts reads them by number; artists number them as they build the picture, usually
@@ -49,9 +52,9 @@ export function refineGroups(elements: readonly Element[]): RefineGroup[] {
   return groups;
 }
 
-/** A group's step: refine_to_goal inside the union of its parts' found areas. */
+/** A group's step: refine_to_goal inside the union of its parts' found areas (a touch-up after the whole-picture refine). */
 export function refineStep(group: RefineGroup): FolderStep {
-  return { title: `Refine: ${group.label}`, done_when: `${group.label[0]!.toUpperCase() + group.label.slice(1)} ${group.parts.length > 1 ? 'are' : 'is'} close to the goal image at full size: forms, windows and edges as crisp as the goal shows them.`,
+  return { title: `Refine: ${group.label}`, done_when: `A touch-up after the whole-picture refine: what is still far from the goal in ${group.label} is close to the goal image at full size, forms, windows and edges as crisp as the goal shows them.`,
     scope: group.label, kind: 'refine_part', tool: 'refine_to_goal', parts: [...group.parts] };
 }
 

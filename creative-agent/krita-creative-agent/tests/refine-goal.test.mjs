@@ -11,7 +11,7 @@ import { mkdtemp, writeFile, readFile, rm, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { paintingTools } from '../src/tools.mjs';
-import { DONE_SCORE, LEVELS, refineToGoalNote } from '../src/refine-goal.ts';
+import { DONE_SCORE, LEVELS, NO_GAIN, NO_GAIN_SHARE, SOFT_REGION, TOUCH_UP, refineToGoalNote } from '../src/refine-goal.ts';
 import { exemption } from '../src/goal-likeness.ts';
 import { encodePlane, decodePlane } from '../src/shapes/png.ts';
 
@@ -25,7 +25,8 @@ async function covered(params, keys) {
     return cx >= 0 && cy >= 0 && cx < plane.width && cy < plane.height && plane.data[cy * plane.width + cx] > 127; });
 }
 
-async function setup(t, { scores = { '0,0': 9, '512,0': 6, '1024,0': 3 }, underpainted = true, placed = true, protectedAreas = [] } = {}) {
+// `gains`: (square, detail) -> how much a pass takes off (GAIN by default); `soft`: square -> the goal's soft share there.
+async function setup(t, { scores = { '0,0': 9, '512,0': 6, '1024,0': 3 }, underpainted = true, placed = true, protectedAreas = [], gains = null, soft = {} } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'refine-goal-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const bytes = encodePlane({ width: 4, height: 3, data: new Uint8Array(12) });
@@ -42,17 +43,19 @@ async function setup(t, { scores = { '0,0': 9, '512,0': 6, '1024,0': 3 }, underp
       calls.push({ operation, params, id });
       if (operation === 'observe') return { status: 'ok', ...CANVAS, revision: 'r' + calls.length, image_path: join(directory, 'view.png'), image_width: 1568, image_height: 1176, layers: [], protected_areas: protectedAreas };
       if (operation === 'refine_map') {
-        const cells = Object.entries(left).map(([key, score]) => ({ rect: cell(key), colour: score / 2, edges: score / 2, score })).sort((a, b) => b.score - a.score);
+        const cells = Object.entries(left).map(([key, score]) => ({ rect: cell(key), colour: score / 2, edges: score / 2, score,
+          ...(params.soft ? { soft: soft[key] ?? 0 } : {}) })).sort((a, b) => b.score - a.score);
         return { status: 'ok', rect: params.rect, cells, colour: 1, edges: 1, ms: 700 };
       }
       if (operation === 'finish') { const keys = await covered(params, Object.keys(left)); calls.at(-1).squares = keys;
-        for (const key of keys) left[key] = Math.max(0, left[key] - GAIN[params.detail]);
+        for (const key of keys) left[key] = Math.max(0, Math.round((left[key] - (gains ? gains(key, params.detail) : GAIN[params.detail])) * 10) / 10);
         return { status: 'ok', layer_id: 'F' + calls.length, finish: { detail: params.detail, strokes: 100000 * keys.length, tiles: keys.length, of_tiles: keys.length, ms: 2000 }, image_path: join(directory, 'view.png'), ...CANVAS }; }
       if (operation === 'area_likeness') { const score = left[params.rect.slice(0, 2).join(',')]; return { status: 'ok', colour: score / 2, edges: score / 2, rect: params.rect, ms: 13 }; }
       if (operation === 'area_accents') return { status: 'ok', rect: params.rect, scale: 1, ms: 500, found: { lights: 1 },
         accents: [{ kind: 'lights', x: params.rect[0] + 10, y: params.rect[1] + 10, size: 3, colour: '#ffeeaa', strength: 0.8, shape: 'dot' },
           { kind: 'darks', x: params.rect[0] + 30, y: params.rect[1] + 30, size: 3, colour: '#100c0c', strength: 0.5, shape: 'dot' }] };
       if (operation === 'accents') return { status: 'ok', layer_id: 'A' + calls.length, adjustments: [] };
+      if (operation === 'flatten_passes') return { status: 'ok', layer_id: 'M' + calls.length, layer_type: 'merged', flattened_passes: params.pass_ids.length, removed_layers: 3 * params.pass_ids.length };
       return { status: 'ok' };
     },
   };
@@ -192,12 +195,17 @@ test('thirty squares: three finish passes and one accents pass a round', async t
   assert.equal(of('finish').length, 3); assert.equal(of('accents').length, 1);
   assert.deepEqual(of('finish').map(c => c.squares.length), [14, 14, 2]);
   assert.equal(result.converged, true);
-  assert.equal(of('refine_map').length, 2, 'no extra map after the last round');
+  assert.equal(of('refine_map').length, 1, 'no extra map after the last round: every square is under the bar (measured after its pass)');
 });
 
 test('the full-size checks have the long operations’ time; the action line names the step', async () => {
   const { LONG_OPERATIONS } = await import('../src/craft.mjs');
-  for (const op of ['area_likeness', 'area_accents', 'refine_map']) assert.ok(LONG_OPERATIONS.includes(op), op);
+  for (const op of ['area_likeness', 'area_accents', 'refine_map', 'flatten_passes']) assert.ok(LONG_OPERATIONS.includes(op), op);
+  // flatten_passes changes the painting: journalled under the move's stage, with the revision checked.
+  const { mutates } = await import('../src/craft.mjs');
+  assert.ok(mutates('flatten_passes'));
+  const bridge = await readFile(new URL('../src/bridge.mjs', import.meta.url), 'utf8');
+  assert.match(bridge, /const mutating = \[[^\]]*'flatten_passes'/);
   const runtime = await readFile(new URL('../src/runtime.mjs', import.meta.url), 'utf8');
   assert.match(runtime, /refine_to_goal' \? 'Refine to the goal'/);
 });
@@ -211,4 +219,98 @@ test('the refine note follows Luna’s reading of the message when there is one,
   assert.equal(refineToGoalNote({ text: 'Refine it', area: false, finished: true, reading: read(0.1, 0.95) }), '', 'Luna: negated');
   assert.match(refineToGoalNote({ text: 'Refine it', area: false, finished: true, reading: read(0.1, 0.1, { name: 'Domed church', confidence: 0.9 }) }), /REFINE A PART[^]*\(Domed church\)/);
   assert.match(refineToGoalNote({ text: 'Refine the church', area: false, finished: true, reading: { ...read(null, null), fallback: 'not_connected' } }), /REFINE A PART[^]*\(church\)/, 'no answer: the keywords');
+});
+
+// The artist, 2026-10-25 (New Moscow, "Refine: Moonlit sky and historic buildings" ran 7.5+ minutes): round 2 repainted
+// regions whose first pass had done nothing ("14.6 → 14.6", "4.7 → 4.7"). A region a pass did not bring closer by at least
+// NO_GAIN (and NO_GAIN_SHARE of its difference) is not refined again in that call.
+test('a region a pass did not bring closer is not refined again; one that gained keeps its finer pass', async t => {
+  assert.equal(NO_GAIN, 0.3); assert.equal(NO_GAIN_SHARE, 0.05);
+  const gains = (key, detail) => ({ '0,0': 3, '512,0': 0, '1024,0': 0.5, '1536,0': 0.7 })[key] ?? (detail ? 3 : 0);
+  const { tool, of } = await setup(t, { scores: { '0,0': 9, '512,0': 14.6, '1024,0': 14.6, '1536,0': 12 }, gains });
+  const result = report(await tool.execute('r1', {}));
+  assert.deepEqual(of('finish').map(c => [c.params.detail, c.squares.sort()]), [['fine', ['0,0', '1024,0', '1536,0', '512,0']], ['finer', ['0,0', '1536,0']]],
+    '14.6 → 14.6 and 14.6 → 14.1 (under 5%) stop; 12.0 → 11.3 (over 5%) and 9 → 6 go on to finer');
+  assert.deepEqual(result.rounds[0].regions.filter(r => r.stalled).map(r => r.rect[0]).sort((a, b) => a - b), [512, 1024]);
+  assert.equal(result.stalled, 2);
+  assert.equal(of('refine_map').length, 2, 'no third map: nothing is left to try');
+});
+
+// The artist, 2026-10-25: soft areas (sky, mist, water: the Finish's soft mask, low goal structure) get the fine pass at most.
+test('a mostly soft region gets the fine pass only, never the finer one; the first map asks for the soft shares', async t => {
+  assert.equal(SOFT_REGION, 0.5);
+  const { tool, of } = await setup(t, { scores: { '0,0': 9, '512,0': 9 }, soft: { '0,0': 0.8, '512,0': 0.2 } });
+  const result = report(await tool.execute('r1', {}));
+  assert.deepEqual(of('finish').map(c => [c.params.detail, c.squares]), [['fine', ['0,0', '512,0']], ['finer', ['512,0']]]);
+  assert.deepEqual(of('refine_map').map(c => !!c.params.soft), [true, false], 'the goal does not change: asked once');
+  assert.equal(result.soft, 1);
+  assert.equal(result.left_above, 1); assert.match(result.message, /as close as the strokes get/);
+});
+
+// The artist, 2026-10-25: one whole-picture refine, then each "Refine: <parts>" step a short touch-up of its area.
+test('a touch-up: one round in a short budget, each region at the level after the one it had, nothing it has had every level of', async t => {
+  assert.deepEqual(TOUCH_UP, { rounds: 1, budget_minutes: 3 });
+  const s = await setup(t, { scores: { '0,0': 9, '512,0': 9, '1024,0': 12 } });
+  const recorded = [];
+  s.runtime.refineLimits = () => TOUCH_UP;
+  // Grid squares (column,row): the whole-picture refine gave 0,0 its fine pass and 1,0 both.
+  s.runtime.refineHistory = () => ({ side: 512, levels: { '0,0': 1, '1,0': 2 } });
+  s.runtime.recordRefine = entry => recorded.push(entry);
+  const result = report(await s.tool.execute('r1', {}));
+  assert.deepEqual(s.of('finish').map(c => [c.params.detail, c.squares]), [['fine', ['1024,0']], ['finer', ['0,0']]]);
+  assert.equal(result.rounds.length, 1, 'one round although 1024,0 is still above the bar');
+  assert.deepEqual(recorded, [{ side: 512, whole: true, levels: { '0,0': 2, '1,0': 2, '2,0': 1 } }]);
+  assert.equal(result.touch_up, true);
+  const timed = await setup(t);
+  let clock = 0;
+  timed.runtime.refineClock = () => (clock += 200000);
+  timed.runtime.refineLimits = () => TOUCH_UP;
+  const byTime = report(await timed.tool.execute('r1', { budget_minutes: 10 }));
+  assert.equal(timed.of('finish').length, 0); assert.match(byTime.ended, /time budget \(3 minutes\)/);
+});
+
+test('a touch-up with nothing left says so on the Now card; a refine records its levels for a later touch-up', async t => {
+  const s = await setup(t, { scores: { '0,0': 9 } });
+  s.runtime.refineLimits = () => TOUCH_UP;
+  s.runtime.refineHistory = () => ({ side: 512, levels: { '0,0': 2 } });
+  const result = report(await s.tool.execute('r1', {}));
+  assert.equal(s.of('finish').length, 0);
+  assert.equal(result.rounds.length, 0);
+  assert.ok(s.events.some(e => e.type === 'action' && /^Refine: nothing more to refine here/.test(e.message)), s.events.map(e => e.message).join('\n'));
+  assert.ok(s.events[0].type === 'status' && /^Refine: comparing/.test(s.events[0].message), 'the card shows the map is being made');
+  // A history made on a canvas of another size (another grid) is not used.
+  const other = await setup(t, { scores: { '0,0': 9 } });
+  other.runtime.refineHistory = () => ({ side: 300, levels: { '0,0': 2 } });
+  await other.tool.execute('r1', {});
+  assert.deepEqual(other.of('finish').map(c => c.params.detail), ['fine', 'finer']);
+});
+
+// The artist, 2026-10-25: after one refine step the painting had 146 layers (a group of two a finish pass, of up to four an
+// accents pass) and Krita reported 10.1 GiB. Each round ends with its finish passes flattened into one layer and its
+// accents passes into another (flatten_passes, flatten_craft.py), in the move's stage, so the move's Undo hides them.
+test('each round ends with one finish layer and one accents layer: its passes flattened, under the call', async t => {
+  const scores = {}; for (let i = 0; i < 30; i++) scores[`${(i % 10) * 512},${Math.floor(i / 10) * 512}`] = 6;
+  const { tool, of } = await setup(t, { scores });
+  const result = report(await tool.execute('r1', {}));
+  assert.deepEqual(of('flatten_passes').map(c => [c.params.name, c.params.pass_ids, c.id]), [
+    ['Refine 1', ['r1/r1-1-fine', 'r1/r1-2-fine', 'r1/r1-3-fine'], 'r1/r1-flatten'],
+    ['Refine 1 accents', ['r1/r1-accents-1'], 'r1/r1-accents-flatten']]);
+  assert.equal(result.layers_removed, 3 * 4 - 2, 'the passes’ groups and layers gone, two layers made');
+  const two = await setup(t);
+  await two.tool.execute('r1', {});
+  assert.deepEqual(two.of('flatten_passes').map(c => c.params.name), ['Refine 1', 'Refine 1 accents', 'Refine 2', 'Refine 2 accents']);
+  // A finish that painted nothing has no pass to flatten; a refused flatten keeps the layers and the run goes on.
+  const empty = await setup(t, { scores: { '0,0': 9 } });
+  const native = empty.runtime.callNative;
+  empty.runtime.callNative = async (op, params, id) => {
+    if (op === 'finish') { const out = await native(op, params, id); return { ...out, layer_id: undefined, contribution_removed: true }; }
+    if (op === 'flatten_passes') {
+      await native(op, params, id);      // recorded, then refused
+      throw Object.assign(new Error('Other layers lie between the passes: nothing was flattened.'), { code: 'validation_rejected' });
+    }
+    return native(op, params, id);
+  };
+  const kept = report(await empty.tool.execute('r1', {}));
+  assert.deepEqual(empty.of('flatten_passes').map(c => c.params.pass_ids), [['r1/r1-accents-1'], ['r1/r2-accents-1']], 'only passes that exist');
+  assert.match(kept.flatten_errors[0], /between the passes/);
 });

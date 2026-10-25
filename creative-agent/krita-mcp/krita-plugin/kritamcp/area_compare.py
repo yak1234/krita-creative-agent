@@ -21,7 +21,9 @@ when there is one), read from the chat folder as paint_finish reads it.
   AREA_PIXELS (reduced by area-averaging above that: the finder's scales are shares of the crop, so a larger area keeps
   its standouts); the accents come back in canvas pixels.
 - refine_map: the whole canvas (or an area) in CELL squares ranked by what is left to do, colour + edges (Refine to the
-  goal, goal 8, picks its worst regions from it).
+  goal, goal 8, picks its worst regions from it). With `soft`, each cell also gets `soft`: the mean of the Finish's own soft
+  mask (finish_pass.soft_mask) over it, 0 (all structure) to 1 (sky, mist, water), so Refine gives a mostly soft region the
+  fine pass only (the artist, 2026-10-25). About 1 s on the whole 6000 x 4500 canvas; Refine asks once a call.
 
 Read-only: the composite is read with the agent's guide lines hidden (as the accents read it) and nothing is written.
 """
@@ -35,7 +37,7 @@ EDGE_BLUR = 1.0                  # edges: gradient magnitude through this blur
 TILE = 1024                      # measured square by square, each padded by the blurs' reach
 FIELDS = ('goal', 'rect')
 ACCENT_FIELDS = FIELDS + ('kinds', 'strength', 'max_accents')
-MAP_FIELDS = ('goal', 'rect', 'cell')
+MAP_FIELDS = ('goal', 'rect', 'cell', 'soft')
 
 
 def _finish():
@@ -86,9 +88,10 @@ def squares(rect, side):
     return out
 
 
-def measure(read_canvas, read_goal, rect, width, height, cell=None, tile=None, breathe=None):
+def measure(read_canvas, read_goal, rect, width, height, cell=None, tile=None, breathe=None, soft=False):
     """The area's full-size difference: {'colour', 'edges', 'pixels'} and, with `cell`, every cell's own ([x, y, w, h],
-    colour, edges). read_canvas(rect) -> BGR(A) uint8, read_goal(rect) -> BGR uint8, both of canvas rect [x, y, w, h].
+    colour, edges; with `soft` its goal's soft share too). read_canvas(rect) -> BGR(A) uint8, read_goal(rect) -> BGR uint8,
+    both of canvas rect [x, y, w, h].
     Square by square (TILE, a whole number of cells), each read padded by the blurs' reach, so the sums do not depend on
     the squares."""
     finish = _finish()
@@ -97,7 +100,8 @@ def measure(read_canvas, read_goal, rect, width, height, cell=None, tile=None, b
     if cell:
         side = max(cell, (side // cell) * cell)
     sums = {'colour': 0.0, 'edges': 0.0, 'pixels': 0}
-    cells = {}
+    cells, softs = {}, {}
+    sizes = finish.sizes(width, height) if cell and soft else None
     for square in squares(rect, side):
         padded = finish.grow(square, pad, width, height)
         canvas = read_canvas(padded)[..., :3]
@@ -112,13 +116,25 @@ def measure(read_canvas, read_goal, rect, width, height, cell=None, tile=None, b
                 view = (slice(part[1] - square[1], part[1] - square[1] + part[3]), slice(part[0] - square[0], part[0] - square[0] + part[2]))
                 entry = cells.setdefault(key, [0.0, 0.0, 0, part])
                 entry[0] += float(colour[view].sum()); entry[1] += float(edges[view].sum()); entry[2] += colour[view].size
+            if sizes:
+                # The Finish's soft mask, read with its own (wider) pad so it equals the whole canvas's mask here.
+                wide = finish.grow(square, sizes['mask_pad'], width, height)
+                mask = finish.soft_mask(read_goal(wide).astype(np.float32) / 255, sizes)
+                mask = mask[square[1] - wide[1]:square[1] - wide[1] + square[3], square[0] - wide[0]:square[0] - wide[0] + square[2]]
+                for part in squares(square, cell):
+                    key = (part[0] // cell, part[1] // cell)
+                    view = mask[part[1] - square[1]:part[1] - square[1] + part[3], part[0] - square[0]:part[0] - square[0] + part[2]]
+                    entry = softs.setdefault(key, [0.0, 0])
+                    entry[0] += float(view.sum()); entry[1] += view.size
         if breathe is not None:
             breathe()
     n = max(1, sums['pixels'])
     out = {'colour': round(sums['colour'] / n, 3), 'edges': round(sums['edges'] / n, 3), 'pixels': sums['pixels']}
     if cell:
-        out['cells'] = [{'rect': entry[3], 'colour': round(entry[0] / entry[2], 3), 'edges': round(entry[1] / entry[2], 3),
-                         'score': round((entry[0] + entry[1]) / entry[2], 3)} for entry in cells.values()]
+        out['cells'] = [dict({'rect': entry[3], 'colour': round(entry[0] / entry[2], 3), 'edges': round(entry[1] / entry[2], 3),
+                              'score': round((entry[0] + entry[1]) / entry[2], 3)},
+                             **({'soft': round(softs[key][0] / max(1, softs[key][1]), 3)} if key in softs else {}))
+                        for key, entry in cells.items()]
         out['cells'].sort(key=lambda c: -c['score'])
     return out
 
@@ -224,7 +240,7 @@ class AreaCompare:
                 raise ValueError('cell is 16-4096 canvas pixels.')
             from .qt_compat import QCoreApplication
             out = measure(read, goal.rect, rect, width, height, cell=cell if operation == 'refine_map' else None,
-                          breathe=QCoreApplication.processEvents)
+                          breathe=QCoreApplication.processEvents, soft=operation == 'refine_map' and params.get('soft') is True)
             return dict(out, status='ok', rect=rect, blur=[round(v, 2) for v in blurs(width, height)], ms=int((time.monotonic() - started) * 1000))
         finally:
             done()

@@ -9,8 +9,9 @@ export const CRAFT_OPERATIONS = ['create_layer','set_layer','fill_region','apply
 // Operations that can run for minutes on a large canvas; past this the outcome is uncertain. The finish (finish_pass.py)
 // took about a minute on a whole 6000 x 4500 canvas offline.
 // The full-size checks (area_compare.py) read a whole 6000 px canvas in squares: the long operations' time too.
-export const LONG_OPERATIONS = ['apply_filter','colorize_flats','split_by_color','finish','area_likeness','area_accents','refine_map'];
+// flatten_passes (flatten_craft.py) composites a refine round's passes square by square over the area they cover.
+export const LONG_OPERATIONS = ['apply_filter','colorize_flats','split_by_color','finish','area_likeness','area_accents','refine_map','flatten_passes'];
 // Comic page operations: comic_page is called by the host when painting starts; letter by the painter.
 export const COMIC_OPERATIONS = ['comic_page','letter'];
 /** Native operations that change the painting (journalled, expected_revision checked). */
-export const mutates = op => ['paint_pass','adjust_layer','painting_toolbox','stamp','draw_guide','accents','finish',...CRAFT_OPERATIONS,...COMIC_OPERATIONS].includes(op);
+export const mutates = op => ['paint_pass','adjust_layer','painting_toolbox','stamp','draw_guide','accents','finish','flatten_passes',...CRAFT_OPERATIONS,...COMIC_OPERATIONS].includes(op);

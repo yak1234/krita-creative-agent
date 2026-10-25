@@ -522,6 +522,11 @@ public:
     bool fullscreenMode(bool defaultValue = false) const;
     void setFullscreenMode(const bool value) const;
 
+    /// macOS: View > Full Screen opens a Space of its own (macOS's full screen) instead of Toska's, which fills the
+    /// screen in the current Space (KisMacosFullScreen.h). Off by default.
+    bool macosNativeFullscreen(bool defaultValue = false) const;
+    void setMacosNativeFullscreen(const bool value) const;
+
     QStringList favoriteCompositeOps(bool defaultValue = false) const;
     void setFavoriteCompositeOps(const QStringList& compositeOps) const;
 

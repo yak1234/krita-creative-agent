@@ -169,6 +169,10 @@
 #include <KisAndroidScaling.h>
 #endif
 
+#ifdef Q_OS_MACOS
+#include <KisMacosFullScreen.h>
+#endif
+
 class ToolDockerFactory : public KoDockFactoryBase
 {
 public:
@@ -2463,12 +2467,61 @@ void KisMainWindow::viewFullscreen(bool fullScreen)
     KisConfig cfg(false);
     cfg.setFullscreenMode(fullScreen);
 
+    setFullScreen(fullScreen);
+    d->fullScreenMode->setChecked(inFullScreen());
+#endif
+}
+
+void KisMainWindow::setFullScreen(bool fullScreen)
+{
+#ifdef Q_OS_MACOS
+    using KisMacosFullScreen::Route;
+    const Route route = KisMacosFullScreen::route(fullScreen, KisMacosFullScreen::isActive(this), isFullScreen(),
+                                                  KisConfig(true).macosNativeFullscreen());
+    if (route == Route::Nothing) {
+        return;
+    }
+    if (route == Route::Ours) {
+        if (fullScreen) {
+            KisMacosFullScreen::enter(this);
+        } else {
+            KisMacosFullScreen::leave(this);
+        }
+        return;
+    }
+#endif
     if (fullScreen) {
         setWindowState(windowState() | Qt::WindowFullScreen);   // set
     } else {
         setWindowState(windowState() & ~Qt::WindowFullScreen);   // reset
     }
-    d->fullScreenMode->setChecked(isFullScreen());
+}
+
+bool KisMainWindow::inFullScreen() const
+{
+#ifdef Q_OS_MACOS
+    if (KisMacosFullScreen::isActive(this)) {
+        return true;
+    }
+#endif
+    return isFullScreen();
+}
+
+void KisMainWindow::changeEvent(QEvent *event)
+{
+    KXmlGuiWindow::changeEvent(event);
+#ifdef Q_OS_MACOS
+    // macOS's own full screen (the macosNativeFullscreen setting) puts the window in a Space of its own. While that Space
+    // is not shown macOS marks the window occluded and Qt does not paint it, so back from it (or back to it) the window can
+    // show the picture macOS kept. Everything is painted again once the move has ended.
+    if (event->type() == QEvent::WindowStateChange || (event->type() == QEvent::ActivationChange && isFullScreen())) {
+        QTimer::singleShot(600, this, [this]() {
+            update();
+            Q_FOREACH (QWidget *child, findChildren<QWidget *>()) {
+                child->update();
+            }
+        });
+    }
 #endif
 }
 
@@ -3295,7 +3348,7 @@ void KisMainWindow::initializeGeometry()
     // We handle full-screening differently on Android, see viewFullScreen.
     bool fullScreen = KisAndroidUtils::isInFullScreen();
 #else
-    bool fullScreen = isFullScreen();
+    bool fullScreen = inFullScreen();
 #endif
     d->fullScreenMode->setChecked(fullScreen);
 }

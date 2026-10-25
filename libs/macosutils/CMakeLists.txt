@@ -7,6 +7,7 @@ set(macosutils_LIB_SRCS
     KisMacosSecurityBookmarkManager.mm
     KisMacosEntitlements.mm
     KisMacosSystemProber.mm
+    KisMacosFullScreen.mm
 )
 
 kis_add_library(kritamacosutils SHARED ${macosutils_LIB_SRCS})

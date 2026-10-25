@@ -1346,11 +1346,7 @@ void KisViewManager::switchCanvasOnly(bool toggled)
     // QT in windows does not return to maximized upon 4th tab in a row
     // https://bugreports.qt.io/browse/QTBUG-57882, https://bugreports.qt.io/browse/QTBUG-52555, https://codereview.qt-project.org/#/c/185016/
     if (toggleFullscreen) {
-        if(toggled) {
-            main->setWindowState( main->windowState() | Qt::WindowFullScreen);
-        } else {
-            main->setWindowState( main->windowState() & ~Qt::WindowFullScreen);
-        }
+        main->setFullScreen(toggled);   // on macOS Toska's full screen unless the setting asks for macOS's (KisMainWindow)
     }
 
     if (options.hideMenuFullscreen) {

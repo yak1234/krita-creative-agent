@@ -64,3 +64,4 @@ TestPythonProtection
 TestNodeDelegate
 KisClippingUtilsTest
 TestNodeView
+KisMacosFullScreenTest

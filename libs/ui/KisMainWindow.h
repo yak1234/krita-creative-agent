@@ -159,6 +159,14 @@ public:
     bool canvasDetached() const;
 
     /**
+     * Full screen on or off: on macOS Toska's own (in the current Space, KisMacosFullScreen.h) unless the
+     * macosNativeFullscreen setting asks for macOS's; elsewhere Qt's. View > Full Screen and canvas-only mode use it.
+     */
+    void setFullScreen(bool fullScreen);
+    /// In full screen, either kind.
+    bool inFullScreen() const;
+
+    /**
      * Shows if the main window is saving anything right now. If the
      * user presses Ctrl+W too fast, then the document can be close
      * before the saving is completed. I'm not sure if it is fixable
@@ -430,6 +438,7 @@ protected:
     void closeEvent(QCloseEvent * e) override;
     void resizeEvent(QResizeEvent * e) override;
     void showEvent(QShowEvent *event) override;
+    void changeEvent(QEvent *event) override;
 
     // QWidget overrides
     void dragMoveEvent(QDragMoveEvent *event) override;

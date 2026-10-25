@@ -227,6 +227,14 @@ kis_add_test(KisAboutAgentTest.cpp
     LINK_LIBRARIES kritaui kritatestsdk
     )
 
+# Toska's full screen on macOS (KisMacosFullScreen.h): which full screen View > Full Screen uses, and nothing off Cocoa
+if (APPLE)
+    kis_add_test(KisMacosFullScreenTest.cpp
+        TEST_NAME KisMacosFullScreenTest
+        LINK_LIBRARIES kritaui kritamacosutils kritatestsdk
+        )
+endif()
+
 # Krita Agent: where Toska's splash banner goes in the build named Toska (KisSplashBannerLayout.h), and the
 # shipped banner (krita/data/splash/toska/banner.svg) has its logo frame and a picture QtSvg decodes
 kis_add_test(KisSplashBannerLayoutTest.cpp

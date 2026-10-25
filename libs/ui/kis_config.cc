@@ -1949,6 +1949,16 @@ void KisConfig::setFullscreenMode(const bool value) const
     m_cfg.writeEntry("fullscreenMode", value);
 }
 
+bool KisConfig::macosNativeFullscreen(bool defaultValue) const
+{
+    return (defaultValue ? false : m_cfg.readEntry("macosNativeFullscreen", false));
+}
+
+void KisConfig::setMacosNativeFullscreen(const bool value) const
+{
+    m_cfg.writeEntry("macosNativeFullscreen", value);
+}
+
 QStringList KisConfig::favoriteCompositeOps(bool defaultValue) const
 {
     return (defaultValue ? QStringList() :

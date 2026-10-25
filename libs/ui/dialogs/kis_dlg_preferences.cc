@@ -390,6 +390,14 @@ GeneralTab::GeneralTab(QWidget *_parent, const char *_name)
 
     m_chkCanvasMessages->setChecked(cfg.showCanvasMessages());
 
+#ifdef Q_OS_MACOS
+    // Toska's full screen stays in the current Space (KisMacosFullScreen.h); this asks for macOS's own instead.
+    m_chkNativeFullScreen = new QCheckBox(i18n("Full Screen opens a Space of its own (macOS full screen)"), groupBox_3);
+    m_chkNativeFullScreen->setToolTip(i18n("Off: Full Screen fills the screen where you are, and the menu bar and Dock appear when the pointer reaches them."));
+    m_chkNativeFullScreen->setChecked(cfg.macosNativeFullscreen());
+    formLayout_17->insertRow(2, QString(), m_chkNativeFullScreen);
+#endif
+
     const QString configPath = KisAppIdentity::configLocation();
     QSettings kritarc(configPath + QStringLiteral("/kritadisplayrc"), QSettings::IniFormat);
     m_chkHiDPI->setChecked(kritarc.value("EnableHiDPI", true).toBool());
@@ -848,6 +856,9 @@ void GeneralTab::setDefault()
     m_mdiColor->setColor(mdiColor);
     m_backgroundimage->setText(cfg.getMDIBackgroundImage(true));
     m_chkCanvasMessages->setChecked(cfg.showCanvasMessages(true));
+    if (m_chkNativeFullScreen) {
+        m_chkNativeFullScreen->setChecked(cfg.macosNativeFullscreen(true));
+    }
     m_chkCompressKra->setChecked(cfg.compressKra(true));
     m_chkTrimKra->setChecked(cfg.trimKra(true));
     m_chkTrimFramesImport->setChecked(cfg.trimFramesImport(true));
@@ -3096,6 +3107,9 @@ bool KisDlgPreferences::editPreferences(std::optional<PageDesc>page)
 
 
         cfg.setShowCanvasMessages(m_general->showCanvasMessages());
+        if (m_general->m_chkNativeFullScreen) {
+            cfg.setMacosNativeFullscreen(m_general->m_chkNativeFullScreen->isChecked());
+        }
         cfg.setCompressKra(m_general->compressKra());
         cfg.setTrimKra(m_general->trimKra());
         cfg.setTrimFramesImport(m_general->trimFramesImport());

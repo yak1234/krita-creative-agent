@@ -137,6 +137,8 @@ private Q_SLOTS:
 public:
     QButtonGroup m_pasteFormatGroup;
     KisCumulativeUndoData m_cumulativeUndoData;
+    /// macOS only (null elsewhere): View > Full Screen opens a Space of its own (KisConfig::macosNativeFullscreen).
+    QCheckBox *m_chkNativeFullScreen {nullptr};
 };
 
 

@@ -13,6 +13,7 @@ from . import vendor
 vendor.add_vendor_path()                        # numpy and other native packages the plugin ships (vendor.py)
 from .qt_compat import QTimer, QThread, pyqtSignal, QPointF, QPoint, QRectF, QByteArray, QBuffer, QIODevice, QCoreApplication, QStandardPaths, scoped
 from . import bundled_release
+from .bridge_guard import refusal
 from .qt_compat import QColor, QPainterPath, QImage
 from .qt_compat import QMessageBox
 import json
@@ -83,6 +84,13 @@ class PaintRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _refused(self):
+        """A browser page or a foreign host name (bridge_guard.py) is answered 403 before anything is read."""
+        reason = refusal(self.headers, self.server.server_address[1])
+        if reason:
+            self.send_json_response({"error": reason}, 403)
+        return bool(reason)
+
     def _authorized(self):
         if not AUTH_TOKEN:
             return True
@@ -92,6 +100,8 @@ class PaintRequestHandler(BaseHTTPRequestHandler):
         """Handle GET requests - health and introspection."""
         parsed = urlparse(self.path)
 
+        if self._refused():
+            return
         if not self._authorized():
             self.send_json_response({"error": "unauthorized"}, 401)
             return
@@ -112,6 +122,8 @@ class PaintRequestHandler(BaseHTTPRequestHandler):
         """Handle POST requests - paint commands."""
         global command_counter
 
+        if self._refused():
+            return
         if not self._authorized():
             self.send_json_response({"error": "unauthorized"}, 401)
             return

@@ -767,6 +767,12 @@ export class StudioRuntime extends PaintingRuntime {
   refineGrain() { return refineGrain(this.textureHost()); }
   /** The refine's form strokes stamped with the goal's dabs in an architectural refine step (architecture-texture goal 9). */
   refineDabs() { return refineDabs(this.textureHost()); }
+  /** The text of the plan's "Add: <thing>" step painted now (the Agent move's step, else the current one), or null: paint_snow
+   * settles snow on every part it names (snow-tool.ts). */
+  additionStepNow() {
+    const index = this.mode === 'agent' ? this.currentMove?.step : this.goal?.current_step, step = Number.isInteger(index) ? this.goal?.brief?.steps?.[index] : null;
+    return step && folderStepKind(step) === 'addition' ? String(step.title).replace(/^\s*add\s*:\s*/i, '').trim() || null : null;
+  }
   /** The plan step painted now: the Agent move's, else Autopilot's current one. */
   paintedStepIndex() { return this.mode === 'agent' ? this.currentMove?.step : this.study?.folder ? this.goal?.current_step : null; }
   /** Whether a step's texture pass ran: on the Agent move, else on the goal by step (Autopilot). */

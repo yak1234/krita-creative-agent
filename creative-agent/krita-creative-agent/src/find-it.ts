@@ -16,6 +16,11 @@
 //   "not the part" cells as negative points (the buildings, for the sky); every cell's mask is decoded on the one study of
 //   the view, a mask that leaks into the "not" cells is dropped, and the rest are merged. A region split by other objects
 //   (the sky between towers) is covered piece by piece, which one prompt cannot do.
+// - The outline stays where the part was located (LIVE 2026-10-25, 6000 x 4500 canvases): it is cut to the located cells
+//   (mostly the part, or showing some of it) grown by a cell; one mostly elsewhere is dropped and its cells asked as a box.
+//   Where the located cells hold much more than the outline (a skyline, a row of towers, a bridge), each cluster of cells is
+//   asked as a box (a few cells) and then cell by cell. Measured on New Moscow's goal (real SAM 2.1 base-plus, the same Luna
+//   answers): Modern skyline 0.0066 -> 0.0475 of the picture, Arched bridge 0 -> 0.0147, Kremlin towers not found -> 0.0307.
 // - The study (the image encoder) runs once per view: findShape keys it by the view's content, so a later shape the
 //   painter asks for on the same view reuses it. The result is cached in the chat folder's .shapes by (finder version, model
 //   revision, view content, request): the same request on the same revision of the painting answers at once.
@@ -30,9 +35,10 @@ import { SHAPES_MODEL } from './shapes/model.ts';
 import { boxPixels, cellBox, NEGATIVE, POSITIVE, unanswered, type Cells, type PartLocator, type Rgba, type Unanswered } from './find-it-locate.ts';
 
 export { NEGATIVE, POSITIVE };
-export const FINDER_VERSION = 4;                         // 2: a named part is found on the goal when it is placed (goal());
+export const FINDER_VERSION = 5;                         // 2: a named part is found on the goal when it is placed (goal());
                                                          // 3: a thin part is looked at again, enlarged (find-it-locate.ts);
-                                                         // 4: a small part is one box around the few cells showing it
+                                                         // 4: a small part is one box around the few cells showing it;
+                                                         // 5: kept near its cells; clusters of cells asked as boxes
 /** The goal is looked at as a copy of at most this many pixels (the studio's host.pixels, bounded-image.ts): the shapes
  * model works at 1024 a side and the locator's grid at LOCATE_PIXELS, so a goal sharpened 4x (25 million pixels) is
  * never decoded whole for Find it (LIVE rehearsal 2, 2026-10-24: 4.7 s of trace_reference on Krita's GUI thread). */
@@ -41,6 +47,17 @@ export const FIND_PIXELS = 2_000_000;
 export const LEAK = 0.25;
 /** A small part's mask is kept when at least this share of it lies in its box (not something larger passing through). */
 export const IN_BOX = 0.5;
+/** An outline with more than this share outside the located cells (dilated by a cell) is something else and is dropped;
+ * its cells are asked as a box instead (LIVE 2026-10-25: "the wooden post the bearded man stands by" came back 2884 px wide
+ * with the main figure's head). What it keeps is cut to those cells. */
+export const OUTSIDE = 0.5;
+/** Located cells holding much more than the outline: a cluster of cells the outline covers less than this share of is asked
+ * as a box, and then its cells it still covers less of one by one (LIVE 2026-10-25: "Modern skyline" was 0.0066 of New
+ * Moscow, about 15% of it; points at the cells' centres found lit windows and the sky between towers). */
+export const COVER = 0.2;
+/** A cluster of at most this many cells is one box; a larger one is asked cell by cell (one box over a city block finds the
+ * block, not its towers). */
+export const CLUSTER_CELLS = 8;
 /** A clicked point's mask below this score is still loaded (the artist sees it and adjusts), with a note. */
 export const UNSURE = 0.6;
 /** Found areas kept in a chat's .shapes. */
@@ -123,9 +140,10 @@ type Point = [number, number, number];
 export function promptsFromCells(cells: Cells, width: number, height: number): { prompts: Point[][]; negatives: Rect[]; box?: Rect } {
   const cell = (i: number) => boxPixels(cellBox(i, cells.cols, cells.rows, cells.area), width, height);
   const centre = (i: number): [number, number] => { const [x0, y0, x1, y1] = cell(i); return [(x0 + x1) / 2, (y0 + y1) / 2]; };
-  const yes = cells.p.map((p, i) => [p, i] as const).filter(([p]) => p >= POSITIVE).sort((a, b) => b[0] - a[0] || a[1] - b[1]).map(([, i]) => i);
+  const on = locatedCells(cells);
+  const yes = cells.p.map((p, i) => [p, i] as const).filter(([p, i]) => p >= POSITIVE && on[i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]).map(([, i]) => i);
   const no = cells.guard ? cells.guard.map(box => boxPixels(box, width, height))
-    : cells.p.map((p, i) => [p, i] as const).filter(([p]) => p <= NEGATIVE).map(([, i]) => cell(i));
+    : cells.p.map((p, i) => [p, i] as const).filter(([p, i]) => p <= NEGATIVE && !on[i]).map(([, i]) => cell(i));
   if (cells.small && yes.length) {
     const rects = yes.map(cell), [cx0, cy0, cx1, cy1] = rects[0]!, mx = (cx1 - cx0) / 2, my = (cy1 - cy0) / 2;
     const x0 = Math.max(0, Math.round(Math.min(...rects.map(r => r[0])) - mx)), y0 = Math.max(0, Math.round(Math.min(...rects.map(r => r[1])) - my));
@@ -133,6 +151,59 @@ export function promptsFromCells(cells: Cells, width: number, height: number): {
     return { prompts: [], negatives: no, box: [x0, y0, x1 - x0, y1 - y0] };
   }
   return { prompts: yes.map(i => [[...centre(i), 1] as Point]), negatives: no };
+}
+
+/** Which cells are where the part was located: mostly the part (unless the same cell shows none of it while other cells
+ * are located without that contradiction: New Moscow's skyline, 0.68 against 0.04 in the sky above it), or showing some of
+ * it. A small part's cells are those showing it. */
+export function locatedCells(cells: Cells): boolean[] {
+  if (cells.small) return cells.p.map(p => p >= POSITIVE);
+  const contradicted = (i: number) => cells.any?.[i] !== undefined && cells.any[i]! <= NEGATIVE;
+  const showing = cells.p.map((_, i) => (cells.any?.[i] ?? 0) >= POSITIVE), mostly = cells.p.map(p => p >= POSITIVE);
+  const trusted = cells.p.some((_, i) => showing[i] || (mostly[i] && !contradicted(i)));
+  return cells.p.map((_, i) => showing[i]! || (mostly[i]! && (!trusted || !contradicted(i))));
+}
+export type Located = {
+  /** The located cells as [x0, y0, x1, y1) in view pixels, by cell index. */
+  rects: Map<number, Rect>;
+  /** The located cells joined where they touch (8-connected), each with its box [x0, y0, x1, y1). */
+  clusters: { cells: number[]; box: Rect }[];
+  /** 1 where an outline is kept: the located cells, each grown by its own size on every side. */
+  region: Uint8Array;
+};
+/** Where the part was located, in view pixels: its cells, their clusters, and the region outlines are kept in. */
+export function locatedRegion(cells: Cells, width: number, height: number): Located {
+  const rects = new Map<number, Rect>(), on = locatedCells(cells);
+  cells.p.forEach((_, i) => { if (on[i]) rects.set(i, boxPixels(cellBox(i, cells.cols, cells.rows, cells.area), width, height)); });
+  const region = new Uint8Array(width * height);
+  for (const [x0, y0, x1, y1] of rects.values()) {
+    const w = x1 - x0, h = y1 - y0;
+    for (let y = Math.max(0, y0 - h); y < Math.min(height, y1 + h); y++) region.fill(1, y * width + Math.max(0, x0 - w), y * width + Math.min(width, x1 + w));
+  }
+  const clusters: Located['clusters'] = [], seen = new Set<number>();
+  for (const start of rects.keys()) {
+    if (seen.has(start)) continue;
+    const members = [start]; seen.add(start);
+    for (let k = 0; k < members.length; k++) {
+      const c = members[k]! % cells.cols, r = Math.floor(members[k]! / cells.cols);
+      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+        const n = (r + dr) * cells.cols + c + dc;
+        if (c + dc < 0 || c + dc >= cells.cols || r + dr < 0 || r + dr >= cells.rows || seen.has(n) || !rects.has(n)) continue;
+        seen.add(n); members.push(n);
+      }
+    }
+    members.sort((a, b) => a - b);
+    const boxes = members.map(i => rects.get(i)!);
+    clusters.push({ cells: members, box: [Math.min(...boxes.map(b => b[0])), Math.min(...boxes.map(b => b[1])), Math.max(...boxes.map(b => b[2])), Math.max(...boxes.map(b => b[3]))] });
+  }
+  return { rects, clusters, region };
+}
+
+/** The share of `rects` ([x0, y0, x1, y1) in view pixels) the merged mask covers. */
+export function coverShare(union: Uint8Array, rects: Rect[], width: number): number {
+  let total = 0, covered = 0;
+  for (const [x0, y0, x1, y1] of rects) for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { total++; if (union[y * width + x]) covered++; }
+  return total ? covered / total : 1;
 }
 
 /** The share of a found mask (view pixels) lying in the given rectangles, [x0, y0, x1, y1) in view pixels. */
@@ -147,6 +218,17 @@ export function leakShare(found: { bounds: Rect; data: Uint8Array }, rects: Rect
     if (blocked[(by + j) * width + bx + i]) leaked++;
   }
   return inside ? leaked / inside : 0;
+}
+
+/** The share of a found mask (view pixels) outside `region` (1 inside). */
+export function outsideShare(found: { bounds: Rect; data: Uint8Array }, region: Uint8Array, width: number): number {
+  const [bx, by, bw, bh] = found.bounds;
+  let inside = 0, outside = 0;
+  for (let j = 0; j < bh; j++) for (let i = 0; i < bw; i++) {
+    if ((found.data[j * bw + i] ?? 0) < 128) continue;
+    inside++; if (!region[(by + j) * width + bx + i]) outside++;
+  }
+  return inside ? outside / inside : 0;
 }
 
 /** Holes smaller than this share of the view are filled (a star, a window lit inside the sky). */
@@ -189,11 +271,11 @@ export function cleanMask(mask: Uint8Array, width: number, height: number, seeds
 }
 
 /** The mask's pixel nearest (x, y), as a seed for cleaning; null when the mask is empty. */
-function nearestInside(found: { bounds: Rect; data: Uint8Array }, x: number, y: number): number[] | null {
+function nearestInside(found: { bounds: Rect; data: Uint8Array }, x: number, y: number, region?: Uint8Array | null, width = 0): number[] | null {
   const [bx, by, bw, bh] = found.bounds;
   let best: number[] | null = null, distance = Infinity;
   for (let j = 0; j < bh; j++) for (let i = 0; i < bw; i++) {
-    if ((found.data[j * bw + i] ?? 0) < 128) continue;
+    if ((found.data[j * bw + i] ?? 0) < 128 || (region && !region[(by + j) * width + bx + i])) continue;
     const d = (bx + i - x) ** 2 + (by + j - y) ** 2;
     if (d < distance) { distance = d; best = [bx + i + 0.5, by + j + 0.5, 1]; }
   }
@@ -288,26 +370,55 @@ export async function findArea(host: FindHost, request: FindRequest): Promise<Fo
       located ?? { fallback: 'no_answer', ms: locateMs });
     cells = located;
     ({ prompts, negatives, box } = promptsFromCells(cells, view_w, view_h));
-    if (!prompts.length && !box) throw new FindError('not_found', `I could not see ${part} on the painting. Try another name for it, or select it with the Freehand tool.`);
+    if (!prompts.length && !box && !locatedRegion(cells, view_w, view_h).clusters.length) throw new FindError('not_found', `I could not see ${part} on the painting. Try another name for it, or select it with the Freehand tool.`);
   }
   const shaping = performance.now(), union = new Uint8Array(view_w * view_h), scores: number[] = [];
   const studyKey = `${goal ? 'goal' : 'canvas'}:${sha.slice(0, 24)}`;   // canvasShape's key for the view: one study per picture
-  const asked: ({ points: Point[] } | { box: Rect })[] = box ? [{ box }] : prompts.map(points => ({ points }));
+  const where = cells ? locatedRegion(cells, view_w, view_h) : null, region = where?.region ?? null;
   const seeds = prompts.flatMap(prompt => prompt.filter(point => point[2] === 1)) as number[][];
-  for (const prompt of asked) {
+  const asked: ({ points: Point[] } | { box: Rect })[] = [], boxes = new Set<string>();
+  /** One prompt: its outline checked (on the part; not leaking into where it is not; not mostly outside its cells), cut to
+   * the located region and merged. 'outside' when it was mostly elsewhere. */
+  const ask = async (prompt: { points: Point[] } | { box: Rect }): Promise<boolean | 'outside'> => {
     host.signal?.throwIfAborted();
+    asked.push(prompt);
     let found: Found;
     try { found = await findShape(host, studyKey, { width: view_w, height: view_h, data }, prompt); }
-    catch (error) { if ((error as { code?: unknown }).code === 'empty' || /No shape was found/.test((error as Error).message)) continue; throw error; }
+    catch (error) { if ((error as { code?: unknown }).code === 'empty' || /No shape was found/.test((error as Error).message)) return false; throw error; }
     if (cells) {
-      if ('points' in prompt) { const [px = 0, py = 0] = prompt.points[0]!; if (!covers(found, px, py)) continue; }   // it found something else
-      else { const [x, y, w, h] = prompt.box; if (leakShare(found, [[x, y, x + w, y + h]], view_w, view_h) < IN_BOX) continue; }
-      if (negatives.length && leakShare(found, negatives, view_w, view_h) > LEAK) continue;
+      if ('points' in prompt) { const [px = 0, py = 0] = prompt.points[0]!; if (!covers(found, px, py)) return false; }   // it found something else
+      else { const [x, y, w, h] = prompt.box; if (leakShare(found, [[x, y, x + w, y + h]], view_w, view_h) < IN_BOX) return false; }
+      if (negatives.length && leakShare(found, negatives, view_w, view_h) > LEAK) return false;
+      if (region && outsideShare(found, region, view_w) > OUTSIDE) return 'outside';
     }
-    if ('box' in prompt) { const [x, y, w, h] = prompt.box, seed = nearestInside(found, x + w / 2, y + h / 2); if (seed) seeds.push(seed); }
+    if ('box' in prompt) { const [x, y, w, h] = prompt.box, seed = nearestInside(found, x + w / 2, y + h / 2, region, view_w); if (seed) seeds.push(seed); }
     const [bx, by, bw, bh] = found.bounds;
-    for (let j = 0; j < bh; j++) for (let i = 0; i < bw; i++) if ((found.data[j * bw + i] ?? 0) >= 128) union[(by + j) * view_w + bx + i] = 255;
+    for (let j = 0; j < bh; j++) for (let i = 0; i < bw; i++) {
+      const k = (by + j) * view_w + bx + i;
+      if ((found.data[j * bw + i] ?? 0) >= 128 && (!region || region[k])) union[k] = 255;
+    }
     scores.push(found.result.score);
+    return true;
+  };
+  const askBox = async ([x0, y0, x1, y1]: Rect) => {
+    const key = [x0, y0, x1, y1].join();
+    if (boxes.has(key)) return;
+    boxes.add(key); await ask({ box: [x0, y0, x1 - x0, y1 - y0] });
+  };
+  const clusterAt = (x: number, y: number) => where ? where.clusters.findIndex(c => c.cells.some(i => {
+    const [x0, y0, x1, y1] = where.rects.get(i)!; return x >= x0 && x < x1 && y >= y0 && y < y1; })) : -1;
+  const elsewhere = new Set<number>();
+  if (box) await ask({ box });
+  for (const points of prompts) if (await ask({ points }) === 'outside') elsewhere.add(clusterAt(points[0]![0], points[0]![1]));
+  // Located cells holding much more than the outline (a skyline, a row of towers, a bridge along its cells), or a point that
+  // found something mostly elsewhere: the cluster as one box when it is a few cells, then each of its cells the outline
+  // still covers little of as a box (on New Moscow the skyline's box found its lower blocks, the cells its towers). A small
+  // part is its box alone.
+  if (where && !cells?.small) for (const [index, cluster] of where.clusters.entries()) {
+    const rects = cluster.cells.map(i => where.rects.get(i)!);
+    if (!elsewhere.has(index) && coverShare(union, rects, view_w) >= COVER) continue;
+    if (cluster.cells.length <= CLUSTER_CELLS) await askBox(cluster.box);
+    for (const rect of rects) if (coverShare(union, [rect], view_w) < COVER) await askBox(rect);
   }
   cleanMask(union, view_w, view_h, seeds);
   const shapesMs = elapsed(shaping);

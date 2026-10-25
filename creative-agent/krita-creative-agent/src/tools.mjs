@@ -389,7 +389,7 @@ export function paintingTools(runtime) {
     goal: async canvas => runtime.finishGoal ? (await runtime.finishGoal(canvas)).goal : null, findArea: request => runtime.callNative('area_accents', request) }));
   // Snow (snow-tool.ts, openspec snow): falling snow in depth layers and snow settled on named parts, found by Find it
   // through the studio's own path (proposeArea), each one reversible pass of the plugin's snow operation (snow_craft.py).
-  tools.push(...snowTools(runtime, { snow: nativeExecute(runtime, 'snow'),
+  tools.push(...snowTools(runtime, { snow: nativeExecute(runtime, 'snow'), addition: () => runtime.additionStepNow?.() ?? null,
     findPart: async name => { const found = runtime.proposeArea ? await runtime.proposeArea(name, { quiet: true }) : null;
       return found?.mask_path ? { mask_path: found.mask_path, bounds: found.bounds } : null; } }));
   // A flat fill anywhere in a batch is nudged before anything paints (studio.mjs fillNudge), so the batch is refused whole.

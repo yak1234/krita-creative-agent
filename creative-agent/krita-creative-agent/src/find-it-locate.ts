@@ -41,6 +41,9 @@ export type Box = [number, number, number, number];
  * requests it took (more than one for a thin part). */
 export type Cells = { cols: number; rows: number; p: number[]; ms: number; model?: string; picture?: LocatePicture;
   area?: Box; guard?: Box[]; looks?: number;
+  /** Per cell (row-major, the same grid), whether it shows any part of it: the region the part was located in, beyond the
+   * cells mostly it (a row of towers, a skyline, a bridge along its cells). */
+  any?: number[];
   /** A small part: `p` is whether each cell shows any of it (none was mostly it on an enlarged look). */
   small?: boolean };
 /** No answer, and why: the decision client's fallback (not_connected, timeout, refused, service_or_response_error...), its
@@ -182,7 +185,7 @@ export function decisionLocator(client: () => Promise<Decider | null>, { cells =
       const any = Array.from({ length: cols * rows }, (_, i) => answer('any_' + (i + 1)));
       const earlier = guard.length;
       for (let i = 0; i < any.length; i++) if (any[i]! <= NEGATIVE) guard.push(cellBox(i, cols, rows, area));
-      const found: Cells = { cols, rows, p, ms: ms(), picture, ...(result.model ? { model: result.model } : {}),
+      const found: Cells = { cols, rows, p, any, ms: ms(), picture, ...(result.model ? { model: result.model } : {}),
         ...(look > 1 ? { area, guard, looks: look } : {}) };
       if (p.some(value => value >= POSITIVE)) return found;
       const showing = any.flatMap((value, i) => value >= POSITIVE ? [cellBox(i, cols, rows, area)] : []);

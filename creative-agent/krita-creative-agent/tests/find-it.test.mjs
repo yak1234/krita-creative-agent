@@ -387,3 +387,130 @@ test('a small part is found end to end from its box; a mask mostly outside the b
     await assert.rejects(findArea(host, { part: 'Domed church' }), e => e.code === 'not_found' && /No outline of Domed church/.test(e.message));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+// LIVE (2026-10-25, 6000 x 4500 canvases). Dostoevsky: "the wooden post the bearded man stands by" came back 2884 px wide
+// with the main figure's head, and paint_snow capped his hair. New Moscow: "Modern skyline" 0.0066 of the picture (it is
+// about 15%), "Arched bridge" a 46 x 34 speck, "Kremlin towers" not found. An outline is now kept only near the cells the
+// part was located in (dilated by a cell), an outline mostly elsewhere is dropped and the part's cells asked as a box, and
+// where the located cells hold much more than the outline, each cluster of cells is asked as a box (a few cells), or cell by
+// cell (many). A fake shapes model answering from a function of the prompt; a 640 x 480 view, an 8 x 6 grid of 80 px cells.
+const SW = 640, SH = 480;
+function promptShapes(directory, answer) {
+  const asked = [];
+  const service = {
+    async study() { return { ms: 1, load_ms: 0, peak_mb: 1, provider: 'cpu', studied: true, attempt: 1 }; },
+    async shape(_id, prompt) {
+      asked.push(prompt);
+      const inside = answer(prompt), full = new Uint8Array(SW * SH);
+      let x0 = SW, y0 = SH, x1 = -1, y1 = -1;
+      for (let j = 0; j < SH; j++) for (let i = 0; i < SW; i++) if (inside(i, j)) { full[j * SW + i] = 255; x0 = Math.min(x0, i); y0 = Math.min(y0, j); x1 = Math.max(x1, i); y1 = Math.max(y1, j); }
+      if (x1 < 0) { const error = new Error('No shape was found there.'); error.code = 'empty'; throw error; }
+      const w = x1 - x0 + 1, h = y1 - y0 + 1, crop = new Uint8Array(w * h);
+      for (let j = 0; j < h; j++) crop.set(full.subarray((y0 + j) * SW + x0, (y0 + j) * SW + x0 + w), j * w);
+      const mask_path = join(directory, `mask-${asked.length}.png`);
+      await writeFile(mask_path, encodePlane({ width: w, height: h, data: crop }));
+      return { bounds: [x0, y0, w, h], score: 0.9, mask_path, model: 'fake', revision: 'r', ms: 2, peak_mb: 1, provider: 'cpu', cached: false };
+    },
+    async forget() {}, async close() {},
+  };
+  return { service, asked };
+}
+/** Cells of the 8 x 6 grid from a function (column, row) -> [mostly, any]. */
+const gridCells = f => {
+  const p = [], any = [];
+  for (let r = 0; r < 6; r++) for (let c = 0; c < 8; c++) { const [a, b] = f(c, r); p.push(a); any.push(b); }
+  return { cols: 8, rows: 6, p, any, ms: 1, model: 'fake-luna' };
+};
+async function promptHarness(cells, answer) {
+  const directory = await mkdtemp(join(tmpdir(), 'find-it-'));
+  const { service, asked } = promptShapes(directory, answer);
+  const view = join(directory, 'view.png'); await writeFile(view, 'view');
+  const host = { directory, shapes: service, shapeStudies: new Map(),
+    view: async () => ({ path: view, width: SW, height: SH, revision: 'rev-1' }),
+    pixels: async () => ({ sha: 'e'.repeat(64), pixels: { width: SW, height: SH, data: new Uint8Array(SW * SH * 4) } }),
+    locate: async () => cells };
+  return { host, asked, directory, close: () => rm(directory, { recursive: true, force: true }) };
+}
+const inRect = ([x0, y0, x1, y1]) => (x, y) => x >= x0 && x < x1 && y >= y0 && y < y1;
+const anyOf = (...tests) => (x, y) => tests.some(t => t(x, y));
+// The post: column 3 (x 240-319), rows 1-5; the bearded man's head far to the right, x 500-559, y 80-159 (unsure cells).
+const post = inRect([290, 90, 310, 470]), head = inRect([500, 80, 560, 160]), beam = inRect([0, 100, 640, 160]);
+const postCells = gridCells((c, r) => c === 3 && r >= 1 ? [r >= 2 && r <= 4 ? 0.9 : 0.4, 0.95] : r === 1 ? [0.3, 0.3] : [0.02, 0.02]);
+
+test('an outline is kept only near the cells the part was located in: the head beside the post is cut away', async () => {
+  const h = await promptHarness(postCells, prompt => prompt.points ? anyOf(post, head) : post);
+  try {
+    const found = await findArea(h.host, { part: 'the wooden post' });
+    const [x, y, w, hh] = found.bounds;
+    assert.ok(x >= 160 && x + w <= 400, 'within the post\'s cells and one cell around them: ' + found.bounds);
+    const plane = await readFound(h.directory, found);
+    assert.equal(at(plane, found.bounds, 300, 300), 255, 'the post');
+    assert.ok(!(530 >= x && 530 < x + w) || at(plane, found.bounds, 530, 120) !== 255, 'not the head');
+    assert.ok(hh > 300, 'the whole post: ' + found.bounds);
+  } finally { await h.close(); }
+});
+
+test('an outline mostly outside the located cells is dropped and the part\'s cells are asked as one box', async () => {
+  // Every point finds the post with a beam across the whole picture and the head: mostly elsewhere.
+  const h = await promptHarness(postCells, prompt => prompt.points ? anyOf(post, head, beam) : post);
+  try {
+    const found = await findArea(h.host, { part: 'the wooden post' });
+    const boxes = h.asked.filter(p => p.box);
+    assert.ok(boxes.length >= 1, 'a box from the cells');
+    const [bx, by, bw, bh] = boxes[0].box;
+    assert.ok(bx <= 240 && by <= 80 && bx + bw >= 320 && by + bh >= 480 && bw <= 160, 'around the post\'s cells: ' + boxes[0].box);
+    assert.deepEqual(found.bounds, [290, 90, 20, 380], 'the post alone');
+  } finally { await h.close(); }
+});
+
+test('located cells holding much more than the outline: the cluster is asked as a box (the skyline)', async () => {
+  // Rows 2-3, columns 4-7 are mostly skyline; a point finds one lit window, the box the whole skyline.
+  const skyline = inRect([320, 180, 640, 320]);
+  const cells = gridCells((c, r) => c >= 4 && (r === 2 || r === 3) ? [0.9, 0.95] : [0.02, 0.02]);
+  const h = await promptHarness(cells, prompt => prompt.points
+    ? inRect([prompt.points[0][0] - 3, prompt.points[0][1] - 3, prompt.points[0][0] + 3, prompt.points[0][1] + 3]) : skyline);
+  try {
+    const found = await findArea(h.host, { part: 'Modern skyline' });
+    assert.equal(h.asked.filter(p => p.points).length, 8, 'a point a cell first');
+    assert.deepEqual(h.asked.filter(p => p.box).map(p => p.box), [[320, 160, 320, 160]], 'then the cluster as one box');
+    assert.ok(found.share > 0.13, 'the skyline, not a few windows: ' + found.share);
+  } finally { await h.close(); }
+});
+
+test('a scattered part no cell is mostly: each cluster of cells showing it is a box, the outlines merged (a row of towers)', async () => {
+  // Three towers in columns 1, 4 and 6 of row 3; the cells show them, none is mostly them.
+  const towers = [inRect([110, 250, 130, 320]), inRect([350, 250, 370, 320]), inRect([510, 250, 530, 320])];
+  const cells = gridCells((c, r) => r === 3 && (c === 1 || c === 4 || c === 6) ? [0.1, 0.9] : [0.02, 0.02]);
+  const h = await promptHarness(cells, prompt => {
+    const [x, y, w, hh] = prompt.box ?? [0, 0, 0, 0], box = inRect([x, y, x + w, y + hh]);
+    return (i, j) => box(i, j) && towers.some(t => t(i, j));
+  });
+  try {
+    const found = await findArea(h.host, { part: 'Kremlin towers' });
+    assert.equal(h.asked.length, 3, 'a box a cluster');
+    assert.ok(h.asked.every(p => p.box && p.box[2] <= 80 && p.box[3] <= 80));
+    assert.deepEqual(found.bounds, [110, 250, 420, 70], 'all three towers');
+    assert.equal(found.kept, 3);
+  } finally { await h.close(); }
+});
+
+test('a large cluster of cells showing a part is asked cell by cell, not as one box over all of it', async () => {
+  // Columns 1-6 of rows 2-3 show buildings with towers; one box over the twelve cells would find the whole city block.
+  const cells = gridCells((c, r) => c >= 1 && c <= 6 && (r === 2 || r === 3) ? [0.1, 0.9] : [0.02, 0.02]);
+  const h = await promptHarness(cells, prompt => {
+    const [x, y, w, hh] = prompt.box ?? [0, 0, 0, 0];
+    return inRect([x + 30, y + 10, x + 50, y + hh]);                // a tower in each cell
+  });
+  try {
+    const found = await findArea(h.host, { part: 'towers' });
+    assert.equal(h.asked.length, 12);
+    assert.ok(h.asked.every(p => p.box && p.box[2] <= 80 && p.box[3] <= 80), 'one cell a box');
+    assert.equal(found.kept, 12);
+  } finally { await h.close(); }
+});
+
+test('a cell "mostly" the part that shows none of it is not located (the model contradicts itself)', () => {
+  const cells = gridCells((c, r) => r === 0 && c === 6 ? [0.68, 0.04] : r === 2 && c === 6 ? [0.9, 0.95] : [0.02, 0.02]);
+  const { prompts } = promptsFromCells(cells, SW, SH);
+  assert.deepEqual(prompts, [[[520, 200, 1]]]);
+});

@@ -275,8 +275,9 @@ export async function readFolderText(root: string, name: string, max = 4000): Pr
 // broke whenever the planner reworded one), the tool it paints with (`tool`, checked by the host: plan-stages.ts stepTool)
 // and, for a refine step per part, the element files it refines (`parts`). All three are optional, so an older plan or a
 // PLAN.md line without them is read by its title as before.
-export type FolderStepKind = 'underpainting' | 'finish' | 'refine' | 'refine_part' | 'accents' | 'element' | 'whole';
-export const FOLDER_STEP_KINDS: readonly FolderStepKind[] = ['underpainting', 'finish', 'refine', 'refine_part', 'accents', 'element', 'whole'];
+// An "Add: <thing>" step (single-image-plans goal 3) paints something the goal image does not have (falling snow, a bird).
+export type FolderStepKind = 'underpainting' | 'finish' | 'refine' | 'refine_part' | 'addition' | 'accents' | 'element' | 'whole';
+export const FOLDER_STEP_KINDS: readonly FolderStepKind[] = ['underpainting', 'finish', 'refine', 'refine_part', 'addition', 'accents', 'element', 'whole'];
 export type FolderStep = { title: string; done_when: string; scope: string; kind?: FolderStepKind; tool?: string; parts?: string[] };
 export const UNDERPAINTING_STEP = 'Underpainting from the goal image';
 export const FINISH_STEP = 'Finish';
@@ -307,6 +308,7 @@ export function folderStepKind(step: { title: string; scope?: string; kind?: str
   if (step.kind && (FOLDER_STEP_KINDS as readonly string[]).includes(step.kind)) return step.kind as FolderStepKind;
   if (step.scope && IMAGE_TYPES.has(extname(step.scope.trim()).toLowerCase())) return 'element';
   if (/^\s*refine\s*:\s*\S/i.test(step.title)) return 'refine_part';
+  if (/^\s*add\s*:\s*\S/i.test(step.title)) return 'addition';
   if (/\baccents?\b/i.test(step.title)) return 'accents';
   if (step.title.trim().toLowerCase() === FINISH_STEP.toLowerCase()) return 'finish';
   if (step.title.trim().toLowerCase() === REFINE_STEP.toLowerCase()) return 'refine';

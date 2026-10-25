@@ -30,6 +30,8 @@ export type ScopeAnswer = 'whole' | 'stages' | 'neither';
 /** The stages a message asks for, while a folder plan is being made: the whole painting, only some stages, or neither,
  * and each stage's probability of being asked for (null: no usable answer). */
 export type StageReading = { scope: { choice: ScopeAnswer; confidence: number } | null; asked: Record<PlanStage, number | null> };
+/** Plan or not (single-image-plans goal 1): does the message ask for one thing or several steps in order? */
+export type PlanAnswer = 'one' | 'several';
 export type Reading = {
   /** The element the message asks to work on now (name null: none), or null when no element was asked about or answered. */
   element: { name: string | null; confidence: number } | null;
@@ -37,6 +39,8 @@ export type Reading = {
   reference: { choice: ReferenceAnswer; confidence: number } | null;
   /** Only when asked (`stages`: a folder plan is being made), else null. */
   stages: StageReading | null;
+  /** Only when asked (`plan`: a single-image chat could plan this message), else null. */
+  plan: { choice: PlanAnswer; confidence: number } | null;
   elapsed_ms: number; cost: number; input_tokens: number; fallback?: FallbackReason;
 };
 export type MessagePolicy = {
@@ -62,6 +66,12 @@ const SCOPE: Record<ScopeAnswer, string> = {
   stages: 'It asks only for one or some stages of the painting (the underpainting, the finish, refining, the accents), not the whole painting.',
   neither: 'It names no stage and does not ask for the whole painting (a greeting, a question, a comment, one part of the picture).',
 };
+// Plan or not (single-image-plans goal 1, the artist 2026-10-25: "Should Luna decide if it's a thing request or multipart
+// request" -> "Yes"). One more choice in the same single decision, asked only where a single-image plan could be made.
+const PLAN_STEPS: Record<PlanAnswer, string> = {
+  one: 'It asks for one thing: one change, one part, one addition or one stage of the painting (or it is a question or a comment).',
+  several: 'It asks for several things to do one after another: two or more stages (the underpainting, the finish, refining to the goal, the accents), a stage and something to add, or several things to add.',
+};
 const STAGE_TEXT: Record<PlanStage, string> = {
   underpainting: 'the underpainting: the first lay-in of the whole picture\u2019s colours and light from the goal image (a block-in)',
   finish: 'the finish: the soft areas blended and the forms restroked over the whole picture',
@@ -70,10 +80,12 @@ const STAGE_TEXT: Record<PlanStage, string> = {
 };
 
 /** Luna's reading of one typed message: one text decision. A fallback is no reading (every answer null). */
-export async function readMessage({ client, text, elements, signal, stages = false }: { client: DecisionMaker; text: string; elements: readonly Element[]; signal?: AbortSignal;
+export async function readMessage({ client, text, elements, signal, stages = false, plan = false }: { client: DecisionMaker; text: string; elements: readonly Element[]; signal?: AbortSignal;
   /** A folder plan is being made: also ask which of its stages the message asks for. */
-  stages?: boolean }): Promise<Reading> {
-  const empty: Reading = { element: null, one_part: null, negation: null, hand_painting: null, reference: null, stages: null, elapsed_ms: 0, cost: 0, input_tokens: 0 };
+  stages?: boolean;
+  /** A single-image chat could plan this message: also ask whether it asks for one thing or several steps. */
+  plan?: boolean }): Promise<Reading> {
+  const empty: Reading = { element: null, one_part: null, negation: null, hand_painting: null, reference: null, stages: null, plan: null, elapsed_ms: 0, cost: 0, input_tokens: 0 };
   const listed = elements.slice(0, 24);
   const questions: Questions = {
     ...(listed.length ? { element: { type: 'choice' as const,
@@ -93,6 +105,7 @@ export async function readMessage({ client, text, elements, signal, stages = fal
       ...Object.fromEntries(PLAN_STAGES.map(stage => [`stage_${stage}`, noul(`Does the message ask for ${STAGE_TEXT[stage]}? Saying not to do it, or to leave it for later, is no.`,
         'It asks for this stage.', 'It does not ask for this stage.')])),
     } : {}),
+    ...(plan ? { plan_steps: { type: 'choice' as const, instructions: 'The painting is made from a goal image. Does the message ask the painter for one thing, or for several steps to do one after another?', criteria: { ...PLAN_STEPS } } } : {}),
   };
   let result;
   try {
@@ -115,10 +128,12 @@ export async function readMessage({ client, text, elements, signal, stages = fal
   const element = listed.length ? picked(a.element, elementKeys) : null;
   const reference = picked(a.reference, Object.keys(REFERENCE));
   const scope = stages ? picked(a.plan_scope, Object.keys(SCOPE)) : null;
+  const steps = plan ? picked(a.plan_steps, Object.keys(PLAN_STEPS)) : null;
   return { element: element ? { name: element.choice === 'none' ? null : listed[Number(element.choice.slice(8)) - 1]!.name, confidence: element.confidence } : null,
     one_part: p(a.one_part), negation: p(a.negation), hand_painting: p(a.hand_painting),
     reference: reference as Reading['reference'],
     stages: stages ? { scope: scope as StageReading['scope'], asked: Object.fromEntries(PLAN_STAGES.map(stage => [stage, p(a[`stage_${stage}`])])) as Record<PlanStage, number | null> } : null,
+    plan: steps as Reading['plan'],
     elapsed_ms: result.elapsed_ms, cost: result.usage.cost, input_tokens: result.usage.input_tokens };
 }
 

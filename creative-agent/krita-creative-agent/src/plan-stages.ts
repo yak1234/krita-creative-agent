@@ -18,7 +18,18 @@
 //   each refining its area fully took 45-60 minutes on New Moscow, one whole-picture refine about 6). Each step records its kind
 //   and tool; the planner may reword titles and checks and regroup the parts, but shapePlan holds the stages to what was
 //   asked, in order, and checks each tool (stepTool).
-// Mechanism only: the studio asks and applies (studio.mjs planFolder); this module imports no .mjs.
+//
+// Plans for a single goal image (openspec single-image-plans, approved by the artist 2026-10-25: "Should plans work
+// differently for single"; "Should Luna decide if it's a thing request or multipart request" -> "Yes"):
+// - Plan or not (planOrNot): the same reading answers whether the message asks for one thing or several steps; Luna acting
+//   and sure decides, the keywords (severalNamed) otherwise, and the small PLAN_CARD asks when Luna is unsure and the
+//   keywords name nothing.
+// - The plan holds the stages the request names (the same stages and order rules), a "Refine: <part>" step for a part it
+//   names (refinePartsNamed; found with Find it on the goal image) and an "Add: <thing>" step for each thing it adds that
+//   the goal image does not have (additionsNamed, additionStep): after the copy stages, before Accents. shapePlan keeps
+//   every addition the draft holds (a planner that forgot one gets it back) and restates each in its done_when, so a
+//   token effort cannot meet it. An Add step may name any known painting tool (a snow tool once one exists).
+// Mechanism only: the studio asks and applies (studio.mjs planFolder, planSingle); this module imports no .mjs.
 import { SURE, PLAN_STAGES, type PlanStage, type Reading } from './message-reading.ts';
 import { folderStepKind, UNDERPAINTING_STEP, FINISH_STEP, REFINE_STEP, ACCENTS_STEP, type FolderStep, type FolderStepKind } from './project-folder.ts';
 import { groupName, refineStep, type RefineGroup } from './refine-parts.ts';
@@ -43,7 +54,7 @@ const POSTPONED = /\blater\b|\bnot yet\b/;
 const ASKING = /\b(?:add|paint|do|include|also|now|next|then|start|run|want|please|plus|let'?s|continue with|go on with|move on to|actually)\b/;
 const WHOLE_WORDS = /\b(?:whole (?:thing|painting|picture|plan|lot)|everything|all of it|it all|like the goal|as the goal (?:image )?shows|full plan|all (?:the )?(?:stages|steps)|(?:from )?start to finish|the complete painting|finish (?:it|the (?:painting|picture)))\b/;
 const STAGE_WORDS: Record<PlanStage, RegExp> = {
-  underpainting: /\bunder-?paint(?:ing)?\b|\bblock[- ]?in\b|\blay[- ]?in\b/,
+  underpainting: /\bunder-?paint(?:ing|ed)?\b|\bblock[- ]?in\b|\blay[- ]?in\b/,
   finish: /(?<!\bto )\bfinish(?:ing)?\b(?!\s+(?:it|the (?:painting|picture|whole)))|\bblend(?:ing)?\b/,
   refine: /\brefin(?:e|ing|ement)\b|\bdetail(?:s|ing)?\b/,
   accents: /\baccents?\b|\bhighlights?\b|\bglints?\b/,
@@ -104,6 +115,87 @@ export function reviseStages({ current, reading, act, text }: { current: readonl
     source: luna.length && !named.stages.length && !named.whole ? 'luna' : 'keywords' };
 }
 
+/** Plan or not: true plans the message step by step, false paints it as one move, null asks (PLAN_CARD). */
+export type PlanOrNot = { plan: boolean | null; source: 'luna' | 'keywords' | 'default' | 'ask' };
+const SEQUENCE = /\b(?:then|after that|afterwards|and next|finally)\b/;
+const LIST_ITEM = /(?:^|\n)\s*(?:\d+[.)]|[-*\u2022])\s+\S/g;
+/** The keywords say "several steps" (true) or nothing (null): two stages or the whole painting, a sequence word ("then",
+ * "after that"), a list of two or more items, a stage or a part and an addition, or two additions. They never say "one". */
+export function severalNamed(text: string): true | null {
+  const said = String(text ?? ''), named = stagesNamed(said);
+  const stages = named.whole ? PLAN_STAGES.length : named.stages.length, adds = additionsNamed(said).length, parts = refinePartsNamed(said).length;
+  const items = (said.match(LIST_ITEM) ?? []).length;
+  return stages >= 2 || items >= 2 || adds >= 2 || (stages + parts >= 1 && adds >= 1) || SEQUENCE.test(fold(said)) ? true : null;
+}
+/** Plan or not for a message in a single-image chat (see the header): Luna acting and sure decides; else the keywords;
+ * with Luna acting but unsure and nothing from the keywords, the card asks; Luna off or not acting and no keyword: one
+ * thing, as before. */
+export function planOrNot({ reading, act, text }: { reading: Reading | null; act: boolean; text: string }): PlanOrNot {
+  const keywords: PlanOrNot | null = severalNamed(text) ? { plan: true, source: 'keywords' } : null;
+  const read = act && reading && !reading.fallback ? reading.plan : null;
+  if (!act || !read) return keywords ?? { plan: false, source: 'default' };
+  if (read.confidence >= SURE) return { plan: read.choice === 'several', source: 'luna' };
+  return keywords ?? { plan: null, source: 'ask' };
+}
+/** The plan-or-not card (the existing question card); Auto-approve takes its recommended option. */
+export const PLAN_CARD = Object.freeze({
+  question: 'Should I plan this step by step, or just do it? I could not tell from your message.',
+  options: ['Plan it step by step', 'Just do it'] as string[],
+  recommended: 'Plan it step by step',
+});
+/** A plan-or-not card answer: true plans, false paints the held request, null is anything else (a new message). */
+export function planFromCard(answer: string): boolean | null {
+  const at = PLAN_CARD.options.indexOf(String(answer ?? '').trim());
+  return at === 0 ? true : at === 1 ? false : null;
+}
+
+/** The start of each clause up to `at`: what came before it in its sentence or clause. */
+const clauseBefore = (text: string, at: number) => { const before = text.slice(0, at); return before.slice(Math.max(...[...'.!?;\n'].map(c => before.lastIndexOf(c))) + 1); };
+const ADD = /\badd(?:\s+to\s+(?:it|this|that|the\s+(?:painting|picture|scene|image)))?\s*[:,\u2013\u2014-]?\s+/gi;
+const ITEM_SPLIT = /,\s*(?:and|plus|also)\s+|\s*;\s*/i;
+/** The things a message asks to add ("add to it: falling snow ..., and fresh snow settled on ..."), in its words: each
+ * "add" not negated in its clause, its items split at ", and" or ";" (a list inside one item stays: "the shoulders, hats
+ * and posts"). A stage is no addition ("add accents"). At most six. */
+export function additionsNamed(text: string): string[] {
+  const said = String(text ?? ''), found: string[] = [];
+  for (const match of said.matchAll(ADD)) {
+    if (NEGATED.test(fold(clauseBefore(said, match.index!)))) continue;
+    const rest = said.slice(match.index! + match[0].length).split(/[.!?\n]|\badd\b|,?\s*\bthen\b/i)[0] ?? '';
+    for (const raw of rest.split(ITEM_SPLIT)) {
+      const item = raw.replace(/^\s*(?:and|also|plus)\s+/i, '').replace(/[\s,:;]+$/, '').trim();
+      if (item.length < 3 || /^(?:it|more|some|this|that)$/i.test(item) || PLAN_STAGES.some(stage => STAGE_WORDS[stage].test(fold(item)))) continue;
+      if (!found.includes(item)) found.push(item.slice(0, 190));
+    }
+  }
+  return found.slice(0, 6);
+}
+const REFINE_PART = /\brefine\s+(?!it\b|to\b|everything\b|all\b|that\b|this\b|the\s+(?:whole|painting|picture|image|scene|goal)\b)([^.;!?\n]+)/gi;
+const OWNER = /^(?:the|his|her|their|its|a|an)\s+/i;
+/** The parts a message asks to refine by name ("refine the face and the soldiers"): never "refine it (to the goal)". */
+export function refinePartsNamed(text: string): string[] {
+  const said = String(text ?? ''), found: string[] = [];
+  for (const match of said.matchAll(REFINE_PART)) {
+    if (NEGATED.test(fold(clauseBefore(said, match.index!)))) continue;
+    const named = match[1]!.split(/\s*,?\s*\b(?:then|to the goal|after that|like the goal)\b/i)[0] ?? '';
+    for (const raw of named.split(/\s*,\s*|\s+and\s+/i)) {
+      const part = raw.replace(OWNER, '').trim();
+      if (part.length >= 2 && !/^(?:details?|more|everything)$/i.test(part) && !found.includes(part)) found.push(part.slice(0, 120));
+    }
+  }
+  return found.slice(0, 6);
+}
+
+/** An addition's done_when restates it, so the painter cannot call a token effort done; the planner's words follow. */
+const restated = (thing: string, words = '') => `Added as the artist asked: ${thing}, painted fully and clearly visible at full size wherever it belongs, not a token few marks.${words ? ' ' + words : ''}`;
+const additionText = (step: { title: string }) => String(step.title ?? '').replace(/^\s*add\s*:\s*/i, '').trim();
+/** An "Add: <thing>" step: something the goal image does not have, painted over the copy. No tool: the painter chooses. */
+export function additionStep(thing: string): Step {
+  const what = String(thing ?? '').trim().replace(/[.!]+$/, '').slice(0, 190);
+  return { title: `Add: ${what}`, done_when: restated(what), scope: WHOLE, kind: 'addition' };
+}
+const STOP = new Set(['the', 'and', 'over', 'with', 'from', 'into', 'onto', 'off', 'all', 'whole', 'some', 'little', 'little', 'more', 'its', 'their', 'his', 'her', 'for', 'add', 'added', 'painted']);
+const contentWords = (text: string) => [...new Set(fold(text).split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 3 && !STOP.has(w)))];
+
 /** The plan card shown when the stages are unclear (the existing question card: goal.question with these options). */
 export const STAGE_CARD = Object.freeze({
   question: 'Which stages should the plan hold? I could not tell from your message.',
@@ -132,7 +224,7 @@ export function orderStages(asked: readonly PlanStage[], { done = [] }: { done?:
 
 /** The tools a step of each kind paints with (the first is the kind's own); null: any painting tool. */
 export const KIND_TOOLS: Readonly<Record<FolderStepKind, readonly string[] | null>> = Object.freeze({
-  underpainting: ['paint_from_reference'], finish: ['paint_finish'], refine: ['refine_to_goal'], refine_part: ['refine_to_goal'],
+  underpainting: ['paint_from_reference'], finish: ['paint_finish'], refine: ['refine_to_goal'], refine_part: ['refine_to_goal'], addition: null,
   accents: ['paint_accents'], element: ['paint_from_reference', 'paint_finish', 'paint_accents', 'refine_to_goal'], whole: null,
 });
 /** A step's tool, checked: kept when it is one of `known` and fits the step's kind, else the kind's own tool (with a note
@@ -153,9 +245,17 @@ const STAGE_STEP: Record<Exclude<PlanStage, 'refine'>, () => Step> = {
 };
 const wholeRefine = (): Step => ({ title: REFINE_STEP, done_when: 'Every part of the picture is close to the goal image at full size: its forms, windows and edges as crisp as the goal shows them.', scope: WHOLE, kind: 'refine', tool: 'refine_to_goal' });
 
-/** The steps for these stages (already in order): the refine stage is the whole-picture refine, then a touch-up a group of parts. */
-export function folderPlanSteps(stages: readonly PlanStage[], groups: readonly RefineGroup[]): Step[] {
-  return stages.flatMap(stage => stage === 'refine' ? [wholeRefine(), ...groups.map(refineStep)] : [STAGE_STEP[stage]()]);
+/** The steps for these stages (already in order): the refine stage is the whole-picture refine, then a touch-up a group of
+ * parts (a single image's: a part the request named); an "Add: <thing>" step each addition, after the copy stages and
+ * before Accents. */
+export function folderPlanSteps(stages: readonly PlanStage[], groups: readonly RefineGroup[], { additions = [] }: { additions?: readonly string[] } = {}): Step[] {
+  const steps = stages.flatMap(stage => stage === 'refine' ? [wholeRefine(), ...groups.map(refineStep)] : [STAGE_STEP[stage]()]);
+  return withAdditions(steps, additions.map(additionStep));
+}
+/** Addition steps go before Accents (the accents are the last crisp touches over everything), else last. */
+function withAdditions(steps: Step[], additions: readonly Step[]): Step[] {
+  const at = steps.findIndex(step => folderStepKind(step) === 'accents');
+  return at < 0 ? [...steps, ...additions] : [...steps.slice(0, at), ...additions, ...steps.slice(at)];
 }
 
 /** The stage a step of this kind belongs to, or null (an element or the artist's own whole-picture step). */
@@ -182,8 +282,9 @@ function validGroups(groups: string[][], elements: readonly Element[]): boolean 
  * the artist's own whole-picture steps (a guides step) follow the underpainting and element steps come last. Every tool
  * is checked (stepTool). `dropped`: the titles of stage steps the artist did not ask for; `notes`: tool corrections.
  */
-export function shapePlan(proposed: readonly Step[], { draft, elements, known, keepWhole = [] }: { draft: readonly Step[]; elements: readonly Element[]; known: readonly string[];
-  /** Titles of whole-picture steps the artist made (in PLAN.md or the plan editor): kept. */ keepWhole?: readonly string[] }):
+export function shapePlan(proposed: readonly Step[], { draft, elements, known, keepWhole = [], single = false }: { draft: readonly Step[]; elements: readonly Element[]; known: readonly string[];
+  /** Titles of whole-picture steps the artist made (in PLAN.md or the plan editor): kept. */ keepWhole?: readonly string[];
+  /** A single goal image: a "Refine: <part>" step is matched by its part's name (there are no element files). */ single?: boolean }):
   { steps: Step[]; dropped: string[]; notes: string[] } {
   const kinds = proposed.map(step => folderStepKind(step));
   const asked = new Set(draft.map(step => stageOf(folderStepKind(step))));
@@ -220,7 +321,9 @@ export function shapePlan(proposed: readonly Step[], { draft, elements, known, k
         // The host's group: the planner's words only from a step of exactly its parts (by position they described other
         // parts: live, 2026-10-25, wrong titles and materials and a duplicate step).
         const mine = new Set((Array.isArray(step.parts) ? step.parts : []).map(String));
-        const match = (pool.get('refine_part') ?? []).find((_, i) => theirParts[i]!.length === mine.size && theirParts[i]!.every(p => mine.has(p)));
+        const label = (s: Step) => fold(String(s.title ?? '').replace(/^\s*refine\s*:\s*/i, '')).replace(OWNER, '').trim();
+        const match = (pool.get('refine_part') ?? []).find((theirs, i) => single ? label(theirs) === label(step)
+          : theirParts[i]!.length === mine.size && theirParts[i]!.every(p => mine.has(p)));
         stageSteps.push(words(step, match));
       }
       continue;
@@ -228,8 +331,9 @@ export function shapePlan(proposed: readonly Step[], { draft, elements, known, k
     stageSteps.push(words(step, pool.get(kind)?.shift()));
   }
   const whole = proposed.filter((step, i) => kinds[i] === 'whole' && wholeKept(step)), element = proposed.filter((_, i) => kinds[i] === 'element');
-  const at = stageSteps.findIndex(step => folderStepKind(step) === 'underpainting') + 1;
-  const ordered = [...stageSteps.slice(0, at), ...whole, ...stageSteps.slice(at), ...element].slice(0, 16);
+  const copies = stageSteps.filter(step => folderStepKind(step) !== 'addition');
+  const at = copies.findIndex(step => folderStepKind(step) === 'underpainting') + 1;
+  const ordered = [...withAdditions([...copies.slice(0, at), ...whole, ...copies.slice(at)], shapeAdditions(proposed.filter((_, i) => kinds[i] === 'addition'), draft.filter(step => folderStepKind(step) === 'addition'))), ...element].slice(0, 16);
   const notes: string[] = [];
   const steps = ordered.map(step => {
     const kind = folderStepKind(step), checked = stepTool({ kind, tool: step.tool }, known);
@@ -239,6 +343,25 @@ export function shapePlan(proposed: readonly Step[], { draft, elements, known, k
   });
   return { steps, dropped, notes };
 }
+
+/** The plan's additions: each of the draft's (the request's), in its order, with the words of the planner's step that
+ * covers it (half its words or more), then the planner's own others. Every done_when restates its addition. */
+function shapeAdditions(theirs: readonly Step[], mine: readonly Step[]): Step[] {
+  const left = [...theirs], out: Step[] = [];
+  for (const step of mine) {
+    const thing = additionText(step), words = contentWords(thing);
+    const share = (s: Step) => { const seen = new Set(contentWords(`${s.title} ${s.done_when ?? ''}`)); return words.length ? words.filter(w => seen.has(w)).length / words.length : 0; };
+    const best = left.map(s => [s, share(s)] as const).filter(([, v]) => v >= 0.5).sort((a, b) => b[1] - a[1])[0]?.[0];
+    if (!best) { out.push(step); continue; }
+    left.splice(left.indexOf(best), 1);
+    out.push(restate({ ...step, ...best, kind: 'addition', scope: best.scope ?? step.scope }, thing));
+  }
+  return [...out, ...left.map(step => restate({ ...step, kind: 'addition', scope: step.scope ?? WHOLE }, additionText(step)))];
+}
+const restate = (step: Step, thing: string): Step => {
+  const words = String(step.done_when ?? '').trim();
+  return fold(words).includes(fold(thing)) ? step : { ...step, done_when: restated(thing, words).slice(0, 2000) };
+};
 
 const groupLabel = (parts: readonly string[], elements: readonly Element[]): string =>
   groupName(parts.map(name => elements.find(e => e.name === name)?.guess ?? name));

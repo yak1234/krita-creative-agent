@@ -25,7 +25,7 @@ export type Blend = typeof BLENDS[number];
 export type Rect = [number, number, number, number];
 export type TexturePart = { name: string; kind: PartKind; bounds: number[]; note?: string };
 export type PartChoice = { part: string; kind: PartKind; materials: { id: string; weight: number }[]; tile_px: { near: number; far: number };
-  direction_deg: number; vanishing: [number, number] | null; strength: number; blend: Blend; source: 'model' | 'default' };
+  direction_deg: number; vanishing: [number, number] | null; strength: number; blend: Blend; source: 'model' | 'default' | 'plan' | 'painter' };
 export type Choice = { parts: PartChoice[]; model?: string; cost?: number; ms: number; fallback?: string };
 
 // Buildings first: what reads as each kind when the model says nothing (plaster facades of classical buildings, Kremlin
@@ -48,13 +48,21 @@ const tileLimits = (part: TexturePart, canvas: { width: number; height: number }
 const strengthCap = (materials: readonly { id: string }[]) =>
   Math.max(STRENGTH[0], Math.min(STRENGTH[1], ...materials.map(m => materialById(m.id)?.max_strength ?? STRENGTH[1])));
 
+/** A material's tile width in canvas px on this part: its metres over the part's size in metres, within the limits. */
+export function tileFor(material: Pick<Material, 'metres'>, part: TexturePart, canvas: { width: number; height: number }, factor = 1): number {
+  const limits = tileLimits(part, canvas);
+  return Math.round(clamp(factor * material.metres * longSide(part.bounds) / PART_METRES[part.kind], limits.low, limits.high));
+}
+/** Ground recedes by default: its far side up the canvas, the far tile this share of the near one. */
+export const RECEDING = { direction_deg: -90, far: 0.45 };
+
 /** The default for a part: its kind's material, a tile from the material's metres over the part's size, flat (or receding). */
 export function defaultPart(part: TexturePart, canvas: { width: number; height: number }): PartChoice {
   const material = materialById(DEFAULT_MATERIAL[part.kind]) ?? allowedMaterials(part.kind)[0]!;
-  const limits = tileLimits(part, canvas), near = Math.round(clamp(material.metres * longSide(part.bounds) / PART_METRES[part.kind], limits.low, limits.high));
+  const near = tileFor(material, part, canvas);
   const recedes = RECEDES.includes(part.kind);
-  return { part: part.name, kind: part.kind, materials: [{ id: material.id, weight: 1 }], tile_px: { near, far: recedes ? Math.max(Math.round(near * 0.45), Math.round(near * FAR_SHARE)) : near },
-    direction_deg: recedes ? -90 : 0, vanishing: null, strength: Math.min(DEFAULT_STRENGTH, strengthCap([material])), blend: 'soft_light', source: 'default' };
+  return { part: part.name, kind: part.kind, materials: [{ id: material.id, weight: 1 }], tile_px: { near, far: recedes ? Math.max(Math.round(near * RECEDING.far), Math.round(near * FAR_SHARE)) : near },
+    direction_deg: recedes ? RECEDING.direction_deg : 0, vanishing: null, strength: Math.min(DEFAULT_STRENGTH, strengthCap([material])), blend: 'soft_light', source: 'default' };
 }
 
 /** What the model chose for one part, made safe: anything it got wrong falls back to the default's value. */

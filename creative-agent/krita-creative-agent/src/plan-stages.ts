@@ -28,7 +28,7 @@ export type StageSource = 'luna' | 'keywords' | 'default' | 'card' | 'ask';
 /** stages null: ask the artist (the plan card). whole: the message asked for the whole painting (or named no stage). */
 export type StageAnswer = { stages: PlanStage[] | null; whole: boolean; source: StageSource };
 type Element = { name: string; guess: string };
-type Step = FolderStep & { checks?: string[]; id?: string };
+type Step = FolderStep & { checks?: string[]; id?: string; materials?: unknown[] };
 
 const WHOLE = 'whole composition';
 /** A step that names guides: the artist asked for them (as studio.mjs GUIDES_STEP). */
@@ -197,7 +197,8 @@ export function shapePlan(proposed: readonly Step[], { draft, elements, known, k
     const kind = folderStepKind(mine), title = String(theirs.title ?? '').trim();
     const keep = title && folderStepKind({ title }) === kind;
     return { ...mine, ...(keep ? { title: title.slice(0, 200) } : {}), ...(theirs.done_when ? { done_when: theirs.done_when } : {}),
-      ...(theirs.checks?.length ? { checks: theirs.checks } : {}), ...(theirs.id ? { id: theirs.id } : {}), ...(theirs.tool ? { tool: theirs.tool } : {}) };
+      ...(theirs.checks?.length ? { checks: theirs.checks } : {}), ...(theirs.id ? { id: theirs.id } : {}), ...(theirs.tool ? { tool: theirs.tool } : {}),
+      ...(theirs.materials?.length ? { materials: theirs.materials } : {}) };   // an architectural refine step's planned materials (plan-materials.ts)
   };
   const theirParts = (pool.get('refine_part') ?? []).map(step => (Array.isArray(step.parts) ? step.parts : []).map(String));
   const regroup = draft.some(step => folderStepKind(step) === 'refine_part') && validGroups(theirParts, elements);

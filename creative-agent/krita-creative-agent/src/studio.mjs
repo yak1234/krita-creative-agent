@@ -9,6 +9,7 @@ import { panelSchema, DEFAULT_PLANNER } from './settings-schema.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS, mutates } from './craft.mjs';
 import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension, architectureTextureExtension } from './extensions.mjs';
 import { textureRequired } from '../extensions/architecture-texture.ts';
+import { cleanPlanSteps, plannedMaterialsSchema } from './plan-materials.ts';
 import { ensureMaterial } from './texture-library.ts';
 import { transferJobId, underpaintingState, underpaintingRefusal, closedNote, UNDERPAINTING_MOVE_NOTE } from './underpainting-move.ts';
 import { goalSpec } from './goal-spec.ts';
@@ -94,14 +95,16 @@ export const briefSchema = object({ title: line, objective: line, requirements: 
     parts:Type.Optional(Type.Array(Type.String({minLength:1,maxLength:400}),{maxItems:24,description:'A refine step\'s element files, as in folder_plan_draft.'})),
     id:Type.Optional(Type.String({pattern:STEP_ID.source,description:'The step\'s id: keep it when revising that step; leave it out for a new step.'})),
     checks:Type.Optional(Type.Array(Type.String({minLength:1,maxLength:300}),{minItems:1,maxItems:5,description:'What the finished area visibly looks like, judged on the canvas. Describe the painted result, not the absence of a seam around the rectangle being repaired.'})),
+    // An architectural "Refine: <parts>" step's texture materials, one per aspect (plan-materials.ts; architecture-texture goal 7).
+    materials:Type.Optional(plannedMaterialsSchema),
     panels:Type.Optional(Type.Array(panelId,{minItems:1,maxItems:24})) }), { minItems: 1, maxItems: 16 }),   // 16: a folder's block-in and 15 elements
   completion: Type.Array(line, { minItems: 1, maxItems: 20 }),
   story:Type.Optional(storySchema) });
 // Saved plans may carry retired stage controls (stop_after, max_operations, region).
 export function normalizeBrief(brief) {
   if (!brief?.steps) return brief;
-  return {...brief,steps:brief.steps.map(({title,done_when,scope,checks,id,kind,tool,parts})=>({title,done_when,...(scope ? {scope}:{}),...(checks?.length ? {checks}:{}),...(id ? {id}:{}),
-    ...(kind ? {kind}:{}),...(tool ? {tool}:{}),...(parts?.length ? {parts}:{})}))};
+  return {...brief,steps:brief.steps.map(({title,done_when,scope,checks,id,kind,tool,parts,materials})=>({title,done_when,...(scope ? {scope}:{}),...(checks?.length ? {checks}:{}),...(id ? {id}:{}),
+    ...(kind ? {kind}:{}),...(tool ? {tool}:{}),...(parts?.length ? {parts}:{}),...(materials?.length ? {materials}:{})}))};
 }
 const RUN_QUESTION_LIMIT = 2;   // Autopilot questions per run; the rest the painter decides
 const questionSchema = object({ question: line, options: Type.Array(line, { maxItems: 4 }) });
@@ -267,7 +270,7 @@ const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','a
 // The plan follows the request (plan-from-request goals 1-3, approved 2026-10-24): folder_plan_draft holds the stages the
 // artist asked for, in the host's order, and the host keeps them so (plan-stages.ts shapePlan): the planner improves the
 // words, may regroup the refine steps' parts, and looks the tools up with painting_tool_help.
-const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist approves the plan with Start painting. folder_plan_draft holds the stages the artist asked for, in the order the host keeps (an underpainting before anything that needs one, Refine only after a whole-picture Finish, Accents last); plan_stages says which and why. First look up each stage tool the draft uses with painting_tool_help (no name: the catalogue with what each does, its rough time on this canvas and what it needs; a name: its full description), then call propose_plan with the draft\'s steps in its order, keeping each step\'s kind, tool and parts: the underpainting is a whole-picture reference transfer (paint_from_reference), the Finish blends the soft areas and restrokes the forms (paint_finish; keep its title exactly "Finish"), "Refine to the goal" refines the whole picture once (refine_to_goal; keep its title exactly), then a "Refine: <parts>" step is a short touch-up of those elements inside their found area, only what the whole-picture refine left there (refine_to_goal; keep the "Refine: " start of its title; regroup the parts by where they sit in the picture, neighbours together (the draft groups them by file order only), every element in exactly one of at most 7 groups), Accents paints the lights, darks and detail on the whole picture (paint_accents). Do not add a stage the draft does not hold: the artist asks for the next stages later. Add a step for an element (its scope is its file name, after the stages) only when the artist asks for that element by name; never repaint the elements one by one by default. The stages and their order are fixed; the wording is yours. The draft\'s done_when and checks are placeholders: before proposing, look at the goal image and each part\'s own image (view_reference; folder notes describe them), then write for every step what done looks like for those parts in this picture: done_when names the parts\' colours, light and the two or three details that must read crisply at full size, and checks (2 to 4) say what to see on the canvas, including what must stay soft or untouched (a halo, mist, a reflection). Never copy the placeholder wording. Never plan a step for an image marked excluded. Add a guides step only when the artist asks for guides. Then stop.\n';
+const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist approves the plan with Start painting. folder_plan_draft holds the stages the artist asked for, in the order the host keeps (an underpainting before anything that needs one, Refine only after a whole-picture Finish, Accents last); plan_stages says which and why. First look up each stage tool the draft uses with painting_tool_help (no name: the catalogue with what each does, its rough time on this canvas and what it needs; a name: its full description), then call propose_plan with the draft\'s steps in its order, keeping each step\'s kind, tool and parts: the underpainting is a whole-picture reference transfer (paint_from_reference), the Finish blends the soft areas and restrokes the forms (paint_finish; keep its title exactly "Finish"), "Refine to the goal" refines the whole picture once (refine_to_goal; keep its title exactly), then a "Refine: <parts>" step is a short touch-up of those elements inside their found area, only what the whole-picture refine left there (refine_to_goal; keep the "Refine: " start of its title; regroup the parts by where they sit in the picture, neighbours together (the draft groups them by file order only), every element in exactly one of at most 7 groups), Accents paints the lights, darks and detail on the whole picture (paint_accents). Do not add a stage the draft does not hold: the artist asks for the next stages later. Add a step for an element (its scope is its file name, after the stages) only when the artist asks for that element by name; never repaint the elements one by one by default. The stages and their order are fixed; the wording is yours. The draft\'s done_when and checks are placeholders: before proposing, look at the goal image and each part\'s own image (view_reference; folder notes describe them), then write for every step what done looks like for those parts in this picture: done_when names the parts\' colours, light and the two or three details that must read crisply at full size, and checks (2 to 4) say what to see on the canvas, including what must stay soft or untouched (a halo, mist, a reflection). Never copy the placeholder wording. Never plan a step for an image marked excluded. Add a guides step only when the artist asks for guides. For each "Refine: <parts>" step whose parts are architecture (buildings, church, towers, domes, skyscrapers, bridge, street, railing, walls, roofs), add materials: per aspect you see in its parts (walls, roofs, windows, ground, trim) one id from painting_tool_help name "materials", with scale fine, medium or coarse and recedes true for ground going away; never for sky, water, people, vehicles or trees. Then stop.\n';
 // A plan step that names guides: the artist asked for them when approving it.
 const GUIDES_STEP = /\b(guides?|trac(e|ing)|block-in|construction lines?)\b/i;
 const FOLDER_ANSWERS = ['Follow the edited plan','Keep the current plan'];
@@ -645,7 +648,15 @@ export class StudioRuntime extends PaintingRuntime {
       return {name, guess:elements.find(e => e.name === name)?.guess ?? name, ...(note ? {note} : {}), ...(area ? {area:{mask_path:area.mask_path, bounds:area.bounds}} : {})};
     });
     const chosen = this.goal.paint_only_here;
-    return {key, label:label.slice(0, 80), parts, area:chosen?.auto === key && chosen.mask_path ? {mask_path:chosen.mask_path, bounds:chosen.bounds} : null};
+    return {key, label:label.slice(0, 80), parts, area:chosen?.auto === key && chosen.mask_path ? {mask_path:chosen.mask_path, bounds:chosen.bounds} : null,
+      ...(step.materials?.length ? {materials:step.materials} : {})};
+  }
+  /** A brief's planned texture materials checked against the library (plan-materials.ts): kept only on an architectural
+   * "Refine: <parts>" step, unknown ids dropped; what was dropped, for the planner or the artist. */
+  cleanStepMaterials(brief) {
+    const {steps, dropped} = cleanPlanSteps(brief.steps, step => folderStepKind(step) === 'refine_part');
+    if (dropped.length) this.diagnostics?.record({type:'plan_materials_dropped', count:dropped.length});
+    return {brief:{...brief, steps}, dropped};
   }
   /** The plan step painted now: the Agent move's, else Autopilot's current one. */
   paintedStepIndex() { return this.mode === 'agent' ? this.currentMove?.step : this.study?.folder ? this.goal?.current_step : null; }
@@ -1931,6 +1942,7 @@ export class StudioRuntime extends PaintingRuntime {
         if (existing) { for (const rule of character.requirements) if (!existing.requirements.includes(rule)) existing.requirements.push(rule); }
         else (brief.characters ??= []).push(structuredClone(character));
       }
+      const planned = this.cleanStepMaterials(brief); brief = planned.brief;
       this.goal.brief = normalizeBrief(brief); if (!this.study.folder) this.goal.brief = withStepIds(this.goal.brief, this.goal.revisions.at(-1)?.brief);
       this.protectDraftRequirements(); this.goal.revision++; this.goal.approved_revision = null;
       this.goal.plan_target = this.canvasContext.canvas ? {document_id:this.canvasContext.canvas.document_id,filename:this.canvasContext.canvas.filename,width:this.canvasContext.canvas.width,height:this.canvasContext.canvas.height}:null;
@@ -1938,7 +1950,8 @@ export class StudioRuntime extends PaintingRuntime {
       this.goal.status = 'ready'; this.goal.current_step = 0; this.yieldRequested = true;
       await this.persist(); this.publish();
       await this.folderPlanChanged(this.goal.revisions.at(-1)?.brief);
-      return { message: this.study.folder ? 'Plan saved and written to PLAN.md. Stop now: the artist reviews it and presses Start painting.' : 'Plan saved. The host will handle starting Autopilot.', revision: this.goal.revision };
+      return { message: this.study.folder ? 'Plan saved and written to PLAN.md. Stop now: the artist reviews it and presses Start painting.' : 'Plan saved. The host will handle starting Autopilot.', revision: this.goal.revision,
+        ...(planned.dropped.length ? { materials_dropped: planned.dropped } : {}) };
     });
     add('start_painting', 'Start or continue the existing painting plan when the latest user message requests execution. Do not use for questions or planning-only requests. The host enables native painting tools after this handoff.', object({user_quote:line}), async p => {
       const latest = this.goal.messages.filter(m=>m.role==='user').at(-1)?.text ?? '';
@@ -2998,6 +3011,8 @@ export class StudioRuntime extends PaintingRuntime {
     brief = normalizeBrief(structuredClone(brief));
     if (!this.goal || !Value.Check(briefSchema, brief)) throw new Error('Complete the objective, steps, and completion checks.');
     brief = this.folderScopes(brief);
+    const planned = this.cleanStepMaterials(brief); brief = planned.brief;
+    if (planned.dropped.length) this.emit({type:'action', seconds:0, message:'Not in the texture library, so left out: ' + planned.dropped.join('; ') + '.'});
     if (!this.study?.folder) brief = withStepIds(brief, this.goal.brief);   // a step keeps its id, and its marks, when reworded
     const comicProblem = this.goal.comic ? comicPlanProblems(brief, this.goal.comic.panels) : null;
     if (comicProblem) throw new Error(comicProblem);

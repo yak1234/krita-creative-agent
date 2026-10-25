@@ -18,6 +18,7 @@ import { Type } from 'typebox';
 import { partKind, materialById, type Material, type PartKind } from '../src/texture-library.ts';
 import { chooseTextures, clampPart, defaultPart, STRENGTH, type PartChoice, type TexturePart } from '../src/texture-choice.ts';
 import type { Picture, StudyReader } from '../src/folder-study.ts';
+import { plannedChoice, type PlannedMaterial } from '../src/plan-materials.ts';
 
 type Content = { type: string; [key: string]: unknown };
 type Result = { content: Content[]; details: any };
@@ -25,7 +26,7 @@ export type Area = { mask_path: string; bounds: number[] };
 /** A step's part: its element file and the artist's name for it, its folder note, its found area. */
 export type StepPart = { name: string; guess?: string; note?: string; area?: Area | null };
 /** The refine step being painted: its identity, its label ("church and street"), its parts, its whole area. */
-export type TextureStep = { key: string; label: string; parts: StepPart[]; area?: Area | null };
+export type TextureStep = { key: string; label: string; parts: StepPart[]; area?: Area | null; materials?: PlannedMaterial[] };
 export type TextureRecord = { step: string; parts: PartChoice[]; model?: string; fallback?: string; ms: number; layer_id?: string; auto: boolean };
 /** What the studio provides (studio.mjs textureHost). */
 export interface TextureHost {
@@ -91,8 +92,13 @@ export default function architectureTexture(host: TextureHost): (pi: ExtensionAP
       chosen = parts.map(p => { const g = byName.get(p.name.trim().toLowerCase()); return g ? clampPart(g, p, canvas) : defaultPart(p, canvas); });
       fallback = 'painter';
     } else {
-      const choice = await chooseTextures({ reader: await host.reader(), view: await host.view().catch(() => null), canvas, parts, signal: signal ?? new AbortController().signal });
-      ({ model, fallback } = choice); chosen = choice.parts;
+      // The plan's materials first (goal 7); only the parts it gives none are asked of the model now.
+      const planned = parts.map(p => plannedChoice(p, step.materials, canvas));
+      const open = parts.filter((_, i) => !planned[i]);
+      const choice = open.length ? await chooseTextures({ reader: await host.reader(), view: await host.view().catch(() => null), canvas, parts: open, signal: signal ?? new AbortController().signal }) : null;
+      if (choice) ({ model, fallback } = choice);
+      let next = 0;
+      chosen = planned.map(p => p ?? choice!.parts[next++]!);
     }
     host.status?.(`Texture: fetching the materials for ${step.label}…`);
     const ids = [...new Set(chosen.flatMap(c => c.materials.map(m => m.id)))];

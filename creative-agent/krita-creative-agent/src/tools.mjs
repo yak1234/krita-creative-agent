@@ -10,6 +10,7 @@ import { guideTools } from './guide-tool.ts';
 import { accentTools } from './accents-tool.ts';
 import { finishTools } from './finish-tool.ts';
 import { refineTools } from './refine-goal.ts';
+import { materialCatalogue } from './plan-materials.ts';
 import { selectionTools } from './paint-only-here.ts';
 import { canvasShape, checkPassLimits, passShape, shapeReport, shapeSchema, shapeTimings } from './shapes/use.ts';
 import { recipeTool } from './recipe-tool.mjs';
@@ -229,7 +230,7 @@ export function paintingTools(runtime) {
         projection_feather:Type.Optional(Type.Integer({minimum:0,maximum:64})),
         commands:Type.Array(object({tool:Type.String(),parameters_json:Type.String({description:'JSON object containing parameters documented by painting_tool_help'})}),{minItems:1,maxItems:256})}), 'painting_toolbox'),
     tool('painting_tool_help', 'Inspecting painting tools',
-      'Without a name: while planning, the catalogue of painting stages and tools (what each does, its rough time on this canvas, what it needs first); while painting, the native painting toolbox and exact parameter formats, with brush settings inspection (read this before painting_toolbox). With a name: that painting tool\'s full description, parameters and the skills that use it.',
+      'Without a name: while planning, the catalogue of painting stages and tools (what each does, its rough time on this canvas, what it needs first); while painting, the native painting toolbox and exact parameter formats, with brush settings inspection (read this before painting_toolbox). With a name: that painting tool\'s full description, parameters and the skills that use it; name "materials": the texture library a plan\'s architectural refine steps choose from.',
       object({ name: Type.Optional(Type.String({ minLength: 1, maxLength: 60, description: 'A painting tool to look up, e.g. paint_finish.' })) }), 'painting_tool_help'),
     tool('create_layer', 'Creating a layer',
       'Create a layer with its craft settings in one call: paint, fill or group. A fill uses a generator from krita_capabilities: color with generator_config {color:\u0027#RRGGBB\u0027}, pattern with {pattern: name}, gradient with {shape: linear|radial|square|conical|spiral, start_position_x/y and end_position_x/y (percent of the canvas), start_color, end_color, repeat: none|forwards|alternate} (a live, re-editable gradient layer); region [x,y,w,h] limits it. Set blend_mode (multiply for shadow, screen/add for light), opacity, alpha_lock (paint only). clip_base: true puts the layer alone in a clip group so later layers can clip to it live (use for flats). clip_to: a layer ID to clip this layer to: live above a clip base, otherwise a mask of that layer\u2019s current alpha (the artist\u2019s layers are never moved). One reversible pass; returns the canvas image.',
@@ -413,7 +414,8 @@ function helpLookup(runtime, tools) {
       return runtime.toolboxHelp.value ?? {};
     };
     let value;
-    if (!name) value = planning ? toolCatalogue({ tools, canvas: size }) : toolboxIndex(await toolbox());
+    if (name === 'materials') value = materialCatalogue();         // the texture library, for a plan's materials (plan-materials.ts)
+    else if (!name) value = planning ? toolCatalogue({ tools, canvas: size }) : toolboxIndex(await toolbox());
     else if (tools.some(t => t.name === name) || planning) value = await toolHelp(name, { tools, canvas: size, skillsDir: SKILLS_DIR });
     else value = toolboxHelp(await toolbox(), name) ?? await toolHelp(name, { tools, canvas: size, skillsDir: SKILLS_DIR });
     return { content: [{ type: 'text', text: JSON.stringify(value) }], details: value };

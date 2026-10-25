@@ -10,7 +10,7 @@ import { constants } from 'node:fs';
 import { copyFile, lstat, open, realpath } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
 
-export type Step = { title: string; done_when: string; scope?: string; checks?: string[]; kind?: string; tool?: string; parts?: string[] };
+export type Step = { title: string; done_when: string; scope?: string; checks?: string[]; kind?: string; tool?: string; parts?: string[]; materials?: unknown[] };
 export type Brief = { title: string; objective: string; requirements: string[]; freedom: string[]; completion: string[]; steps: Step[] };
 /** The artist's marks on a step: skipped, met (by the Met button, or "good enough" while it painted), redone (count). */
 export type StepMark = { skipped?: boolean; met?: 'artist' | 'good_enough'; redone?: number };
@@ -286,7 +286,8 @@ export function briefFromPlan(plan: Pick<Plan, 'title' | 'steps'>, brief?: Brief
     return { title: s.title.slice(0, 200), done_when: mine?.done_when ?? `${s.title} is painted where the goal image places it.`,
       ...(scope ? { scope } : {}), ...(mine?.checks?.length ? { checks: mine.checks } : {}),
       // A step's kind, tool and refine parts (plan-from-request) follow it by its identity, as its done_when does.
-      ...(mine?.kind ? { kind: mine.kind } : {}), ...(mine?.tool ? { tool: mine.tool } : {}), ...(mine?.parts?.length ? { parts: [...mine.parts] } : {}) };
+      ...(mine?.kind ? { kind: mine.kind } : {}), ...(mine?.tool ? { tool: mine.tool } : {}), ...(mine?.parts?.length ? { parts: [...mine.parts] } : {}),
+      ...(mine?.materials?.length ? { materials: structuredClone(mine.materials) } : {}) };
   });
   return { title: (brief?.title ?? plan.title ?? 'Project folder plan').slice(0, 200),
     objective: brief?.objective ?? 'Paint the folder’s plan one move per step, as PLAN.md lists it.',

@@ -170,3 +170,20 @@ test('studio: the texture host records the pass on the Agent move', () => {
   assert.equal(host.done(), true);
   assert.equal(studio.currentMove.texture.step, 'id:s3');
 });
+
+test('a step with planned materials uses them and asks the model only for the parts they leave out', async () => {
+  let asked = null;
+  const step = { ...CHURCH_STEP, materials: [{ aspect: 'walls', id: 'ph_castle_brick_02_red' }] };
+  const { tools, calls, host } = setup({ step });
+  host.reader = async () => async ({ prompt }) => { asked = prompt; return { text: '{"parts":[]}', cost: 0, model: 'fake/qwen' }; };
+  const result = await tools.texture_architecture.execute('p1', {});
+  assert.deepEqual(calls[0].params.parts[0].materials, [{ id: 'ph_castle_brick_02_red', weight: 1 }]);
+  assert.doesNotMatch(asked, /the church/, 'the church was planned: not asked');
+  assert.match(asked, /cobbled street/);
+  const told = JSON.parse(result.content.filter(c => c.type === 'text').at(-1).text);
+  assert.deepEqual(told.texture.parts.map(p => p.source), ['plan', 'default']);
+  const both = setup({ step: { ...CHURCH_STEP, materials: [{ aspect: 'walls', id: 'Bricks008' }, { aspect: 'ground', id: 'PavingStones150' }] } });
+  both.host.reader = async () => { throw new Error('the model must not be asked'); };
+  await both.tools.texture_architecture.execute('p2', {});
+  assert.deepEqual(both.calls[0].params.parts.map(p => p.materials[0].id), ['Bricks008', 'PavingStones150']);
+});

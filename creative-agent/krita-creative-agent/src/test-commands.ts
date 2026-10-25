@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { extname, isAbsolute, resolve, sep } from 'node:path';
 import { PLAN_STEP_ACTIONS, type StepView } from './plan-steps.ts';
 
-export const TEST_COMMANDS = ['start_plan', 'plan_step', 'find_it', 'paint_only_here', 'answer', 'closeup_answer', 'folder_guess', 'folder_study', 'sharpen_answer', 'set_mode', 'stop'] as const;
+export const TEST_COMMANDS = ['start_plan', 'plan_step', 'find_it', 'paint_only_here', 'answer', 'closeup_answer', 'folder_guess', 'folder_study', 'sharpen_answer', 'set_mode', 'set_limits', 'stop'] as const;
 export type TestCommand = typeof TEST_COMMANDS[number];
 const MODES = ['ask', 'plan', 'agent', 'autopilot'];
 
@@ -82,6 +82,11 @@ export function panelCommand(type: unknown, params: unknown, view: CommandView):
       const { mode } = fields(params, ['mode']);
       if (typeof mode !== 'string' || !MODES.includes(mode)) refuse(`mode is one of ${MODES.join(', ')}.`);
       return { command: { type: 'set_mode', mode } };
+    }
+    case 'set_limits': {                             // the panel's allowance for this chat: AI images 0-20, or null for no limit
+      const { ai_images } = fields(params, ['ai_images']);
+      if (!(ai_images === null || (Number.isInteger(ai_images) && (ai_images as number) >= 0 && (ai_images as number) <= 20))) refuse('ai_images is 0-20, or null for no limit.');
+      return { command: { type: 'set_limits', limits: { minutes: 0, passes: 0, ai_images } } };
     }
     case 'start_plan':                               // the Plan tab's and the Now card's Start painting
       fields(params, []);

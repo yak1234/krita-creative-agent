@@ -10,7 +10,7 @@ const view = (more = {}) => ({ testFolder: folder, mode: 'agent', planSteps: [{ 
 const found = { request_id: 'f1', part: 'the sky', mask_path: folder + '/data/chat/.shapes/found-0123456789abcdef01234567.png', bounds: [0, 0, 10, 5], canvas: [10, 10] };
 
 test('only the allowlisted panel commands, with known parameters', () => {
-  assert.deepEqual([...TEST_COMMANDS].sort(), ['answer', 'closeup_answer', 'find_it', 'folder_guess', 'folder_study', 'paint_only_here', 'plan_step', 'set_mode', 'sharpen_answer', 'start_plan', 'stop']);
+  assert.deepEqual([...TEST_COMMANDS].sort(), ['answer', 'closeup_answer', 'find_it', 'folder_guess', 'folder_study', 'paint_only_here', 'plan_step', 'set_limits', 'set_mode', 'sharpen_answer', 'start_plan', 'stop']);
   for (const type of ['shutdown', 'end', 'open_folder', 'configure_provider', 'delete_chat', 'import_archive', 'shapes_model', 'prompt', '', 7])
     assert.throws(() => panelCommand(type, {}, view()), /not a test command|Allowed/, String(type));
   assert.throws(() => panelCommand('stop', { now: true }, view()), /unknown parameter now/);
@@ -80,4 +80,11 @@ test('answers go to the question the test chat shows: a Paint only here card wit
   assert.throws(() => panelCommand('folder_study', { action: 'delete' }, view()), /action is/);
   assert.deepEqual(panelCommand('folder_study', { action: 'study', name: 'final_goal.png' }, view({ folderImages: ['final_goal.png', '01-moonlit-sky.png'] })).command,
     { type: 'folder_study', action: 'study', name: 'final_goal.png' }, 'the goal can be studied too');
+});
+
+test('set_limits sets the test chat allowance as the panel does: AI images 0-20 or null for no limit (to test /canvas-reference with real pictures)', () => {
+  assert.deepEqual(panelCommand('set_limits', { ai_images: 3 }, view()).command, { type: 'set_limits', limits: { minutes: 0, passes: 0, ai_images: 3 } });
+  assert.deepEqual(panelCommand('set_limits', { ai_images: null }, view()).command.limits.ai_images, null);
+  assert.throws(() => panelCommand('set_limits', { ai_images: 50 }, view()), /0-20/);
+  assert.throws(() => panelCommand('set_limits', { budget: 1 }, view()), /unknown/i);
 });

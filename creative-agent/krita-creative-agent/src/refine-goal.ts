@@ -106,6 +106,9 @@ export type RefineRuntime = {
   /** The levels earlier refines in this chat reached (kept moves only), and where this call's are recorded. */
   refineHistory?(): RefineHistory | null;
   recordRefine?(entry: RefineHistory & { whole: boolean }): void;
+  /** In an architectural "Refine: <parts>" step, the grain its form strokes carry (architecture-texture goal 6: each part's
+   * material as a Krita pattern, inside its area), or null. */
+  refineGrain?(): Promise<Record<string, unknown>[] | null>;
 };
 export type RefineDependencies = {
   /** The chat's placed goal and whether the whole picture is underpainted (studio.mjs finishGoal). */
@@ -201,6 +204,8 @@ export function refineTools(runtime: RefineRuntime, dependencies: RefineDependen
       const first = await dependencies.sharpenFirst?.(goal);
       if (first) throw new Error(first);
       const spec: GoalSpec = await goalSpec(goal);
+      // The architecture's grain in the form strokes (goal 6); one that cannot be had never stops the refine.
+      const grain = await runtime.refineGrain?.().catch(() => null) ?? null;
       const scoped = args.area === undefined ? runtime.paintOnlyArea?.() ?? null : null;
       const areaMask = scoped ? await loadAreaMask(scoped, runtime.study.directory) : null;
       const area = (scoped ? scoped.bounds : args.area && typeof args.area === 'object' ? args.area.box : [0, 0, canvas.width, canvas.height]) as Rect;
@@ -288,7 +293,7 @@ export function refineTools(runtime: RefineRuntime, dependencies: RefineDependen
               const inside_shape = await batchMask(runtime.study.directory, `${id}/${round}/${b}/${at}`, cells.map(c => c.rect), areaMask);
               runtime.emit({ type: 'status', phase: 'painting', message: `Refine: round ${round}, ${cells.length} region${cells.length === 1 ? '' : 's'} (${detail})…` });
               const key = `${id}/r${round}-${b + 1}-${detail}`;
-              const painted = await dependencies.native('finish', key, { name: `Refine ${round}`, goal: spec, inside_shape, detail }, signal);
+              const painted = await dependencies.native('finish', key, { name: `Refine ${round}`, goal: spec, inside_shape, detail, ...(grain?.length ? { grain } : {}) }, signal);
               const result = painted?.details ?? painted ?? {};
               if (recorded(painted)) finishIds.push(key);
               strokes += Number(result.finish?.strokes ?? 0);

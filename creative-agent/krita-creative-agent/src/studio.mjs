@@ -8,7 +8,7 @@ import { executionSettings, thinkingLevel, AUTO_REASONING_NOTE } from './executi
 import { panelSchema, DEFAULT_PLANNER } from './settings-schema.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS, mutates } from './craft.mjs';
 import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension, architectureTextureExtension } from './extensions.mjs';
-import { textureRequired } from '../extensions/architecture-texture.ts';
+import { textureRequired, refineGrain } from '../extensions/architecture-texture.ts';
 import { cleanPlanSteps, plannedMaterialsSchema } from './plan-materials.ts';
 import { ensureMaterial } from './texture-library.ts';
 import { transferJobId, underpaintingState, underpaintingRefusal, closedNote, UNDERPAINTING_MOVE_NOTE } from './underpainting-move.ts';
@@ -658,6 +658,8 @@ export class StudioRuntime extends PaintingRuntime {
     if (dropped.length) this.diagnostics?.record({type:'plan_materials_dropped', count:dropped.length});
     return {brief:{...brief, steps}, dropped};
   }
+  /** The refine's form-stroke grain in an architectural refine step (refine-goal.ts, architecture-texture goal 6). */
+  refineGrain() { return refineGrain(this.textureHost()); }
   /** The plan step painted now: the Agent move's, else Autopilot's current one. */
   paintedStepIndex() { return this.mode === 'agent' ? this.currentMove?.step : this.study?.folder ? this.goal?.current_step : null; }
   /** Whether a step's texture pass ran: on the Agent move, else on the goal by step (Autopilot). */
@@ -697,6 +699,10 @@ export class StudioRuntime extends PaintingRuntime {
         return material.detail_from ? {...maps, detail_from:material.detail_from} : maps;
       },
       native: (params, id, signal) => nativeExecute(this, 'texture')(id, params, signal),
+      patterns: async materials => (await this.callNative('register_patterns', {materials}))?.patterns ?? {},
+      // One decision a step and move: the refine's grain and the texture pass share it.
+      decided: key => this.textureDecisions?.get(key + '@' + (this.currentMove?.number ?? 'run')),
+      remember: (key, decision) => (this.textureDecisions ??= new Map()).set(key + '@' + (this.currentMove?.number ?? 'run'), decision),
       status: message => this.emit({type:'status', phase:'painting', message}),
     };
   }

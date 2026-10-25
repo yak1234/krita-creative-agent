@@ -158,7 +158,23 @@ class TextureCraft:
         x1, y1 = max(r[0] + r[2] for _p, r, _m in parts), max(r[1] + r[3] for _p, r, _m in parts)
         canvas_projection.pixels_written(doc, (x0, y0, x1 - x0, y1 - y0))
         created.update(layer_type='texture', written_squares=written, texture={'parts': report})
+        try:                                                # the same materials as brush patterns (goal 6); never fails the pass
+            from krita import Krita
+            from . import texture_patterns
+            created['patterns'] = texture_patterns.register(Krita.instance(), maps)
+        except Exception as error:
+            created['patterns_error'] = str(error)
         return created
+
+    def _texture_register(self, params):
+        """register_patterns: {materials} as Krita patterns "Texture: <id>" (goal 6), or why not."""
+        from krita import Krita
+        from . import texture_patterns
+        fields(params, ('materials',), ('materials',))
+        app = Krita.instance()
+        if not hasattr(app, 'createPattern'):
+            return {'status': 'unavailable', 'patterns': {}, 'error': 'Patterns need our Krita (Krita.createPattern).'}
+        return {'status': 'ok', 'patterns': texture_patterns.register(app, self._texture_maps(params))}
 
     @staticmethod
     def _texture_over(below, above):

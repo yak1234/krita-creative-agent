@@ -563,6 +563,9 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         if operation == 'make_material':
             # Tips saved to the study folder (material_stamp.py); not a canvas change, like select.
             return self._material_make(doc, session, params)
+        if operation == 'register_patterns':
+            # The texture library's materials as Krita patterns (texture_patterns.py): resources, not a canvas change.
+            return self._texture_register(params)
         if operation == 'krita_action' and self._native_action_kind(params) == 'selection':
             # A selection action saves a named selection: no pass or checkpoint, like select.
             return self._native_select_action(doc, session, params)

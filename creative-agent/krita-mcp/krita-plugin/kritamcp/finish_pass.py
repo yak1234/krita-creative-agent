@@ -36,7 +36,12 @@ import threading
 import time
 import numpy as np
 
-FIELDS = ('name', 'goal', 'box', 'selection', 'inside_shape', 'detail', 'stage_id', 'region', 'expected_revision', 'panel')
+FIELDS = ('name', 'goal', 'box', 'selection', 'inside_shape', 'detail', 'grain', 'stage_id', 'region', 'expected_revision', 'panel')
+# grain (architecture-texture goal 6): in an architectural part, the form strokes carry its material's Krita pattern
+# (texture_patterns.py), at most GRAIN_STRENGTH, in at most GRAIN_PARTS parts a call.
+GRAIN_FIELDS = ('pattern', 'inside_shape', 'tile_px', 'strength')
+GRAIN_STRENGTH = 0.5
+GRAIN_PARTS = 8
 GOAL_FIELDS = ('path', 'sha256', 'size', 'source', 'target')
 SCALE_SIDE = 6000                             # the spike's canvas: every size below is in its pixels
 EDGE_SIGMA = 40                               # how far "how much structure is here" looks
@@ -521,6 +526,8 @@ class FinishCraft:
             self._region_check_named(doc, session, text(params['selection'], 'selection', 2000))
         if params.get('inside_shape'):
             self._region_shape_selection(doc, session, params['inside_shape'])
+        if 'grain' in params:
+            self._finish_grains(doc, session, params['grain'])
         detail = params.get('detail', 'normal')
         sizes(doc.width(), doc.height(), detail)
         work = self._finish_work(doc, session, params)
@@ -543,6 +550,25 @@ class FinishCraft:
         self._craft_check_rgba(doc, 'Finish')
         self._craft_validate_create(doc, session, {'name': params['name'], 'type': 'group', **{k: params[k] for k in ('stage_id', 'panel') if k in params}})
 
+    def _finish_grains(self, doc, session, grain):
+        """The grain list checked and read: [(mask, mask rect, height 0-1, tile px, strength)] (texture_patterns.py)."""
+        from krita import Krita
+        from .creative_validation import fields, numeric, text
+        from . import shape_mask, texture_patterns
+        if not isinstance(grain, list) or len(grain) > GRAIN_PARTS:
+            raise ValueError('grain is a list of at most %d parts {pattern, inside_shape, tile_px, strength}.' % GRAIN_PARTS)
+        out = []
+        for entry in grain:
+            if not isinstance(entry, dict):
+                raise ValueError('A grain part is {pattern, inside_shape, tile_px, strength}.')
+            fields(entry, GRAIN_FIELDS, GRAIN_FIELDS)
+            height = texture_patterns.pattern_height(Krita.instance(), text(entry['pattern'], 'pattern', 200))
+            tile = numeric(entry['tile_px'], 'grain tile_px', 8, 4000)
+            strength = numeric(entry['strength'], 'grain strength', 0, GRAIN_STRENGTH)
+            rect, data = shape_mask.read_shape(entry['inside_shape'], session.get('output'), doc.width(), doc.height())
+            out.append((np.frombuffer(data, np.uint8).reshape(rect[3], rect[2]), tuple(rect), height, float(tile), float(strength)))
+        return out
+
     def _finish_work(self, doc, session, params, limit=None):
         """The tiles to finish: the area's bounds where the goal sits, square by square."""
         width, height = doc.width(), doc.height()
@@ -560,6 +586,7 @@ class FinishCraft:
         limit = self._finish_limit(doc, session, params)
         work = self._finish_work(doc, session, params, limit)
         coverage_of = limit[0]
+        grains = self._finish_grains(doc, session, params['grain']) if params.get('grain') else []
         spec = params['goal']
         # Where the goal is, on the canvas only: a placement rounded or reaching past an edge seeds nothing off it.
         target = intersect(placed(spec), [0, 0, width, height])
@@ -613,6 +640,9 @@ class FinishCraft:
             own = crop(canvas, union, canvas_rect)
             blend, strokes, report = finish_tile(tile, own, canvas_rect, crop(goal_pixels, goal_union, goal_rect), goal_rect, target, width, height, size,
                                                  coverage, lambda count: breathe(count))
+            if strokes is not None and grains:
+                from . import texture_patterns
+                strokes = texture_patterns.apply_grain(np.frombuffer(strokes, np.uint8).reshape(h, w, 4).copy(), tile, grains).tobytes()
             for label, pixels in (('blend', blend), ('strokes', strokes)):
                 if pixels is None:
                     continue
@@ -635,7 +665,7 @@ class FinishCraft:
                 layer.remove()
         # whole: the whole picture at the default detail (the companion's "the whole picture is finished", from the passes).
         whole = size['detail'] == 'normal' and not any(params.get(k) for k in ('box', 'selection', 'inside_shape'))
-        out = dict(group, finish={'detail': size['detail'], 'whole': whole, 'tiles': done['tiles'], 'of_tiles': len(work), 'blend_tiles': done['blend_tiles'],
+        out = dict(group, finish={'detail': size['detail'], 'whole': whole, **({'grain_parts': len(grains)} if grains else {}), 'tiles': done['tiles'], 'of_tiles': len(work), 'blend_tiles': done['blend_tiles'],
                                   'stroke_tiles': done['stroke_tiles'], 'strokes': done['strokes'],
                                   'soft_share': round(done['soft'] / area, 3), 'ms': int((time.monotonic() - started) * 1000)},
                    layers={label: layer.uniqueId().toString() for label, layer in layers.items()

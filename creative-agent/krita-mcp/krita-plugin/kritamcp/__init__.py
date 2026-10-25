@@ -1231,13 +1231,14 @@ class KritaMCPExtension(CreativeTools, PrecisionTools, Extension):
         path = os.path.abspath(os.path.expanduser(params.get("path", "")))
         if not os.path.isfile(path):
             return {"error": "Texture file does not exist"}
-        patterns = Krita.instance().resources("pattern")
-        matches = [r for r in patterns.values() if os.path.basename(r.filename()) == os.path.basename(path)]
-        if len(matches) != 1:
-            return {"error": "Import this file as Patterns in Settings > Manage Resources first", "path": path, "matches": len(matches)}
         image = QImage(path)
         if image.isNull() or max(image.width(), image.height()) > 4096:
             return {"error": "Texture must be a readable image no larger than 4096 pixels per side"}
+        from .texture_patterns import brush_pattern
+        found = brush_pattern(Krita.instance(), image, path)    # our Krita registers the file itself (architecture-texture goal 6)
+        if isinstance(found, dict):
+            return found
+        matches = [found]
         if matches[0].image().convertToFormat(QImage.Format.Format_ARGB32) != image.convertToFormat(QImage.Format.Format_ARGB32):
             return {"error": "Imported pattern differs from this file; import it with a unique filename", "path": path}
         scale = number(params.get("scale", 1), "scale", .01, 10)
@@ -1254,8 +1255,8 @@ class KritaMCPExtension(CreativeTools, PrecisionTools, Extension):
             return base64.b64encode(base64.b64encode(value)).decode("ascii")
         changes = {"Texture/Pattern/Pattern": xml_bytes(raw),
                    "Texture/Pattern/PatternMD5": xml_bytes(hashlib.md5(raw).digest()),
-                   "Texture/Pattern/PatternFileName": path,
-                   "Texture/Pattern/Name": os.path.basename(path),
+                   "Texture/Pattern/PatternFileName": matches[0].filename() or path,
+                   "Texture/Pattern/Name": matches[0].name() or os.path.basename(path),
                    "Texture/Pattern/Enabled": True,
                    "Texture/Pattern/Scale": scale,
                    "Texture/Strength/Value": strength}

@@ -39,6 +39,10 @@ export interface TextureHost {
   /** The material's maps as base64 (downloaded and verified on first use), with its detail_from. */
   maps(material: Material, signal?: AbortSignal): Promise<Record<string, unknown>>;
   native(params: Record<string, unknown>, id: string, signal?: AbortSignal): Promise<Result>;   // the plugin's texture operation
+  /** The materials as Krita patterns (the plugin's register_patterns): {id: pattern name}; absent or {} on stock Krita. */
+  patterns?(materials: Record<string, unknown>): Promise<Record<string, string>>;
+  decided?(key: string): Decision | undefined;          // this step's choice, when made already
+  remember?(key: string, decision: Decision): void;
   status?(message: string): void;
 }
 export type ArchitecturalPart = TexturePart & { area: Area };
@@ -53,6 +57,40 @@ export function architecturalParts(step: TextureStep | null): ArchitecturalPart[
     const area = part.area ?? shared;
     return kind && area ? [{ name: label, kind: kind as PartKind, bounds: area.bounds, ...(part.note ? { note: part.note } : {}), area }] : [];
   });
+}
+
+export type Decision = { chosen: PartChoice[]; model?: string; fallback?: string };
+/** Each architectural part's choice: the plan's materials first (goal 7), the model only for the parts they leave out. Made
+ * once a step: the form strokes' grain (before the refine) and the texture pass (after it) share it (host.decided). */
+export async function decideTextures(host: TextureHost, step: TextureStep, signal?: AbortSignal): Promise<Decision> {
+  const known = host.decided?.(step.key);
+  if (known) return known;
+  const parts = architecturalParts(step), canvas = host.canvas();
+  if (!canvas) throw new Error('Observe the canvas first.');
+  const planned = parts.map(p => plannedChoice(p, step.materials, canvas));
+  const open = parts.filter((_, i) => !planned[i]);
+  const choice = open.length ? await chooseTextures({ reader: await host.reader(), view: await host.view().catch(() => null), canvas, parts: open, signal: signal ?? new AbortController().signal }) : null;
+  let next = 0;
+  const decision: Decision = { chosen: planned.map(p => p ?? choice!.parts[next++]!), ...(choice?.model ? { model: choice.model } : {}), ...(choice?.fallback ? { fallback: choice.fallback } : {}) };
+  host.remember?.(step.key, decision);
+  return decision;
+}
+
+/** How strongly the form strokes carry their part's pattern (Krita's brush texture strength, "subtract"): grain, not a stamp. */
+export const GRAIN_STRENGTH = 0.3;
+/** The Finish's grain for a refine step's form strokes (goal 6): each architectural part's first material, registered as a
+ * Krita pattern, at the part's near tile size, inside its found area; null when the step has no architecture or our Krita
+ * cannot make patterns. */
+export async function refineGrain(host: TextureHost, signal?: AbortSignal): Promise<Record<string, unknown>[] | null> {
+  const step = host.step(), parts = architecturalParts(step);
+  if (!step || !parts.length || !host.patterns) return null;
+  const { chosen } = await decideTextures(host, step, signal);
+  const ids = [...new Set(chosen.map(c => c.materials[0]!.id))], materials: Record<string, unknown> = {};
+  for (const id of ids) materials[id] = await host.maps(materialById(id)!, signal);
+  const names = await host.patterns(materials);
+  const grain = chosen.flatMap((c, i) => { const pattern = names[c.materials[0]!.id];
+    return pattern ? [{ pattern, inside_shape: { mask_path: parts[i]!.area.mask_path, bounds: parts[i]!.area.bounds }, tile_px: c.tile_px.near, strength: GRAIN_STRENGTH }] : []; });
+  return grain.length ? grain : null;
 }
 
 /** Whether the step may not be met yet: it has architecture and its texture pass has not run. */
@@ -91,15 +129,7 @@ export default function architectureTexture(host: TextureHost): (pi: ExtensionAP
       const byName = new Map(given.map(g => [String(g.part).trim().toLowerCase(), g]));
       chosen = parts.map(p => { const g = byName.get(p.name.trim().toLowerCase()); return g ? clampPart(g, p, canvas) : defaultPart(p, canvas); });
       fallback = 'painter';
-    } else {
-      // The plan's materials first (goal 7); only the parts it gives none are asked of the model now.
-      const planned = parts.map(p => plannedChoice(p, step.materials, canvas));
-      const open = parts.filter((_, i) => !planned[i]);
-      const choice = open.length ? await chooseTextures({ reader: await host.reader(), view: await host.view().catch(() => null), canvas, parts: open, signal: signal ?? new AbortController().signal }) : null;
-      if (choice) ({ model, fallback } = choice);
-      let next = 0;
-      chosen = planned.map(p => p ?? choice!.parts[next++]!);
-    }
+    } else ({ chosen, model, fallback } = await decideTextures(host, step, signal));
     host.status?.(`Texture: fetching the materials for ${step.label}…`);
     const ids = [...new Set(chosen.flatMap(c => c.materials.map(m => m.id)))];
     const materials: Record<string, unknown> = {};

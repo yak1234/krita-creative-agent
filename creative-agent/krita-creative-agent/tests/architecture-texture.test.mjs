@@ -187,3 +187,30 @@ test('a step with planned materials uses them and asks the model only for the pa
   await both.tools.texture_architecture.execute('p2', {});
   assert.deepEqual(both.calls[0].params.parts.map(p => p.materials[0].id), ['Bricks008', 'PavingStones150']);
 });
+
+import { refineGrain, GRAIN_STRENGTH } from '../extensions/architecture-texture.ts';
+
+test('the refine’s form strokes carry each architectural part’s material as a Krita pattern, one decision for both passes', async () => {
+  const reply = { parts: [{ part: 'the church', materials: [{ id: 'Bricks008', weight: 1 }], tile_px: { near: 220, far: 220 }, strength: 0.2 }] };
+  const { host, tools, calls } = setup({ reply });
+  let asked = 0, registered = null;
+  const reader = host.reader;
+  host.reader = async () => { asked++; return reader(); };
+  const memory = new Map();
+  host.decided = key => memory.get(key);
+  host.remember = (key, decision) => memory.set(key, decision);
+  host.patterns = async materials => { registered = Object.keys(materials).sort(); return Object.fromEntries(Object.keys(materials).map(id => [id, 'Texture: ' + id])); };
+  const grain = await refineGrain(host);
+  assert.deepEqual(registered, ['Bricks008', 'PavingStones046']);
+  assert.deepEqual(grain.map(g => [g.pattern, g.inside_shape.bounds, g.strength]), [['Texture: Bricks008', [2000, 800, 900, 1400], GRAIN_STRENGTH],
+    ['Texture: PavingStones046', [0, 3600, 6000, 900], GRAIN_STRENGTH]]);
+  assert.equal(grain[0].tile_px, 220);
+  await tools.texture_architecture.execute('t', {});
+  assert.equal(asked, 1, 'the texture pass reuses the decision');
+  assert.equal(calls[0].params.parts[0].materials[0].id, 'Bricks008');
+  const sky = setup({ step: SKY_STEP });
+  sky.host.patterns = async () => ({});
+  assert.equal(await refineGrain(sky.host), null);
+  const stock = setup();
+  assert.equal(await refineGrain(stock.host), null, 'no patterns (stock Krita): no grain');
+});

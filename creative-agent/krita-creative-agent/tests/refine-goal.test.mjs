@@ -314,3 +314,15 @@ test('each round ends with one finish layer and one accents layer: its passes fl
   assert.deepEqual(empty.of('flatten_passes').map(c => c.params.pass_ids), [['r1/r1-accents-1'], ['r1/r2-accents-1']], 'only passes that exist');
   assert.match(kept.flatten_errors[0], /between the passes/);
 });
+
+test('an architectural step’s form strokes carry its grain: every finish of the refine gets it, none without it', async t => {
+  const grain = [{ pattern: 'Texture: Bricks008', inside_shape: { mask_path: '/chat/.shapes/found-a.png', bounds: [0, 0, 600, 600] }, tile_px: 220, strength: 0.3 }];
+  const s = await setup(t);
+  s.runtime.refineGrain = async () => grain;
+  await s.tool.execute('g1', {});
+  assert.ok(s.of('finish').length > 0 && s.of('finish').every(c => JSON.stringify(c.params.grain) === JSON.stringify(grain)));
+  const plain = await setup(t);
+  plain.runtime.refineGrain = async () => { throw new Error('the model is down'); };
+  await plain.tool.execute('g2', {});
+  assert.ok(plain.of('finish').every(c => !('grain' in c.params)), 'a grain that cannot be had never stops the refine');
+});

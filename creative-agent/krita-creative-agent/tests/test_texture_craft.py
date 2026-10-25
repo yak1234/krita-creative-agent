@@ -7,6 +7,7 @@ small synthetic textures; files in a temporary folder."""
 import base64
 import os
 import sys
+import types
 import unittest
 
 import numpy as np
@@ -25,9 +26,11 @@ class TextureTests(finish_tests.FinishOperationTests):
     def setUp(self):
         super().setUp()
         name = 'creative_test_package.texture_raster'
-        prior = sys.modules.get(name)
-        sys.modules[name] = raster_tests.raster
+        prior, package = sys.modules.get(name), sys.modules['creative_test_package']
+        attribute = getattr(package, 'texture_raster', None)
+        sys.modules[name] = package.texture_raster = raster_tests.raster
         self.addCleanup(lambda: sys.modules.__setitem__(name, prior) if prior else sys.modules.pop(name, None))
+        self.addCleanup(lambda: setattr(package, 'texture_raster', attribute) if attribute else delattr(package, 'texture_raster'))
         brick = raster_tests.jpeg(raster_tests.bricks(128, 64, 8))
         self.materials = {'Bricks085': {'color': b64(brick), 'displacement': b64(brick)}}
 
@@ -106,9 +109,57 @@ class TextureTests(finish_tests.FinishOperationTests):
         self.assertEqual(len(self.h.doc.root.childNodes()), 1 if not layers else 2, 'no layer was added')
 
 
+class PatternTests(TextureTests):
+    """Goal 6: the library's materials as Krita patterns, and the Finish's form strokes carrying one as grain in a part."""
+    def setUp(self):
+        super().setUp()
+        import krita
+        import test_texture_patterns as pattern_tests
+        name = 'creative_test_package.texture_patterns'
+        prior, package = sys.modules.get(name), sys.modules['creative_test_package']
+        attribute = getattr(package, 'texture_patterns', None)
+        sys.modules[name] = package.texture_patterns = pattern_tests.patterns     # `from . import` reads the package first
+        pattern_tests.patterns.REGISTERED.clear()
+        self.addCleanup(lambda: sys.modules.__setitem__(name, prior) if prior else sys.modules.pop(name, None))
+        self.addCleanup(lambda: setattr(package, 'texture_patterns', attribute) if attribute else delattr(package, 'texture_patterns'))
+        self.app = pattern_tests.FakeKrita()
+        before = krita.Krita
+        krita.Krita = types.SimpleNamespace(instance=lambda: self.app)
+        self.addCleanup(lambda: setattr(krita, 'Krita', before))
+
+    def test_the_texture_pass_and_register_patterns_make_texture_patterns(self):
+        result = self.texture([self.part([100, 50, 300, 250])])
+        self.assertEqual(result['patterns'], {'Bricks085': 'Texture: Bricks085'})
+        registered = region_tests.run(self.h, 'register_patterns', {'materials': self.materials})
+        self.assertEqual(registered, {'status': 'ok', 'patterns': {'Bricks085': 'Texture: Bricks085'}})
+        self.assertEqual(self.app.calls, ['Texture: Bricks085'], 'registered once a session')
+
+    def test_form_strokes_carry_the_grain_inside_the_part_only(self):
+        region_tests.run(self.h, 'register_patterns', {'materials': self.materials})
+        plain = self.run_finish('plain', box=[0, 0, 600, 400])
+        self.assertEqual(plain['status'], 'ok', plain.get('error'))
+        group = self.h._creative_node(self.h.doc, plain['layer_id'])
+        smooth = next(c for c in group.childNodes() if c.label.endswith('strokes')).data[..., 3].astype(int)
+        review = region_tests.run(self.h, 'review_pass', {'pass_id': 'plain', 'action': 'reject'}, 'undo-plain')
+        self.assertEqual(review['status'], 'ok', review.get('error'))
+        grain = [{'pattern': 'Texture: Bricks085', 'inside_shape': self.shape('church', [300, 0, 300, 400]), 'tile_px': 40, 'strength': 0.4}]
+        grained = self.run_finish('grained', box=[0, 0, 600, 400], grain=grain)
+        self.assertEqual(grained['status'], 'ok', grained.get('error'))
+        self.assertEqual(grained['finish']['grain_parts'], 1)
+        group = self.h._creative_node(self.h.doc, grained['layer_id'])
+        rough = next(c for c in group.childNodes() if c.label.endswith('strokes')).data[..., 3].astype(int)
+        self.assertTrue((rough[:, :300] == smooth[:, :300]).all(), 'outside the part: the same strokes')
+        self.assertLess(rough[:, 300:].sum(), smooth[:, 300:].sum(), 'inside: thinned by the pattern')
+        with self.assertRaisesRegex(ValueError, 'pattern'):
+            self.run_finish('bad', box=[0, 0, 600, 400], grain=[dict(grain[0], pattern='Texture: Nope')])
+        with self.assertRaisesRegex(ValueError, 'strength'):
+            self.run_finish('bad2', box=[0, 0, 600, 400], grain=[dict(grain[0], strength=0.9)])
+
+
 def load_tests(loader, tests, pattern):
     """Only this file's tests, without running the finish tests again here."""
-    return unittest.TestSuite(TextureTests(name) for name in sorted(vars(TextureTests)) if name.startswith('test_'))
+    return unittest.TestSuite([TextureTests(name) for name in sorted(vars(TextureTests)) if name.startswith('test_')]
+                              + [PatternTests(name) for name in sorted(vars(PatternTests)) if name.startswith('test_')])
 
 
 if __name__ == '__main__':

@@ -217,3 +217,46 @@ test('guide: refine_to_goal is never undone by Luna review; its findings are rec
   assert.equal(calls.record[0].status, 'warned'); assert.match(calls.record[0].reason, /refine_to_goal/);
   assert.match(reviewOf(changed).note, /Luna found Moon covered[^]*kept/);
 });
+
+// Live 2026-10-24: 16 Luna undos in 8 chats, most of them a blend (a k) Blender Basic smudge, a paint_reference_surface
+// "soft masses" or a sky surface blend) flagged as texture over forms; one hit the cap and ended the move. Softening the dab
+// texture is what a blend is for: that finding is recorded, never undone, and does not count toward the cap.
+const texture = { type: 'texture_over_forms', label: 'texture over forms', probability: 0.86, location: 'center' };
+const smudge = { actions: [{ tool: 'paint_pass', arguments: { name: 'Soften', preset: 'k) Blender Basic', strokes: [] } }] };
+
+test('guide: texture over forms on a blending pass is recorded, never undone', async () => {
+  for (const [tool, input] of [['paint_reference_surface', { preset: 'k) Blender Basic', edges: false }], ['paint_batch', smudge],
+    ['paint_pass', { preset: 'k) Blender Blur' }]]) {
+    const { calls, result } = setup({ reviews: [{ findings: [texture] }, { findings: [texture] }, { findings: [texture] }] });
+    for (let i = 0; i < 3; i++) {
+      const changed = await result(tool, { input });
+      assert.match(reviewOf(changed).note, /Luna found texture over forms \(center\); it is kept/, tool);
+      assert.ok(changed.content.includes(before), 'the canvas image stays');
+    }
+    assert.deepEqual([calls.undo.length, calls.stop.length], [0, 0], tool + ': no undo, and the move goes on');
+    assert.equal(calls.record[0].status, 'warned'); assert.match(calls.record[0].reason, /blending pass/);
+  }
+});
+
+test('guide: a blending pass is still undone for another finding, and a colour pass for texture', async () => {
+  const { calls, result } = setup({ reviews: [{ findings: [texture, moon] }, { findings: [texture] }, { findings: [texture] }] });
+  await result('paint_reference_surface', { input: {} });
+  assert.equal(calls.undo.length, 1, 'the covered moon is acted on');
+  await result('paint_batch', { input: { actions: [...smudge.actions, { tool: 'paint_pass', arguments: { preset: 'b) Basic-1' } }] } });
+  assert.equal(calls.undo.length, 2, 'a batch that also lays colour is not a blend');
+  const rake = await result('paint_pass', { input: { preset: 'k) Blender Rake' } });
+  assert.match(reviewOf(rake).note, /already undid 2 batches/, 'a rake drags streaks: texture');
+});
+
+// Review (2026-10-25): paint_finish lays new goal-coloured strokes and paint_reference_surface repaints edges unless told
+// not to, so neither is a blend by its name; an action that names no preset (a fill, a gradient, the toolbox) lays colour.
+test('only a call whose every painting action names a blender preset is a blend', async () => {
+  const { blending } = await import('../extensions/luna-review.ts');
+  assert.equal(blending('paint_finish', {}), false);
+  assert.equal(blending('paint_reference_surface', { preset: 'k) Blender Basic' }), false, 'its edge pass repaints edges');
+  assert.equal(blending('paint_reference_surface', { preset: 'k) Blender Basic', edges: false }), true);
+  assert.equal(blending('paint_batch', { actions: [...smudge.actions, { tool: 'fill_region', arguments: { name: 'Sky', area: [] } }] }), false);
+  assert.equal(blending('paint_batch', { actions: [...smudge.actions, { tool: 'painting_toolbox', arguments: { commands: [{ tool: 'set_brush', parameters_json: '{"preset":"k) Blender Basic"}' }] } }] }), false);
+  assert.equal(blending('paint_batch', smudge), true);
+  assert.equal(blending('krita_gradient', {}), false);
+});

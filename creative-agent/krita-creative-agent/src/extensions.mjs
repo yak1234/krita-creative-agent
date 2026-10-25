@@ -11,10 +11,14 @@ import seamCheck from '../extensions/seam-check.ts';
 import goalLikeness from '../extensions/goal-likeness.ts';
 import paintingWeight from '../extensions/painting-weight.ts';
 import architectureTexture from '../extensions/architecture-texture.ts';
+import argumentRepair from '../extensions/argument-repair.ts';
 
 export const LOOP_GUARDS = { name: 'loop-guards', factory: loopGuards };
 // What makes the painting heavy for Krita, told to the painter from the observations' `weight` (painting_weight.py).
 export const PAINTING_WEIGHT = { name: 'painting-weight', factory: paintingWeight() };
+// Tool calls whose JSON did not parse get their arguments back when the brackets can be put right (argument-repair.ts).
+/** @param {(event: import('../extensions/argument-repair.ts').RepairRecord) => void} record */
+export const argumentRepairExtension = record => ({ name: 'argument-repair', factory: argumentRepair({ record }) });
 // Luna's per-batch review of Agent moves, bound to the studio's ReviewHost (studio.mjs reviewHost).
 /** @param {import('../extensions/luna-review.ts').ReviewHost} host */
 export const lunaReviewExtension = host => ({ name: 'luna-review', factory: lunaReview(host) });

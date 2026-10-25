@@ -167,6 +167,22 @@ test('Start painting with no open step left finishes instead of painting; pacing
   assert.equal(host.goal.current_step, 0, 'a step restored before the current one is still painted');
 });
 
+// LIVE 2026-10-24 (59514fff move 6): the artist typed "can't you just finish adding sharpness" and pressed Good enough
+// while it started; its first call was refused "the artist marked this step good enough". A move the artist's own typed
+// message started paints one batch of it: the mark ends the move after that batch, not before it.
+test('Agent mode: Good enough lets a move the artist’s own message started paint one batch, then ends it', () => chatFolder(async dir => {
+  const host = fakeHost({ busy: true, dir, goal: { status: 'active' } });
+  const move = { number: 6, status: 'painting', step: 0, step_key: keys[0], calls: 0, artist_message: true };
+  host.state.move = move; host.goal.moves = [move];
+  const controls = planStepControls(host);
+  await controls.command(command('good_enough', 0), reviewer(controls));
+  assert.equal(move.finished, true);
+  assert.doesNotThrow(() => controls.beforeBatch({ tool: 'paint_reference_surface' }));
+  controls.batchEnded();
+  assert.throws(() => controls.beforeBatch({ tool: 'paint_batch' }), /good enough/, 'one batch, not the whole move');
+  assert.ok(host.calls.some(line => /^say: .*after one batch of your message/.test(line)), host.calls.join(' | '));
+}));
+
 test('Agent mode: Good enough lets the batch finish, refuses more painting except the move\'s own reference job, then keeps the move and starts the next open step', () => chatFolder(async dir => {
   const host = fakeHost({ busy: true, dir, goal: { status: 'active', step_marks: { [keys[1]]: { skipped: true } }, reference_jobs: { ['a'.repeat(32)]: [1], ['b'.repeat(32)]: [0] } } });
   const move = { number: 1, status: 'painting', step: 0, step_key: keys[0], calls: 2, review: { verdict: 'warned' }, review_line: 'Luna warned: seam',

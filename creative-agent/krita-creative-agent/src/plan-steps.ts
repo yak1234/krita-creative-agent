@@ -29,7 +29,8 @@ export const STEP_ID = /^[A-Za-z0-9_-]{1,40}$/;
 
 type PlanStep = { title: string; scope?: string; done_when?: string; id?: string };
 export type Move = { number: number; status: string; step?: number; step_key?: string; calls?: number; finished?: boolean;
-  guides_only?: boolean; review?: { verdict?: string }; review_line?: string; likeness?: { luna?: Record<string, number> } };
+  guides_only?: boolean; review?: { verdict?: string }; review_line?: string; likeness?: { luna?: Record<string, number> };
+  artist_message?: boolean };   // the move was started by the artist's own typed message (studio.mjs runMove)
 export type Goal = { brief: { steps: PlanStep[] } | null; status?: string; current_step?: number; done_steps?: number[];
   step_marks?: StepMarks; step_batches?: Record<string, number>; moves?: Move[]; reference_jobs?: Record<string, number[]>;
   pace_history?: { step: number; progress?: number | null; action?: string }[]; reviews?: { verdict?: string }[] };
@@ -199,6 +200,7 @@ export function planStepControls(host: PlanStepHost) {
   let redirect: string | null = null;                      // Autopilot: the next painting call is refused with this
   let pendingKey: string | null = null;                    // Autopilot: "good enough" waiting for the batch in progress
   let pendingMove: Move | null = null;                     // Agent: the move "good enough" ends (this run only)
+  let oneBatch = false;                                    // Agent: that move may still paint one batch of the artist's message
   let working = false;                                     // a Met / Redo (or the automatic keep) is under way
 
   const goalOf = (): Goal => { const goal = host.getGoal(); if (!goal?.brief?.steps?.length) throw new Error('There is no plan.'); return goal; };
@@ -317,7 +319,9 @@ export function planStepControls(host: PlanStepHost) {
         await lesson(goal, 'good_enough', index, host.mode() === 'agent' ? move : undefined);
         if (host.mode() === 'agent' && move) {
           pendingMove = move; move.finished = true;            // the move ends after the turn in progress
-          host.say(`Good enough: ${name} ends after the batch in progress, then the next step starts.`);
+          oneBatch = !!move.artist_message && !inFlight;       // the artist's typed message gets one batch before it ends
+          host.say(oneBatch ? `Good enough: ${name} ends after one batch of your message, then the next step starts.`
+            : `Good enough: ${name} ends after the batch in progress, then the next step starts.`);
           await host.persist(); host.publish();
           if (!host.busy()) await controls.afterRun();
           return;
@@ -361,7 +365,10 @@ export function planStepControls(host: PlanStepHost) {
      * job the move started; Autopilot: once, redirected). */
     beforeBatch(call?: Call): void {
       const move = host.currentMove(), goal = host.getGoal();
-      if (host.mode() === 'agent' && move && move === pendingMove) {
+      // A move the artist's own typed message started paints one batch of it (LIVE 2026-10-24: "can't you just finish
+      // adding sharpness" was refused at its first call); then the mark refuses as for any move.
+      if (host.mode() === 'agent' && move && move === pendingMove && oneBatch) oneBatch = false;
+      else if (host.mode() === 'agent' && move && move === pendingMove) {
         const job = call?.tool === 'continue_reference_painting' ? String(call.args?.job_id ?? '') : '';
         if (!job || !(goal?.reference_jobs?.[job] ?? []).includes(move.number))
           throw new Error('Nothing was painted: the artist marked this step good enough. Paint nothing more; stop now.');
@@ -390,11 +397,11 @@ export function planStepControls(host: PlanStepHost) {
     async afterRun(): Promise<void> {
       const goal = host.getGoal();
       redirect = null;
-      if (!goal?.brief?.steps?.length) { pendingKey = null; pendingMove = null; return; }
+      if (!goal?.brief?.steps?.length) { pendingKey = null; pendingMove = null; oneBatch = false; return; }
       if (pendingKey) { advance(goal); await host.persist(); host.publish(); }
       const move = pendingMove;
       if (!move || host.busy()) return;
-      pendingMove = null;
+      pendingMove = null; oneBatch = false;
       if (move !== goal.moves?.at(-1)) return;                // another chat, or a later move
       const index = moveStep(move, keysOf(goal));
       if (index < 0) { await host.persist(); host.publish(); return; }

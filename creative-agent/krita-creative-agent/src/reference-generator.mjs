@@ -21,7 +21,25 @@ export const referenceSchema=object({
 export const DEFAULT_STEPS=[6,2.5,1.2];
 // Integer rectangles rarely share an exact ratio: the whole of a 1920x1291 reference over a 1520x1022 canvas
 // is off by a fraction of a pixel. Within one target pixel the stretch cannot be seen.
-const sameAspect=(sw,sh,tw,th)=>Math.abs(sh*tw/sw-th)<=1;
+export const sameAspect=(sw,sh,tw,th)=>Math.abs(sh*tw/sw-th)<=1;
+/** A source of other proportions than its target, centre-cropped to the target's (LIVE 2026-10-23/24: five calls refused
+ * for a few pixels' difference): {source, target}, or null when they already match. When whole source pixels cannot hit
+ * the ratio within one target pixel (a large enlargement), the target is trimmed to the crop, centred, by under a scale's
+ * worth of pixels. */
+export function cropToAspect(source,target){
+ const [sx,sy,sw,sh]=source,[tx,ty,tw,th]=target;
+ if(!(sw>0&&sh>0&&tw>0&&th>0)||sameAspect(sw,sh,tw,th))return null;
+ let crop;
+ if(sw/sh>tw/th){const w=Math.max(1,Math.round(sh*tw/th));crop=[sx+Math.floor((sw-w)/2),sy,w,sh];}
+ else{const h=Math.max(1,Math.round(sw*th/tw));crop=[sx,sy+Math.floor((sh-h)/2),sw,h];}
+ let fitted=target;
+ if(!sameAspect(crop[2],crop[3],tw,th)){
+  if(sw/sh>tw/th){const w=Math.round(crop[2]*th/crop[3]);fitted=[tx+Math.floor((tw-w)/2),ty,w,th];}
+  else{const h=Math.round(crop[3]*tw/crop[2]);fitted=[tx,ty+Math.floor((th-h)/2),tw,h];}
+  if(fitted[2]>tw||fitted[3]>th||!sameAspect(crop[2],crop[3],fitted[2],fitted[3]))return null;
+ }
+ return {source:crop,target:fitted};
+}
 /** The source→target mapping of the reference tools, for other tools that place things from reference pixels (guides):
  * (x, y) in source pixels to canvas pixels, under the same aspect rule. Points outside the source map on, unclamped.
  * @param {number[]} source [x,y,w,h] in reference pixels @param {number[]} target [x,y,w,h] in canvas pixels
@@ -120,7 +138,7 @@ function cropGradient(recipe,image,canvas){
 const hex=rgb=>'#'+rgb.map(v=>Math.round(v).toString(16).padStart(2,'0')).join('');
 // A polyline as straight cubic segments, the shape a native pass takes.
 const curve=pts=>({start:pts[0],segments:pts.slice(1).map((q,i)=>{const p=pts[i];return [p[0]+(q[0]-p[0])/3,p[1]+(q[1]-p[1])/3,p[0]+2*(q[0]-p[0])/3,p[1]+2*(q[1]-p[1])/3,q[0],q[1]];})});
-export function generateEdgePlan(recipe,image,canvas){
+export function generateEdgePlan(recipe,image,canvas,{limit=EDGE_LIMIT}={}){
  const {mode,...fields}=recipe;
  if(mode!=='edges'||!Value.Check(edgeSchema,fields))throw new Error('Invalid edge recipe. Use source/target rectangles and optional spacing, min_contrast and max_length.');
  const {sw,sh,scale,GX,GY,M,at,pixel,point}=cropGradient(recipe,image,canvas);
@@ -131,7 +149,7 @@ export function generateEdgePlan(recipe,image,canvas){
  const seeds=[];for(let k=0;k<M.length;k++)if(M[k]>=threshold)seeds.push(k);
  seeds.sort((a,b)=>M[b]-M[a]||a-b);
  const strokes=[];
- for(const seed of seeds){
+ for(const [seen,seed] of seeds.entries()){
   const x0=seed%sw,y0=Math.floor(seed/sw);if(taken[cell(x0,y0)])continue;
   const tangent=k=>[-GY[k]/M[k],GX[k]/M[k]];
   const path=[[x0,y0]];
@@ -154,7 +172,8 @@ export function generateEdgePlan(recipe,image,canvas){
    const pts=line.map(([x,y])=>point(x+side*nx*s/2,y+side*ny*s/2));
    strokes.push({...curve(pts),size:Math.max(1,s*scale*1.05),opacity:colour.alpha,flow:1,color:hex(colour.rgb)});
   }
-  if(strokes.length>EDGE_LIMIT)throw new Error(`More than ${EDGE_LIMIT} edge strokes. Raise min_contrast or spacing, or choose a smaller region (focal areas, not the whole picture).`);
+  if(strokes.length>limit)throw Object.assign(new Error(`More than ${limit} edge strokes. Raise min_contrast or spacing, or choose a smaller region (focal areas, not the whole picture).`),
+   {limit,estimate:Math.round(strokes.length*seeds.length/(seen+1))});   // strokes so far, scaled to every seed: the count the pass would make
  }
  if(!strokes.length)throw new Error('No edges at this contrast; lower min_contrast or choose a region with edges.');
  const rand=random(recipe.seed??714);

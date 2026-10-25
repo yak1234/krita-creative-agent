@@ -46,7 +46,8 @@ import { decisionId } from './decision-records.mjs';
 import { skillCommand } from './skill-commands.ts';
 import { fillNudge, massGuidance, hasGoalReference, paintedTransfers, referenceColourPassMade, referenceFirstContext } from './reference-first.ts';
 import { transferRefusal, existingPainting, WHOLE_SHARE } from './reference-tool.mjs';
-import { typedStrokeRefusal, handPaintingRequested } from './typed-strokes.ts';
+import { typedStrokeRefusal, handPaintingRequested, MAX_MARKS, widthCap } from './typed-strokes.ts';
+import { openRoutesLine } from './open-routes.ts';
 import { scanFolder, readFolderText, elementStep, folderStepKind, elementsNamed, goalChoices, goalNamed, FOLDER_LIMITS, FOLDER_STEP_KINDS } from './project-folder.ts';
 import { stagePolicy, reviseStages, stagesNamed, orderStages, folderPlanSteps, shapePlan, nextStages, STAGE_CARD, stagesFromCard, PLAN_STAGES } from './plan-stages.ts';
 import { refineGroups, partsOf, unionFound } from './refine-parts.ts';
@@ -523,7 +524,8 @@ export class StudioRuntime extends PaintingRuntime {
       const move=this.currentMove;
       move.actions=(move.actions ?? 0)+(call.args?.actions?.length ?? 1);
       move.strokes=(move.strokes ?? 0)+countStrokes(call);
-      move.title ??= String(call.args?.summary ?? call.args?.name ?? call.tool ?? 'Painting move').slice(0,120);
+      // Never a tool name: a call without a summary or name (paint_accents) titles the move with its request (LIVE 2026-10-24).
+      move.title ??= String(call.args?.summary ?? call.args?.name ?? (move.request || 'Painting move')).slice(0,120);
       move.canvas=canvasPath ?? move.canvas;
       move.calls=(move.calls ?? 0)+1;
       this.setActivity('painting', `Move ${move.number} · ${move.title} · ${move.calls} batch${move.calls === 1 ? '' : 'es'} · ${move.strokes} strokes`);
@@ -787,6 +789,21 @@ export class StudioRuntime extends PaintingRuntime {
     const policy=messagePolicy({reading, act:mode==='guide', text:said, elements, planned});
     this.messageReading={study:this.study, text:said, mode, reading, policy, stages};
     return this.messageReading;
+  }
+  /** The move's open routes (open-routes.ts): what the host allows now and what it will refuse, from the same checks the
+   * calls meet, computed once as the move starts (LIVE 2026-10-23/24: about 25 refusals in 10 chats, found one at a time). */
+  async openRoutes(canvas, move, referenceState) {
+    const W = canvas?.width, H = canvas?.height;
+    const undone = this.undoneReferenceJobs();
+    const painted = W && H ? (await paintedTransfers(this.study.directory, {revision:this.goal?.revision}).catch(() => [])).filter(job => !undone.has(job.id)).length : 0;
+    const rule = target => !(W && H) ? 'the canvas size is not known yet' : transferRefusal(this.goal, {source:target, target}, canvas, painted, {established:existingPainting(this, canvas), protectedAreas:canvas.protected_areas?.length ?? 0});
+    const transfers = W && H ? await this.wholeTransfers(canvas) : [];
+    const used = this.goal?.unify_pass, spent = used && !(used.move && this.goal.moves?.find(m => m.number === used.move)?.status === 'undone');
+    return openRoutesLine({fillNudge:!!referenceState && this.fillNudged !== move && !this.goal?.paint_only_here,
+      wholeTransfer:rule([0, 0, W, H]), patchTransfer:rule([0, 0, Math.round(W * 0.4), Math.round(H * 0.4)]),
+      typedCap:transfers.length && !this.goal?.hand_painting ? {marks:MAX_MARKS, px:widthCap(canvas)} : null,
+      unifyUsed:spent && (transfers.length || existingPainting(this, canvas)) ? String(used.what ?? used.tool ?? 'an earlier pass') : null,
+      liveFilters:this.mode === 'agent'});
   }
   /** One unify pass (unify-pass.ts): after a whole-picture underpainting, the chat's first whole-canvas softening call is
    * returned to be remembered; a later one (or a second in the same call) is refused. A pass whose move was undone is spent no more. */
@@ -1877,8 +1894,11 @@ export class StudioRuntime extends PaintingRuntime {
     add('finish_move', 'Agent mode: the subject of this move reads as finished. Give a one-line summary of what the move painted; the artist then keeps it, undoes it or corrects it. request_done: true when everything the artist asked for is now painted, so keeping this move ends the request instead of starting another move.',
       object({ summary: Type.String({ minLength: 1, maxLength: 160 }), request_done: Type.Optional(Type.Boolean()) }), async ({ summary, request_done }) => {
         if (this.mode !== 'agent' || !this.currentMove) throw new Error('finish_move ends an Agent move; there is no move in progress.');
-        if (!this.currentMove.actions && !this.currentMove.guides) throw new Error('Paint the subject first; this move has no painting yet.');
-        if (!this.currentMove.actions) {                            // a guides-only move: its card shows the guides
+        // A continue move may find the request it continues already painted (LIVE 2026-10-24: refused five times, the move
+        // ended empty): it finishes the request without painting.
+        const continued = this.currentMove.continues && request_done;
+        if (!this.currentMove.actions && !this.currentMove.guides && !continued) throw new Error('Paint the subject first; this move has no painting yet.');
+        if (!this.currentMove.actions && !continued) {              // a guides-only move: its card shows the guides
           const seen = await this.callNative('observe').catch(() => null);
           if (seen?.image_path) this.currentMove.canvas = seen.image_path;
         }
@@ -3108,7 +3128,8 @@ export class StudioRuntime extends PaintingRuntime {
       const movePrompt = areaRequest ? `${areaRequest}\n\n(The artist answered "${answered.question}": ${text.trim()}.)` : modelText;
       if (this.mode === 'agent' && !moveKind && await this.holdForSharpen(text, command)) return;
       // The move is the artist's held request when a card answered it (its button is no request: review, 2026-10-24).
-      if (this.mode === 'agent') { await this.runMove(movePrompt, images, {...command, display_text:areaRequest ?? text, ...(moveKind ? {move_kind:moveKind} : {})}); return; }
+      const typed = !optionAnswer && !areaRequest && !addAnswer && !/^you decide[.!]*$/i.test(text.trim());
+      if (this.mode === 'agent') { await this.runMove(movePrompt, images, {...command, display_text:areaRequest ?? text, typed, ...(moveKind ? {move_kind:moveKind} : {})}); return; }
       // Autopilot works toward the brief like a goal: an answer to a question the painter asked
       // mid-run goes straight back to painting, without a planning turn.
       const resumeRun = this.mode === 'autopilot' && answered?.asked_in === 'agent' && this.goal.brief && this.goal.approved_revision === this.goal.revision;
@@ -3611,8 +3632,16 @@ export class StudioRuntime extends PaintingRuntime {
     if (retryStep >= 0) this.goal.current_step = retryStep;
     const move = {number:(this.goal.moves?.length ?? 0)+1, request:String(command.display_text ?? text).slice(0,500), status:'painting', actions:0, strokes:0, started_at:stamp(),
       ...(command.move_kind ? {kind:command.move_kind} : {}),
+      // The artist's own typed text (not Keep, a retry, guides, a plan step or a card's button): a Good enough pressed while
+      // it starts lets it paint one batch first (plan-steps.ts).
+      ...(command.typed && !command.start_plan && !command.keep_follow && !['continue','retry','guides'].includes(command.move_kind) && String(text ?? '').trim() ? {artist_message:true} : {}),
       ...((this.folderPlanning() && this.folderPlanApproved()) || (!this.study.folder && (command.start_plan || retryStep >= 0) && this.goal.brief?.steps?.length)
         ? this.folderStepOf(Math.min(this.goal.current_step ?? 0, this.goal.brief.steps.length - 1)) : {})};
+    // A continue move (Keep of an unfinished move) carries the request it continues: "Kept. Continue my request" is a button,
+    // not a request, and became the move's title and the retry's "it kept. Continue ..." (LIVE 2026-10-24).
+    const continued = command.move_kind === 'continue' && !command.start_plan ? this.goal.moves?.at(-1) : null;
+    // Its title is its own (its first batch, its finish_move, or the request when it stops unfinished).
+    if (continued?.request) Object.assign(move, {request:continued.request, continues:continued.continues ?? continued.number});
     this.goal.moves = [...(this.goal.moves ?? []), move]; this.currentMove = move;
     const element = this.folderElement(move.step);
     if (element) move.element = element.id;                  // a folder element step: judged against the goal once it is underpainted
@@ -3649,6 +3678,8 @@ export class StudioRuntime extends PaintingRuntime {
       const folderMove = this.folderMoveInstructions(move);
       const underpaintingNote = state?.transfer && !folderMove ? '\n' + UNDERPAINTING_MOVE_NOTE + '\n' : '';
       const said = String(command.display_text ?? text ?? '');
+      const routesNote = guidesOnly ? '' : '\n' + await this.openRoutes(canvas, move, state).catch(() => '') + '\n';
+      const continueNote = move.continues ? `\nTHIS MOVE CONTINUES move ${move.continues}. The artist's request: "${move.request}". Paint what it still needs; if it is all painted already, call finish_move with request_done: true without painting.\n` : '';
       const detailNote = guidesOnly || command.move_kind ? '' : await this.goalDetailNote(said, canvas);
       // Luna read the message as about one part of the picture that is no folder element (message-reading.ts): its area first.
       const reading = this.messageReading?.text === said ? this.messageReading.policy : null;
@@ -3657,21 +3688,24 @@ export class StudioRuntime extends PaintingRuntime {
       // Refine after the whole-picture Finish (refine-goal.ts): the whole picture runs refine_to_goal, a part is asked for and refined fine.
       const refineNote = guidesOnly || command.move_kind || folderMove ? '' : refineToGoalNote({text:said, area:!!this.goal.paint_only_here,
         finished:this.wholeFinished(), reading:this.messageReading?.text === said ? this.messageReading.reading : null});
-      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + underpaintingNote + folderMove + detailNote + partNote + (refineNote ? '\n' + refineNote + '\n' : '') + (move.ask_next ? askWhenDoneNote(move.ask_next.reason, this.layerNeed.area, move.ask_next.elements) : '') + '\nArtist:\n' + text, images);
+      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + underpaintingNote + folderMove + continueNote + routesNote + detailNote + partNote + (refineNote ? '\n' + refineNote + '\n' : '') + (move.ask_next ? askWhenDoneNote(move.ask_next.reason, this.layerNeed.area, move.ask_next.elements) : '') + '\nArtist:\n' + text, images);
     } finally {
       this.goal.used_ms += Date.now() - this.goalStartedAt; this.goalStartedAt = undefined;
       const guidesOnly = !move.actions && move.guides > 0;
       if (guidesOnly) move.guides_only = true;
       if (guidesOnly) move.title = 'Drew guides' + (move.finished && move.title ? ': ' + move.title : ' (' + move.guides + ')');
       move.status = move.actions || guidesOnly ? 'ready' : 'empty'; move.finished_at = stamp();
+      const doneAlready = move.status === 'empty' && move.continues && move.finished && move.request_done;
+      if (doneAlready) await this.hideGuides().catch(() => {});      // the request is done: its guides go, as at Keep
       if (move.limited && !move.finished) move.title = move.request.slice(0,120);     // a first batch's summary would describe only part of it
       this.currentMove = undefined;
-      if (this.goal.status === 'active') this.goal.status = move.status === 'ready' ? 'move_ready' : 'paused';
+      if (this.goal.status === 'active') this.goal.status = move.status === 'ready' ? 'move_ready' : doneAlready ? 'complete' : 'paused';
       await this.flushCheckpoint();
       this.emit({type:'move', move}); await this.persist(); this.publish();
       const askNext = move.ask_next ? ` Luna sees little left to add here. What should come next?${move.ask_next.elements.length ? ' ' + listOr(move.ask_next.elements) : ''}` : '';
       if (!this.runError && !this.cancelRequested)
         this.setActivity('idle', (guidesOnly ? `Move ${move.number} drew guides: keep them, undo them, or type a correction.`
+          : doneAlready ? `Move ${move.number}: your request was already painted, nothing more to add. Describe what to paint next.`
           : !move.actions ? 'No painting this turn. Describe the move you want.'
           : move.luna_stopped ? `Move ${move.number} stopped: ${move.luna_stopped} Keep it, undo it, or type a correction.`
           : (move.underpainting?.closed ? `Move ${move.number} underpainted the whole picture and ended with the transfer: keep it, undo it, or type a correction.`
@@ -3772,8 +3806,10 @@ export class StudioRuntime extends PaintingRuntime {
       this.setActivity('idle', `Move ${move.number} undone. Stopped, so it is not painted again.`);
       return Promise.resolve();
     }
-    const did = move.summary ?? move.title;
-    return this.prompt(`I undid move ${move.number}${did ? ` (it ${String(did).replace(/^[A-Z]/, c => c.toLowerCase())})` : ''}. Try a different way to do the same request: keep what already works in the painting, refine existing forms rather than repainting them, and do not repeat what that move did.${note ? ` What to change: ${note}` : ''}`,
+    // An unfinished move's title is its request (runMove): say so, not "it paint the whole city".
+    const did = move.summary ?? (move.finished || move.title !== move.request ? move.title : null);
+    const what = did ? ` (it ${String(did).replace(/^[A-Z]/, c => c.toLowerCase())})` : move.request ? ` (it worked on "${move.request.slice(0,160)}")` : '';
+    return this.prompt(`I undid move ${move.number}${what}. Try a different way to do the same request: keep what already works in the painting, refine existing forms rather than repainting them, and do not repeat what that move did.${note ? ` What to change: ${note}` : ''}`,
       {move_kind:move.guides_only ? 'guides' : 'retry', ...(move.step_key ? {plan_step_key:move.step_key} : {})});
   }
   async runGoal() {
@@ -4090,7 +4126,7 @@ export class StudioRuntime extends PaintingRuntime {
   onEvent(event) {
     super.onEvent(event); this.countUsage(event);
     // Where the Agent move works: the area its newest call names, for the close-ups (closeup-crops.ts).
-    if (event.type === 'tool_execution_start' && this.mode === 'agent' && this.currentMove) { const area=callArea(event.args); if (area) this.currentMove.area=area; }
+    if (event.type === 'tool_execution_start' && this.mode === 'agent' && this.currentMove) { const area=callArea(this.preparedArgs(event.toolName, event.args)); if (area) this.currentMove.area=area; }
     if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') this.replyText += event.assistantMessageEvent.delta;
     if (event.type === 'message_end' && event.message.role === 'assistant' && this.replyText) {
       const text = this.replyText; this.replyText = '';

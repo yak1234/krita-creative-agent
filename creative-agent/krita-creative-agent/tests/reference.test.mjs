@@ -514,3 +514,46 @@ test('an Agent move’s whole-picture transfer takes the underpainting budget an
   assert.ok(first.details.total_strokes<=66,String(first.details.total_strokes));
  }finally{await small.close();}
 });
+
+// LIVE 2026-10-23/24: "Source and target must have matching aspect ratios" (5 calls) and "More than 60000 edge strokes" (4)
+// were refused although the host could put them right: the source is centre-cropped to the target's proportions, and an
+// edge pass over the limit raises its contrast (then spacing) until it fits, as the surface tool's edge pass already did.
+test('a source of other proportions is centre-cropped to the target, and the painter is told',async()=>{
+ const h=await harness();try{
+  const edgeTool=h.tools.find(t=>t.name==='paint_reference_edges');
+  const done=await edgeTool.execute('crop',{name:'Rim',reference_id:'ref',preset:'b) Basic-6 Details',source:[0,0,24,24],target:[0,0,48,32],min_contrast:.05});
+  assert.equal(done.details.status,'complete');
+  const [job]=JSON.parse((await h.tools.find(t=>t.name==='list_reference_paintings').execute('l',{})).content[0].text);
+  assert.match(job.repaired,/source \[0,0,24,24\] cropped to \[0,4,24,16\]/);
+  const transfer=await h.tools[0].execute('crop transfer',{...recipe,source:[0,0,24,20],target:[2,2,48,48]});
+  assert.match(JSON.parse(transfer.content[0].text).repaired,/cropped to \[2,0,20,20\]/);
+ }finally{await h.close();}
+});
+
+test('an edge pass over the stroke limit raises its contrast until it fits, and the painter is told',async()=>{
+ const h=await harness();try{
+  const W=120,noise={width:W,height:W,data:Buffer.from(Array.from({length:W*W*4},(_,i)=>i%4===3?255:(i*7919)%251))};
+  const decode=h.runtime.callNative;
+  h.runtime.callNative=async(op,p)=>op==='decode_reference'?{width:W,height:W,rgba_base64:noise.data.toString('base64'),sha256:p.sha256}:decode(op,p);
+  h.runtime.config.edge_limit=2000;
+  const args={name:'Noise',reference_id:'ref',preset:'b) Basic-6 Details',source:[0,0,W,W],target:[0,0,60,60],spacing:.75,min_contrast:.02};
+  assert.throws(()=>generateEdgePlan({mode:'edges',...args},noise,{width:64,height:64},{limit:2000}),/More than 2000 edge strokes/);
+  const done=await h.tools.find(t=>t.name==='paint_reference_edges').execute('limit',args);
+  assert.equal(done.details.status,'complete');
+  assert.ok(done.details.total_strokes<=2000);
+  assert.match(JSON.parse(done.content[0].text).repaired,/over the 2000-stroke limit: min_contrast 0\.02 raised to [\d.]+/);
+  const [job]=JSON.parse((await h.tools.find(t=>t.name==='list_reference_paintings').execute('l',{})).content[0].text);
+  // Review: the factor comes from the estimated count, a few rebuilds at most, and the contrast stays sane.
+  h.runtime.config.edge_limit=0;
+  await assert.rejects(h.tools.find(t=>t.name==='paint_reference_edges').execute('too many',{...args,name:'Noise 2'}),
+    /about \d+ edge strokes, over the 0-stroke limit even at min_contrast 0\.5 and spacing [\d.]+\. Choose a smaller region/);
+ }finally{await h.close();}
+});
+test('the edge-limit retry rebuilds at most three times and never raises min_contrast past 0.5',async()=>{
+ const {editEdgeRecipe,EDGE_RETRIES,EDGE_CONTRAST_CEILING}=await import('../src/reference-tool.mjs');
+ assert.equal(EDGE_RETRIES,3); assert.equal(EDGE_CONTRAST_CEILING,.5);
+ const next=editEdgeRecipe({min_contrast:.1,spacing:1.5},{estimate:8000,limit:2000});
+ assert.ok(next.min_contrast>.1 && next.min_contrast<=.5);
+ const wider=editEdgeRecipe({min_contrast:.5,spacing:1.5},{estimate:8000,limit:2000});
+ assert.ok(wider.spacing>1.5 && wider.min_contrast===.5);
+});

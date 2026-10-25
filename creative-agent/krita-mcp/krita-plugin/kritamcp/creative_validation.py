@@ -192,6 +192,18 @@ def pen_input(values, name, count):
     return values
 
 
+def widened(mask, width, height):
+    """A one-byte-per-pixel mask (width x height) grown by one pixel in every direction (non-zero is set)."""
+    out = bytearray(len(mask))
+    for y in range(height):
+        for x in range(width):
+            if mask[y * width + x]:
+                for yy in range(max(0, y - 1), min(height, y + 2)):
+                    for xx in range(max(0, x - 1), min(width, x + 2)):
+                        out[yy * width + xx] = 1
+    return bytes(out)
+
+
 def painted_share(pixels, tolerance=12, ignore=None):
     """The share of pixels that differ from the canvas's dominant colour (0 for a blank canvas).
 

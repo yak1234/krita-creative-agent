@@ -2137,6 +2137,139 @@ test('a Subject move that reaches its limit stops for the artist and says so',{t
  } finally {await h.close();}
 });
 
+// LIVE 2026-10-24: Keep of an unfinished move sent "Kept. Continue my request with the next move.", and that text became
+// the continue move's request, its title and the retry's "I undid move 4 (it kept. Continue my request ...)". A continue
+// move after a move without finish_move found nothing left and was refused at finish_move ("Paint the subject first"), so it
+// ended empty (5 chats).
+test('a continue move carries the request it continues: its title, the retry and the painter all see it',{timeout:60000},async()=>{
+ let painterCalls=0; let h;
+ h=await harness(req=>{
+  if(!req.tools.some(t=>t.function.name==='paint_batch')) return {content:'Hello.'};
+  painterCalls++; return call('paint_batch',{summary:'More towers',actions:[{tool:'paint_pass',arguments:pass}]});
+ },async(operation,params,_study,id)=>{
+  if(operation!=='paint_pass')return undefined;
+  const dir=h.runtime.study.directory; await writeFile(join(dir,'view.png'),png);
+  return {status:'ok',document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,image_path:join(dir,'view.png'),layers:[],revision:'r-'+id,content_id:'c-'+id,passes:[]};
+ });
+ try {
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  await h.runtime.prompt('Paint the whole city.');
+  await h.runtime.moveAction({action:'keep',move:1});
+  const second=h.runtime.goal.moves[1];
+  assert.equal(second.kind,'continue');
+  assert.deepEqual([second.request,second.continues],['Paint the whole city.',1]);
+  assert.equal(second.title,'Paint the whole city.','a limited move is titled with its request, not the earlier batch');
+  assert.ok(h.requests.map(latestUserText).some(text=>/CONTINUES move 1\. The artist's request: "Paint the whole city\."/.test(text)),'the painter is told the request');
+  h.requests.length=0;
+  await h.runtime.moveAction({action:'undo',move:2});
+  const retry=h.requests.map(latestUserText).find(text=>/I undid move 2/.test(text));
+  assert.match(retry,/I undid move 2 \(it worked on "Paint the whole city\."\)/);
+  assert.doesNotMatch(retry,/it kept\./i);
+ } finally {await h.close();}
+});
+
+test('a continue move that finds the request painted may finish it with request_done and no painting',{timeout:30000},async()=>{
+ let h, turn=0;
+ h=await harness(req=>{
+  if(!req.tools.some(t=>t.function.name==='paint_batch')) return {content:'Hello.'};
+  turn++;
+  if(turn===1) return call('paint_batch',{summary:'Bridge edges',actions:[{tool:'paint_pass',arguments:pass}]});
+  if(turn===2) return {content:'I sharpened the bridge.'};                     // move 1 ends without finish_move
+  return turn===3 ? call('finish_move',{summary:'Bridge refined',request_done:true}) : {content:'Done.'};
+ },async(operation,params,_study,id)=>{
+  if(operation!=='paint_pass')return undefined;
+  const dir=h.runtime.study.directory; await writeFile(join(dir,'view.png'),png);
+  return {status:'ok',document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,image_path:join(dir,'view.png'),layers:[],revision:'r-'+id,content_id:'c-'+id,passes:[]};
+ });
+ try {
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  let hidden=0; const hide=h.runtime.hideGuides.bind(h.runtime); h.runtime.hideGuides=async(...a)=>{hidden++; return hide(...a);};
+  await h.runtime.prompt('Sharpen the bridge.');
+  assert.equal(h.runtime.goal.moves[0].title,'Bridge edges');
+  await h.runtime.moveAction({action:'keep',move:1});
+  assert.equal(hidden,1,'the request is done: its guides go, as Keep of a finished request does');
+  const told=h.requests.flatMap(r=>r.messages).filter(m=>m.role==='tool').map(m=>JSON.stringify(m.content)).join('\n');
+  assert.doesNotMatch(told,/Paint the subject first/);
+  const second=h.runtime.goal.moves[1];
+  assert.deepEqual([second.finished,second.request_done,second.title],[true,true,'Bridge refined']);
+  assert.equal(h.runtime.goal.status,'complete','the request is done');
+  assert.match(h.events.filter(e=>e.type==='status').at(-1).message,/already painted/);
+ } finally {await h.close();}
+});
+
+// LIVE 2026-10-23/24: a paint_batch whose JSON had one brace too many (15 calls) and a finish_move summary over 160
+// characters (6) were refused for their shape alone. The session repairs them before validation (argument-repair.ts).
+test('the painter’s malformed batch JSON and an over-long finish_move summary are repaired, not refused',{timeout:30000},async()=>{
+ let h, turn=0;
+ const raw=JSON.stringify({summary:'Towers',actions:[{tool:'paint_pass',arguments:pass}]})+'}';
+ h=await harness(req=>{
+  if(!req.tools.some(t=>t.function.name==='paint_batch')) return {content:'Hello.'};
+  turn++;
+  if(turn===1) return {tool_calls:[{index:0,id:'call-raw',type:'function',function:{name:'paint_batch',arguments:raw}}]};
+  return turn===2 ? call('finish_move',{summary:'Kremlin towers: '+'red brick walls and green spires, '.repeat(6)}) : {content:'Done.'};
+ },async(operation,params,_study,id)=>{
+  if(operation!=='paint_pass')return undefined;
+  const dir=h.runtime.study.directory; await writeFile(join(dir,'view.png'),png);
+  return {status:'ok',document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,image_path:join(dir,'view.png'),layers:[],revision:'r-'+id,content_id:'c-'+id,passes:[]};
+ });
+ try {
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  await h.runtime.prompt('Paint the Kremlin towers.');
+  assert.equal(h.calls.filter(c=>c.operation==='paint_pass').length,1,'the batch painted');
+  const told=h.requests.flatMap(r=>r.messages).filter(m=>m.role==='tool').map(m=>JSON.stringify(m.content)).join('\n');
+  assert.doesNotMatch(told,/Invalid arguments|must not have more than/);
+  assert.match(told,/host_repaired/);
+  const [move]=h.runtime.goal.moves;
+  assert.equal(move.finished,true); assert.ok(move.title.length<=160 && move.title.endsWith('…'));
+ } finally {await h.close();}
+});
+
+// LIVE 2026-10-23/24: about 25 refusals in 10 chats were found one at a time. Each move's context lists the open routes,
+// from the same checks. The typed-stroke cap holds for typed messages too (only a request for hand-painted work lifts it);
+// a move counts as the artist's own message only for typed text, never a card's button or "You decide".
+test('each move is told its open routes up front; the typed-stroke cap holds for the artist’s typed message',{timeout:30000},async()=>{
+ let h;
+ h=await harness(req=>req.tools.some(t=>t.function.name==='paint_batch') ? {content:'Done.'} : {content:'Hello.'});
+ try {
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  h.runtime.goal.unify_pass={tool:'apply_filter',what:'gaussian blur filter',share:1,index:0};
+  h.runtime.wholeTransfers=async()=>[{id:'job'}];                               // the whole picture is underpainted
+  await h.runtime.prompt('Refine the sky please.');
+  const text=h.requests.map(latestUserText).find(t=>/HOST MODE: AGENT/.test(t));
+  assert.match(text,/OPEN ROUTES this move[^]*Not now:[^\n]*another whole-canvas softening pass \(gaussian blur filter used the chat's one/);
+  assert.match(text,/Not now:[^\n]*typed strokes over 12 small marks/);
+  const [move]=h.runtime.goal.moves;
+  assert.equal(move.artist_message,true);
+  h.runtime.currentMove=move; h.runtime.decisionObservation={width:768,height:1024};
+  const strokes={tool:'paint_pass',args:{strokes:Array.from({length:40},()=>({start:[1,1],size:4}))}};
+  await assert.rejects(h.runtime.capTypedStrokes(strokes),/small marks/,'a typed message keeps the cap');
+  h.runtime.currentMove=null;
+  h.runtime.goal.question={id:'q',question:'Which sky?',options:['Warm','Cool'],asked_in:'agent'};
+  await h.runtime.prompt('Warm');
+  assert.equal(h.runtime.goal.moves.at(-1).artist_message,undefined,'a card’s button is no typed message');
+  await h.runtime.prompt('You decide');
+  assert.equal(h.runtime.goal.moves.at(-1).artist_message,undefined);
+ } finally {await h.close();}
+});
+
+test('a continue move gets its own title from its own painting, and openRoutes without a canvas size allows no transfer',async()=>{
+ const runtime=Object.create(StudioRuntime.prototype);
+ Object.assign(runtime,{mode:'agent',currentMove:{number:2,request:'Sharpen the bridge.',continues:1},setActivity(){}});
+ await runtime.afterPainting({},{tool:'paint_batch',args:{summary:'Bridge railings',actions:[]}});
+ assert.equal(runtime.currentMove.title,'Bridge railings');
+ Object.assign(runtime,{goal:{moves:[]},study:{directory:'/nonexistent'},undoneReferenceJobs:()=>new Set(),wholeTransfers:async()=>[],fillNudged:null});
+ const line=await runtime.openRoutes({},{number:1},null);
+ assert.match(line,/Not now:[^\n]*a whole-canvas paint_from_reference \(the canvas size is not known yet\)/);
+ assert.doesNotMatch(line,/Allowed now:[^\n]*paint_from_reference on a region/);
+});
+
+test('a move card is never titled with a tool name',async()=>{
+ const runtime=Object.create(StudioRuntime.prototype);
+ Object.assign(runtime,{mode:'agent',currentMove:{number:5,request:'can you just finish adding sharpness'},setActivity(){}});
+ await runtime.afterPainting({},{tool:'paint_accents',args:{area:[0,0,10,10]}});
+ assert.equal(runtime.currentMove.title,'can you just finish adding sharpness');
+});
+
 test('an Agent move made of craft is one card: fill, clipped Multiply layer and a baked filter, and Undo rejects them together',{timeout:30000},async()=>{
  const area=[{shape:'ellipse',bounds:[100,100,300,300]}];
  const move=call('paint_batch',{summary:'Lit sphere',actions:[

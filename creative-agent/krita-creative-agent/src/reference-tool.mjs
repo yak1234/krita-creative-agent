@@ -11,7 +11,8 @@ import { defineTool } from '@earendil-works/pi-coding-agent';
 import {Type} from 'typebox';
 import {containedFile,imageContent} from './files.mjs';
 import {scopePlan,loadAreaMask,scopedShare,chipLine} from './paint-only-here.ts';
-import {referenceSchema,edgeSchema,surfaceSchema,generateReferencePlan,generateEdgePlan,generateSurfacePlan,analysisCopy,estimateReferenceStrokes,DEFAULT_STEPS,REFERENCE_GENERATOR_VERSION} from './reference-generator.mjs';
+import {referenceSchema,edgeSchema,surfaceSchema,generateReferencePlan,generateEdgePlan,generateSurfacePlan,analysisCopy,estimateReferenceStrokes,DEFAULT_STEPS,REFERENCE_GENERATOR_VERSION,cropToAspect,EDGE_LIMIT} from './reference-generator.mjs';
+import {EDGE_SPACING_MAX} from './reference-limits.ts';
 // Strokes per native call. Each call re-reads the canvas and journals its receipt; at 128 that
 // overhead was ~80% of a 157k-stroke job. The plugin accepts up to 1024 per pass.
 export const REFERENCE_BATCH=1024;
@@ -30,6 +31,7 @@ const summary=j=>({job_id:j.id,name:j.recipe.name,status:j.status,completed_stro
  ...(j.closeup?{closeup:j.closeup}:{}),
  ...(j.fitted?{fitted:j.fitted.underpainting?underpaintingNote(j):`Steps widened from [${j.fitted.from}] to [${j.recipe.steps}] so the transfer fits ${j.fitted.move?`one Agent move (about ${j.fitted.move} strokes)`:`about ${j.fitted.minutes} of the ${j.fitted.left} minutes left`}; the dabs are larger, so refine focal areas by hand, and make the picture crisp with paint_accents.`}:{}),
  ...(j.inside_label?{inside:j.inside_label+'. Only the dabs inside it were planned; Krita keeps every write there.'}:{}),
+ ...(j.repaired?{repaired:`The host adjusted this call: ${j.repaired}.`}:{}),
  ...(j.ground?{ground:'A toned ground layer in the reference\u2019s colours, top to bottom, lies under the transfer, so gaps between dabs show its tone, not white canvas.'}:{}),
  next_action:j.status==='complete'?'Review the finished canvas.':j.status==='awaiting_review'?'Inspect this pass image, then continue_reference_painting for the next refinement pass.':'Resume with continue_reference_painting after inspecting any interruption.'});
 // A transfer is underpainting: on a large canvas its dabs are 25-60 px whatever the steps, so running
@@ -38,6 +40,16 @@ const summary=j=>({job_id:j.id,name:j.recipe.name,status:j.status,completed_stro
 // it is refused; after one transfer has painted, or on a painting that already existed (a live finishing
 // run's first move on the New Moscow mosaic was a whole-canvas transfer), only a patch of at most REGION_SHARE.
 export const REGION_SHARE=0.2;
+// An edge pass over the stroke limit (LIVE 2026-10-23/24, four calls refused) is rebuilt with fewer, stronger edges: its
+// min_contrast raised by the factor it is over (estimated from the strokes planned so far), up to a sane ceiling, then its
+// spacing. At most EDGE_RETRIES rebuilds; past them the call is refused with what to change.
+export const EDGE_RETRIES=3,EDGE_CONTRAST_CEILING=.5;
+export function editEdgeRecipe(recipe,{estimate,limit}){
+ const contrast=recipe.min_contrast??.1,spacing=recipe.spacing??1.5,factor=Math.max(1.25,(estimate/limit)*1.2);
+ if(contrast<EDGE_CONTRAST_CEILING)return {...recipe,min_contrast:Math.min(EDGE_CONTRAST_CEILING,Math.round(contrast*factor*1000)/1000)};
+ if(spacing<EDGE_SPACING_MAX)return {...recipe,spacing:Math.min(EDGE_SPACING_MAX,Math.round(spacing*factor*100)/100)};
+ return null;
+}
 // A face or hands is a few percent of the canvas. A fine transfer from a close-up reference there,
 // followed by edges, is how those get resolved, and that happens late, so a focal patch is never refused.
 export const FOCAL_SHARE=0.03;
@@ -206,7 +218,7 @@ export function referenceTools(runtime,executePass,fillRegion){
  // rebuilds the same plan whatever the chat's area is now.
  const buildPlan=async(recipe,pixels,canvas,inside)=>{
   const analysed=analysisCopy(recipe,pixels);   // edges and surface: a very large crop is read reduced (reference-generator.mjs)
-  const plan=({edges:generateEdgePlan,surface:generateSurfacePlan}[recipe.mode]??generateReferencePlan)(analysed.recipe,analysed.image,{width:canvas.width,height:canvas.height});
+  const plan=({edges:generateEdgePlan,surface:generateSurfacePlan}[recipe.mode]??generateReferencePlan)(analysed.recipe,analysed.image,{width:canvas.width,height:canvas.height},{limit:runtime.config?.edge_limit??EDGE_LIMIT});
   return inside?scopePlan(plan,await loadAreaMask(inside,runtime.study.directory)):plan;
  };
  async function start(id,recipe,signal){
@@ -220,6 +232,14 @@ export function referenceTools(runtime,executePass,fillRegion){
   // used) is scaled to the sharpened pixels; the job records what was asked.
   {const goalRef=runtime.study.references.find(r=>r.id===recipe.reference_id),scaled=goalRef?.sharpened?staleGoalSource(recipe.source,goalRef,await jobs()):null;
    if(scaled)recipe={...recipe,source:scaled};}
+  // Shapes the host puts right instead of refusing (argument repair, LIVE 2026-10-23/24): told in the job's summary.
+  const repaired=[];
+  {const fit=cropToAspect(recipe.source,recipe.target);
+   if(fit){
+    const [cx,cy,cw,ch]=fit.source,focal=(recipe.focal_regions??[]).map(([x,y,w,h])=>{const x0=Math.max(x,cx),y0=Math.max(y,cy),x1=Math.min(x+w,cx+cw),y1=Math.min(y+h,cy+ch);return [x0,y0,x1-x0,y1-y0];}).filter(r=>r[2]>0&&r[3]>0);
+    repaired.push(`source [${recipe.source}] cropped to [${fit.source}] (the target's proportions)`+(fit.target!==recipe.target?`, target [${recipe.target}] to [${fit.target}]`:''));
+    recipe={...recipe,source:fit.source,target:fit.target,...(recipe.focal_regions?{focal_regions:focal}:{})};
+   }}
   const source=await reference(runtime,recipe.reference_id);
   const observation=await runtime.callNative('observe');runtime.decisionObservation=observation;
   const pixels=await decode(source);
@@ -254,9 +274,21 @@ export function referenceTools(runtime,executePass,fillRegion){
    const refusal=stretchRefusal(recipe,{established:existingPainting(runtime,observation),paintedJobs:(await paintedJobs()).length});
    if(refusal)throw new Error(refusal);
   }
-  const plan=await buildPlan(recipe,pixels,observation,inside);
+  let plan;
+  for(let tries=0;;tries++){
+   try{plan=await buildPlan(recipe,pixels,observation,inside);break;}
+   catch(error){
+    if(recipe.mode!=='edges'||!/^More than/.test(error.message)||!error.estimate)throw error;
+    const next=tries<EDGE_RETRIES?editEdgeRecipe(recipe,error):null;
+    if(!next)throw new Error(`This region has about ${error.estimate} edge strokes, over the ${error.limit}-stroke limit even at min_contrast ${recipe.min_contrast??.1} and spacing ${recipe.spacing??1.5}. Choose a smaller region (focal areas, not the whole picture), or raise spacing.`);
+    recipe=next;
+   }
+  }
+  if(recipe.mode==='edges'&&(recipe.min_contrast!==asked.min_contrast||recipe.spacing!==asked.spacing))
+   repaired.push(`over the ${runtime.config?.edge_limit??EDGE_LIMIT}-stroke limit: min_contrast ${asked.min_contrast??.1} raised to ${recipe.min_contrast??.1}`+(recipe.spacing!==asked.spacing?`, spacing ${asked.spacing??1.5} to ${recipe.spacing}`:''));
+  if(repaired.length)runtime.diagnostics?.record?.({type:'argument_repair',tool:recipe.mode==='edges'?'paint_reference_edges':recipe.mode==='surface'?'paint_reference_surface':'paint_from_reference',repairs:repaired});
   if(inside&&!plan.total)throw new Error(`No dab of this transfer lies inside the area the artist chose (${chipLine(area).toLowerCase()}): transfer the reference area that lies under it.`);
-  const job={id:identifier,version:REFERENCE_GENERATOR_VERSION,recipe,...(inside?{inside,inside_label:chipLine(area)}:{}),...(requested!==recipe?{requested}:{}),...(routed?{closeup:routed.note}:{}),...(fitted?{fitted}:{}),...(ground?{ground}:{}),reference_hash:source.sha256,plan_hash:hash(JSON.stringify(plan)+'\n'),canvas:{width:observation.width,height:observation.height},scope:scope(runtime),status:'ready',pass:0,pass_count:plan.passes.length,offset:0,completed:0,total:plan.total,last_revision:observation.revision,layer_id:null,pending:null};await atomic(path(identifier),job);return run(job,signal,plan);
+  const job={id:identifier,version:REFERENCE_GENERATOR_VERSION,recipe,...(inside?{inside,inside_label:chipLine(area)}:{}),...(requested!==recipe?{requested}:{}),...(routed?{closeup:routed.note}:{}),...(fitted?{fitted}:{}),...(ground?{ground}:{}),...(repaired.length?{repaired:repaired.join('; ')}:{}),reference_hash:source.sha256,plan_hash:hash(JSON.stringify(plan)+'\n'),canvas:{width:observation.width,height:observation.height},scope:scope(runtime),status:'ready',pass:0,pass_count:plan.passes.length,offset:0,completed:0,total:plan.total,last_revision:observation.revision,layer_id:null,pending:null};await atomic(path(identifier),job);return run(job,signal,plan);
  }
  async function run(job,signal,built){
   allowed(runtime);

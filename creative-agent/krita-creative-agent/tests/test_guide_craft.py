@@ -437,6 +437,55 @@ class ObserveWithoutGuidesTests(GuideSetup, unittest.TestCase):
         self.assertEqual(self.h._creative_painted_share(blank_with_guides, self.h.doc, session), 0.2,
                          'a hidden guide layer covers nothing')
 
+    def test_painted_share_reads_the_painting_without_its_guides(self):
+        """Live (2026-10-23, three chats): construction guides on a blank 6000 x 4500 canvas still measured 8-14%
+        painted, and the whole-picture transfer was refused as 'this painting already exists'. Krita's layer thumbnail
+        maps the layer's own extent, not the canvas, so its alpha does not line up with the canvas thumbnail. The share
+        is read from the painting rebuilt without its guides first; the thumbnail cover is the fallback, widened by a
+        pixel for the smoothing of the two scalings."""
+        self.guide()
+        layer = self.guides_group().children[0]
+        white, blue, clear = bytes([255, 255, 255, 255]), bytes([79, 179, 255, 255]), bytes(4)
+        class Thumb:
+            def __init__(self, data): self.data = data
+        layer.thumbnail = lambda w, h: Thumb(clear * 100)                  # misaligned: covers nothing
+        self.h._creative_thumb_rgba = lambda image, size=96: (image.data, 10, 10)
+        blank_with_guides = Thumb(white * 30 + blue * 20 + white * 50)
+        rebuilt = []
+        self.h._guide_unguided = lambda doc, image, region=None, session=None: rebuilt.append(region) or (Thumb(white * 100), None)
+        session = dict(self.h._creative_session)
+        self.assertEqual(self.h._creative_painted_share(blank_with_guides, self.h.doc, session), 0.0)
+        self.assertEqual(rebuilt, [None], 'the whole canvas, once')
+        # No rebuild (the guides lie under other layers): the cover, one pixel wider, takes a band its thumbnail missed.
+        self.h._guide_unguided = lambda doc, image, region=None, session=None: (None, 'The guide lines lie under other layers.')
+        layer.thumbnail = lambda w, h: Thumb(clear * 40 + blue * 10 + clear * 50)   # row 4 only; the view has rows 3-4
+        self.assertEqual(self.h._creative_painted_share(blank_with_guides, self.h.doc, session), 0.0)
+
+    def test_observe_rebuilds_the_painting_without_guides_once(self):
+        """Review (2026-10-25): an observation that already tried the rebuild without guides (and got none) must not try
+        it again for painted_share."""
+        self.guide()
+        h = self.h
+
+        class Image:
+            def width(self): return 4
+            def height(self): return 4
+            def isNull(self): return False
+            def hasAlphaChannel(self): return False
+            def save(self, path, *args):
+                with open(path, 'wb') as stream:
+                    stream.write(b'x')
+                return True
+        h.doc.projection = lambda *args: Image()
+        h._creative_view_image = lambda doc, image, region=None, scaled_read=True, side=None: image
+        h._view_artist_focus = lambda doc: None
+        h._creative_thumb_rgba = lambda image, size=96: (bytes([255] * 64), 4, 4)
+        asked = []
+        h._guide_unguided = lambda doc, image, region=None, session=None: asked.append(region) or (None, 'The guide lines lie under other layers.')
+        session = {'output': h._creative_session['output'], 'document_id': 'x', 'passes': []}
+        module.CreativeTools._creative_observe(h, h.doc, session, None, guides=False)
+        self.assertEqual(asked, [None], 'one rebuild an observation')
+
     def test_observe_passes_the_flag_and_refuses_a_bad_one(self):
         run(self.h, 'observe', {'guides': False})
         run(self.h, 'observe', {})

@@ -15,7 +15,7 @@ import uuid
 import krita as krita_module
 from krita import Krita, Selection
 from .qt_compat import Qt, QCoreApplication
-from .creative_validation import fields, numeric, text, color, validate_pass, painted_share, PEN_INPUTS
+from .creative_validation import fields, numeric, text, color, validate_pass, painted_share, widened as _widened, PEN_INPUTS
 from .creative_document_identity import document_id, open_documents
 from .layer_craft import LayerCraft
 from .region_craft import RegionCraft
@@ -2204,8 +2204,9 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         lap('revision')
         if region:
             self._creative_region(region, doc.width(), doc.height())
-        unguided, guides_note = None, None
+        unguided, guides_note, tried = None, None, False
         if not guides or session.get('unguided_views'):   # the view without guides only for whoever judges it
+            tried = not region                           # a whole-canvas rebuild: painted_share reuses it, or its absence
             try:
                 unguided, guides_note = self._guide_unguided(doc, projection, region, session)
             except Exception as error:                   # a look must never fail for its guides: they stay in it
@@ -2226,7 +2227,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         # The details, each timed: on merged New Moscow they took 270 ms an observation together (runs 5-8).
         layers = self._creative_layer_list(doc); lap('layers')
         # Whole-canvas views say how much of the canvas is painted, so a blank document is not taken for a painting.
-        painted = None if region else self._creative_painted_share(shown, doc if shown is projection else None, session); lap('painted')
+        painted = None if region else self._creative_painted_share(shown, doc if shown is projection else None, session, unguided, tried); lap('painted')
         with open(filename, 'rb') as stream:
             content_id = hashlib.sha256(stream.read()).hexdigest()
         lap('content')
@@ -2328,9 +2329,19 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         raw = thumb.constBits().asstring(thumb.sizeInBytes())
         return b''.join(raw[row * line:row * line + width] for row in range(thumb.height())), thumb.width(), thumb.height()
 
-    def _creative_painted_share(self, projection, doc=None, session=None):
-        """How much of the canvas is painted. A guide line is not paint: the pixels a visible guide layer covers are
-        left out (block-in guides on a blank canvas measured 10% painted, and the underpainting was refused)."""
+    def _creative_painted_share(self, projection, doc=None, session=None, unguided=None, tried=False):
+        """How much of the canvas is painted. A guide line is not paint (block-in guides on a blank canvas measured
+        8-14% painted, and the underpainting was refused). Read from the painting rebuilt without its guides
+        (unguided, when the observation made it already); else the pixels a visible guide layer's thumbnail covers are
+        left out, widened by a pixel: Krita's layer thumbnail maps the layer's own extent, not the canvas, so it never
+        lines up exactly with the canvas thumbnail. tried: the observation already asked for the rebuild (once is enough)."""
+        if doc is not None and unguided is None and not tried and hasattr(self, '_guide_unguided'):
+            try:
+                unguided, _note = self._guide_unguided(doc, projection, None, session)
+            except Exception:                    # a rebuild that fails: the thumbnail cover below
+                unguided = None
+        if unguided is not None:
+            return painted_share(self._creative_thumb_rgba(unguided)[0])
         pixels, width, height = self._creative_thumb_rgba(projection)
         cover = None
         if doc is not None and hasattr(self, '_guide_group'):
@@ -2342,6 +2353,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                     cover = alpha if cover is None else bytes(a | b for a, b in zip(cover, alpha))
             except Exception:                    # a guide that cannot be read: measure as before
                 cover = None
+        if cover is not None and len(cover) == width * height:
+            cover = _widened(cover, width, height)
         return painted_share(pixels, ignore=cover)
 
     def _creative_has_transparency(self, image):

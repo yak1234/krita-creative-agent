@@ -48,6 +48,15 @@ layer (no blend, mask, perspective or colour handling); it is not used, only its
    windows, courses and scales. Buildings only, like the rest. The old manual `set_brush_texture` becomes a thin
    wrapper over the same registration.
 
+7. **Materials are chosen in the plan.** The artist, 2026-10-25: "make that part of the planning prompt, qwen 3vl
+   picks the krita patterns for each aspect". While planning, the planner model (Qwen3 VL by default) already views each
+   part's image; for each architectural "Refine: <group>" step it writes `materials`: per aspect (walls, roofs/domes,
+   windows, ground, trim) a catalogue id, plus scale and direction hints. The plan card shows them in plain words
+   ("walls: old red brick; tower roofs: green painted metal") and the artist can edit them before Start, as the rest
+   of the plan. The texture pass and the textured brushes use the planned materials; only a step without them (an
+   older plan, a step added later) asks the model at paint time. Ids are validated against the catalogue; unknown ones
+   are dropped and reported.
+
 ## Non-goals
 
 - No photo pasted as a visible layer; no AI image generation.

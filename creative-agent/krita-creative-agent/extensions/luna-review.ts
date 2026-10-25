@@ -34,6 +34,28 @@ export const UNDO_CAP = 2;
 /** Batches Luna reviews and records but never undoes (finish-stage goal 8, review finding): a Refine to the goal run is many
  * squares of fine finishes and accents, as goal likeness exempts it. */
 export const RECORD_ONLY = ['refine_to_goal'];
+/** A blending pass smooths the paint already there (live 2026-10-24: 16 undos in 8 chats, most of them a smudge, a surface
+ * blend or soft masses flagged as texture over forms). Softening the dab texture is what such a pass is for, so on one
+ * `texture_over_forms` is recorded and never undone; any other finding is still acted on. No tool is a blend by its name
+ * (paint_finish lays goal-coloured strokes; paint_reference_surface repaints edges unless edges is false): a call is a blend
+ * when every painting action names a blender preset (the k) Blender family, a blur, a smudge or smear). Rake and knife
+ * blenders drag streaks and slivers, which is texture. An action without a preset (a fill, a gradient, the toolbox) lays
+ * colour, so the call is no blend. */
+const BLENDER = /blend|blur|smudge|smear/i, STREAKS = /rake|knife/i;
+type Args = Record<string, unknown>;
+const blendAction = (tool: unknown, args: unknown): boolean => {
+  const a = (args && typeof args === 'object' ? args : {}) as Args, preset = a.preset;
+  if (typeof preset !== 'string' || !BLENDER.test(preset) || STREAKS.test(preset)) return false;
+  if (tool === 'paint_reference_surface' && a.edges !== false) return false;     // its edge pass paints with another brush
+  return a.edge_preset === undefined;
+};
+/** Is this call a blending pass: every painting action in it names a blender preset? */
+export function blending(toolName: string, input: unknown): boolean {
+  const args = (input && typeof input === 'object' ? input : {}) as Args;
+  if (toolName !== 'paint_batch') return blendAction(toolName, args);
+  const actions = Array.isArray(args.actions) ? args.actions as { tool?: unknown; arguments?: unknown }[] : [];
+  return actions.length > 0 && actions.every(action => blendAction(action?.tool, action?.arguments));
+}
 
 const lost = (findings: MoveFinding[]): string => findings.map(f => f.location ? `${f.label} (${f.location})` : f.label).join('; ');
 const line = (review: Record<string, unknown>) => ({ type: 'text' as const, text: JSON.stringify({ luna_review: review }) });
@@ -73,6 +95,10 @@ export default function lunaReview(host: ReviewHost): (pi: ExtensionAPI) => void
       const verdict = await check(move, event.toolCallId, passes, after, scope, guidesNote);
       if (verdict.status !== 'warned') { host.record(verdict); return undefined; }
       const what = lost(verdict.findings);
+      if (blending(toolName, event.input) && verdict.findings.every(f => f.type === 'texture_over_forms')) {
+        host.record({ ...verdict, reason: `${toolName}: a blending pass, texture over forms recorded, never undone` });
+        return { content: [...event.content, line({ note: `Luna found ${what}; it is kept: this pass blends the paint already there, and a blend is never undone for texture. Judge the result yourself.`, findings: verdict.findings })] };
+      }
       if (RECORD_ONLY.includes(toolName)) {                // a whole refine run is never undone for one finding
         host.record({ ...verdict, reason: `${toolName}: recorded, never undone` });
         return { content: [...event.content, line({ note: `Luna found ${what}; it is kept: a Refine to the goal run is never undone for one finding. Tell the artist.`, findings: verdict.findings })] };

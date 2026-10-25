@@ -14,7 +14,8 @@ import { BUILD_INFO, PROTOCOL_VERSION } from './build-info.mjs';
 import { inheritPiCatalog } from './model-catalog.mjs';
 import { SKILLS_DIR } from './skills.mjs';
 import { isFillNudge } from './reference-first.ts';
-import { GUARDS_CHANNEL, LOOP_GUARDS, PAINTING_WEIGHT } from './extensions.mjs';
+import { GUARDS_CHANNEL, LOOP_GUARDS, PAINTING_WEIGHT, argumentRepairExtension } from './extensions.mjs';
+import { withArgumentRepair } from './argument-repair.ts';
 
 const SIGN_IN_NAMES = { 'openai-codex': 'ChatGPT (Codex)', 'anthropic': 'Claude', 'google-gemini-cli': 'Gemini CLI', 'google-antigravity': 'Google Antigravity' };
 /** How to restore a lapsed or missing OAuth sign-in. The chat keeps its model. */
@@ -271,7 +272,9 @@ export class PaintingRuntime {
       });
       // The loop guards' settings travel on this bus (studio.mjs applyExecutionSettings).
       this.guardEvents = createEventBus();
-      const extensions = [...(this.config?.loopGuards === false ? [] : [LOOP_GUARDS]), PAINTING_WEIGHT, ...(hooks(this).extensionFactories?.() ?? [])];
+      // Arguments the host can put right before validation (argument-repair.ts): malformed JSON here, shapes on each tool below.
+      const repaired = event => hooks(this).diagnostics?.record(event);
+      const extensions = [argumentRepairExtension(repaired), ...(this.config?.loopGuards === false ? [] : [LOOP_GUARDS]), PAINTING_WEIGHT, ...(hooks(this).extensionFactories?.() ?? [])];
       const loader = new DefaultResourceLoader({ cwd: directory, agentDir: join(directory, 'agent'), settingsManager: settings,
         // Only the bundled skills: Pi lists them while the painter's skill-only `read` tool is active.
         // Only the shipped extensions, inline: discovery stays off. loopGuards: false leaves the guards out (benchmarks);
@@ -281,7 +284,8 @@ export class PaintingRuntime {
         systemPromptOverride: () => hooks(this).systemInstructions ?? PAINTING_INSTRUCTIONS,
       });
       await loader.reload();
-      const tools = hooks(this).buildTools ? hooks(this).buildTools() : paintingTools(this);
+      const tools = withArgumentRepair(hooks(this).buildTools ? hooks(this).buildTools() : paintingTools(this), repaired);
+      this.argumentTools = new Map(tools.map(tool => [tool.name, tool]));
       const result = await createAgentSession({ cwd: directory, agentDir: join(directory, 'agent'),
         modelRuntime: this.models, model, thinkingLevel: thinkingLevel(hooks(this).executionSettings,model,hooks(this).executionPhase),
         // `tools` is an allowlist: the tools an extension registers are named by its entry (extensions.mjs), or Pi drops them.
@@ -393,6 +397,8 @@ export class PaintingRuntime {
     }
   }
   /** @param {import('@earendil-works/pi-coding-agent').AgentSessionEvent} event */
+  /** A call's arguments as they will run: repaired before validation (argument-repair.ts), read quietly. */
+  preparedArgs(name, args) { return this.argumentTools?.get(name)?.preparedArguments?.(args) ?? args; }
   onEvent(event) {
     if(event.type==='turn_start')this.diagnosticRequestId=randomUUID();
     if (['turn_start','turn_end','message_start','message_end','tool_execution_start','tool_execution_end','auto_retry_start','auto_retry_end'].includes(event.type)) {
@@ -436,6 +442,7 @@ export class PaintingRuntime {
       }
     }
     if (event.type === 'tool_execution_start') {
+      event = { ...event, args: this.preparedArgs(event.toolName, event.args) };     // what will run (argument-repair.ts)
       this.pendingTools.set(event.toolCallId, { name: event.toolName, args: event.args, at: Date.now() });
       this.setActivity('tool', ({observe_canvas:'Looking at the canvas…',list_brushes:'Choosing a brush…',paint_pass:'Painting: ' + (event.args?.name ?? 'next pass'),adjust_layer:'Adjusting a layer…',create_layer:'Creating a layer: ' + (event.args?.name ?? 'new layer'),set_layer:'Setting a layer…',select:'Selecting: ' + (event.args?.name ?? 'a region'),fill_region:'Filling a region: ' + (event.args?.name ?? 'a layer'),apply_filter:'Applying a filter: ' + (event.args?.filter ?? 'filter'),colorize_flats:'Colorizing flats: ' + (event.args?.name ?? 'Flats'),transform_layer:'Transforming a layer…',letter:'Lettering: ' + (event.args?.kind ?? 'text') + ' in ' + (event.args?.panel ?? 'a panel'),view_reference:'Studying the reference…',bucket_fill:'Filling: ' + (event.args?.name ?? 'a region'),enclose_and_fill:'Filling inside an outline: ' + (event.args?.name ?? 'regions'),krita_gradient:'Painting a gradient: ' + (event.args?.name ?? 'gradient'),smart_patch:'Smart patch: ' + (event.args?.name ?? 'repair'),make_material:'Making a material: ' + (event.args?.name ?? 'tips'),draw_guide:'Drawing a guide: ' + (event.args?.element ?? 'construction lines'),finish_guide:'Hiding the guide: ' + (event.args?.element ?? 'element'),stamp_material:'Stamping: ' + (event.args?.name ?? 'a material'),texture_architecture:'Texturing the architecture…'})[event.toolName] ?? 'Working…');
     }

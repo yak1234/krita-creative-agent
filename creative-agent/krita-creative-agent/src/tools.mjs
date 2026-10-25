@@ -19,6 +19,7 @@ import { COMIC_OPERATIONS, CRAFT_OPERATIONS, mutates } from './craft.mjs';
 import { assetTools } from './assets.mjs';
 import { skillReadTool, SKILLS_DIR } from './skills.mjs';
 import { toolCatalogue, toolHelp, toolboxIndex, toolboxHelp } from './tool-catalogue.ts';
+import { repairArguments, repairBatchActions, fieldHint } from './argument-repair.ts';
 
 /** @template {import('typebox').TProperties} T @param {T} properties */
 const object = properties => Type.Object(properties, { additionalProperties: false });
@@ -386,7 +387,8 @@ export function paintingTools(runtime) {
     goal: async canvas => runtime.finishGoal ? (await runtime.finishGoal(canvas)).goal : null, findArea: request => runtime.callNative('area_accents', request) }));
   // A flat fill anywhere in a batch is nudged before anything paints (studio.mjs fillNudge), so the batch is refused whole.
   tools.push(batchTool(tools, name => runtime.toolOffered?.(name) ?? true,
-    async actions => { if (actions.some(a => a.tool === 'fill_region')) await runtime.fillNudge?.({batch:true}); return prepareBatchShapes(runtime, actions); }));
+    async actions => { if (actions.some(a => a.tool === 'fill_region')) await runtime.fillNudge?.({batch:true}); return prepareBatchShapes(runtime, actions); },
+    repairs => runtime.diagnostics?.record?.({ type: 'argument_repair', tool: 'paint_batch', repairs })));
   // Paint only here (paint-only-here.ts): for work on one part with no area set, ask the artist for its area (Agent), with
   // the shapes model's outline when the studio can find it (Find it for me); Autopilot uses that outline by itself.
   tools.push(...selectionTools(selectionHostFor(runtime)));
@@ -501,12 +503,38 @@ export function batchReferences(args, ran, index) {
 
 /** beforePaint: a check of the whole batch after validation, before anything paints (it throws to refuse the batch);
  * it may return the actions prepared for painting (paint_pass shapes found), which then run instead. */
-export function batchTool(tools, offered = /** @type {(name: string) => boolean} */ (() => true), beforePaint = /** @type {(actions: any[]) => Promise<any[] | void>} */ (async () => {})) {
+export function batchTool(tools, offered = /** @type {(name: string) => boolean} */ (() => true), beforePaint = /** @type {(actions: any[]) => Promise<any[] | void>} */ (async () => {}),
+  repaired = /** @type {(notes: string[]) => void} */ (() => {})) {
   const byName = Object.fromEntries(tools.filter(t => BATCH_TOOLS.includes(t.name)).map(t => [t.name, t]));
+  const others = new Set(tools.map(t => t.name));
+  // Before validation (argument-repair.ts; LIVE 2026-10-23/24, about 70 batches refused for their shape alone): each action
+  // in its shape, an action without a tool given the one batch tool whose schema takes its arguments, each action's
+  // arguments repaired against its tool, and a tool that does not run inside a batch named, with what to do instead.
+  const prepareArguments = (args, quiet = false) => {
+    const notes = [];
+    const shaped = /** @type {any} */ (repairBatchActions(args, notes));
+    if (!Array.isArray(shaped?.actions)) return shaped;
+    const actions = shaped.actions.map((action, index) => {
+      if (!action || typeof action !== 'object' || !action.arguments || typeof action.arguments !== 'object') return action;
+      let tool = action.tool;
+      if (typeof tool === 'string' && !BATCH_TOOLS.includes(tool))
+        throw new Error(`Action ${index + 1}: ${tool} does not run inside paint_batch. Call ${tool} on its own${others.has(tool) ? '' : ' (if this mode offers it)'}, and paint_batch for the rest; paint_batch runs ${BATCH_TOOLS.join(', ')}. Nothing was painted.`);
+      if (tool === undefined) {
+        const fits = Object.values(byName).filter(t => Value.Check(t.parameters, repairArguments(t, action.arguments, [])));
+        if (fits.length !== 1) return action;
+        tool = fits[0].name; notes.push(`action ${index + 1}: tool found from its arguments (${tool})`);
+      }
+      const target = byName[tool];
+      const fixed = target ? repairArguments(target, action.arguments, notes) : action.arguments;
+      return fixed === action.arguments && tool === action.tool ? action : { ...action, tool, arguments: fixed };
+    });
+    if (notes.length && !quiet) repaired(notes);
+    return notes.length ? { ...shaped, actions } : shaped;
+  };
   // The original executes, captured now: wrappers added later (pacing) apply once per batch, not per action.
   const run = Object.fromEntries(Object.entries(byName).map(([name, t]) => [name, t.execute]));
   return defineTool({
-    name: 'paint_batch', label: 'Painting a batch', executionMode: 'sequential',
+    name: 'paint_batch', label: 'Painting a batch', executionMode: 'sequential', prepareArguments,
     description: 'Run 1-'+BATCH_LIMIT+' painting actions in order in ONE call: '+BATCH_TOOLS.join(', ')+'. Each action takes exactly the arguments of that tool. '
       +'Plan several complementary moves (for example block-in, then texture, then edge accents), send them together, then judge the single returned canvas image before the next batch. '
       +'Every action is validated before anything paints; the batch stops at the first failed action and reports what ran. '
@@ -523,7 +551,8 @@ export function batchTool(tools, offered = /** @type {(name: string) => boolean}
         if (!target || !offered(tool)) throw new Error(`Action ${index + 1}: ${tool} is not available in this mode.`);
         if (!Value.Check(target.parameters, args)) {
           const issue = [...Value.Errors(target.parameters, args)][0];
-          throw new Error(`Action ${index + 1} (${tool}) does not match its schema${issue ? ` at ${issue.instancePath || '/'}: ${issue.message}` : ''}. Nothing was painted.`);
+          const field = issue && issue.message === 'schema is false' ? String(issue.instancePath ?? '').replace(/^\//, '') : '';
+          throw new Error(`Action ${index + 1} (${tool}) does not match its schema${issue ? ` at ${issue.instancePath || '/'}: ${issue.message}` : ''}.${field ? fieldHint(tool, target.parameters, field) : ''} Nothing was painted.`);
         }
       });
       const prepared = /** @type {any[]} */ ((await beforePaint(actions)) ?? actions);

@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { extname, isAbsolute, resolve, sep } from 'node:path';
 import { PLAN_STEP_ACTIONS, type StepView } from './plan-steps.ts';
 
-export const TEST_COMMANDS = ['start_plan', 'plan_step', 'find_it', 'paint_only_here', 'answer', 'closeup_answer', 'folder_guess', 'folder_study', 'sharpen_answer', 'set_mode', 'set_limits', 'stop'] as const;
+export const TEST_COMMANDS = ['start_plan', 'plan_step', 'find_it', 'paint_only_here', 'answer', 'closeup_answer', 'folder_guess', 'folder_study', 'sharpen_answer', 'canvas_reference_answer', 'set_mode', 'set_limits', 'stop'] as const;
 export type TestCommand = typeof TEST_COMMANDS[number];
 const MODES = ['ask', 'plan', 'agent', 'autopilot'];
 
@@ -20,8 +20,11 @@ export type FoundEvent = { request_id?: string; part?: string | null; mask_path?
 export type Question = { id: string; question?: string; options?: string[]; recommended?: string; select_area?: { part?: string; proposal?: { mask_path?: string; bounds?: number[]; canvas?: number[] } } };
 /** The Sharpen goal card the panel shows (goal-sharpen.ts): the offer, or the side by side after sharpening. */
 export type SharpenCard = { kind: 'offer' | 'review'; id: string; options: string[]; text: string; image_path?: string; progress?: string };
+/** The canvas reference card (canvas-reference.ts): the canvas and the reference side by side, its buttons as actions. */
+export type ReferenceCard = { id: string; options: string[]; actions: string[]; text: string; image_path?: string };
 export type CommandView = { testFolder: string; mode?: string | null; planSteps: StepView[]; question: Question | null;
-  closeupQuestion: Question | null; foundAreas: FoundEvent[]; folderElements: string[]; folderImages?: string[]; sharpen?: SharpenCard | null };
+  closeupQuestion: Question | null; foundAreas: FoundEvent[]; folderElements: string[]; folderImages?: string[]; sharpen?: SharpenCard | null;
+  canvasReference?: ReferenceCard | null };
 /** The panel's buttons on the Sharpen goal card: Sharpen / Use as is on the offer, Use sharpened / Keep original after. */
 const SHARPEN_ACTIONS = { offer: ['sharpen', 'original'], review: ['use', 'keep'] } as const;
 export type AreaCommand = { action: 'clear' } | { action: 'set'; mask_path: string; bounds: Rect; canvas: [number, number]; name: string | null };
@@ -145,6 +148,13 @@ export function panelCommand(type: unknown, params: unknown, view: CommandView):
       const allowed: readonly string[] = [...SHARPEN_ACTIONS[card.kind], 'cancel'];
       if (typeof action !== 'string' || !allowed.includes(action)) refuse(`action is ${SHARPEN_ACTIONS[card.kind].join(' or ')} (or cancel while it sharpens).`);
       return { command: { type: 'goal_sharpen', id: card.id, action } };
+    }
+    case 'canvas_reference_answer': {               // the canvas reference card's buttons: Use as the target, Try again, Discard
+      const { action } = fields(params, ['action']);
+      const card = view.canvasReference;
+      if (!card) return refuse('The test chat shows no canvas reference card now.');
+      if (typeof action !== 'string' || !card.actions.includes(action)) refuse(`action is ${card.actions.join(' or ')}.`);
+      return { command: { type: 'canvas_reference', id: card.id, action } };
     }
     case 'folder_guess': {                           // the folder card: the artist names an element
       const input = fields(params, ['name', 'guess']);

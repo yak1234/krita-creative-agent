@@ -378,6 +378,24 @@ test('a find in progress: the state waits for its outline, and the activity move
   } finally { await s.cleanup(); }
 });
 
+test('the canvas reference card is in the state and is answered as the panel answers it', async () => {
+  const s = await setup();
+  try {
+    await s.companion.start({ prompt: 'Paint it.', width: 6000, height: 4500 });
+    await s.companion.waitIdle(5000);
+    const emit = event => s.companion.child.stdout.write(JSON.stringify(event) + '\n');
+    emit({ type: 'canvas_reference', id: 'ref-1', title: 'Canvas reference', message: 'A reference of a glow…', image_path: '/compare.png',
+      options: ['Use as the target', 'Try again', 'Discard'], actions: ['use', 'retry', 'discard'], share: 0.04, bounds: [1, 2, 3, 4], auto_approve: false });
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.deepEqual(s.companion.state().canvas_reference, { id: 'ref-1', options: ['Use as the target', 'Try again', 'Discard'], actions: ['use', 'retry', 'discard'],
+      text: 'A reference of a glow…', image_path: '/compare.png' });
+    await s.companion.command('canvas_reference_answer', { action: 'use' });
+    assert.deepEqual(s.commands.at(-1), { type: 'canvas_reference', id: 'ref-1', action: 'use' });
+    assert.equal(s.companion.state().canvas_reference, null, 'answered: the card is gone');
+    await s.companion.end();
+  } finally { await s.cleanup(); }
+});
+
 test('the Sharpen goal card is in the state and is answered as the panel answers it', async () => {
   const s = await setup();
   try {

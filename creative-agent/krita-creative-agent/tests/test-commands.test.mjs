@@ -10,7 +10,7 @@ const view = (more = {}) => ({ testFolder: folder, mode: 'agent', planSteps: [{ 
 const found = { request_id: 'f1', part: 'the sky', mask_path: folder + '/data/chat/.shapes/found-0123456789abcdef01234567.png', bounds: [0, 0, 10, 5], canvas: [10, 10] };
 
 test('only the allowlisted panel commands, with known parameters', () => {
-  assert.deepEqual([...TEST_COMMANDS].sort(), ['answer', 'closeup_answer', 'find_it', 'folder_guess', 'folder_study', 'paint_only_here', 'plan_step', 'set_limits', 'set_mode', 'sharpen_answer', 'start_plan', 'stop']);
+  assert.deepEqual([...TEST_COMMANDS].sort(), ['answer', 'canvas_reference_answer', 'closeup_answer', 'find_it', 'folder_guess', 'folder_study', 'paint_only_here', 'plan_step', 'set_limits', 'set_mode', 'sharpen_answer', 'start_plan', 'stop']);
   for (const type of ['shutdown', 'end', 'open_folder', 'configure_provider', 'delete_chat', 'import_archive', 'shapes_model', 'prompt', '', 7])
     assert.throws(() => panelCommand(type, {}, view()), /not a test command|Allowed/, String(type));
   assert.throws(() => panelCommand('stop', { now: true }, view()), /unknown parameter now/);
@@ -87,4 +87,12 @@ test('set_limits sets the test chat allowance as the panel does: AI images 0-20 
   assert.deepEqual(panelCommand('set_limits', { ai_images: null }, view()).command.limits.ai_images, null);
   assert.throws(() => panelCommand('set_limits', { ai_images: 50 }, view()), /0-20/);
   assert.throws(() => panelCommand('set_limits', { budget: 1 }, view()), /unknown/i);
+});
+
+test('canvas_reference_answer presses the canvas reference card buttons the card shows (never auto-approved, so tests answer it)', () => {
+  const card = { id: 'ref-1', options: ['Use as the target', 'Try again', 'Discard'], actions: ['use', 'retry', 'discard'], text: 'A reference of …' };
+  assert.throws(() => panelCommand('canvas_reference_answer', { action: 'use' }, view()), /no canvas reference card/);
+  assert.deepEqual(panelCommand('canvas_reference_answer', { action: 'use' }, view({ canvasReference: card })).command, { type: 'canvas_reference', id: 'ref-1', action: 'use' });
+  assert.throws(() => panelCommand('canvas_reference_answer', { action: 'use' }, view({ canvasReference: { ...card, actions: ['retry', 'discard'] } })), /action is retry or discard/);
+  assert.throws(() => panelCommand('canvas_reference_answer', { action: 'use', id: 'x' }, view({ canvasReference: card })), /unknown/i);
 });

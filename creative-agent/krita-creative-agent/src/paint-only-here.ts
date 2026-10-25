@@ -198,7 +198,8 @@ export async function askForArea(host: SelectionHost, given: string, { request }
   if (partNegated(host.latestRequest?.() ?? '', part))
     return { asked: false, negated: true, reply: `The artist said not to work on ${part}: do not ask for it and leave it alone.` };
   let proposal: Proposal | null = null;
-  try { proposal = (await host.propose?.(part)) ?? null; } catch { proposal = null; }    // no outline: the plain card
+  let searched = false;                                                                     // the shapes model ran and found nothing
+  try { proposal = (await host.propose?.(part)) ?? null; searched = !!host.propose && !proposal; } catch { proposal = null; }    // no outline: the plain card
   if (host.mode !== 'agent') {
     let failed = '';
     if (proposal && host.adopt) {
@@ -215,8 +216,10 @@ export async function askForArea(host: SelectionHost, given: string, { request }
   const question = proposal
     ? `Is this ${part}? It is selected on your painting now. Adjust it with Freehand (Shift adds, Alt subtracts) if needed, then press Use this.`
     : `Select ${part}: Find it for me outlines it with the shapes model, or draw around it with the Freehand Selection tool (the Magnetic one snaps to edges), then press Use my selection.`;
-  // Auto-approve's answer (auto-approve.ts): Find it for me (the shapes model outlines the part), then Use this for its outline.
-  goal.question = { id: randomUUID(), question, options: [...(proposal ? PROPOSAL_OPTIONS : SELECT_OPTIONS)], recommended: proposal ? PROPOSAL_OPTIONS[0] : SELECT_OPTIONS[0], asked_in: 'agent',
+  // Auto-approve's answer (auto-approve.ts): Use this for a found outline; Paint everywhere when the shapes model already found
+  // nothing (asking it again finds nothing again: the artist, 2026-10-25, hands-free like the demo); else Find it for me.
+  const recommended = proposal ? PROPOSAL_OPTIONS[0] : searched ? 'Paint everywhere' : SELECT_OPTIONS[0];
+  goal.question = { id: randomUUID(), question, options: [...(proposal ? PROPOSAL_OPTIONS : SELECT_OPTIONS)], recommended, asked_in: 'agent',
     select_area: { part, ...(request ? { request: request.slice(0, 500) } : {}), ...(proposal ? { proposal } : {}) } };
   goal.status = 'needs_input'; host.yieldTurn();
   await host.persist(); host.publish();

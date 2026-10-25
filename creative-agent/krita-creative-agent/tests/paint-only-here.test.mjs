@@ -273,6 +273,15 @@ test('a failing or empty proposal falls back to the plain card with Find it for 
   }
 });
 
+test('Find it already found nothing: auto-approve recommends Paint everywhere; Find it could not run: Find it for me (the artist, 2026-10-25: hands-free like the demo)', async () => {
+  const goal = { status: 'active' };
+  await askForArea({ mode: 'agent', goal, emit() {}, persist: async () => {}, publish() {}, yieldTurn() {}, propose: async () => null }, 'the Kremlin towers');
+  assert.equal(goal.question.recommended, 'Paint everywhere', 'asking the shapes model again finds nothing again');
+  const offline = { status: 'active' };
+  await askForArea({ mode: 'agent', goal: offline, emit() {}, persist: async () => {}, publish() {}, yieldTurn() {}, propose: async () => { throw new Error('offline'); } }, 'the sky');
+  assert.equal(offline.question.recommended, 'Find it for me');
+});
+
 test('Autopilot uses the found outline as the area by itself and says so; without one it paints without an area', async () => {
   const said = [], goal = { status: 'active' }, adopted = [];
   const proposal = { mask_path: '/chat/.shapes/found-0123456789abcdef01234567.png', bounds: [0, 0, 40, 12], canvas: [40, 30], share: 0.4 };

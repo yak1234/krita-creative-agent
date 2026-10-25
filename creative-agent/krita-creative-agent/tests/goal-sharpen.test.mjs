@@ -504,3 +504,17 @@ test('the picture goal: the folder\u2019s first, else the first attached goal re
   assert.equal(pictureGoal([{ ...own, width: 1000 }], canvas), null, 'other proportions');
   assert.equal(pictureGoal([own], null), null, 'no canvas yet');
 });
+
+test('saves of the sharpen record never collide: overlapping saves all land, each change kept (live: two at once lost a rename)', async () => {
+  const { saveChoices } = await import('../src/goal-sharpen.ts');
+  const { mkdtemp, readFile, readdir, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+  const dir = await mkdtemp(join(tmpdir(), 'goal-sharpen-save-'));
+  try {
+    await Promise.all(Array.from({ length: 20 }, (_, i) => saveChoices(dir, { sha: 's' + i, choice: i % 2 ? 'sharpened' : 'original' })).concat(saveChoices(dir, { seconds_per_mp: 120 })));
+    const saved = JSON.parse(await readFile(join(dir, 'goal-sharpen.json'), 'utf8'));
+    assert.equal(Object.keys(saved.choices).length, 20, 'no change lost');
+    assert.equal(saved.seconds_per_mp, 120);
+    assert.deepEqual(await readdir(dir), ['goal-sharpen.json'], 'no temporary file left behind');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

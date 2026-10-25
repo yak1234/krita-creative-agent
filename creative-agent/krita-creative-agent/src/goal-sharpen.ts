@@ -36,6 +36,32 @@ export const ENLARGEMENT = 2;                    // more than this x onto the ca
 export const OFFER_PIXELS = Math.min(MAX_INPUT_PIXELS, TRANSFER_PIXELS / 2);
 export const SHARPEN_ANSWERS = { offer: ['Sharpen', 'Use as is'], review: ['Use sharpened', 'Keep original'] } as const;
 const CHOICES_FILE = 'goal-sharpen.json';
+type SavedChoices = { choices: Record<string, { choice: 'sharpened' | 'original'; at: string }>; seconds_per_mp?: number };
+type ChoiceChange = { sha?: string; choice?: 'sharpened' | 'original'; seconds_per_mp?: number };
+
+/** The sharpen record (choices per goal content, the measured speed) in a data folder, or an empty one. */
+export async function readChoices(dir: string): Promise<SavedChoices> {
+  try { const saved = JSON.parse(await readFile(join(dir, CHOICES_FILE), 'utf8')); return { choices: saved.choices ?? {}, ...(Number(saved.seconds_per_mp) > 0 ? { seconds_per_mp: Number(saved.seconds_per_mp) } : {}) }; }
+  catch { return { choices: {} }; }
+}
+// One save at a time per folder, across every sharpener in the companion (live, 2026-10-25: a shared sharpening ended two
+// waiters at once; both wrote the same `.json.<pid>` file and one rename failed, ENOENT, and could have lost the other's change).
+const saving = new Map<string, Promise<void>>();
+/** Reads, changes and writes the record in turn, each through its own temporary file. */
+export function saveChoices(dir: string, change: ChoiceChange): Promise<void> {
+  const next = (saving.get(dir) ?? Promise.resolve()).catch(() => {}).then(async () => {
+    const saved = await readChoices(dir);
+    if (change.sha && change.choice) saved.choices[change.sha] = { choice: change.choice, at: new Date().toISOString() };
+    if (change.seconds_per_mp) saved.seconds_per_mp = change.seconds_per_mp;
+    await mkdir(dir, { recursive: true });
+    const temporary = join(dir, `${CHOICES_FILE}.${process.pid}.${randomUUID()}`);
+    try { await writeFile(temporary, JSON.stringify({ version: 1, ...saved }, null, 2)); await rename(temporary, join(dir, CHOICES_FILE)); }
+    catch (error) { await rm(temporary, { force: true }); throw error; }
+  });
+  saving.set(dir, next);
+  void next.finally(() => { if (saving.get(dir) === next) saving.delete(dir); }).catch(() => {});
+  return next;
+}
 
 export type Sharpened = { from: { path: string; width: number; height: number; sha256: string; mimeType?: string }; model: string; revision: string;
   scale: number; full: string; at: string };
@@ -173,23 +199,13 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
   const modelDir = () => { const dir = dataDir(); if (!dir) throw new UpscaleError('model', 'Sharpening needs the companion’s data folder, and none is set.'); return modelDirectory(dir, spec); };
   const sharpen = service ?? upscaleService({ modelDir: async () => modelDir() });
 
-  type Saved = { choices: Record<string, { choice: 'sharpened' | 'original'; at: string }>; seconds_per_mp?: number };
-  async function choices(): Promise<Saved> {
+  async function choices(): Promise<SavedChoices> {
     const dir = dataDir();
-    if (!dir) return { choices: {} };
-    try { const saved = JSON.parse(await readFile(join(dir, CHOICES_FILE), 'utf8')); return { choices: saved.choices ?? {}, ...(Number(saved.seconds_per_mp) > 0 ? { seconds_per_mp: Number(saved.seconds_per_mp) } : {}) }; }
-    catch { return { choices: {} }; }
+    return dir ? readChoices(dir) : { choices: {} };
   }
-  async function remember(change: { sha?: string; choice?: 'sharpened' | 'original'; seconds_per_mp?: number }) {
+  async function remember(change: ChoiceChange) {
     const dir = dataDir();
-    if (!dir) return;
-    const saved = await choices();
-    if (change.sha && change.choice) saved.choices[change.sha] = { choice: change.choice, at: new Date().toISOString() };
-    if (change.seconds_per_mp) saved.seconds_per_mp = change.seconds_per_mp;
-    await mkdir(dir, { recursive: true });
-    const temporary = join(dir, CHOICES_FILE + '.' + process.pid);
-    await writeFile(temporary, JSON.stringify({ version: 1, ...saved }, null, 2));
-    await rename(temporary, join(dir, CHOICES_FILE));
+    if (dir) await saveChoices(dir, change);
   }
   async function hashOf(path: string): Promise<string> {
     const info = await stat(path), stamp = `${info.size}:${info.mtimeMs}`, known = hashes.get(path);
@@ -322,7 +338,7 @@ export function goalSharpener(host: SharpenHost, { spec = UPSCALE_MODEL, downloa
       if (stopped) {
         say('Sharpening stopped: the original goal image is used. You can sharpen it later from the card.');
         const saved = await choices().catch(() => ({ choices: {} }));
-        show(study, record.id, offerEvent(record, goal, await modelReady(modelDir(), spec).catch(() => false), (saved as Saved).seconds_per_mp));
+        show(study, record.id, offerEvent(record, goal, await modelReady(modelDir(), spec).catch(() => false), (saved as SavedChoices).seconds_per_mp));
       } else { say(`${(error as Error).message.replace(/\.?$/, '.')} The original goal image is used.`); host.settled?.(); }
     }
   }

@@ -1234,6 +1234,7 @@ class CreativeAgentDocker(DockWidget):
         self.reply_open = False
         self.current_reply = None
         self.output_directory = None
+        self.chat_directory = None                    # the chat's own folder (found outlines live in its .shapes); a save never moves it
         self.resume_on_ready = None
         self.pending_restore = None
         self.focus_after_restore = False
@@ -3056,7 +3057,7 @@ class CreativeAgentDocker(DockWidget):
                 self.return_to_painting(restored=True)
         elif kind == 'study':
             self.study_id = event['id']
-            self.study_active = True; self.output_directory = event['directory']
+            self.study_active = True; self.output_directory = self.chat_directory = event['directory']
             self.model.blockSignals(True)
             if event.get('model'):
                 self.accepted_model = event['model']; self.pending_model_change = False

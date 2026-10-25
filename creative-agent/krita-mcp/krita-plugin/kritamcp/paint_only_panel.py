@@ -242,7 +242,7 @@ class PaintOnlyBar(QWidget):
         if reason is not None:
             self.say(reason); return False
         try:
-            self.areas.load_found(doc, outline, self.panel.output_directory)
+            self.areas.load_found(doc, outline, getattr(self.panel, 'chat_directory', None) or self.panel.output_directory)
         except (ValueError, OSError, KeyError) as error:
             self.say(str(error)); return False
         self.choose_tool(FREEHAND)

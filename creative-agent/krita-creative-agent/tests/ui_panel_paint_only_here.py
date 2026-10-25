@@ -143,7 +143,7 @@ class PaintOnlyHere(unittest.TestCase):
         paint_only_here.AREAS._areas = []; state.document = None
 
     def chat(self, area=None, **goal):
-        self.panel.study_active = True; self.panel.output_directory = self.folder
+        self.panel.study_active = True; self.panel.output_directory = self.panel.chat_directory = self.folder
         self.panel.handle_event({'type': 'goal', 'goal': dict({'status': 'ready', 'paint_only_here': area}, **goal), 'mode': 'agent', 'references': []})
         app.processEvents()
 
@@ -333,6 +333,20 @@ class PaintOnlyHere(unittest.TestCase):
         self.bar.button.click()
         self.assertEqual(self.sent('paint_only_here')[-1]['bounds'], [0, 0, W, 12], 'Paint only here takes the outline as adjusted')
         self.assertEqual(self.doc.undo_steps, [])
+
+    def test_find_it_after_the_painting_is_saved_still_loads_the_outline(self):
+        # LIVE (the artist, 2026-10-25): once the painting was saved, the panel took the painting's folder for the chat folder
+        # and refused every found outline ("Find it for me reads its outline only from this chat folder's .shapes").
+        self.chat()
+        saved = os.path.join(tempfile.mkdtemp(dir=self.folder), 'Creative painting 26.kra')
+        self.panel.handle_event({'type': 'canvas', 'checkpoint': saved})
+        self.bar.find('the bridge')
+        [request] = self.sent('find_it')
+        self.panel.handle_event({'type': 'found_area', 'request_id': request['request_id'], 'mask_path': self.found_file([0, 0, W, 12]),
+                                 'bounds': [0, 0, W, 12], 'canvas': [W, H], 'message': 'Found the bridge.'})
+        app.processEvents()
+        self.assertIsNotNone(self.doc.selected, 'the outline loads after a save')
+        self.assertEqual(self.panel.status.text(), 'Found the bridge.')
 
     def test_find_it_errors_and_refusals_are_shown_as_they_are(self):
         self.bar.find_button.click()

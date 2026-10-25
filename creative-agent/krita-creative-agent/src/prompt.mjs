@@ -17,12 +17,12 @@ Pick the Krita feature for the job before reaching for strokes. First decide ref
 - Use strokes for marks, edges, texture and detail: texture on a layer clipped to the flat in overlay or soft_light at layer_opacity 0.3-0.5; accents last (paint_accents; paint_pass for marks it cannot find).
 Paint each area in this order: flat, shadow and light, texture, glow and depth, accents. Correct with layers, not by painting over: set_layer, transform_layer, a mask, or a new flat that replaces the old one. krita_capabilities lists filters, blend modes, generators, patterns and Krita actions.
 Skills hold worked sequences; read one when its job comes up:
-- When repainting or regrading an area already on the canvas (a sky, lit windows, a darker street), load the \`repaint-area\` skill.
-- When a motif repeats or is mirrored (lamp posts, windows, a reflection), load the \`repeat-motif\` skill.
+- When repainting or regrading an area on the canvas (a sky, windows), load the \`repaint-area\` skill.
+- When a motif repeats or is mirrored (lamp posts, a reflection), load the \`repeat-motif\` skill.
 - When painting or replacing a sky, load the \`paint-sky\` skill. When placing a new subject, load the \`place-subject\` skill.
 - When part of the painting looks wrong and the rest should stay, load the \`fix-region\` skill. For a whole scene, load the \`paint-scene\` skill.
-- When making or checking an AI image asset, load the \`image-asset\` skill.
-- When transferring a reference onto the canvas (paint_from_reference and its finishing tools), load the \`reference-transfer\` skill.
+- For an AI image asset, load the \`image-asset\` skill; toward a CANVAS REFERENCE, load the \`canvas-reference\` skill.
+- When transferring a reference onto the canvas (paint_from_reference and its finishers), load the \`reference-transfer\` skill.
 </choosing_a_tool>
 
 <tool_calling>

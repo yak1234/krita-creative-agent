@@ -158,6 +158,18 @@ export async function requestImage({ choice, prompt, inputs = [], aspect, key, f
   return { data, cost: reply.usage?.cost ?? null, model: choice.model };
 }
 
+/** The image backend the `assets` setting names: codex (the default) or openrouter. */
+export const assetBackend = runtime => ASSET_BACKENDS.includes(runtime.executionSettings?.assets) ? runtime.executionSettings.assets : 'codex';
+
+/** One image from the backend the `assets` setting names, for make_asset and a canvas reference (canvas-reference.ts).
+ * An edit keeps its input's framing on OpenRouter; on Codex `size` follows `aspect` (an edit of a canvas passes the
+ * canvas's proportions, so a wide canvas comes back wide). */
+export async function requestAssetImage(runtime, /** @type {{mode: 'generate'|'draft'|'edit', prompt: string, inputs?: {data: Buffer, mimeType: string}[], aspect?: string, transparent?: boolean, fetchImpl?: typeof fetch, signal?: AbortSignal}} */ { mode, prompt, inputs = [], aspect, transparent = false, fetchImpl, signal }) {
+  return assetBackend(runtime) === 'codex'
+    ? requestCodexImage({ prompt, inputs, size: codexSize(aspect), transparent, quality: CODEX_QUALITY[mode], token: await runtime.codexKey?.(), fetchImpl, signal })
+    : requestImage({ choice: ASSET_MODELS[mode], prompt, inputs, aspect: mode === 'edit' ? undefined : aspect, key: await runtime.imageKey?.(), fetchImpl, signal });
+}
+
 // Assets and the sandbox's work files live in <study>/assets; Python can write there and nowhere else.
 async function assetsFolder(runtime) {
   const folder = join(runtime.study.directory, 'assets');
@@ -222,7 +234,8 @@ function assertAssetRoom(runtime) {
   if (runtime.study.references.filter(r => r.role === 'asset' && r.source !== 'folder').length >= limit) throw new Error('This conversation already has ' + limit + ' assets. Reuse one of them.');
 }
 
-async function attach(runtime, { id, file, name, notes, source }) {
+/** An image file as a reference asset of the chat (make_asset's, a script's, a canvas reference's). */
+export async function attachAsset(runtime, { id, file, name, notes, source }) {
   assertAssetRoom(runtime);
   const info = imageInfo(await readFile(file));
   const reference = { id, path: file, source_path: file, role: 'asset', purpose: 'material', name: String(name).slice(0, 200), notes: String(notes ?? '').slice(0, 2000), source, ...info };
@@ -277,14 +290,12 @@ export function assetTools(runtime, { fetchImpl } = /** @type {{fetchImpl?: type
         } else inputs.push(await readImage(referenceFile(runtime, params.edit_reference_id).path));
       } else if (params.edit_region || params.edit_reference_id) throw new Error('edit_region and edit_reference_id are for mode edit.');
       if (params.style_reference_id) inputs.push(await readImage(referenceFile(runtime, params.style_reference_id).path));
-      const backend = ASSET_BACKENDS.includes(runtime.executionSettings?.assets) ? runtime.executionSettings.assets : 'codex';
+      const backend = assetBackend(runtime);
       const prompt = params.prompt + (params.cutout ? (backend === 'codex' ? TRANSPARENT_BACKGROUND : PLAIN_BACKGROUND) : '') +
         (params.mode === 'edit' && inputs.length > 1 ? ' Edit the first image; the second image is only a style reference.' : '');
       runtime.emit?.({ type: 'status', phase: 'asset', message: 'Making asset: ' + params.name });
       const aspect = params.mode === 'edit' ? undefined : params.aspect_ratio;
-      const image = backend === 'codex'
-        ? await requestCodexImage({ prompt, inputs, size: codexSize(aspect), transparent: !!params.cutout, quality: CODEX_QUALITY[params.mode], token: await runtime.codexKey?.(), fetchImpl, signal })
-        : await requestImage({ choice: ASSET_MODELS[params.mode], prompt, inputs, aspect, key: await runtime.imageKey?.(), fetchImpl, signal });
+      const image = await requestAssetImage(runtime, { mode: params.mode, prompt, inputs, aspect, transparent: !!params.cutout, fetchImpl, signal });
       const raw = 'raw-' + randomUUID().slice(0, 8) + '.img';
       await writeFile(join(folder, raw), image.data);
       const fit = params.fit_to ? fitSize(params.fit_to) : null;
@@ -301,7 +312,7 @@ export function assetTools(runtime, { fetchImpl } = /** @type {{fetchImpl?: type
       }
       // The image exists (and may have cost money), so it counts; attach saves the chat with the new count.
       if (runtime.goal) runtime.goal.ai_images_used = (runtime.goal.ai_images_used ?? 0) + 1;
-      const reference = await attach(runtime, { id: prepared.id, file: prepared.file, name: params.name, notes: params.prompt, source: { mode: params.mode, model: image.model } });
+      const reference = await attachAsset(runtime, { id: prepared.id, file: prepared.file, name: params.name, notes: params.prompt, source: { mode: params.mode, model: image.model } });
       const note = verdict && !verdict.fallback ? { asset_check: { findings: verdict.findings.map(id => ADVICE[id]),
         probabilities: Object.fromEntries(Object.entries(verdict.probabilities).map(([k, v]) => [k, Math.round(v * 100) / 100])),
         ...(verdict.retried_tolerance ? { cutout_retried_at_tolerance: verdict.retried_tolerance } : {}) } } : {};
@@ -343,7 +354,7 @@ export function assetTools(runtime, { fetchImpl } = /** @type {{fetchImpl?: type
         const local = join(folder, path.slice(6));
         if (!existsSync(local)) continue;
         const id = basename(local).replace(/\.png$/, '').startsWith('asset-') ? basename(local).replace(/\.png$/, '') : 'asset-' + randomUUID().slice(0, 8);
-        made.push(await attach(runtime, { id, file: local, name: params.name ?? (params.script.replace(/\.py$/, '') + ' result'), notes: item.notes, source: { skill: params.skill, script: params.script } }));
+        made.push(await attachAsset(runtime, { id, file: local, name: params.name ?? (params.script.replace(/\.py$/, '') + ' result'), notes: item.notes, source: { skill: params.skill, script: params.script } }));
       }
       if (!made.length) return { content: [{ type: 'text', text: JSON.stringify({ result }) }], details: { result } };
       // A preview for the model to see the result (transparency on a checkerboard).

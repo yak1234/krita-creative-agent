@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { executionSettings } from '../src/execution-settings.mjs';
 import { panelSchema, SETTINGS } from '../src/settings-schema.mjs';
-import { AUTO_APPROVE_DELAYS, AUTO_APPROVE_KINDS, autoApproveRecord, recommendYouDecide } from '../src/auto-approve.ts';
+import { AUTO_APPROVE_DELAYS, AUTO_APPROVE_KINDS, NEVER_AUTO_APPROVE, autoApproveRecord, recommendYouDecide } from '../src/auto-approve.ts';
 import { StudioRuntime } from '../src/studio.mjs';
 import { STAGE_CARD } from '../src/plan-stages.ts';
 
@@ -51,4 +51,10 @@ test('choice cards mark a recommended option only where a default answer is safe
   assert.deepEqual(recommendYouDecide({ question: 'Which sky?', options: ['Warm', 'Cool'] }),
     { question: 'Which sky?', options: ['Warm', 'Cool'], recommended: 'You decide' });
   assert.equal(recommendYouDecide({ question: 'q', options: ['A', 'you decide.'] }).recommended, 'you decide.', 'its own spelling, when the painter offered it');
+});
+
+test('the canvas reference card is never auto-approved: it is the artist\'s own choice of what to paint', () => {
+  assert.ok(NEVER_AUTO_APPROVE.includes('canvas_reference'));
+  assert.ok(!AUTO_APPROVE_KINDS.some(kind => NEVER_AUTO_APPROVE.includes(kind)));
+  assert.equal(autoApproveRecord({ kind: 'canvas_reference', answer: 'use', delay: 0 }), null);
 });

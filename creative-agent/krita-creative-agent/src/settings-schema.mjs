@@ -43,6 +43,11 @@ export const SETTINGS = Object.freeze([
     error: 'Choose how many AI images a new chat may use: 0, 1, 3, 5 or unlimited.',
     options: [[0, 'None: paint by hand'], [1, '1 image'], [3, '3 images'], [5, '5 images'], ['unlimited', 'No limit']],
     tooltip: 'How many AI-generated images (a sky, a tree) the painter may make in a new chat before repainting them with brushes. Change it for the open chat in the panel.' },
+  // Preview additions (canvas-reference.ts; the artist, 2026-10-25): before a plan's "Add: <thing>" step paints, a canvas
+  // reference shows the canvas with that thing added, and the step paints toward it inside the changed area when it is used.
+  { key: 'preview_additions', type: 'boolean', default: false, panel: 'generic', label: 'Preview additions', accessible: 'Preview additions with a canvas reference',
+    error: 'preview_additions must be true or false.', options: [[false, 'Off'], [true, 'Preview with a canvas reference']],
+    tooltip: 'Before a plan step that adds something (Add: snow, Add: ghosts) paints, an image model shows the canvas with it added: a canvas reference beside the chat. Use it as the target and the step paints toward it only where it differs; each picture is one AI image of the chat\'s allowance.' },
   // Off by default: a screen that never sleeps must be the artist's choice. The panel shows when it holds.
   { key: 'keep_screen_awake', type: 'boolean', default: false, panel: 'generic', control: 'checkbox', label: 'Screen', accessible: 'Keep the screen awake while painting',
     error: 'keep_screen_awake must be true or false.', options: [[false, 'Let the screen sleep'], [true, 'Keep the screen awake while painting']],

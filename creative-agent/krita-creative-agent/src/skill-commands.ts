@@ -15,6 +15,9 @@ export type SkillCommand = {
   move_kind?: 'guides';
   /** Listed only while this is available: guides needs our Krita and the Guides setting. */
   needs?: 'guides';
+  /** The studio answers the command itself, never the painter: canvas_reference makes a reference picture of an edit
+   * (canvas-reference.ts); its skill is what the painter reads when it paints toward it. */
+  action?: 'canvas_reference';
 };
 
 export const SKILL_COMMANDS: readonly SkillCommand[] = Object.freeze([
@@ -22,6 +25,9 @@ export const SKILL_COMMANDS: readonly SkillCommand[] = Object.freeze([
     description: 'Lay the reference\'s colours on the canvas first, then refine them.' },
   { name: 'refine', aliases: [], skill: 'repaint-area',
     description: 'Refine painted work: keep its forms, add light, edges and detail.' },
+  // The artist, 2026-10-25: "not make the edits but make a reference generation of what the edit would look like".
+  { name: 'canvas-reference', aliases: ['preview'], skill: 'canvas-reference', action: 'canvas_reference',
+    description: 'Preview an edit: an image model shows the canvas changed as a reference; nothing is painted until you use it.' },
 ]);
 
 /** The short command that starts the artist's message, and the text after it; null for anything else. Any case, and

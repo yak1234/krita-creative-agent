@@ -7,7 +7,7 @@ import { deflateSync, crc32 } from 'node:zlib';
 import { readFileSync } from 'node:fs';
 import { listSkills, expandSkillCommand, skillReadTool, SKILLS_DIR } from '../src/skills.mjs';
 import { runPython } from '../src/python-sandbox.mjs';
-import { assetTools, ASSET_MODELS, fitSize, transferSteps, ASSET_QUESTIONS, CODEX_MODEL, codexSize } from '../src/assets.mjs';
+import { assetTools, ASSET_MODELS, fitSize, transferSteps, ASSET_QUESTIONS, CODEX_MODEL, codexSize, requestAssetImage } from '../src/assets.mjs';
 import { imageInfo } from '../src/files.mjs';
 
 // An RGB PNG: a dark green triangle on a plain cream background, like a model's isolated subject.
@@ -249,7 +249,7 @@ test('Codex is the default image backend: the sign-in, a transparent cut-out fro
 
 test('workflow skills are reusable slash commands: /name and /skill:name both expand; other /words stay as typed', async () => {
   const names = listSkills().map(s => s.name).sort();
-  assert.deepEqual(names, ['fix-region', 'guided-trace', 'image-asset', 'paint-scene', 'paint-sky', 'place-subject', 'reference-transfer', 'repaint-area', 'repeat-motif']);
+  assert.deepEqual(names, ['canvas-reference', 'fix-region', 'guided-trace', 'image-asset', 'paint-scene', 'paint-sky', 'place-subject', 'reference-transfer', 'repaint-area', 'repeat-motif']);
   for (const skill of listSkills()) assert.ok(skill.description.length >= 60 && skill.description.length <= 1024, skill.name + ' has a usable description');
   const sky = expandSkillCommand('/paint-sky a stormy dusk');
   assert.match(sky, /^<skill name="paint-sky"/);
@@ -336,4 +336,24 @@ test('every bundled skill that makes AI images keeps to the allowance, and those
   }
   for (const name of ['paint-sky', 'place-subject', 'fix-region'])
     assert.match(skills.find(s => s.name === name).text, /## Hand-painted route/, name + ' has a hand-painted route');
+});
+
+test('one edit request for a canvas reference: the backend the assets setting names (Codex by default), the canvas as its input', async () => {
+  const claims = Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'acct-123' } })).toString('base64url');
+  const requests = [], image = subjectPng(40, 30);
+  const sse = 'data: ' + JSON.stringify({ type: 'response.output_item.done', item: { type: 'image_generation_call', result: image.toString('base64') } }) + '\n';
+  const fetchImpl = async (url, options) => { requests.push({ url, body: JSON.parse(options.body) });
+    return url.startsWith('https://chatgpt.com') ? { ok: true, status: 200, text: async () => sse }
+      : { ok: true, json: async () => ({ data: [{ b64_json: image.toString('base64') }] }) }; };
+  const runtime = { executionSettings: {}, codexKey: async () => 'eyJhbGciOiJub25lIn0.' + claims + '.sig', imageKey: async () => 'test-key' };
+  const input = { data: Buffer.from('canvas'), mimeType: 'image/png' };
+  const made = await requestAssetImage(runtime, { mode: 'edit', prompt: 'Edit this painting: more snow', inputs: [input], aspect: '4:3', fetchImpl });
+  assert.deepEqual(made.data, image); assert.match(made.model, /^codex\//);
+  assert.equal(requests[0].body.tools[0].size, '1536x1024', 'a wide canvas asks for a wide picture');
+  assert.equal(requests[0].body.tools[0].quality, 'medium');
+  assert.match(requests[0].body.input[0].content[1].image_url, /^data:image\/png;base64,/);
+  runtime.executionSettings.assets = 'openrouter';
+  await requestAssetImage(runtime, { mode: 'edit', prompt: 'Edit this painting: more snow', inputs: [input], aspect: '4:3', fetchImpl });
+  assert.equal(requests[1].url, 'https://openrouter.ai/api/v1/images'); assert.equal(requests[1].body.model, ASSET_MODELS.edit.model);
+  assert.equal(requests[1].body.aspect_ratio, 'auto', 'an edit keeps its input\'s framing');
 });

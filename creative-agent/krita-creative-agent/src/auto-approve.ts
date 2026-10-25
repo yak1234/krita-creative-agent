@@ -13,6 +13,10 @@ export const AUTO_APPROVE_DELAYS = Object.freeze([0, 10, 30, 60] as const);
  * (Sharpen) and its review (Use sharpened), and a question or close-up question that marks a recommended option. */
 export const AUTO_APPROVE_KINDS = Object.freeze(['plan_step', 'move', 'sharpen_offer', 'sharpen_review', 'question', 'closeup'] as const);
 export type AutoApproveKind = typeof AUTO_APPROVE_KINDS[number];
+/** Cards Auto-approve never answers: a canvas reference (canvas-reference.ts) is the artist's own choice of what the painting
+ * becomes, so Use as the target, Try again (an AI image) and Discard always wait for them. The panel keeps the same list
+ * (auto_approve.py NEVER). */
+export const NEVER_AUTO_APPROVE = Object.freeze(['canvas_reference'] as const);
 export type AutoApproveRecord = { type: 'auto_approve'; kind: AutoApproveKind; answer: string; delay: number; card?: string };
 
 const isKind = (value: unknown): value is AutoApproveKind => (AUTO_APPROVE_KINDS as readonly unknown[]).includes(value);

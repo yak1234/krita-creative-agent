@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { executionSettings, thinkingLevel } from '../src/execution-settings.mjs';
 import { StudioRuntime } from '../src/studio.mjs';
 test('execution defaults preserve one painter and capability-aware reasoning',()=>{
- assert.deepEqual(executionSettings(),{concurrency:1,reasoning:'auto',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,auto_approve:'off',guides:true,reference_first:true,assets:'codex',ai_images:0,keep_screen_awake:false,sharpen_goal:'ask',view_size:'auto',planner_model:'default',study_folder:true,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
+ assert.deepEqual(executionSettings(),{concurrency:1,reasoning:'auto',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,auto_approve:'off',guides:true,reference_first:true,assets:'codex',ai_images:0,preview_additions:false,keep_screen_awake:false,sharpen_goal:'ask',view_size:'auto',planner_model:'default',study_folder:true,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
  assert.equal(thinkingLevel(executionSettings(),{reasoning:true}),'low');
  assert.equal(thinkingLevel(executionSettings({reasoning:'high'}),{reasoning:true}),'high');
  assert.equal(thinkingLevel(executionSettings({reasoning:'high'}),{reasoning:false}),'off');
@@ -27,7 +27,7 @@ test('settings are declared once: validation, defaults and the panel schema come
   if (setting.panel==='generic') assert.ok(setting.label && setting.accessible && setting.options.length>=(setting.type==='model' ? 1 : 2),setting.key+' can be built by the panel');
  }
  const schema=panelSchema();
- assert.deepEqual(schema.map(f=>f.key),['concurrency','move_size','merge_kept','auto_approve','guides','reference_first','assets','ai_images','keep_screen_awake','sharpen_goal','view_size','planner_model','study_folder','routing'],'reasoning is custom and native_craft hidden');
+ assert.deepEqual(schema.map(f=>f.key),['concurrency','move_size','merge_kept','auto_approve','guides','reference_first','assets','ai_images','preview_additions','keep_screen_awake','sharpen_goal','view_size','planner_model','study_folder','routing'],'reasoning is custom and native_craft hidden');
  assert.deepEqual(schema.find(f=>f.key==='merge_kept').options,[{value:true,label:'Merge kept passes'},{value:false,label:'Keep every pass'}]);
  assert.deepEqual(Object.keys(schema[0]).sort(),['accessible','control','key','label','note','options','tooltip']);
  assert.equal(schema.find(f=>f.key==='keep_screen_awake').control,'checkbox');assert.equal(schema[0].control,'combo');
@@ -107,4 +107,14 @@ test('Planner model: Qwen3 VL by default (the painter when it is not connected);
  const field=panelSchema({models:[{route:'openrouter/qwen/qwen3.8-flash',label:'Qwen3.8 Flash (openrouter)'}]}).find(f=>f.key==='planner_model');
  assert.deepEqual(field.options,[{value:'default',label:'Default: Qwen3 VL 235B A22B Instruct (openrouter/qwen/qwen3-vl-235b-a22b-instruct)'},{value:'painter',label:'Same as the painter'},{value:'openrouter/qwen/qwen3.8-flash',label:'Qwen3.8 Flash (openrouter)'}]);
  assert.match(field.tooltip,/plan/i);
+});
+
+test('Preview additions (canvas-reference): off by default; on, a plan\'s Add step shows a canvas reference before it paints', async () => {
+  const { panelSchema } = await import('../src/settings-schema.mjs');
+  assert.equal(executionSettings().preview_additions, false);
+  assert.equal(executionSettings({ preview_additions: true }).preview_additions, true);
+  assert.throws(() => executionSettings({ preview_additions: 'yes' }), /preview_additions must be true or false/);
+  const field = panelSchema().find(f => f.key === 'preview_additions');
+  assert.equal(field.label, 'Preview additions');
+  assert.match(field.tooltip, /canvas reference/); assert.match(field.tooltip, /AI image/);
 });

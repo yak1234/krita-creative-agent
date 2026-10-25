@@ -31,9 +31,9 @@ test('one table: every command names a bundled skill and has a one-line descript
 test('the slash menu lists the short commands, then /skill:<name> for every bundled skill', () => {
   const skills = listSkills();
   const menu = slashMenu(skills);
-  assert.deepEqual(menu.slice(0, 2).map(m => m.command), ['/colour', '/refine'], 'no /trace in the menu');
+  assert.deepEqual(menu.slice(0, 3).map(m => m.command), ['/colour', '/refine', '/canvas-reference'], 'no /trace in the menu');
   assert.deepEqual(menu.find(m => m.command === '/colour').aliases, ['/color', '/from-reference']);
-  assert.deepEqual(menu.slice(2).map(m => m.command), skills.map(s => '/skill:' + s.name));
+  assert.deepEqual(menu.slice(3).map(m => m.command), skills.map(s => '/skill:' + s.name));
   for (const m of menu) assert.ok(m.description && !m.description.includes('\n'), m.command);
 });
 
@@ -56,4 +56,12 @@ test('short commands match whatever the case, with trailing punctuation on the c
   assert.ok(expandSkillCommand('/Refine! the moon').startsWith('<skill name="repaint-area"'));
   assert.ok(expandSkillCommand('/Refine! the moon').endsWith('\n\nthe moon'));
   assert.equal(skillCommand('/ref.ine'), null);
+});
+
+test('/canvas-reference is a command the studio answers itself: it previews an edit, the painter never reads it as a request', () => {
+  const command = skillCommand('/canvas-reference add more ghosts in the sky');
+  assert.equal(command.name, 'canvas-reference'); assert.equal(command.action, 'canvas_reference');
+  assert.equal(command.rest, 'add more ghosts in the sky');
+  assert.equal(skillCommand('/preview more snow').name, 'canvas-reference', 'its short alias');
+  assert.match(SKILL_COMMANDS.find(c => c.name === 'canvas-reference').description, /reference/);
 });

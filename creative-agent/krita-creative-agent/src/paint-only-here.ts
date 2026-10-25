@@ -215,7 +215,8 @@ export async function askForArea(host: SelectionHost, given: string, { request }
   const question = proposal
     ? `Is this ${part}? It is selected on your painting now. Adjust it with Freehand (Shift adds, Alt subtracts) if needed, then press Use this.`
     : `Select ${part}: Find it for me outlines it with the shapes model, or draw around it with the Freehand Selection tool (the Magnetic one snaps to edges), then press Use my selection.`;
-  goal.question = { id: randomUUID(), question, options: [...(proposal ? PROPOSAL_OPTIONS : SELECT_OPTIONS)], asked_in: 'agent',
+  // Auto-approve's answer (auto-approve.ts): Find it for me (the shapes model outlines the part), then Use this for its outline.
+  goal.question = { id: randomUUID(), question, options: [...(proposal ? PROPOSAL_OPTIONS : SELECT_OPTIONS)], recommended: proposal ? PROPOSAL_OPTIONS[0] : SELECT_OPTIONS[0], asked_in: 'agent',
     select_area: { part, ...(request ? { request: request.slice(0, 500) } : {}), ...(proposal ? { proposal } : {}) } };
   goal.status = 'needs_input'; host.yieldTurn();
   await host.persist(); host.publish();

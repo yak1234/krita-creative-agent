@@ -198,6 +198,7 @@ test('the painter asks for a selection: a question card in Agent, never a stall 
   assert.equal(goal.status, 'needs_input'); assert.ok(host.yielded);
   assert.equal(goal.question.question, 'Select the sky: Find it for me outlines it with the shapes model, or draw around it with the Freehand Selection tool (the Magnetic one snaps to edges), then press Use my selection.');
   assert.deepEqual(goal.question.options, SELECT_OPTIONS);
+  assert.equal(goal.question.recommended, 'Find it for me', 'Auto-approve (auto-approve.ts) asks the shapes model for the outline');
   assert.deepEqual(SELECT_OPTIONS, ['Find it for me', 'Select with Freehand', 'Use my selection', 'Paint everywhere']);
   assert.deepEqual(goal.question.select_area, { part: 'the sky' });
   assert.equal(events.at(-1).type, 'question'); assert.deepEqual(events.at(-1).select_area, { part: 'the sky' });
@@ -254,6 +255,7 @@ test('with a found outline the card asks "Is this the sky?" with Use this, Adjus
   assert.deepEqual(asked, ['the sky']);
   assert.match(goal.question.question, /^Is this the sky\? It is selected on your painting now\./);
   assert.deepEqual(goal.question.options, PROPOSAL_OPTIONS);
+  assert.equal(goal.question.recommended, 'Use this', 'Auto-approve paints inside the found outline');
   assert.deepEqual(PROPOSAL_OPTIONS, ['Use this', 'Adjust with Freehand', 'Paint everywhere']);
   assert.deepEqual(goal.question.select_area, { part: 'the sky', request: 'Paint the moonlit sky.', proposal });
   assert.deepEqual(events.at(-1).select_area.proposal, proposal, 'the panel loads it as the selection');

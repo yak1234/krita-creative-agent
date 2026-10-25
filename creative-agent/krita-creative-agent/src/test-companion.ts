@@ -259,7 +259,8 @@ export class TestCompanion {
   async command(type: unknown, params: unknown): Promise<Record<string, unknown>> {
     const s = this.status;
     const planned = panelCommand(type, params, { testFolder: this.folder, mode: s.mode, planSteps: s.plan_steps, question: s.question,
-      closeupQuestion: s.closeup_question, foundAreas: s.found_areas, folderElements: (s.project_folder?.elements ?? []).map(e => e.name), sharpen: s.sharpen });
+      closeupQuestion: s.closeup_question, foundAreas: s.found_areas, folderElements: (s.project_folder?.elements ?? []).map(e => e.name),
+      folderImages: [...(s.project_folder?.goal ? [s.project_folder.goal] : []), ...(s.project_folder?.elements ?? []).map(e => e.name)], sharpen: s.sharpen });
     const result: Record<string, unknown> = { status: 'ok', type };
     if (planned.area) result.krita = await this.applyArea(planned.area);
     if (planned.command) {

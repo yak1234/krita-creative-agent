@@ -56,6 +56,11 @@ export const SETTINGS = Object.freeze([
   { key: 'planner_model', type: 'model', default: 'painter', panel: 'generic', label: 'Planner model', accessible: 'Planner model',
     error: 'Planner model: choose Same as the painter or a connected provider/model.', options: [['painter', 'Same as the painter']],
     tooltip: 'The model that makes and revises the plan (a project folder\'s plan, Plan mode). Painting always uses the painter model chosen above. A model that is not connected plans as the painter.' },
+  // Folder study (folder-study.ts, approved 2026-10-24): a vision model writes a short note per project folder image, so the
+  // planner and painter read the notes as text and open an image only when they need it. Off: file names only, as before.
+  { key: 'study_folder', type: 'boolean', default: true, panel: 'generic', label: 'Study folder images', accessible: 'Study folder images',
+    error: 'Study folder images must be On or Off.', options: [[true, 'On: a short note per image'], [false, 'Off: file names only']],
+    tooltip: 'When a project folder opens, a vision model writes a short note per image (what it shows, where it sits in the goal, its colours and shapes), so the planner and painter know every image without receiving them all. A folder of more than 20 images asks first. Under $0.001 an image with qwen3-vl (13 images: about 36 s).' },
   { key: 'routing', type: 'choice', default: 'off', panel: 'generic', label: 'Decision checks', accessible: 'Decision checks',
     error: 'Unknown decisions mode.', options: [['off', 'Off'], ['evaluate', 'Evaluate only'], ['guide', 'Guide agent']],
     note: 'Fast typed decisions: request routing, artifacts a pass introduced, progress between reviews and run pacing. When on, the canvas, pass images and your direction go to the decision endpoint below. Evaluate only records results; Guide agent also acts on them. The painter still decides and edits the image.' },

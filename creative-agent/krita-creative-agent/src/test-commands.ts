@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { extname, isAbsolute, resolve, sep } from 'node:path';
 import { PLAN_STEP_ACTIONS, type StepView } from './plan-steps.ts';
 
-export const TEST_COMMANDS = ['start_plan', 'plan_step', 'find_it', 'paint_only_here', 'answer', 'closeup_answer', 'folder_guess', 'sharpen_answer', 'set_mode', 'stop'] as const;
+export const TEST_COMMANDS = ['start_plan', 'plan_step', 'find_it', 'paint_only_here', 'answer', 'closeup_answer', 'folder_guess', 'folder_study', 'sharpen_answer', 'set_mode', 'stop'] as const;
 export type TestCommand = typeof TEST_COMMANDS[number];
 const MODES = ['ask', 'plan', 'agent', 'autopilot'];
 
@@ -21,7 +21,7 @@ export type Question = { id: string; question?: string; options?: string[]; sele
 /** The Sharpen goal card the panel shows (goal-sharpen.ts): the offer, or the side by side after sharpening. */
 export type SharpenCard = { kind: 'offer' | 'review'; id: string; options: string[]; text: string; image_path?: string; progress?: string };
 export type CommandView = { testFolder: string; mode?: string | null; planSteps: StepView[]; question: Question | null;
-  closeupQuestion: Question | null; foundAreas: FoundEvent[]; folderElements: string[]; sharpen?: SharpenCard | null };
+  closeupQuestion: Question | null; foundAreas: FoundEvent[]; folderElements: string[]; folderImages?: string[]; sharpen?: SharpenCard | null };
 /** The panel's buttons on the Sharpen goal card: Sharpen / Use as is on the offer, Use sharpened / Keep original after. */
 const SHARPEN_ACTIONS = { offer: ['sharpen', 'original'], review: ['use', 'keep'] } as const;
 export type AreaCommand = { action: 'clear' } | { action: 'set'; mask_path: string; bounds: Rect; canvas: [number, number]; name: string | null };
@@ -145,6 +145,21 @@ export function panelCommand(type: unknown, params: unknown, view: CommandView):
       const input = fields(params, ['name', 'guess']);
       if (typeof input.name !== 'string' || !view.folderElements.includes(input.name)) refuse(`name is an element of the project folder: ${view.folderElements.join(', ') || 'none'}.`);
       return { command: { type: 'folder_guess', name: input.name, guess: text(input.guess, 'guess', 80) } };
+    }
+    case 'folder_study': {                           // the Folder tab's study menu (Study, Exclude, Include), choice card and Stop
+      const input = fields(params, ['action', 'name', 'choice', 'picked']);
+      const images = view.folderImages ?? view.folderElements;      // the goal too (it can be studied; the companion refuses excluding it)
+      const element = (name: unknown) => typeof name === 'string' && images.includes(name) ? name
+        : refuse(`name is an image (element) of the project folder: ${images.join(', ') || 'none'}.`);
+      if (input.action === 'stop') return { command: { type: 'folder_study', action: 'stop' } };
+      if (input.action === 'choose') {
+        if (!['plan', 'all', 'pick', 'none'].includes(input.choice as string)) refuse('choice is plan, all, pick or none.');
+        if (input.choice !== 'pick') return { command: { type: 'folder_study', action: 'choose', choice: input.choice } };
+        if (!Array.isArray(input.picked) || input.picked.length > 400) refuse('picked is a list of the folder\'s element names.');
+        return { command: { type: 'folder_study', action: 'choose', choice: 'pick', picked: (input.picked as unknown[]).map(element) } };
+      }
+      if (['study', 'exclude', 'include'].includes(input.action as string)) return { command: { type: 'folder_study', action: input.action, name: element(input.name) } };
+      return refuse('action is choose, study, exclude, include or stop.');
     }
   }
 }

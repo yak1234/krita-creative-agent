@@ -355,6 +355,7 @@ export function paintingTools(runtime) {
         const shown = reference.sharpened && runtime.modelImage ? await runtime.modelImage(reference) : null;
         const image = shown ? { info: { mimeType: shown.mimeType, width: reference.width, height: reference.height }, content: shown }
           : await imageContent(runtime.study.directory, reference.path);
+        runtime.referenceViewed?.(reference, image.content);   // folder-study: recorded as sent; a folder image with no note is studied now
         return { content: [{ type: 'text', text: JSON.stringify({ id, role: reference.role, ...image.info }) }, image.content], details: { id } };
       },
     },

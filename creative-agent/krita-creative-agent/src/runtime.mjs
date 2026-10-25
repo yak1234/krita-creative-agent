@@ -33,6 +33,7 @@ export function signInMessage(provider, lapsed = false) {
  *   applyExecutionSettings?: () => void, systemInstructions?: string, sessionManagers?: any,
  *   paintingsDirectory?: string, executionSettings?: any, executionPhase?: string, transition?: {kind?: string} | null,
  *   diagnostics?: {record: (event: object) => void}, extensionFactories?: () => any[],
+ *   withholdImages?: (messages: any[]) => any[],
  * }} RuntimeHooks
  */
 const hooks = runtime => /** @type {RuntimeHooks} */ (/** @type {unknown} */ (runtime));
@@ -298,7 +299,8 @@ export class PaintingRuntime {
       // Send only the newest canvas images to the model, and older tool results as one line (history-trim.ts); Pi's own
       // transform runs first.
       const transform = this.session.agent.transformContext;
-      this.session.agent.transformContext = async (messages, signal) => keepRecentImages(trimOldToolResults(transform ? await transform(messages, signal) : messages));
+      // An image the artist excluded since it was sent is withheld from every request (studio withholdImages, folder-study).
+      this.session.agent.transformContext = async (messages, signal) => keepRecentImages(trimOldToolResults((m => hooks(this).withholdImages?.(m) ?? m)(transform ? await transform(messages, signal) : messages)));
       stopAfterTurn(this.session.agent, () => this.turns, turns => this.cancelRequested || this.faulted || turns >= 24);
       this.session.subscribe(event => this.onEvent(event));
       this.untrace?.(); this.untrace = hooks(this).traceSession?.(this.session, 'painter');

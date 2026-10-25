@@ -64,7 +64,8 @@ async function harness(respond, bridgeHook) {
     return operation==='end'?{status:'ok'}:observation;
   }};
   const capabilities={async initialize(){},status(){return {status:'verified',route_verified:true,images_supported:true,tools_supported:true};},async verify(){return {route_verified:true,cached:true};},async invalidate(){}};
-  const runtime=new StudioRuntime({root:output,config:{output},models,bridge,capabilities,tracing:recordingTracing(),emit:e=>events.push(e)});
+  // No folder study reader (folder-study-studio.test.mjs tests the study): opening a folder sends no study requests here.
+  const runtime=new StudioRuntime({root:output,config:{output},models,bridge,capabilities,tracing:recordingTracing(),emit:e=>events.push(e),studyReader:null});
   return {runtime,requests,calls,events,output,start:(mode,prompt='Help me plan',extra={})=>runtime.start({provider:'local-test',model:'vision-test',chat_mode:mode,prompt,mode:'copy',...extra}),
     async close(){if(runtime.busy) runtime.stop(); await runtime.writeQueue; await runtime.end().catch(()=>{}); runtime.dispose(); server.closeAllConnections(); await new Promise(r=>server.close(r)); await rm(output,{recursive:true,force:true});}};
 }
@@ -979,7 +980,7 @@ test('parallel preparation runs two isolated model requests beside one painter t
     assert.equal(peak,2);assert.equal(proposals,2);assert.equal(h.runtime.goal.status,'complete');
     assert.equal(h.calls.filter(c=>c.operation==='paint_pass').length,1);
     const id=h.runtime.study.id;await h.runtime.end();await h.runtime.resume(id);
-    assert.deepEqual(h.runtime.executionSettings,{concurrency:2,reasoning:'high',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,guides:true,reference_first:true,assets:'codex',ai_images:0,keep_screen_awake:false,sharpen_goal:'ask',view_size:'auto',planner_model:'painter',decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
+    assert.deepEqual(h.runtime.executionSettings,{concurrency:2,reasoning:'high',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,guides:true,reference_first:true,assets:'codex',ai_images:0,keep_screen_awake:false,sharpen_goal:'ask',view_size:'auto',planner_model:'painter',study_folder:true,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
     assert.equal(h.runtime.session.thinkingLevel,'off');
     assert.equal(h.runtime.goal.status,'paused');
   } finally {await h.close();}

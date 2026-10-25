@@ -15,7 +15,7 @@ import importlib.util
 
 PLUGIN = Path(__file__).resolve().parents[2] / 'krita-mcp/krita-plugin/kritamcp'
 package = types.ModuleType('panel_folder_test'); package.__path__ = [str(PLUGIN)]; sys.modules['panel_folder_test'] = package
-from panel_folder_test.qt_compat import QApplication, QDockWidget, QStandardPaths, Qt
+from panel_folder_test.qt_compat import QAbstractItemView, QApplication, QDockWidget, QStandardPaths, Qt
 QStandardPaths.setTestModeEnabled(True)
 
 
@@ -297,6 +297,117 @@ class PanelFolder(unittest.TestCase):
         self.panel.tabs.setCurrentIndex(self.panel.folder_tab)
         self.assertEqual(self.panel.folder_picture_path, path)
         self.assertFalse(self.panel.folder_picture.pixmap().isNull())
+
+    # Folder study (openspec folder-study): the study line with Stop, each image's state, the menu, the choice card.
+    def study(self, **fields):
+        names = [e['name'] for e in INDEX['elements']]
+        base = {'enabled': True, 'state': 'done', 'total': 4, 'done': 4, 'failed': 0, 'count': 4, 'needs_choice': False, 'choice': None,
+                'picked': [], 'excluded': [], 'images': dict({'final_goal.png': 'studied'}, **{n: 'studied' for n in names}),
+                'estimate': {'plan': {'images': 1, 'cost': 0.0006, 'seconds': 9}, 'all': {'images': 4, 'cost': 0.0024, 'seconds': 9}}}
+        base.update(fields)
+        self.panel.handle_event({'type': 'folder', 'index': INDEX, 'references': {}, 'study': base})
+        self.panel.tabs.setCurrentIndex(self.panel.folder_tab); app.processEvents()
+        return self.panel.folder_study
+
+    def test_the_study_line_shows_progress_and_stop_sends_folder_study_stop(self):
+        card = self.study(state='running', done=1)
+        self.assertTrue(card.line.isVisible()); self.assertEqual(card.line.text(), 'Studying 4 images… 1/4')
+        self.assertTrue(card.stop.isVisible())
+        card.stop.click()
+        self.assertEqual(self.commands, [{'type': 'folder_study', 'action': 'stop'}])
+        card = self.study(state='done')
+        self.assertIn('4 of 4 images studied', card.line.text()); self.assertFalse(card.stop.isVisible())
+        card = self.study(state='stopped', done=2, images=dict(self.panel.folder_study.last['images'], **{'assets/03-lamps-and-trees.png': 'not_studied'}))
+        self.assertIn('Study stopped', card.line.text()); self.assertIn('3 of 4', card.line.text())
+        self.assertIn('when the chat starts', self.study(state='waiting').line.text())
+        self.assertIn('No connected model reads images', self.study(state='unavailable').line.text())
+        card = self.study(enabled=False)
+        self.assertFalse(card.line.isVisible(), 'Off: file names only, no study line')
+
+    def test_each_image_shows_studied_not_studied_or_excluded_and_the_menu_studies_or_excludes(self):
+        images = {'final_goal.png': 'studied', 'assets/01-moonlit-sky.png': 'studied', 'assets/02-historic-buildings.png': 'not_studied',
+                  'assets/03-lamps-and-trees.png': 'excluded'}
+        self.study(images=images, excluded=['assets/03-lamps-and-trees.png'])
+        items = [self.panel.folder_elements.item(i) for i in range(self.panel.folder_elements.count())]
+        self.assertIn('Studied ✓', items[0].toolTip()); self.assertIn('Not studied', items[1].toolTip()); self.assertIn('Excluded', items[2].toolTip())
+        self.assertFalse(items[0].icon().isNull(), 'a studied image has its mark')
+        self.assertEqual([item.text() for item in items], ['Moonlit sky', 'Historic buildings', 'Lamps and trees'], 'the names stay editable text')
+        self.assertIn('goal image studied', self.panel.folder_study.line.text().lower())
+        menu = self.panel.folder_element_menu(items[1])
+        self.assertEqual([a.text() for a in menu.actions()], ['Study', 'Exclude'])
+        next(a for a in menu.actions() if a.text() == 'Exclude').trigger()
+        self.assertEqual(self.commands[-1], {'type': 'folder_study', 'action': 'exclude', 'name': 'assets/02-historic-buildings.png'})
+        next(a for a in self.panel.folder_element_menu(items[1]).actions() if a.text() == 'Study').trigger()
+        self.assertEqual(self.commands[-1], {'type': 'folder_study', 'action': 'study', 'name': 'assets/02-historic-buildings.png'})
+        self.assertEqual([a.text() for a in self.panel.folder_element_menu(items[2]).actions()], ['Include'])
+        next(a for a in self.panel.folder_element_menu(items[2]).actions()).trigger()
+        self.assertEqual(self.commands[-1], {'type': 'folder_study', 'action': 'include', 'name': 'assets/03-lamps-and-trees.png'})
+        self.assertEqual([a.text() for a in self.panel.folder_element_menu(items[0]).actions()], ['Exclude'], 'studied: nothing to study again')
+        self.assertEqual(self.panel.folder_elements.contextMenuPolicy(), Qt.ContextMenuPolicy.CustomContextMenu, 'right-click opens it')
+        # With the study on, the list stays after the plan lists the steps: it is where the states show.
+        brief = {'title': 'T', 'objective': 'o', 'requirements': [], 'freedom': [], 'completion': ['c'], 'steps': [{'title': 'Moonlit sky', 'done_when': 'd'}]}
+        self.panel.handle_event({'type': 'goal', 'goal': {'status': 'ready', 'brief': brief}, 'mode': 'agent', 'references': [],
+                                 'plan_steps': [{'index': 0, 'key': 'k', 'title': 'Moonlit sky', 'state': 'open'}]})
+        self.assertTrue(self.panel.folder_elements.isVisible())
+
+    def test_a_big_folder_asks_what_to_study_and_let_me_pick_sends_the_checked_images(self):
+        card = self.study(state='idle', total=0, done=0, count=22, needs_choice=True,
+                          images={n: 'not_studied' for n in ['final_goal.png'] + [e['name'] for e in INDEX['elements']]},
+                          estimate={'plan': {'images': 1, 'cost': 0.0006, 'seconds': 9}, 'all': {'images': 22, 'cost': 0.0132, 'seconds': 54}})
+        self.assertTrue(card.choice.isVisible())
+        labels = [b.text() for b in card.options.values()]
+        self.assertTrue(labels[0].startswith('Study only what the plan uses')); self.assertIn('$0.0006', labels[0])
+        self.assertTrue(labels[1].startswith('Study all 22')); self.assertIn('$0.013', labels[1]); self.assertIn('54 s', labels[1])
+        self.assertEqual(labels[2:], ['Let me pick…', 'Don\'t study'])
+        self.assertTrue(card.options['plan'].isChecked(), 'only what the plan uses is the default')
+        card.go.click()
+        self.assertEqual(self.commands[-1], {'type': 'folder_study', 'action': 'choose', 'choice': 'plan'})
+        card.options['pick'].setChecked(True)
+        items = [self.panel.folder_elements.item(i) for i in range(self.panel.folder_elements.count())]
+        self.assertTrue(all(item.flags() & Qt.ItemFlag.ItemIsUserCheckable for item in items), 'the list gets checkboxes')
+        items[0].setCheckState(Qt.CheckState.Checked); items[2].setCheckState(Qt.CheckState.Checked)
+        self.assertEqual(len(self.commands), 1, 'checking sends nothing')
+        card.go.click()
+        self.assertEqual(self.commands[-1], {'type': 'folder_study', 'action': 'choose', 'choice': 'pick', 'picked': ['assets/01-moonlit-sky.png', 'assets/03-lamps-and-trees.png']})
+        card.options['none'].setChecked(True); card.go.click()
+        self.assertEqual(self.commands[-1], {'type': 'folder_study', 'action': 'choose', 'choice': 'none'})
+        self.assertFalse(any(item.flags() & Qt.ItemFlag.ItemIsUserCheckable for item in items), 'no checkboxes outside Let me pick')
+        card = self.study(count=22, choice='pick', picked=['assets/03-lamps-and-trees.png'])
+        self.assertFalse(card.choice.isVisible(), 'answered: the card goes')
+
+    def test_a_study_only_update_changes_the_rows_in_place_and_ticks_survive_a_rebuild(self):
+        images = {n: 'not_studied' for n in ['final_goal.png'] + [e['name'] for e in INDEX['elements']]}
+        self.study(state='running', done=0, images=images)
+        rows = self.panel.folder_elements
+        rows.item(0).setData(Qt.ItemDataRole.UserRole + 7, 'still me')
+        rows.setCurrentRow(1); rows.editItem(rows.item(1)); app.processEvents()
+        self.assertEqual(rows.state(), QAbstractItemView.State.EditingState)
+        self.study(state='running', done=1, images=dict(images, **{'assets/01-moonlit-sky.png': 'studied'}))
+        self.assertEqual(rows.item(0).data(Qt.ItemDataRole.UserRole + 7), 'still me', 'the rows were not rebuilt')
+        self.assertIn('Studied ✓', rows.item(0).toolTip()); self.assertFalse(rows.item(0).icon().isNull())
+        self.assertEqual(rows.state(), QAbstractItemView.State.EditingState, 'a rename in progress goes on')
+        self.assertEqual(rows.currentRow(), 1)
+        self.assertEqual(self.panel.folder_study.line.text(), 'Studying 4 images… 1/4')
+        rows.closePersistentEditor(rows.item(1)); rows.setCurrentRow(-1)
+        # Let me pick: the artist's ticks survive a rebuild (another event with a changed index).
+        card = self.study(state='idle', total=0, done=0, count=22, needs_choice=True, images=images)
+        card.options['pick'].setChecked(True)
+        rows.item(2).setCheckState(Qt.CheckState.Checked)
+        index = dict(INDEX, elements=[dict(e, guess=e['guess'] + ' (renamed)') for e in INDEX['elements']])
+        self.panel.handle_event({'type': 'folder', 'index': index, 'references': {}, 'study': self.panel.folder_study.last})
+        self.assertEqual(rows.item(2).checkState(), Qt.CheckState.Checked, 'the tick stays')
+        self.assertTrue(rows.item(0).text().endswith('(renamed)'))
+
+    def test_a_big_folder_s_choice_can_be_changed_later(self):
+        card = self.study(count=22, choice='all', big=True)
+        self.assertFalse(card.choice.isVisible())
+        self.assertTrue(card.change.isVisible())
+        card.change.click()
+        self.assertTrue(card.choice.isVisible()); self.assertTrue(card.options['all'].isChecked(), 'the current choice is shown')
+        card.options['none'].setChecked(True); card.go.click()
+        self.assertEqual(self.commands[-1], {'type': 'folder_study', 'action': 'choose', 'choice': 'none'})
+        card = self.study(count=4)
+        self.assertFalse(card.change.isVisible(), 'a small folder has no choice')
 
 if __name__ == '__main__':
     unittest.main()

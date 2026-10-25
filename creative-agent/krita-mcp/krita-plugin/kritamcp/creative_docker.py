@@ -24,6 +24,7 @@ except ImportError:                                       # command_queue is not
 from .protection import ProtectionCraft
 from .feature_guard import FeatureCraft
 from .paint_only_panel import PaintOnlyBar
+from .folder_study_panel import FolderStudyCard
 from .reference_parts import part_image, crop_image, opaque_bounds
 from .qt_compat import Qt, QProcess, QProcessEnvironment, QUrl, QTimer, pyqtSignal, QEvent, QSize, QRectF, scoped, QCoreApplication, QStandardPaths
 from .qt_compat import QToolTip
@@ -1538,6 +1539,10 @@ class CreativeAgentDocker(DockWidget):
         self.folder_elements.setAccessibleName('Element images of the project folder')
         self.folder_elements.setToolTip('The element images, painted in this order. Double-click a name to correct it.')
         self.folder_elements.itemChanged.connect(self.folder_guess_changed); folder_layout.addWidget(self.folder_elements)
+        # Folder study (folder_study_panel.py): the study line, each row's state, the right-click menu, a big folder's choice.
+        self.folder_study = FolderStudyCard(self.send, self.folder_elements); folder_layout.addWidget(self.folder_study)
+        self.folder_elements.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.folder_elements.customContextMenuRequested.connect(self.folder_element_context_menu)
         folder_page.addWidget(self.folder_card); folder_page.addStretch(1)
         self.folder_guesses = {}
         self.plan_bar = QFrame(); self.plan_bar.setObjectName('planBar')
@@ -2342,6 +2347,12 @@ class CreativeAgentDocker(DockWidget):
         if path: self.send({'type': 'open_folder', 'path': path})
 
     def show_folder(self, event):
+        # Only the study changed (its progress, a note): the rows are updated in place, so a rename in progress, the
+        # selection and the scroll stay (folder_study_panel.py).
+        shown = json.dumps({k: v for k, v in event.items() if k not in ('type', 'study')}, sort_keys=True, default=str)
+        if shown == getattr(self, 'folder_shown', None) and not self.folder_card.isHidden() and self.folder_elements.count():
+            self.show_folder_study(event); return
+        self.folder_shown = shown
         index = event.get('index') or {}
         self.folder_root = index.get('root', '')
         self.folder_title.setText('<b>%s</b>' % html.escape(index.get('name') or os.path.basename(self.folder_root)))
@@ -2362,9 +2373,11 @@ class CreativeAgentDocker(DockWidget):
             item = QListWidgetItem(self.folder_guesses[element['name']])
             item.setData(Qt.ItemDataRole.UserRole, element['name'])
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-            item.setToolTip(self.text_tip([element['name']] + ([element['prompt']] if element.get('prompt') else [])))
+            item.setData(Qt.ItemDataRole.UserRole + 1, [element['name']] + ([element['prompt']] if element.get('prompt') else []))   # the tooltip's lines
             self.folder_elements.addItem(item)
-        self.folder_elements.blockSignals(False); self.fit_folder_elements()
+        self.folder_elements.blockSignals(False)
+        self.folder_goal_name = goal['name'] if goal else None
+        self.show_folder_study(event)
         others, skipped = index.get('others') or [], index.get('skipped') or []
         plural = lambda n, word: '%d %s%s' % (n, word, '' if n == 1 else 's')
         limit = event.get('plan_limit')
@@ -2375,6 +2388,17 @@ class CreativeAgentDocker(DockWidget):
             + (['Skipped:'] + ['%s: %s' % (s['name'], s['reason']) for s in skipped] if skipped else [])
         self.folder_footer.setToolTip(self.text_tip(tip) if tip else '')
         self.folder_card.show(); self.tabs.setTabVisible(self.folder_tab, True)
+
+    def show_folder_study(self, event):
+        """The study's state on the Folder tab: the study line and each row's mark and tooltip, in place."""
+        study = event.get('study')
+        self.folder_elements.blockSignals(True)
+        for i in range(self.folder_elements.count()):
+            item = self.folder_elements.item(i)
+            state = FolderStudyCard.image_words(((study or {}).get('images') or {}).get(item.data(Qt.ItemDataRole.UserRole))) if study else ''
+            item.setToolTip(self.text_tip(list(item.data(Qt.ItemDataRole.UserRole + 1) or []) + ([state] if state else [])))
+        self.folder_elements.blockSignals(False)
+        self.folder_study.show_study(study, getattr(self, 'folder_goal_name', None)); self.fit_folder_elements()
 
     def folder_goal_chosen(self, _index=None):
         name = self.folder_goal_choice.currentData()
@@ -2428,12 +2452,20 @@ class CreativeAgentDocker(DockWidget):
         count = self.folder_elements.count()
         rows = sum(self.folder_elements.sizeHintForRow(i) for i in range(count))
         self.folder_elements.setFixedHeight(rows + 2 * self.folder_elements.frameWidth() + 2 if count else 0)
-        self.folder_elements.setVisible(bool(count) and not (self.goal or {}).get('brief'))
+        self.folder_elements.setVisible(bool(count) and (not (self.goal or {}).get('brief') or self.folder_study.shows_states()))   # the study's states show there
 
     @staticmethod
     def text_tip(lines):
         """A tooltip of plain lines (file names may hold < or &): escaped inside rich text, so nothing is read as markup."""
         return '<p style="white-space:pre-wrap">%s</p>' % '<br>'.join(html.escape(str(line)) for line in lines)
+
+    def folder_element_menu(self, item):
+        """A row's study menu (folder_study_panel.py): Study, Exclude or Include."""
+        return self.folder_study.menu_for(item, self)
+
+    def folder_element_context_menu(self, position):
+        item = self.folder_elements.itemAt(position)
+        if item is not None: self.folder_element_menu(item).exec(self.folder_elements.viewport().mapToGlobal(position))
 
     def folder_guess_changed(self, item):
         name = item.data(Qt.ItemDataRole.UserRole)
@@ -2646,7 +2678,7 @@ class CreativeAgentDocker(DockWidget):
         self.flush_stream()
         self.transcript.clear()
         self.current_reply = None; self.reply_open = False
-        self.folder_card.hide(); self.folder_guesses = {}; self.folder_elements.clear(); self.clear_folder_masses()
+        self.folder_card.hide(); self.folder_guesses = {}; self.folder_elements.clear(); self.clear_folder_masses(); self.folder_study.clear(); self.folder_shown = None
         self.plan_steps.show_steps([]); self.tabs.setTabVisible(self.plan_tab, False); self.tabs.setTabVisible(self.folder_tab, False)
         self.tabs.setCurrentIndex(self.chat_tab)
         self.goal = None; self.plan_bar.hide(); self.move_bar.hide(); self.current_move = None; self.question_id = None; self.question_controls = []; self.closeup_question_id = None; self.closeup_controls = []

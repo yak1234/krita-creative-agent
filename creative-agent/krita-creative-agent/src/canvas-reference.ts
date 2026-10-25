@@ -9,9 +9,12 @@
 //     -> the canvas as observed goes to the image model (the `assets` setting: Codex by default) with an edit prompt that
 //        keeps everything else identical; "in <part>" limits the comparison to Find it's outline of the part
 //     -> a card beside the chat: the canvas and the reference side by side, the changed area outlined in red
-//        [Use as the target] [Try again] [Discard]; never answered by Auto-approve (auto-approve.ts NEVER_AUTO_APPROVE)
+//        [Use as the target] [Use as the new goal] [Try again] [Discard]; never answered by Auto-approve
+//        (auto-approve.ts NEVER_AUTO_APPROVE); Use as the new goal only when the chat has a goal picture
 //     -> Use as the target: the difference area becomes the move's Paint only here area (Krita blocks every write outside
 //        it) and the move paints toward the reference there (referenceMoveNote); faces and everything outside stay.
+//     -> Use as the new goal: the same move, and the change is pasted into the goal picture first (goal-edit.ts), so
+//        later moves keep it; /original-goal goes back.
 //
 // The difference area (differenceMask), at the comparison size (the canvas view, at most MASK_RULES.side on its long side):
 //   1. tone: each channel of the reference is shifted by its median difference to the canvas, then fitted to it (gain
@@ -34,7 +37,7 @@ export type Rect = [number, number, number, number];
 export type Rgba = { width: number; height: number; data: Uint8Array };
 export type Mask = { width: number; height: number; data: Uint8Array; share: number; bounds: Rect | null };
 
-export const CANVAS_REFERENCE_OPTIONS = Object.freeze({ use: 'Use as the target', retry: 'Try again', discard: 'Discard' } as const);
+export const CANVAS_REFERENCE_OPTIONS = Object.freeze({ use: 'Use as the target', goal: 'Use as the new goal', retry: 'Try again', discard: 'Discard' } as const);
 export type CanvasReferenceAction = keyof typeof CANVAS_REFERENCE_OPTIONS;
 /** A difference over more of the canvas than this: the model changed a lot (a narrower instruction or an area helps). */
 export const WIDE_SHARE = 0.6;
@@ -272,7 +275,7 @@ const aspectOf = (w: number, h: number): string => {
 
 export type CanvasReferenceRecord = {
   id: string; instruction: string; part: string | null; step_key?: string;
-  state: 'ready' | 'used' | 'discarded' | 'replaced';
+  state: 'ready' | 'used' | 'discarded' | 'replaced'; goal?: boolean;
   reference_path: string; reference_size: [number, number]; compare_path: string; mask_path: string; mask_size: [number, number];
   canvas: [number, number]; share: number; bounds: Rect | null; wide: boolean; model: string; made_at: string; asset_id?: string;
 };
@@ -311,6 +314,10 @@ export type CanvasReferenceHost = {
   busy(): boolean;
   /** Use as the target: paint toward the reference inside `area`. */
   use(record: CanvasReferenceRecord, area: UseArea): Promise<void>;
+  /** The chat has a goal picture the change can be pasted into (Use as the new goal is offered). */
+  hasGoal?(): boolean;
+  /** Use as the new goal: paste the reference inside `area` (canvas pixels) into the goal picture. */
+  makeGoal?(record: CanvasReferenceRecord, area: { bounds: Rect; plane: Plane }): Promise<void>;
   /** Discard: the card is gone (a plan step it held paints without it). */
   discarded?(record: CanvasReferenceRecord): Promise<void>;
 };
@@ -343,7 +350,8 @@ export function canvasReferencer(host: CanvasReferenceHost) {
     if (record.wide) lines.push(`The model changed a lot (${percent(record.share)}% of the canvas): try a narrower instruction, or name an area (… in the sky).`);
     if (record.step_key) lines.push('The plan step waits for your answer: it paints after it, toward the reference when you use it.');
     lines.push(...notes);
-    const options = record.bounds ? [CANVAS_REFERENCE_OPTIONS.use, CANVAS_REFERENCE_OPTIONS.retry, CANVAS_REFERENCE_OPTIONS.discard] : [CANVAS_REFERENCE_OPTIONS.retry, CANVAS_REFERENCE_OPTIONS.discard];
+    const options = record.bounds ? [CANVAS_REFERENCE_OPTIONS.use, ...(host.makeGoal && host.hasGoal?.() ? [CANVAS_REFERENCE_OPTIONS.goal] : []),
+      CANVAS_REFERENCE_OPTIONS.retry, CANVAS_REFERENCE_OPTIONS.discard] : [CANVAS_REFERENCE_OPTIONS.retry, CANVAS_REFERENCE_OPTIONS.discard];
     host.emit({ type: 'canvas_reference', id: record.id, title: 'Canvas reference', message: lines.join('\n\n'), image_path: record.compare_path,
       options, actions: options.map(label => (Object.keys(CANVAS_REFERENCE_OPTIONS) as CanvasReferenceAction[]).find(k => CANVAS_REFERENCE_OPTIONS[k] === label)),
       share: record.share, wide: record.wide, bounds: record.bounds, auto_approve: false });
@@ -401,16 +409,21 @@ export function canvasReferencer(host: CanvasReferenceHost) {
     } else if (action === 'retry') {
       record.state = 'replaced'; await drop(record); await host.persist();
       await start({ instruction: record.instruction, part: record.part, ...(record.step_key ? { step_key: record.step_key } : {}) });
-    } else if (action === 'use') {
+    } else if (action === 'use' || (action === 'goal' && host.makeGoal)) {
       if (!record.bounds) { say('The reference shows no change to paint.'); return; }
       if (host.busy()) { say('A move is painting: stop it or wait for it, then press Use as the target.'); card(record, []); return; }
       const [w, h] = record.mask_size, plane = decodePlane(await readFile(record.mask_path), { width: w, height: h });
       const area = canvasMask({ ...plane, ...measure(plane.data, w, h) }, record.canvas);
       const file = join(host.study!.directory, FOLDER, record.id, 'area.png');
       await writeFile(file, encodePlane(area.plane));
+      if (action === 'goal') {
+        // A goal that cannot be changed never stops the move: it paints toward the reference for this move only.
+        try { await host.makeGoal!(record, { bounds: area.bounds, plane: area.plane }); record.goal = true; }
+        catch (error) { say(`${(error as Error).message} The reference is the target for this move only.`); }
+      }
       record.state = 'used'; await host.persist(); host.publish();
       await host.use(record, { mask_path: file, bounds: area.bounds, canvas: record.canvas, share: area.share });
-    } else throw new Error('A canvas reference is used, tried again or discarded.');
+    } else throw new Error('A canvas reference is used, made the new goal, tried again or discarded.');
   }
 
   return { start, answer };

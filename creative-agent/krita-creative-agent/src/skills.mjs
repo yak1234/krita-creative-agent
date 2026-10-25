@@ -36,7 +36,7 @@ export function listSkills(directory = SKILLS_DIR) {
 // The short commands (skill-commands.ts: /colour, /refine) expand as /skill:<their skill>.
 export function expandSkillCommand(text, directory = SKILLS_DIR) {
   const short = skillCommand(text);
-  if (short) return expandSkillCommand('/skill:' + short.skill + (short.rest ? ' ' + short.rest : ''), directory);
+  if (short) return short.skill ? expandSkillCommand('/skill:' + short.skill + (short.rest ? ' ' + short.rest : ''), directory) : text;
   const match = /^\/(skill:)?([a-z0-9-]+)(?:\s+([\s\S]*))?$/.exec(text?.trim() ?? '');
   if (!match) return text;
   const skill = listSkills(directory).find(s => s.name === match[2]);

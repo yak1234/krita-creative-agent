@@ -111,14 +111,14 @@ test('the compare picture: the canvas and the reference side by side, the change
 
 // ----- the card ---------------------------------------------------------------------------------------------------------
 
-async function fakeHost({ changed = [[100, 40, 40, 30]], wide = false, backend = 'codex', busy = false } = {}) {
+async function fakeHost({ changed = [[100, 40, 40, 30]], wide = false, backend = 'codex', busy = false, goalPhoto = false, goalFails = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'canvas-reference-'));
   const canvas = picture(200, 150), view = join(directory, 'view.png');
   await writeFile(view, encodeRgba(canvas));
-  const events = [], generated = [], used = [], discarded = [];
+  const events = [], generated = [], used = [], discarded = [], goals = [];
   const goal = { limits: { ai_images: 3 }, ai_images_used: 0 };
   const host = {
-    study: { directory }, goal, events, generated, used, discarded,
+    study: { directory }, goal, events, generated, used, discarded, goals,
     backend: () => backend,
     allowance() { if (goal.ai_images_used >= goal.limits.ai_images) throw new Error('This chat\'s AI image allowance (3) is used up.'); },
     observe: async () => ({ image_path: view, width: 800, height: 600 }),
@@ -135,6 +135,7 @@ async function fakeHost({ changed = [[100, 40, 40, 30]], wide = false, backend =
     busy: () => busy,
     async use(record, area) { used.push({ record, area }); },
     async discarded(record) { discarded.push(record); },
+    ...(goalPhoto ? { hasGoal: () => true, async makeGoal(record, area) { if (goalFails) throw new Error('The goal image could not be read.'); goals.push({ record, area }); } } : {}),
   };
   return { host, directory, close: () => rm(directory, { recursive: true, force: true }) };
 }
@@ -315,4 +316,39 @@ test('a used canvas reference is the likeness target over the whole canvas; neve
   for (const state of ['ready', 'discarded', 'replaced']) assert.equal(referencePlacement({ ...record, state }, { width: 1448, height: 1086 }), null, state);
   assert.equal(referencePlacement(record, { width: 6000, height: 4500 }), null, 'the canvas was resized since');
   assert.equal(referencePlacement(null, { width: 1448, height: 1086 }), null);
+});
+
+test('Use as the new goal: offered when the chat has a goal picture; it changes the goal, then paints like Use', async () => {
+  const { host, close } = await fakeHost({ goalPhoto: true });
+  try {
+    const referencer = canvasReferencer(host);
+    await referencer.start({ instruction: 'add more ghosts', part: null });
+    const [card] = cards(host);
+    assert.deepEqual(card.options, ['Use as the target', 'Use as the new goal', 'Try again', 'Discard']);
+    assert.deepEqual(card.actions, ['use', 'goal', 'retry', 'discard']);
+    await referencer.answer({ id: card.id, action: 'goal' });
+    assert.equal(host.goals.length, 1);
+    const { area } = host.goals[0];
+    assert.equal(area.plane.width, area.bounds[2]); assert.equal(area.plane.data.length, area.bounds[2] * area.bounds[3], 'the area at canvas size');
+    assert.equal(host.used.length, 1, 'then the move paints toward it');
+    assert.deepEqual(host.used[0].area.bounds, area.bounds);
+    assert.equal(host.goal.canvas_references[card.id].state, 'used'); assert.equal(host.goal.canvas_references[card.id].goal, true);
+  } finally { await close(); }
+  const plain = await fakeHost();
+  try {
+    await canvasReferencer(plain.host).start({ instruction: 'add more ghosts', part: null });
+    assert.ok(!cards(plain.host)[0].options.includes('Use as the new goal'), 'no goal picture: only this move');
+  } finally { await plain.close(); }
+});
+
+test('when the goal cannot be changed the move still paints toward the reference, and says why', async () => {
+  const { host, close } = await fakeHost({ goalPhoto: true, goalFails: true });
+  try {
+    const referencer = canvasReferencer(host);
+    await referencer.start({ instruction: 'add more ghosts', part: null });
+    await referencer.answer({ id: cards(host)[0].id, action: 'goal' });
+    assert.equal(host.used.length, 1);
+    assert.equal(host.goal.canvas_references[cards(host)[0].id].goal, undefined);
+    assert.ok(host.events.some(e => e.type === 'action' && /goal image could not be read.*this move only/i.test(e.message)));
+  } finally { await close(); }
 });

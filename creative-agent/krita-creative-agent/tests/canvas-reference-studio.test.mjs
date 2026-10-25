@@ -6,13 +6,14 @@ import { recordingTracing } from './fake-langfuse.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { StudioRuntime } from '../src/studio.mjs';
 import { encodeRgba } from '../src/shapes/png.ts';
+import { decodeRgba } from '../src/png-rgba.ts';
 
 const call = (name, args) => ({ tool_calls: [{ index: 0, id: 'call-' + Math.random().toString(36).slice(2), type: 'function', function: { name, arguments: JSON.stringify(args) } }] });
 function picture(w, h, patch) {
@@ -95,7 +96,7 @@ test('/canvas-reference makes the card and paints nothing; Use as the target pai
     assert.equal(h.runtime.goal.ai_images_used, 1);
     assert.ok(h.runtime.goal.messages.some(m => m.role === 'user' && m.text === '/canvas-reference add more ghosts and ghost-like lighting'), 'the transcript keeps what was typed');
     const [card] = cards(h);
-    assert.deepEqual(card.options, ['Use as the target', 'Try again', 'Discard']);
+    assert.deepEqual(card.options, ['Use as the target', 'Use as the new goal', 'Try again', 'Discard'], 'the chat has a goal picture');
     assert.equal(card.auto_approve, false); assert.match(card.message, /ChatGPT/);
     assert.ok(!h.calls.some(c => c.operation === 'paint_only_here'), 'nothing set on the painting yet');
 
@@ -181,5 +182,32 @@ test('Preview additions: Discard paints the Add step without a reference; the st
     assert.doesNotMatch(JSON.stringify(painted[0].messages), /CANVAS REFERENCE: the artist approved/);
     assert.ok(!h.calls.some(c => c.operation === 'paint_only_here'));
     assert.equal(h.images.length, 1, 'previewed once');
+  } finally { await h.close(); }
+});
+
+test('Use as the new goal pastes the change into the goal picture, paints toward it, and /original-goal goes back', { timeout: 60000 }, async () => {
+  const { h, painted } = await agentChat((req, n) => n === 1 ? call('finish_move', { summary: 'Painted the ghosts.' }) : { content: 'Done.' });
+  try {
+    const goal = h.runtime.study.references.find(r => r.purpose === 'general'), started = goal.path;
+    await h.runtime.prompt('/canvas-reference add more ghosts and ghost-like lighting');
+    const [card] = cards(h);
+    await h.runtime.canvasReference.answer({ id: card.id, action: 'goal' });
+    assert.notEqual(goal.path, started); assert.match(goal.path, /goal-edits/);
+    assert.equal(goal.id, h.runtime.study.references.find(r => r.purpose === 'general').id, 'the same goal, its picture changed');
+    const before = decodeRgba(await readFile(started)), after = decodeRgba(await readFile(goal.path));
+    assert.deepEqual([after.width, after.height], [200, 150], 'the goal\'s own size');
+    const px = (img, x, y) => [...img.data.subarray((y * img.width + x) * 4, (y * img.width + x) * 4 + 3)];
+    // The change, white on the reference at [100, 40, 40, 30] of 200 x 150, lands at the same place on the goal.
+    assert.deepEqual(px(after, 120, 55), [250, 250, 250], 'inside the change: the reference');
+    assert.deepEqual(px(after, 20, 120), px(before, 20, 120), 'far from it: the goal untouched');
+    assert.ok(painted.length >= 1, 'the move paints toward it, as Use does');
+    assert.ok(h.events.some(e => e.type === 'action' && /goal picture now includes this change/.test(e.message)));
+    const moved = painted.length;
+    await h.runtime.prompt('/original-goal');
+    assert.equal(goal.path, started, 'back to the picture the chat started from');
+    assert.ok(h.events.some(e => e.type === 'action' && /original goal picture again/.test(e.message)));
+    await h.runtime.prompt('/original-goal');
+    assert.ok(h.events.some(e => e.type === 'action' && /never changed/.test(e.message)));
+    assert.equal(painted.length, moved, '/original-goal never reaches the painter');
   } finally { await h.close(); }
 });

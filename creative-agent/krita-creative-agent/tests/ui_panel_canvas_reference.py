@@ -2,7 +2,7 @@
 ui_panel_auto_approve: it stubs krita for the whole process. The canvas reference card (canvas-reference.ts; the artist,
 2026-10-25: "not make the edits but make a reference generation of what the edit would look like"): the canvas and the
 reference side by side in one picture, the card's notes (the change's share, a warning when it changed a lot, where the
-canvas was sent) always visible, and Use as the target / Try again / Discard, each sending the card's answer once. It is
+canvas was sent) always visible, and Use as the target / Use as the new goal / Try again / Discard, each sending the card's answer once. It is
 never answered by Auto-approve, even set to Immediately. The clock is faked; the picture is written to a temporary
 folder that is removed. No dialog opens and no profile is touched (Qt's test mode for standard paths)."""
 import json
@@ -43,7 +43,8 @@ QProcess = module.QProcess
 FIELD = {'key': 'auto_approve', 'label': 'Auto-approve', 'accessible': 'Auto-approve', 'tooltip': 't', 'note': '', 'control': 'combo',
          'options': [{'value': 'off', 'label': 'Off'}, {'value': 0, 'label': 'Immediately'}, {'value': 10, 'label': '10 s'},
                      {'value': 30, 'label': '30 s'}, {'value': 60, 'label': '60 s'}]}
-OPTIONS = ['Use as the target', 'Try again', 'Discard']
+OPTIONS = ['Use as the target', 'Use as the new goal', 'Try again', 'Discard']
+ACTIONS = ['use', 'goal', 'retry', 'discard']
 MESSAGE = ('A reference of “add more ghosts”: the canvas (left) and the reference (right). The change covers 18% of the canvas, '
            'outlined in red. Nothing is painted until you use it.\n\nYour canvas was sent to ChatGPT (your Codex sign-in) to make this picture.')
 
@@ -83,7 +84,7 @@ class PanelCanvasReference(unittest.TestCase):
 
     def card(self, **extra):
         event = dict({'type': 'canvas_reference', 'id': 'r1', 'title': 'Canvas reference', 'message': MESSAGE, 'image_path': self.picture,
-                      'options': OPTIONS, 'actions': ['use', 'retry', 'discard'], 'share': 0.18, 'wide': False, 'auto_approve': False}, **extra)
+                      'options': OPTIONS, 'actions': ACTIONS, 'share': 0.18, 'wide': False, 'auto_approve': False}, **extra)
         self.panel.handle_event(event); app.processEvents()
         return [b for b in self.panel.canvas_reference_controls]
 
@@ -93,7 +94,7 @@ class PanelCanvasReference(unittest.TestCase):
     def texts(self):
         return [label.text() for label in self.panel.findChildren(QLabel) if label.isVisible()]
 
-    def test_the_card_shows_both_pictures_its_notes_and_three_answers(self):
+    def test_the_card_shows_both_pictures_its_notes_and_its_answers(self):
         buttons = self.card()
         self.assertEqual([b.text() for b in buttons], OPTIONS)
         pictures = [l for l in self.panel.findChildren(QLabel) if l.objectName() == 'questionImage' and l.isVisible()]
@@ -109,7 +110,7 @@ class PanelCanvasReference(unittest.TestCase):
         self.assertFalse([t for t in self.texts() if t.startswith('Auto-approve:')])
 
     def test_each_answer_is_sent_once(self):
-        for action, index in (('use', 0), ('retry', 1), ('discard', 2)):
+        for action, index in (('use', 0), ('goal', 1), ('retry', 2), ('discard', 3)):
             self.commands.clear()
             buttons = self.card(id='r-' + action)
             buttons[index].click(); app.processEvents()

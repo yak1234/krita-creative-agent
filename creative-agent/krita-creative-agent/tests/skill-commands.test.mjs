@@ -17,10 +17,10 @@ test('the short commands expand to their skill plus the artist\'s text', () => {
   assert.equal(expandSkillCommand('trace the outline'), 'trace the outline');
 });
 
-test('one table: every command names a bundled skill and has a one-line description', () => {
+test('one table: every command names a bundled skill (or is one the studio answers) and has a one-line description', () => {
   const skills = listSkills().map(s => s.name);
   for (const c of SKILL_COMMANDS) {
-    assert.ok(skills.includes(c.skill), c.name);
+    assert.ok(c.skill ? skills.includes(c.skill) : c.action === 'original_goal', c.name);
     assert.ok(c.description.length > 20 && c.description.length <= 120 && !c.description.includes('\n'), c.name);
   }
   assert.equal(skillCommand('/trace the moon'), null, '/trace is gone with visible tracing (crisp-accents)');
@@ -31,9 +31,9 @@ test('one table: every command names a bundled skill and has a one-line descript
 test('the slash menu lists the short commands, then /skill:<name> for every bundled skill', () => {
   const skills = listSkills();
   const menu = slashMenu(skills);
-  assert.deepEqual(menu.slice(0, 3).map(m => m.command), ['/colour', '/refine', '/canvas-reference'], 'no /trace in the menu');
+  assert.deepEqual(menu.slice(0, 4).map(m => m.command), ['/colour', '/refine', '/canvas-reference', '/original-goal'], 'no /trace in the menu');
   assert.deepEqual(menu.find(m => m.command === '/colour').aliases, ['/color', '/from-reference']);
-  assert.deepEqual(menu.slice(3).map(m => m.command), skills.map(s => '/skill:' + s.name));
+  assert.deepEqual(menu.slice(4).map(m => m.command), skills.map(s => '/skill:' + s.name));
   for (const m of menu) assert.ok(m.description && !m.description.includes('\n'), m.command);
 });
 
@@ -64,4 +64,11 @@ test('/canvas-reference is a command the studio answers itself: it previews an e
   assert.equal(command.rest, 'add more ghosts in the sky');
   assert.equal(skillCommand('/preview more snow').name, 'canvas-reference', 'its short alias');
   assert.match(SKILL_COMMANDS.find(c => c.name === 'canvas-reference').description, /reference/);
+});
+
+test('/original-goal is a command the studio answers itself: back to the goal picture the chat started from', () => {
+  const command = skillCommand('/original-goal');
+  assert.equal(command.name, 'original-goal'); assert.equal(command.action, 'original_goal'); assert.equal(command.skill, undefined);
+  assert.match(SKILL_COMMANDS.find(c => c.name === 'original-goal').description, /original goal/i);
+  assert.equal(expandSkillCommand('/original-goal'), '/original-goal', 'no skill: left as typed for the studio');
 });

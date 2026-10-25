@@ -75,6 +75,8 @@ import { open as openFile } from 'node:fs/promises';
 import { canvasReferencer, canvasReferenceRequest, referenceMoveNote, referencePlacement } from './canvas-reference.ts';
 import { assertAiImageAllowed, assetBackend, attachAsset, pngFromImage, requestAssetImage } from './assets.mjs';
 import { decodeRgba } from './png-rgba.ts';
+import { blendIntoGoal, adoptEditedGoal, originalGoal } from './goal-edit.ts';
+import { encodeRgba } from './shapes/png.ts';
 
 /** A Find it failure for the diagnostics: the message as the panel showed it, the FindError's code, and why the decision
  * model gave no answer (its fallback, HTTP status or error name, time and the picture it was sent) when that was it. */
@@ -351,6 +353,8 @@ export class StudioRuntime extends PaintingRuntime {
       publish: () => this.publish(),
       busy: () => this.busy,
       use: (record, area) => this.useCanvasReference(record, area),
+      hasGoal: () => !!pictureGoal(this.study?.references, this.decisionObservation ?? this.lastObservation ?? this.canvasContext?.canvas),
+      makeGoal: (record, area) => this.makeGoalFromReference(record, area),
       discarded: async record => {
         const held = this.referenceHeld?.id === record.id ? this.referenceHeld : null;
         if (!held) return;
@@ -366,6 +370,37 @@ export class StudioRuntime extends PaintingRuntime {
     if (direct) return direct;
     const png = await pngFromImage(this, data).catch(() => null);
     return png ? decodeRgba(png, undefined, {ignoreColour:true}) : null;
+  }
+  /** Use as the new goal (goal-edit.ts): the reference inside the difference area pasted into the goal picture through the
+   * goal's placement on this canvas, written in the chat's folder (never over the artist's file), and the goal swapped. */
+  async makeGoalFromReference(record, area) {
+    const canvas = {width:record.canvas[0], height:record.canvas[1]}, goal = pictureGoal(this.study.references, canvas);
+    const placed = goal && await this.goalPlacement(canvas);
+    if (!goal || placed?.reference.id !== goal.id) throw new Error('This chat has no goal picture to change.');
+    const data = await readFile(goal.path);
+    const pixels = decodeRgba(data) ?? await this.callNative('decode_reference', {image_base64:data.toString('base64'), sha256:createHash('sha256').update(data).digest('hex')})
+      .then(d => ({width:d.width, height:d.height, data:Buffer.from(d.rgba_base64, 'base64')})).catch(() => null);
+    const reference = await this.decodeImage(await readFile(record.reference_path));
+    if (!pixels || !reference) throw new Error('The goal picture could not be read.');
+    if (pixels.width !== goal.width || pixels.height !== goal.height) throw new Error('The goal picture is not the size the chat knows.');
+    const folder = join(this.study.directory, 'goal-edits'), file = join(folder, record.id + '.png');
+    await mkdir(folder, {recursive:true});
+    await writeFile(file, encodeRgba(blendIntoGoal(pixels, reference, area, record.canvas, placed.mapping)));
+    adoptEditedGoal(goal, file, record.id, stamp());
+    await this.goalPictureChanged();
+    this.emit({type:'action', seconds:0, message:'The goal picture now includes this change, so later moves keep it. Type /original-goal to go back.'});
+  }
+  /** /original-goal: the goal picture the chat started from (or its sharpened copy), after Use as the new goal. */
+  async restoreOriginalGoal() {
+    const goal = pictureGoal(this.study.references, this.decisionObservation ?? this.lastObservation ?? this.canvasContext?.canvas);
+    if (!goal || !originalGoal(goal)) { this.emit({type:'action', seconds:0, message:'The goal picture was never changed in this chat.'}); return; }
+    await this.goalPictureChanged();
+    this.emit({type:'action', seconds:0, message:'The goal is the original goal picture again.'});
+  }
+  /** Whatever was read from the goal picture is read again (as after Sharpen: sharpenHost goalChanged). */
+  async goalPictureChanged() {
+    this.likenessGoal = null; this.startMassMaps(); this.emitFolder();
+    await this.persist(); this.publish();
   }
   /** Use as the target (canvas-reference.ts): the reference becomes a reference asset, the difference area the move's Paint
    * only here area (protected on the painting, `auto` so it ends with the move), and a move paints toward it there: the
@@ -3470,6 +3505,7 @@ export class StudioRuntime extends PaintingRuntime {
       // A request held for the Sharpen goal card (holdForSharpen) is in the transcript already.
       const message = command.sharpen_resumed || command.reference_resumed ? this.goal.messages.findLast(m => m.role === 'user') : await this.remember('user', text,command.message_id);
       // /canvas-reference (canvas-reference.ts): the studio's own command; the card waits for the artist, nothing paints.
+      if (skillCommand(text)?.action === 'original_goal') { await this.restoreOriginalGoal(); this.setActivity('idle', 'Ready for your next message.'); return; }
       const referenceAsk = canvasReferenceRequest(text);
       if (referenceAsk) {
         const made = await this.canvasReference.start(referenceAsk);

@@ -9,15 +9,17 @@
 export type SkillCommand = {
   name: string;
   aliases: readonly string[];
-  skill: string;
+  /** The skill it expands to; none for a command the studio answers without the painter. */
+  skill?: string;
   description: string;
   /** The Agent move the command starts: guides draws guides only (studio.mjs). */
   move_kind?: 'guides';
   /** Listed only while this is available: guides needs our Krita and the Guides setting. */
   needs?: 'guides';
   /** The studio answers the command itself, never the painter: canvas_reference makes a reference picture of an edit
-   * (canvas-reference.ts); its skill is what the painter reads when it paints toward it. */
-  action?: 'canvas_reference';
+   * (canvas-reference.ts); its skill is what the painter reads when it paints toward it. original_goal puts back the goal
+   * picture a canvas reference changed (goal-edit.ts). */
+  action?: 'canvas_reference' | 'original_goal';
 };
 
 export const SKILL_COMMANDS: readonly SkillCommand[] = Object.freeze([
@@ -28,6 +30,8 @@ export const SKILL_COMMANDS: readonly SkillCommand[] = Object.freeze([
   // The artist, 2026-10-25: "not make the edits but make a reference generation of what the edit would look like".
   { name: 'canvas-reference', aliases: ['preview'], skill: 'canvas-reference', action: 'canvas_reference',
     description: 'Preview an edit: an image model shows the canvas changed as a reference; nothing is painted until you use it.' },
+  { name: 'original-goal', aliases: [], action: 'original_goal',
+    description: 'Go back to the original goal picture after a canvas reference was used as the new goal.' },
 ]);
 
 /** The short command that starts the artist's message, and the text after it; null for anything else. Any case, and

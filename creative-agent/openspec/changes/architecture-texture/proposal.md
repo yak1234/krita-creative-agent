@@ -57,6 +57,15 @@ layer (no blend, mask, perspective or colour handling); it is not used, only its
    older plan, a step added later) asks the model at paint time. Ids are validated against the catalogue; unknown ones
    are dropped and reported.
 
+8. **Brushwork patterns from the goal.** The artist, 2026-10-25 ("isn't krita patterns from image exactly what we
+   need"; "sure"). For each architectural part, the goal image cut at the part's found area (Find it) becomes a pattern
+   of the goal's own brushwork: the crop is high-passed (its light and shading removed, keeping the stroke grain), made
+   seamless (offset and blend the edges) and registered with Krita.createPattern() as "Goal brushwork: <part>". The
+   part's form strokes carry it as their brush texture, so the painting takes the goal's impasto rhythm; the library
+   material (goals 1, 6) adds full-size material detail the small goal lacks (New Moscow's goal is 1448 px wide for a
+   6000 px canvas; a Sharpen-ed goal is used when there is one). The plan names both per step (goal 7). A part too
+   small or too flat to give a pattern (measured: too little high-pass energy) falls back to the library alone.
+
 ## Non-goals
 
 - No photo pasted as a visible layer; no AI image generation.

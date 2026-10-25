@@ -53,7 +53,8 @@ export const UNDO_CAP = 2;
 const line = (value: Record<string, unknown>) => ({ type: 'text' as const, text: JSON.stringify({ goal_likeness: value }) });
 const WHY: Record<Exemption, string> = { accents: 'accents are small by design',
   finish: 'the finish repaints the underpainting from the goal by design (the artist approved its look)', transfer: 'it is a colour transfer from a reference',
-  departure: 'the artist asked for a change from the reference', layer_settings: 'it changes layer settings, not only paint' };
+  departure: 'the artist asked for a change from the reference', layer_settings: 'it changes layer settings, not only paint',
+  effect: 'it is weather the artist asked for (snow), which the goal image does not have' };
 const UNPROTECTED = 'this chat has no kept whole-picture transfer of the goal to protect';
 /** ΔE finds the batch clearly better (review, 2026-10-24): its changed area got closer to the goal by a just-noticeable
  * difference or more, or more of its cells got clearly better than clearly worse. Luna is not asked: never undone. */

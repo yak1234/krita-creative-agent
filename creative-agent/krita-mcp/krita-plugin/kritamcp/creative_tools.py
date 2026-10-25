@@ -35,6 +35,7 @@ from .material_stamp import MaterialCraft, RESOURCE_PREFIX as STAMP_RESOURCE_PRE
 from .accent_adjust import AccentCraft
 from .finish_pass import FinishCraft
 from .texture_craft import TextureCraft
+from .snow_craft import SnowCraft
 from .brushwork_pattern import BrushworkCraft
 from .area_compare import AreaCompare
 from .guide_craft import GuideCraft
@@ -94,7 +95,7 @@ def wait_for_krita(seconds):
 # later results and `save_status`. Actions after the copy stay unsaved. Without the helper, before the painting is its
 # own file, and at the end of a chat, the save is synchronous as before.
 # Pass kinds that add a new agent layer or mask.
-NEW_CONTRIBUTIONS = ('paint_pass', 'guide', 'create_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'flatten_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp', 'accents', 'finish', 'texture') + TOOL_OPERATIONS
+NEW_CONTRIBUTIONS = ('paint_pass', 'guide', 'create_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'flatten_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp', 'accents', 'finish', 'texture', 'snow') + TOOL_OPERATIONS
 CHECKPOINT_SECONDS = 180
 # Operations that paint as one fork stroke job: waited on by the job itself, never by Document.waitForDone.
 STROKE_JOBS = ('paint_pass', 'draw_guide')
@@ -125,7 +126,7 @@ def merge_pass_record_error(result, error):
             'error': result['error'] + ' (' + note + ')' if result.get('error') else note}
 
 
-class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, FlattenCraft, ProtectionCraft, FeatureCraft, NativeCraft, MaterialCraft, ToolCraft, GuideCraft, AccentCraft, FinishCraft, TextureCraft, BrushworkCraft, AreaCompare):
+class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, FlattenCraft, ProtectionCraft, FeatureCraft, NativeCraft, MaterialCraft, ToolCraft, GuideCraft, AccentCraft, FinishCraft, TextureCraft, SnowCraft, BrushworkCraft, AreaCompare):
     def cmd_creative(self, request):
         fields(request, ('operation', 'session_id', 'operation_id', 'params'), ('operation', 'params'))
         operation = request['operation']
@@ -616,7 +617,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             self._creative_store_operations(session)
             return dict(self._creative_observe(doc, session), unresolved_operations=[],
                         committed_operation_count=self._creative_committed_count(session))
-        if operation not in ('paint_pass', 'adjust_layer', 'painting_toolbox', 'review_pass', 'create_layer', 'set_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'flatten_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp', 'accents', 'finish', 'texture', 'draw_guide') + TOOL_OPERATIONS:
+        if operation not in ('paint_pass', 'adjust_layer', 'painting_toolbox', 'review_pass', 'create_layer', 'set_layer', 'fill_region', 'apply_filter', 'colorize_flats', 'transform_layer', 'comic_page', 'letter', 'merge_passes', 'flatten_passes', 'krita_action', 'clone_layer', 'split_by_color', 'stamp', 'accents', 'finish', 'texture', 'snow', 'draw_guide') + TOOL_OPERATIONS:
             raise ValueError('Unsupported creative operation')
         self._guide_refuse_target(doc, session, operation, params)
         operation_id = text(request.get('operation_id'), 'operation_id', 100)
@@ -721,6 +722,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
             self._finish_validate(doc, session, params)
         elif operation == 'texture':
             self._texture_validate(doc, session, params)
+        elif operation == 'snow':
+            self._snow_validate(doc, session, params)
         elif operation == 'draw_guide':
             if not on_fork():
                 raise ValueError('Guides need our Krita (the fork), which paints them on a layer of their own.')
@@ -807,6 +810,8 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 result.update(self._finish_apply(doc, session, params, result))
             elif operation == 'texture':
                 result.update(self._texture_apply(doc, session, params, result))
+            elif operation == 'snow':
+                result.update(self._snow_apply(doc, session, params, result))
             elif operation == 'draw_guide':
                 result.update(self._guide_draw(doc, session, params, result))
             elif operation in TOOL_OPERATIONS:
@@ -924,7 +929,7 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
                 self._creative_settle_containers(doc, session, self._creative_node(doc, layer_id))
             if layer_id:
                 state = self._creative_layer_state(self._creative_node(doc, layer_id), doc)
-                entry = dict(id=operation_id, title=params.get('name') or {'fill_region': 'Region fill', 'apply_filter': params.get('filter'), 'colorize_flats': 'Colorized flats', 'transform_layer': 'Transform', 'comic_page': 'Comic page', 'letter': 'Lettering', 'merge_passes': 'Merged passes', 'krita_action': result.get('action_label'), 'clone_layer': 'Clone', 'split_by_color': 'Split by colour', 'stamp': 'Stamp', 'accents': 'Accents', 'finish': 'Finish', 'texture': 'Texture', **TOOL_TITLES}.get(operation) or 'Layer adjustment', kind=operation,
+                entry = dict(id=operation_id, title=params.get('name') or {'fill_region': 'Region fill', 'apply_filter': params.get('filter'), 'colorize_flats': 'Colorized flats', 'transform_layer': 'Transform', 'comic_page': 'Comic page', 'letter': 'Lettering', 'merge_passes': 'Merged passes', 'krita_action': result.get('action_label'), 'clone_layer': 'Clone', 'split_by_color': 'Split by colour', 'stamp': 'Stamp', 'accents': 'Accents', 'finish': 'Finish', 'texture': 'Texture', 'snow': 'Snow', **TOOL_TITLES}.get(operation) or 'Layer adjustment', kind=operation,
                              stage_id=params.get('stage_id'), region=params.get('region'), layer_id=layer_id,
                              continuation_of=params.get('continue_layer_id'),
                              group_id=result.get('group_id'),

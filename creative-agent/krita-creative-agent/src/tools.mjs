@@ -9,6 +9,7 @@ import { mapReferencePoint } from './reference-generator.mjs';
 import { guideTools } from './guide-tool.ts';
 import { accentTools } from './accents-tool.ts';
 import { finishTools } from './finish-tool.ts';
+import { snowTools } from './snow-tool.ts';
 import { refineTools } from './refine-goal.ts';
 import { materialCatalogue } from './plan-materials.ts';
 import { selectionTools } from './paint-only-here.ts';
@@ -386,6 +387,11 @@ export function paintingTools(runtime) {
   // In an area from the placed goal, the full-size comparison (area_compare.py area_accents; finish-stage goal 7).
   tools.push(...accentTools(runtime, { findAccents: request => findReferenceAccents(runtime, request), adjust: nativeExecute(runtime, 'accents'),
     goal: async canvas => runtime.finishGoal ? (await runtime.finishGoal(canvas)).goal : null, findArea: request => runtime.callNative('area_accents', request) }));
+  // Snow (snow-tool.ts, openspec snow): falling snow in depth layers and snow settled on named parts, found by Find it
+  // through the studio's own path (proposeArea), each one reversible pass of the plugin's snow operation (snow_craft.py).
+  tools.push(...snowTools(runtime, { snow: nativeExecute(runtime, 'snow'),
+    findPart: async name => { const found = runtime.proposeArea ? await runtime.proposeArea(name, { quiet: true }) : null;
+      return found?.mask_path ? { mask_path: found.mask_path, bounds: found.bounds } : null; } }));
   // A flat fill anywhere in a batch is nudged before anything paints (studio.mjs fillNudge), so the batch is refused whole.
   tools.push(batchTool(tools, name => runtime.toolOffered?.(name) ?? true,
     async actions => { if (actions.some(a => a.tool === 'fill_region')) await runtime.fillNudge?.({batch:true}); return prepareBatchShapes(runtime, actions); },

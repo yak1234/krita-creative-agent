@@ -14,7 +14,7 @@ export class PaintingBridge {
     const request = { operation, params };
     if (sessionId) request.session_id = sessionId;
     if (operationId) request.operation_id = operationId;
-    const mutating = ['begin','paint_pass','adjust_layer','painting_toolbox','review_pass','merge_passes','flatten_passes','finish',...CRAFT_OPERATIONS,...COMIC_OPERATIONS].includes(operation);
+    const mutating = ['begin','paint_pass','adjust_layer','painting_toolbox','review_pass','merge_passes','flatten_passes','finish','snow',...CRAFT_OPERATIONS,...COMIC_OPERATIONS].includes(operation);
     // Filters can run long on a large canvas; past this the outcome is uncertain, never retried.
     const timeout = LONG_OPERATIONS.includes(operation) ? 300 : 120;
     let result;

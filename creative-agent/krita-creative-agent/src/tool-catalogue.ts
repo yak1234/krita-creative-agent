@@ -47,6 +47,11 @@ export const STAGE_TOOLS: readonly StageTool[] = Object.freeze([
     measured: { seconds: [15, 60], source: 'live on the New Moscow copy, 15 s and 1 min (finish-stage 1.5, 2.7)' } },
 ]);
 
+/** Painting tools outside the stages with a measured time: the catalogue gives their rough time on this canvas too. */
+export const MEASURED_TOOLS: Readonly<Record<string, { seconds: [number, number]; source: string }>> = Object.freeze({
+  paint_snow: { seconds: [5, 30], source: 'offline on a 6000 x 4500 canvas (openspec snow): falling 2 s of pixels, a 2500 x 1500 roof cap 2.5 s; plus Krita\u2019s read and writes and 2-6 s of Find it per named part' },
+});
+
 const trim = (n: number) => String(Math.round(n * 10) / 10);
 /** A measured range scaled to this canvas: "15-30 s", "1-2 min", "a few seconds"; unscaled without a canvas. */
 export function roughTime(measured: { seconds: readonly number[] }, canvas: Canvas): string {
@@ -67,7 +72,8 @@ export function toolCatalogue({ tools, canvas }: { tools: readonly Tool[]; canva
   return fitted(n => ({
     how: 'A folder plan is made of these stages, in this order. Call painting_tool_help with a name for a tool\u2019s description, parameters and the skills that use it.',
     canvas: canvas ? [canvas.width, canvas.height] : null, stages,
-    tools: others.map(t => ({ name: t.name, does: cut(firstSentence(t.description), n) })),
+    tools: others.map(t => ({ name: t.name, does: cut(firstSentence(t.description), n),
+      ...(MEASURED_TOOLS[t.name] ? { rough_time: roughTime(MEASURED_TOOLS[t.name]!, canvas) } : {}) })),
   }), [240, 120, 60, 0]);
 }
 

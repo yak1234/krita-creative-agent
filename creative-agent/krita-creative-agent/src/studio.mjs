@@ -4,7 +4,7 @@ import { DecisionService } from './decisions/service.ts';
 import { chatShapes } from './shapes/chat.ts';
 import { chatCloseups, goalReference } from './closeups.ts';
 import {passCheck, progressCheck, moveCheck, seamCheck} from './visual-checks.ts';
-import { executionSettings, thinkingLevel, AUTO_REASONING_NOTE } from './execution-settings.mjs';
+import { executionSettings, thinkingLevel, AUTO_REASONING_NOTE, migrateSettings } from './execution-settings.mjs';
 import { panelSchema, DEFAULT_PLANNER } from './settings-schema.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS, mutates } from './craft.mjs';
 import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension, architectureTextureExtension, goalBrushworkExtension } from './extensions.mjs';
@@ -493,7 +493,15 @@ export class StudioRuntime extends PaintingRuntime {
       const migration = await this.store.migrateLegacy(root);
       if (migration.errors.length) this.emit({type:'recovery',message:'Some older conversations need recovery.',items:migration.errors});
     }
-    try { this.executionSettings=executionSettings(JSON.parse(await readFile(join(this.store.stateDirectory,'execution-settings.json'),'utf8'))); } catch {this.executionSettings=executionSettings();}
+    try {
+      const settingsFile=join(this.store.stateDirectory,'execution-settings.json'), doneFile=join(this.store.stateDirectory,'settings-migrations.json');
+      const saved=JSON.parse(await readFile(settingsFile,'utf8')), done=JSON.parse(await readFile(doneFile,'utf8').catch(()=>'{}'));
+      const migrated=migrateSettings(saved,done);
+      this.executionSettings=executionSettings(migrated.settings);
+      if (JSON.stringify(migrated.done)!==JSON.stringify(done)) {
+        await writeFile(settingsFile,JSON.stringify(migrated.settings,null,2)); await writeFile(doneFile,JSON.stringify(migrated.done,null,2));
+      }
+    } catch {this.executionSettings=executionSettings();}
     await super.initialize();
     // Plugin journals still kept as JSON move into each chat's journal database (phase C). The
     // plugin converts them, so only it writes its journal; a chat opened meanwhile converts itself.

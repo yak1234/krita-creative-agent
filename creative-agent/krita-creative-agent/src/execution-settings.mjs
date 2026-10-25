@@ -16,6 +16,18 @@ export function executionSettings(value={}) {
     throw new Error('Choose a decision endpoint and model.');
   return {...result,decisions:{endpoint:decisions.endpoint,model:decisions.model}};
 }
+/** One-time changes to saved settings, recorded in `done` (settings-migrations.json) so each runs once. sharpen_always: the
+ * panel saved every setting, so an Ask saved before Always became the default was the old default, not a choice (the
+ * artist, 2026-10-25: "it's by default always"); an Ask chosen later is kept. */
+/** @param {Record<string, any>} saved @param {Record<string, any>} done */
+export function migrateSettings(saved={},done={}) {
+  /** @type {Record<string, any>} */
+  const settings={...saved};
+  /** @type {Record<string, any>} */
+  const next={...done};
+  if (!done.sharpen_always) { if (settings.sharpen_goal==='ask') settings.sharpen_goal='always'; next.sharpen_always=true; }
+  return {settings,done:next};
+}
 // Auto spends reasoning where calls are few and judgement decides the outcome: the plan and the visual review
 // (a handful of calls a chat) think at medium. Painting turns (dozens to hundreds) think at low: on the same
 // build, Rothko and Mondrian painted in half the time at low as at medium, with every review check met.

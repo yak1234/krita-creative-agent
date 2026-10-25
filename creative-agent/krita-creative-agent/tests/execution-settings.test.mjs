@@ -119,3 +119,13 @@ test('Preview additions (canvas-reference): off by default; on, a plan\'s Add st
   assert.equal(field.label, 'Preview additions');
   assert.match(field.tooltip, /canvas reference/); assert.match(field.tooltip, /AI image/);
 });
+
+import { migrateSettings } from '../src/execution-settings.mjs';
+test('one-time: a saved Ask from before Always became the default turns into Always; a later Ask is kept (the artist, 2026-10-25)',()=>{
+  const first=migrateSettings({sharpen_goal:'ask',auto_approve:60},{});
+  assert.equal(first.settings.sharpen_goal,'always');
+  assert.equal(first.settings.auto_approve,60,'nothing else changes');
+  assert.deepEqual(first.done,{sharpen_always:true});
+  assert.equal(migrateSettings({sharpen_goal:'ask'},{sharpen_always:true}).settings.sharpen_goal,'ask','chosen after the migration: kept');
+  assert.equal(migrateSettings({sharpen_goal:'never'},{}).settings.sharpen_goal,'never','Never was a choice: kept');
+});

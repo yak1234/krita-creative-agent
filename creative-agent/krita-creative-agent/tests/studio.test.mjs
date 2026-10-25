@@ -5372,3 +5372,106 @@ test('painting_tool_help with the real tools: small answers while planning; an i
   assert.equal((await ask({name:'paint_finish'})).name,'paint_finish','a painting tool by name while painting too');
  } finally {await h.close();}
 });
+
+// Plans for a single goal image (openspec single-image-plans, the artist 2026-10-25: "Should plans work differently for
+// single"; "Should Luna decide if it's a thing request or multipart request" -> "Yes").
+const DOSTOEVSKY_REQUEST='Paint this scene from the goal image: an underpainting, the finish, then refine it to the goal. Then add to it: falling snow over the whole scene, and fresh snow settled on the shoulders, hats, the posts and the rooftops';
+async function singleGoalChat(h){
+ await h.start('ask','Hello');
+ const goal=join(h.runtime.study.directory,'dostoevsky-goal.png'); await writeFile(goal,png);
+ await h.runtime.addReferences([{path:goal,name:'Dostoevsky street',role:'reference'}]);
+}
+// Luna reading a message for plan or not: `plan` is its answer ([choice, confidence]); every other question no.
+const planLuna=plan=>fakeLuna(request=>request.purpose!=='read-message' ? {fallback:'service_or_response_error'} : {answers:{one_part:{type:'noul',noul:.1},negation:{type:'noul',noul:.05},
+ reference:{type:'choice',choice:'neither',confidence:.9},hand_painting:{type:'noul',noul:.1},...(request.questions.plan_steps ? {plan_steps:{type:'choice',choice:plan[0],confidence:plan[1]}} : {})}});
+
+test('a single goal image and a request for several steps: a plan, as a folder gets one, with the additions before nothing is painted',{timeout:30000},async()=>{
+ const offered=[];
+ const h=await harness(req=>{ const names=req.tools.map(t=>t.function.name); if(names.includes('propose_plan')) offered.push(latestUserText(req)); return {content:'Here is the plan.'}; });
+ try {
+  await singleGoalChat(h); await h.runtime.setMode('agent');
+  await h.runtime.prompt(DOSTOEVSKY_REQUEST);
+  assert.equal(offered.length,1,'one planning turn');
+  assert.match(offered[0],/SINGLE GOAL IMAGE PLAN/);
+  const draft=JSON.parse(offered[0].match(/single_plan_draft: (\{.*\})/)[1]);
+  assert.deepEqual(draft.steps.map(s=>s.kind),['underpainting','finish','refine','addition','addition']);
+  const steps=h.runtime.goal.brief.steps;
+  assert.deepEqual(steps.map(s=>s.title),['Underpainting from the goal image','Finish','Refine to the goal','Add: falling snow over the whole scene','Add: fresh snow settled on the shoulders, hats, the posts and the rooftops']);
+  assert.match(steps[4].done_when,/fresh snow settled on the shoulders, hats, the posts and the rooftops/);
+  assert.ok(steps.every(s=>s.id),'steps carry ids, so Met, Redo and Skip follow them without a folder');
+  assert.equal(h.runtime.goal.single_plan.request,DOSTOEVSKY_REQUEST);
+  assert.equal(h.runtime.goal.approved_revision,null,'nothing is painted before Start painting');
+  assert.ok(!h.calls.some(c=>['paint_pass','begin'].includes(c.operation)));
+  assert.match(h.events.filter(e=>e.type==='status').at(-1).message,/Plan ready: 5 moves/);
+  assert.ok(!(await readdir(h.runtime.study.directory)).includes('PLAN.md'),'no folder, no PLAN.md');
+  // A typed revision of the draft keeps its stages and is planned again, never painted.
+  await h.runtime.prompt('also add accents');
+  assert.equal(offered.length,2);
+  assert.deepEqual(h.runtime.goal.brief.steps.map(s=>s.kind),['underpainting','finish','refine','addition','addition','accents']);
+ } finally {await h.close();}
+});
+
+test('a single goal image: a sure "one thing" paints at once; an unsure reading asks plan or not, recommending the plan',{timeout:30000},async()=>{
+ let planning=0;
+ const h=await harness(req=>{ if(req.tools.some(t=>t.function.name==='propose_plan')) planning++; return {content:'Done.'}; });
+ try {
+  await singleGoalChat(h);
+  h.runtime.lunaClient=planLuna(['one',.93]); await h.runtime.setExecutionSettings({routing:'guide'}); await h.runtime.setMode('agent');
+  await h.runtime.prompt('make the sky warmer');
+  const reads=h.runtime.lunaClient.requests.filter(r=>r.purpose==='read-message');
+  assert.equal(reads.length,1,'one reading for the message');
+  assert.ok('plan_steps' in reads[0].questions,'plan or not asked in that reading');
+  assert.equal(planning,0); assert.equal(h.runtime.goal.brief,null); assert.equal(h.runtime.goal.moves.length,1,'painted as one move');
+  h.runtime.lunaClient=planLuna(['several',.5]);
+  await h.runtime.prompt('Make it lovely.');
+  const card=h.events.filter(e=>e.type==='question').at(-1);
+  assert.deepEqual(card.options,['Plan it step by step','Just do it']);
+  assert.equal(card.recommended,'Plan it step by step','Auto-approve plans');
+  assert.equal(h.runtime.goal.moves.length,1,'nothing painted while the card waits');
+  await h.runtime.prompt('Just do it');
+  assert.equal(h.runtime.goal.moves.length,2); assert.equal(h.runtime.goal.moves[1].request,'Make it lovely.','the held request is painted');
+  await h.runtime.prompt('Make it lovelier.');
+  await h.runtime.prompt('Plan it step by step');
+  assert.equal(planning,1); assert.ok(h.runtime.goal.brief.steps.length>0); assert.equal(h.runtime.goal.single_plan.request,'Make it lovelier.');
+ } finally {await h.close();}
+});
+
+test('a single-image plan from the planner keeps every addition, restated; an Add step paints with its tool and the artist’s words',{timeout:30000},async()=>{
+ const proposal={title:'Dostoevsky street',objective:'A snowy street.',requirements:[],freedom:[],completion:['Done.'],
+  steps:[{title:'Underpainting of the street',done_when:'Laid in.',kind:'underpainting'},{title:'Finish',done_when:'Blended.'},{title:'Refine to the goal',done_when:'Close.'},
+   {title:'Add: falling snow',done_when:'A few flakes.',kind:'addition',tool:'paint_snow'}]};
+ let planned=false;
+ const h=await harness(req=>{ const names=req.tools.map(t=>t.function.name); if(names.includes('propose_plan') && !planned){planned=true; return call('propose_plan',proposal);} return {content:'Here is the plan.'}; });
+ try {
+  await singleGoalChat(h); await h.runtime.setMode('agent');
+  h.runtime.knownTools=()=>['paint_from_reference','paint_finish','refine_to_goal','paint_accents','paint_batch','paint_snow'];   // the snow tool, once it exists
+  await h.runtime.prompt(DOSTOEVSKY_REQUEST);
+  const steps=h.runtime.goal.brief.steps;
+  assert.deepEqual(steps.map(s=>s.title),['Underpainting of the street','Finish','Refine to the goal','Add: falling snow','Add: fresh snow settled on the shoulders, hats, the posts and the rooftops']);
+  assert.equal(steps[3].tool,'paint_snow');
+  assert.match(steps[3].done_when,/falling snow over the whole scene.*not a token few marks.*A few flakes\./);
+  const text=h.runtime.folderMoveInstructions({step:4});
+  assert.match(text,/an addition the goal image does not have: fresh snow settled on the shoulders, hats, the posts and the rooftops\./);
+  assert.match(text,/The artist asked: "Paint this scene from the goal image/);
+  assert.match(text,/the painting tools you judge best/);
+  assert.match(h.runtime.folderMoveInstructions({step:3}),/with paint_snow \(the step's tool/);
+ } finally {await h.close();}
+});
+
+test('Start painting approves a single-image plan and paints its first step; a message while it runs is no new plan',{timeout:30000},async()=>{
+ const painter=[];
+ let planning=0;
+ const h=await harness(req=>{ const names=req.tools.map(t=>t.function.name); if(names.includes('propose_plan')) planning++; else painter.push(latestUserText(req)); return {content:'Done.'}; });
+ try {
+  await singleGoalChat(h); await h.runtime.setMode('agent');
+  await h.runtime.prompt(DOSTOEVSKY_REQUEST);
+  assert.equal(planning,1);
+  await h.runtime.prompt('',{start_plan:true});
+  assert.equal(h.runtime.goal.approved_revision,h.runtime.goal.revision);
+  assert.equal(h.runtime.goal.moves.at(-1).step,0);
+  assert.match(painter.at(-1),/step 1 of the approved plan, "Underpainting from the goal image"/);
+  await h.runtime.prompt('then make the sky warmer and add a crow');
+  assert.equal(planning,1,'a plan in progress: the message is a correction, not a new plan');
+  assert.equal(h.runtime.goal.brief.steps.length,5);
+ } finally {await h.close();}
+});

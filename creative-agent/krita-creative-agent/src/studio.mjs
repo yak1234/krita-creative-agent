@@ -2,7 +2,7 @@ import { MODES as modes, isPaintingMode } from './modes.mjs';
 import {LunaRouter, routingState, contextIdentity, routingAdvice} from './routing.mjs';
 import { DecisionService } from './decisions/service.ts';
 import { chatShapes } from './shapes/chat.ts';
-import { chatCloseups } from './closeups.ts';
+import { chatCloseups, goalReference } from './closeups.ts';
 import {passCheck, progressCheck, moveCheck, seamCheck} from './visual-checks.ts';
 import { executionSettings, thinkingLevel, AUTO_REASONING_NOTE } from './execution-settings.mjs';
 import { panelSchema, DEFAULT_PLANNER } from './settings-schema.mjs';
@@ -52,7 +52,7 @@ import { transferRefusal, existingPainting, WHOLE_SHARE } from './reference-tool
 import { typedStrokeRefusal, handPaintingRequested, MAX_MARKS, widthCap } from './typed-strokes.ts';
 import { openRoutesLine } from './open-routes.ts';
 import { scanFolder, readFolderText, elementStep, folderStepKind, elementsNamed, goalChoices, goalNamed, FOLDER_LIMITS, FOLDER_STEP_KINDS } from './project-folder.ts';
-import { stagePolicy, reviseStages, stagesNamed, orderStages, folderPlanSteps, shapePlan, nextStages, STAGE_CARD, stagesFromCard, PLAN_STAGES } from './plan-stages.ts';
+import { stagePolicy, reviseStages, stagesNamed, orderStages, folderPlanSteps, shapePlan, nextStages, STAGE_CARD, stagesFromCard, PLAN_STAGES, planOrNot, PLAN_CARD, planFromCard, additionsNamed, refinePartsNamed } from './plan-stages.ts';
 import { refineGroups, partsOf, unionFound } from './refine-parts.ts';
 import { goalSharpener, sharpenedContext, noMoreDetailNote, refineRequested, ENLARGEMENT } from './goal-sharpen.ts';
 import { sharpenFirstMessage } from './finish-tool.ts';
@@ -273,6 +273,9 @@ const PACED_TOOLS=['paint_batch','paint_pass','paint_recipe','paint_contours','a
 // artist asked for, in the host's order, and the host keeps them so (plan-stages.ts shapePlan): the planner improves the
 // words, may regroup the refine steps' parts, and looks the tools up with painting_tool_help.
 const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist approves the plan with Start painting. folder_plan_draft holds the stages the artist asked for, in the order the host keeps (an underpainting before anything that needs one, Refine only after a whole-picture Finish, Accents last); plan_stages says which and why. First look up each stage tool the draft uses with painting_tool_help (no name: the catalogue with what each does, its rough time on this canvas and what it needs; a name: its full description), then call propose_plan with the draft\'s steps in its order, keeping each step\'s kind, tool and parts: the underpainting is a whole-picture reference transfer (paint_from_reference), the Finish blends the soft areas and restrokes the forms (paint_finish; keep its title exactly "Finish"), "Refine to the goal" refines the whole picture once (refine_to_goal; keep its title exactly), then a "Refine: <parts>" step is a short touch-up of those elements inside their found area, only what the whole-picture refine left there (refine_to_goal; keep the "Refine: " start of its title; regroup the parts by where they sit in the picture, neighbours together (the draft groups them by file order only), every element in exactly one of at most 7 groups), Accents paints the lights, darks and detail on the whole picture (paint_accents). Do not add a stage the draft does not hold: the artist asks for the next stages later. Add a step for an element (its scope is its file name, after the stages) only when the artist asks for that element by name; never repaint the elements one by one by default. The stages and their order are fixed; the wording is yours. The draft\'s done_when and checks are placeholders: before proposing, look at the goal image and each part\'s own image (view_reference; folder notes describe them), then write for every step what done looks like for those parts in this picture: done_when names the parts\' colours, light and the two or three details that must read crisply at full size, and checks (2 to 4) say what to see on the canvas, including what must stay soft or untouched (a halo, mist, a reflection). Never copy the placeholder wording. Never plan a step for an image marked excluded. Add a guides step only when the artist asks for guides. For each "Refine: <parts>" step whose parts are architecture (buildings, church, towers, domes, skyscrapers, bridge, street, railing, walls, roofs), add materials: per aspect you see in its parts (walls, roofs, windows, ground, trim) one id from painting_tool_help name "materials", with scale fine, medium or coarse and recedes true for ground going away; never for sky, water, people, vehicles or trees. Choose by what each part looks like in its own image and the goal, not by its name: match the colour and the build (a cream or yellow stucco facade is sandstone or plaster, not red brick; red fortress brick is the old castle brick; green tented roofs are green metal; gold domes are gold; slate fish-scale domes are slate), and windows only for glass skyscrapers. Then stop.\n';
+// Plans for a single goal image (openspec single-image-plans, approved by the artist 2026-10-25): the same plan as a
+// folder's (propose_plan, the plan card, Met/Redo/Skip, auto-approve), from the stages, parts and additions the request names.
+const SINGLE_PLAN = 'SINGLE GOAL IMAGE PLAN. The artist attached one goal image (no project folder) and asked for several steps. Nothing is painted until the artist approves the plan with Start painting. single_plan_draft holds what the artist asked for, in the order the host keeps: the stages (an underpainting before anything that needs one, Refine only after a whole-picture Finish, Accents last), a "Refine: <part>" step for each part the artist named to refine, and an "Add: <thing>" step for each thing the artist asked to add that the goal image does not have, after the copy stages and before Accents; plan_stages says which and why. First look up the tools with painting_tool_help (no name: the catalogue; a name: its full description), then call propose_plan with the draft\'s steps in its order, keeping each step\'s kind, tool and parts: the underpainting is a whole-picture reference transfer (paint_from_reference), the Finish blends the soft areas and restrokes the forms (paint_finish; keep its title exactly "Finish"), "Refine to the goal" refines the whole picture once (refine_to_goal; keep its title exactly), a "Refine: <part>" step touches up only that part inside its found area (refine_to_goal; keep the "Refine: " start of its title; never add one for a part the artist did not name), an "Add: <thing>" step (kind addition; keep the "Add: " start of its title) paints that thing over the picture as it is: give it the tool that suits it (a dedicated tool such as paint_snow when painting_tool_help lists one, else leave tool out and the painter chooses), and write its done_when to restate what the artist asked to add, where and how much, so a few token marks cannot meet it. Keep every addition the artist asked for as its own step; never fold one into another step or drop it. Accents paints the lights, darks and detail on the whole picture (paint_accents). Do not add a stage the draft does not hold. The draft\'s done_when and checks are placeholders: look at the goal image (view_reference), then write for every step what done looks like in this picture, and checks (2 to 4) of what to see on the canvas. Then stop.\n';
 // A plan step that names guides: the artist asked for them when approving it.
 const GUIDES_STEP = /\b(guides?|trac(e|ing)|block-in|construction lines?)\b/i;
 const FOLDER_ANSWERS = ['Follow the edited plan','Keep the current plan'];
@@ -889,12 +892,12 @@ export class StudioRuntime extends PaintingRuntime {
   }
   /** Luna's reading of a typed Agent message (message-reading.ts): one text decision, made once a message and kept with
    * the policy it gives (the keyword rules' when Luna is off, failed or not on Guide). Null outside a chat. */
-  async readArtistMessage(text, {stages=false}={}) {
+  async readArtistMessage(text, {stages=false, plan=false}={}) {
     const said=String(text ?? ''), mode=this.lunaMode();
     // Kept for this text and Decision checks mode; a failed or timed-out reading is asked again (review, 2026-10-24). A
     // reading made with the plan's stage questions (plan-from-request goal 1) serves one asked without them too.
     if (this.messageReading?.text===said && this.messageReading.study===this.study && this.messageReading.mode===mode && !this.messageReading.reading?.fallback
-      && (!stages || this.messageReading.stages)) return this.messageReading;
+      && (!stages || this.messageReading.stages) && (!plan || this.messageReading.plan)) return this.messageReading;
     if (!this.goal) return null;
     const index=this.study?.folder ? this.folderIndex : null;
     const elements=(index?.elements ?? []).map(e=>({name:e.name, guess:String(this.folderGuessOf(e) || e.name)}));
@@ -902,13 +905,13 @@ export class StudioRuntime extends PaintingRuntime {
     let reading=null;
     if (mode!=='off') {
       const client=await this.luna().catch(()=>null);
-      reading=client ? await readMessage({client, text:said, elements, signal:this.lunaSignal(), stages}) : null;
+      reading=client ? await readMessage({client, text:said, elements, signal:this.lunaSignal(), stages, plan}) : null;
       this.diagnostics?.record({type:'message_reading', mode, ...(reading ? {element:reading.element, one_part:reading.one_part, negation:reading.negation,
-        reference:reading.reference, hand_painting:reading.hand_painting, ...(reading.stages ? {stages:reading.stages} : {}), elapsed_ms:reading.elapsed_ms, cost:reading.cost, input_tokens:reading.input_tokens,
+        reference:reading.reference, hand_painting:reading.hand_painting, ...(reading.stages ? {stages:reading.stages} : {}), ...(reading.plan ? {plan:reading.plan} : {}), elapsed_ms:reading.elapsed_ms, cost:reading.cost, input_tokens:reading.input_tokens,
         ...(reading.fallback ? {fallback:reading.fallback} : {})} : {fallback:'not_connected'})});
     }
     const policy=messagePolicy({reading, act:mode==='guide', text:said, elements, planned});
-    this.messageReading={study:this.study, text:said, mode, reading, policy, stages};
+    this.messageReading={study:this.study, text:said, mode, reading, policy, stages, plan};
     return this.messageReading;
   }
   /** The move's open routes (open-routes.ts): what the host allows now and what it will refuse, from the same checks the
@@ -1857,7 +1860,7 @@ export class StudioRuntime extends PaintingRuntime {
     // An area the artist chose on a refine-part card belongs to that step (review 2026-10-24): it ends with it, as a found one.
     const tie = answered?.select_area?.step_key, chosen = this.goal.paint_only_here;
     if (tie && chosen && !chosen.auto) { this.goal.paint_only_here = {...chosen, auto:tie, step_area:true}; await this.persist(); this.publish(); }
-    if (this.goal.paint_only_here || !this.folderPlanning() || !this.folderPlanApproved()) return false;
+    if (this.goal.paint_only_here || !((this.folderPlanning() && this.folderPlanApproved()) || (this.singlePlanning() && this.singlePlanApproved()))) return false;
     const steps = this.goal.brief?.steps ?? [];
     if (!steps.length) return false;
     const index = Math.min(this.goal.current_step ?? 0, steps.length - 1);
@@ -1874,7 +1877,8 @@ export class StudioRuntime extends PaintingRuntime {
    * never refining the whole picture instead. True when the card was shown and the move waits. */
   async refinePartArea(index, key, text, {ask = true} = {}) {
     const step = this.goal.brief.steps[index], label = String(step.scope && !/\.(png|jpe?g|gif)$/i.test(step.scope) ? step.scope : layerName(step.title).replace(/^\s*refine\s*:\s*/i, ''));
-    const elements = this.folderElements(), parts = partsOf(step, elements), found = [];
+    // A single goal image has no element files: a step's parts are the names the artist gave them, found on the goal.
+    const elements = this.folderElements(), parts = elements.length ? partsOf(step, elements) : (step.parts?.length ? step.parts.map(String) : [label]), found = [];
     for (const name of parts) {
       const part = elements.find(e => e.name === name)?.guess ?? name, area = await this.proposeArea(part, {quiet:true});
       if (!area) { found.length = 0; break; }
@@ -2579,6 +2583,12 @@ export class StudioRuntime extends PaintingRuntime {
   /** propose_plan in a folder planning turn: the planner's steps shaped to the stages asked (plan-stages.ts shapePlan). */
   shapeFolderBrief(brief) {
     const stages = this.goal?.plan_stages?.stages;
+    if (this.singlePlanning() && this.goal?.single_plan && stages) {
+      const shaped = shapePlan(brief.steps, {draft:this.singlePlanSteps(stages), elements:[], known:this.knownTools(), single:true,
+        keepWhole:(this.goal?.brief?.steps ?? []).filter(step => folderStepKind(step) === 'whole').map(step => step.title)});
+      if (shaped.dropped.length || shaped.notes.length) this.diagnostics?.record({type:'single_plan_shaped', dropped:shaped.dropped, notes:shaped.notes});
+      return {...brief, steps:shaped.steps};
+    }
     if (!this.study?.folder || !stages?.length) return brief;
     const known = this.knownTools();
     // The artist's own whole-picture steps (kept from the plan as it is) stay; others the request did not ask for go.
@@ -2630,6 +2640,110 @@ export class StudioRuntime extends PaintingRuntime {
       + (stages.added.length ? ` (${stages.added.map(a => a.because).join('; ')}.)` : '')
       + ' Review or edit it, then press Start painting.');
   }
+  // Plans for a single goal image (openspec single-image-plans).
+  /** The goal image of a chat without a folder plan: the reference with the canvas's proportions, else the first whole one. */
+  singleGoal() {
+    const refs = this.study?.references ?? [];
+    return goalReference(refs, this.lastObservation) ?? refs.find(r => r.role === 'reference' && !r.part_kind && r.source !== 'folder') ?? null;
+  }
+  /** Agent mode on a goal image with no folder plan (no folder, or one without elements). */
+  singlePlanning() { return this.mode === 'agent' && !this.folderPlanning() && !!this.singleGoal(); }
+  singlePlanApproved() { return !!this.goal?.single_plan && this.folderPlanApproved(); }
+  /** The steps for these stages and the request's parts and additions (goal.single_plan). */
+  singlePlanSteps(stages) {
+    const plan = this.goal?.single_plan ?? {};
+    return folderPlanSteps(stages, (plan.parts ?? []).map(part => ({label:part, parts:[part]})), {additions:plan.additions ?? []});
+  }
+  /** A message in a single-image Agent chat (before runMove): 'done' when it was planned or the plan-or-not card asks;
+   * {request} when that card's Just do it paints the request it held; null paints the message as one move, as before.
+   * Plan or not is Luna's answer in the message's one reading (plan-stages.ts planOrNot). */
+  async singlePlanTurn({text, images, command, answered, moveKind}) {
+    if (!this.singlePlanning() || !this.goal) return null;
+    if (command.start_plan) {                                        // Start painting approves the single plan
+      if (!command.keep_follow && this.goal.single_plan && this.goal.brief) { this.goal.approved_revision = this.goal.revision; this.goal.done_steps ??= []; }
+      return null;
+    }
+    if (command.move_kind || moveKind || command.keep_follow || command.sharpen_resumed) return null;
+    const said = String(text ?? '').trim();
+    if (answered?.plan_or_not && answered.options?.includes(said)) {
+      const plan = planFromCard(said);
+      this.diagnostics?.record({type:'plan_or_not', source:'card', plan});
+      if (plan === false) return {request:answered.plan_or_not.request};
+      await this.planSingle(answered.plan_or_not.request, images); return 'done';
+    }
+    if (answered?.options?.includes(said)) return null;              // another card's button is no request
+    const steps = this.goal.brief?.steps ?? [];
+    if (this.goal.single_plan && steps.length && !this.singlePlanApproved()) { await this.planSingle(text, images, {revising:true}); return 'done'; }
+    if (steps.length && this.firstOpenStep() < steps.length) return null;   // a plan in progress: a correction for its move
+    const reading = await this.readArtistMessage(text, {stages:true, plan:true});
+    const answer = planOrNot({reading:reading?.reading ?? null, act:this.lunaMode() === 'guide', text});
+    this.diagnostics?.record({type:'plan_or_not', source:answer.source, plan:answer.plan});
+    if (answer.plan === null) {
+      this.goal.question = {id:randomUUID(), question:PLAN_CARD.question, options:[...PLAN_CARD.options], recommended:PLAN_CARD.recommended, asked_in:'agent', plan_or_not:{request:String(text).slice(0,2000)}};
+      this.goal.status = 'needs_input'; await this.persist(); this.publish();
+      this.emit({type:'question', ...this.goal.question});
+      this.setActivity('awaiting_user', 'Your answer will guide the next step.');
+      return 'done';
+    }
+    if (!answer.plan) return null;
+    await this.planSingle(text, images); return 'done';
+  }
+  /** The stages a single-image plan holds (plan-stages.ts stagePolicy, reviseStages; no stage card: a request that names no
+   * stage gets the full plan, or only its parts and additions on a canvas already underpainted). */
+  async singleStages(text, {revising, additions, parts}) {
+    const reading = await this.readArtistMessage(text, {stages:true, plan:true}), act = this.lunaMode() === 'guide';
+    const canvas = this.lastObservation, painted = canvas ? await this.underpainted(canvas).catch(() => false) : false;
+    const done = [...new Set([...this.doneStages(), ...(painted ? ['underpainting'] : []), ...(this.wholeFinished() ? ['finish'] : [])])];
+    let answer;
+    if (revising) { const r = reviseStages({current:this.currentStages() ?? [], reading:reading?.reading ?? null, act, text}); answer = {stages:r.stages, source:r.source}; }
+    else {
+      const policy = stagePolicy({reading:reading?.reading ?? null, act, text}), named = policy.stages && policy.source !== 'default';
+      answer = named ? policy : (additions.length || parts.length) && painted ? {stages:parts.length ? ['refine'] : [], source:'keywords'}
+        : {stages:[...PLAN_STAGES], source:'default'};
+    }
+    const ordered = orderStages(answer.stages, {done});
+    this.diagnostics?.record({type:'plan_stages', source:answer.source, stages:ordered.stages, added:ordered.added.map(a => a.stage), single:true});
+    return {stages:ordered.stages, source:answer.source, added:ordered.added, request:String(text).slice(0,500)};
+  }
+  /** A single-image planning turn (as planFolder): the planner proposes from single_plan_draft; with no proposal the host
+   * proposes the draft. The plan lives on the chat's goal (no folder, so no PLAN.md: nothing is written next to the
+   * artist's goal image unasked); its steps carry ids, so Met, Redo and Skip follow them. */
+  async planSingle(text, images, {revising=false}={}) {
+    const prev = revising ? this.goal.single_plan : null;
+    const additions = [...new Set([...(prev?.additions ?? []), ...additionsNamed(text)])].slice(0, 6);
+    const parts = [...new Set([...(prev?.parts ?? []), ...refinePartsNamed(text)])].slice(0, 6);
+    const stages = await this.singleStages(text, {revising, additions, parts});
+    this.goal.single_plan = {request:prev?.request ?? String(text).slice(0, 2000), additions, parts};
+    this.goal.plan_stages = stages;
+    this.goal.status = this.goal.brief ? 'paused' : 'draft';
+    const before = this.goal.brief ? structuredClone(this.goal.brief) : null, revisionsBefore = (this.goal.revisions ??= []).length;
+    const goal = this.singleGoal(), steps = this.singlePlanSteps(stages.stages);
+    const draft = normalizeBrief({title:String(goal?.name ?? 'The goal image').slice(0, 200), objective:`Paint from the goal image ${goal?.name ?? ''} what the artist asked: ${steps.map(step => step.title).join(', ')}.`.slice(0, 2000),
+      requirements:[], freedom:[], completion:[steps.length ? `Every step is done: ${steps.map(step => layerName(step.title)).join('; ')}.`.slice(0, 2000) : 'The artist’s request is painted.'], steps});
+    const why = {stages:stages.stages, source:stages.source, ...(stages.added.length ? {added:stages.added} : {}), ...(additions.length ? {additions} : {}), ...(parts.length ? {parts} : {})};
+    try {
+      await this.withPlanner(async planner => {
+        this.selectTools('plan'); this.publish();
+        await super.runPrompt(this.context('plan') + SINGLE_PLAN + 'plan_stages: ' + JSON.stringify(why) + '\nsingle_plan_draft: ' + JSON.stringify(draft) + '\n\nArtist:\n' + text,
+          planner?.input?.includes('image') ? images : []);
+      });
+    }
+    finally { this.selectTools(this.mode); }
+    if (this.cancelRequested || this.runError || this.goal.question) return;
+    const proposedNow = (this.goal.revisions ?? []).slice(revisionsBefore).some(r => r.source === 'model');
+    if (!proposedNow) {                                              // nothing proposed: the host reshapes the draft, or proposes it
+      this.goal.revisions.push({revision:this.goal.revision, brief:before, at:stamp(), source:'single'});
+      this.goal.brief = withStepIds(normalizeBrief(before && revising ? this.shapeFolderBrief(before) : draft), before);
+      this.goal.revision++; this.goal.approved_revision = null;
+      if (!revising) { this.goal.current_step = 0; this.goal.done_steps = []; }
+    }
+    if (!revising && proposedNow) this.goal.done_steps = [];
+    this.goal.current_step = Math.min(this.firstOpenStep(), this.goal.brief.steps.length - 1);
+    this.goal.status = 'ready'; await this.persist(); this.publish();
+    const n = this.goal.brief.steps.length, adds = this.goal.brief.steps.filter(step => folderStepKind(step) === 'addition').length;
+    this.setActivity('idle', `Plan ready: ${n} move${n === 1 ? '' : 's'}` + (adds ? `, ${adds} of them adding what the goal image does not have` : '')
+      + (stages.added.length ? ` (${stages.added.map(a => a.because).join('; ')})` : '') + '. Review or edit it, then press Start painting.');
+  }
   /** After the plan changed: ticks follow their steps by title, the next open step is current, PLAN.md is rewritten. */
   async folderPlanChanged(before) {
     if (!this.study?.folder || !this.goal?.brief) return;
@@ -2679,7 +2793,7 @@ export class StudioRuntime extends PaintingRuntime {
     if (!Number.isInteger(move.step) || !this.goal.brief?.steps[move.step]) return '';
     const step = this.goal.brief.steps[move.step], file = stepFile(step), name = layerName(step.title);
     const element = file && this.study.references.find(r => r.folder_name === file);
-    const goal = this.study.references.find(r => r.source === 'folder' && r.role === 'reference');
+    const goal = this.study.references.find(r => r.source === 'folder' && r.role === 'reference') ?? (this.study.folder ? null : this.singleGoal());
     const goalText = goal ? `the goal image ${goal.id}` : 'the goal image';
     // Guides only when the artist asked: a step they approved that names guides (the artist, 2026-10-23: traced lines
     // were distracting next to the solid underpainting, so no guides by default).
@@ -2701,6 +2815,12 @@ export class StudioRuntime extends PaintingRuntime {
         return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}": the artist chose to refine without an area, so refine the whole picture to ${goalText} with refine_to_goal. One call; then look at the canvas and finish_move. No typed strokes and no other painting in this step.\n`;
       }
       if (kind === 'accents') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: crisp accents on the whole picture with paint_accents from ${goalText} (lights, glints, darks and lines, in the underpainting's own paint). Paint only this step, with no typed strokes over the underpainting, then finish_move.\n`;
+      // An addition (single-image-plans goal 3): what the goal image does not have, painted over the copy, fully.
+      if (kind === 'addition') {
+        const thing = String(step.title).replace(/^\s*add\s*:\s*/i, '').trim(), asked = String(this.goal.single_plan?.request ?? '').trim();
+        const tool = step.tool ? `with ${step.tool} (the step's tool; painting_tool_help describes it)` : 'with the painting tools you judge best for it (painting_tool_help lists them: brush passes with paint_batch or paint_pass, Krita\'s layers and filters)';
+        return `\nPLAN MOVE: step ${move.step + 1} of the approved plan, "${name}": an addition the goal image does not have: ${thing}.${asked ? ` The artist asked: "${asked.slice(0, 600)}".` : ''} Paint it over the picture as it is now ${tool}, on its own layer named "${name}", leaving the copy of ${goalText} underneath intact. Done when: ${String(step.done_when ?? '').trim()} Paint all of it where the artist asked, not a token few marks; then look at the canvas and finish_move.\n`;
+      }
       if (kind === 'whole') return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: ${String(step.done_when ?? '').trim()} Refine what the underpainting has rather than repainting it (paint_finish, paint_accents, Krita's layers and filters), then finish_move.\n`;
       return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}", for the whole composition: the underpainting of the whole picture from ${goalText} (paint_from_reference, all of it onto the whole canvas). Paint only this step. ${UNDERPAINTING_MOVE_NOTE}\n`;
     }
@@ -3246,6 +3366,9 @@ export class StudioRuntime extends PaintingRuntime {
         if (command.start_plan && !command.keep_follow && this.goal.brief && this.goal.folder_plan_root === this.study.folder.root) { this.goal.approved_revision = this.goal.revision; this.goal.done_steps ??= []; }
         else { await this.planFolder(answered?.plan_stages ? text : modelText, images, answered?.plan_stages ? answered : null); return; }
       }
+      // A single goal image (single-image-plans): Luna's reading says plan or not; a plan is made as a folder's is.
+      const single = this.mode === 'agent' ? await this.singlePlanTurn({text, images, command, answered, moveKind}) : null;
+      if (single === 'done') return;
       // The add-step card's answer: yes adds the steps asked about; either way the request it held is painted next.
       // A panel option (a card's button) is never read as the artist's message (review, 2026-10-24).
       const optionAnswer = !!answered?.options?.includes(text.trim());
@@ -3259,7 +3382,7 @@ export class StudioRuntime extends PaintingRuntime {
         this.setActivity('awaiting_user', 'Your answer will guide the next step.'); return;
       }
       // An answer to the area card paints what the artist asked for before it, with the area they chose (or none).
-      const areaRequest = answered?.select_area?.request && answered.options?.includes(text.trim()) ? answered.select_area.request : addAnswer?.request ?? null;
+      const areaRequest = answered?.select_area?.request && answered.options?.includes(text.trim()) ? answered.select_area.request : addAnswer?.request ?? single?.request ?? null;
       const movePrompt = areaRequest ? `${areaRequest}\n\n(The artist answered "${answered.question}": ${text.trim()}.)` : modelText;
       if (this.mode === 'agent' && !moveKind && await this.holdForSharpen(text, command)) return;
       // The move is the artist's held request when a card answered it (its button is no request: review, 2026-10-24).

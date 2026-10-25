@@ -29,12 +29,13 @@ def load():
     try:
         package = types.ModuleType('brushwork_test_package'); package.__path__ = [str(PLUGIN)]
         sys.modules['brushwork_test_package'] = package
-        return importlib.import_module('brushwork_test_package.qt_compat'), importlib.import_module('brushwork_test_package.brushwork_pattern')
+        return (importlib.import_module('brushwork_test_package.qt_compat'), importlib.import_module('brushwork_test_package.brushwork_pattern'),
+                importlib.import_module('brushwork_test_package.goal_dabs'))
     finally:
         sys.modules.update(stubs)
 
 
-qt, pattern = load()
+qt, pattern, goal_dabs = load()
 
 
 def gradient_stripes(w=160, h=120, light=(40, 220), period=7, amplitude=24, grain=40, seed=3):
@@ -153,6 +154,26 @@ class PatternKrita:
         return self.patterns[label]
 
 
+class TipResource:
+    def __init__(self, name, image):
+        self._name, self._image = name, image
+    def name(self): return self._name
+    def image(self): return self._image
+
+
+class DabKrita(PatternKrita):
+    """And Application.createBrushTip (the fork): an 'alpha' tip of the image, None when it refuses."""
+    def __init__(self, refuse_tips=False, **extra):
+        super().__init__(**extra)
+        self.refuse_tips, self.tips, self.tip_calls = refuse_tips, {}, []
+    def createBrushTip(self, image, name, application):
+        self.tip_calls.append((name, application))
+        if self.refuse_tips or image.isNull():
+            return None
+        self.tips[name] = TipResource(name, image.copy())
+        return self.tips[name]
+
+
 class FakeDocument:
     def __init__(self, width, height):
         self._w, self._h = width, height
@@ -219,6 +240,34 @@ class BrushworkOperation(unittest.TestCase):
         # Recorded for the brush texture (goal 6), by part name whatever its spacing or case.
         self.assertEqual(pattern.goal_brushwork_pattern('The  Church'), {'name': 'Goal brushwork: the church', 'energy': church['energy'], 'size': 130, 'scale': 2.0})
         self.assertIsNone(pattern.goal_brushwork_pattern('Moonlit sky'))
+
+    def test_each_part_gets_goal_dabs_as_brush_tips_or_none_when_flat(self):
+        self.krita = DabKrita()
+        goal_dabs._MADE.clear()
+        self.addCleanup(goal_dabs._MADE.clear)
+        church, sky = self.run_op([{'name': 'the church', 'inside_shape': self.area('church', [20, 20, 260, 360])},
+                                   {'name': 'Moonlit sky', 'inside_shape': self.area('sky', [320, 20, 260, 360])}])['brushwork']
+        self.assertTrue(1 <= len(church['dabs']) <= goal_dabs.MOST_DABS, church)
+        self.assertEqual(church['dabs'], ['Goal dab: the church %d' % n for n in range(1, len(church['dabs']) + 1)])
+        self.assertEqual(sky['dabs'], [], 'flat paint gives no dab')
+        self.assertEqual([c[1] for c in self.krita.tip_calls], ['alpha'] * len(church['dabs']))
+        # The registered tip: black, the dab's coverage in its alpha, as the strokes use it.
+        image = self.krita.tips[church['dabs'][0]].image().convertToFormat(qt.QImage.Format.Format_ARGB32)
+        alpha = np.frombuffer(qt.image_bytes(image), np.uint8).reshape(image.height(), image.width(), 4)[..., 3]
+        kept = goal_dabs.dab_alpha(self.krita, church['dabs'][0])
+        self.assertLessEqual(int(np.abs(alpha.astype(int) - np.round(kept * 255)).max()), 1)
+        # A Krita that refuses the tip, or has no createBrushTip: the dab is still kept for the strokes.
+        for krita in (DabKrita(refuse_tips=True), PatternKrita()):
+            goal_dabs._MADE.clear()
+            again = self.run_op([{'name': 'the church', 'inside_shape': self.area('church', [20, 20, 260, 360])}], krita)['brushwork'][0]
+            self.assertEqual(again['dabs'], church['dabs'])
+            self.assertIsNotNone(goal_dabs.dab_alpha(krita, again['dabs'][0]))
+        # After a plugin reload (nothing kept here) the tip is read back from Krita's brush resources.
+        goal_dabs._MADE.clear()
+        self.krita.resources = lambda kind: dict(self.krita.tips) if kind == 'brush' else {}
+        back = goal_dabs.dab_alpha(self.krita, church['dabs'][0])
+        self.assertLess(float(np.abs(back - kept).max()), 0.02)
+        self.assertIsNone(goal_dabs.dab_alpha(self.krita, 'Goal dab: nothing 1'))
 
     def test_another_resource_of_the_name_and_a_refusal(self):
         self.krita = PatternKrita(artist={'Goal brushwork: the church'})

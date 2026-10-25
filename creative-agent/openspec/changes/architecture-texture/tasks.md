@@ -73,3 +73,17 @@
 - [x] 6.2 `extensions/goal-brushwork.ts`: before refine_to_goal or paint_finish in an architectural refine step, once per step
       and goal, never blocking; the record per part on goal.step_brushwork[key]; `brushworkPattern(record, part)`.
 - [ ] 6.3 The textured brushes (goal 6) use it; the plan card names it (goal 7). Live: the energy threshold on New Moscow.
+
+## 9. Goal dabs (goal 9)
+
+- [x] 9.1 `goal_dabs.py` (numpy/OpenCV): in the part's goal crop (the brushwork crop, Sharpen-ed goal when there is one) up to
+      3 patches (about 40 canvas px, 9-25 goal px) of most high-pass energy (at least 6 luminance levels, wholly inside the
+      part), each the blob nearest its centre, softly thresholded, centred, feathered into a 64 px alpha; specks, fills and
+      flat parts give none. `brushwork_patterns` registers them with Krita.createBrushTip as "Goal dab: <part> <n>" ('alpha')
+      and reports `dabs` per part; without the API, or refused, they are still kept for the strokes.
+- [x] 9.2 Finish `dab` [{tips, inside_shape}]: a form stroke whose seed is in the part is one affine warp of a pre-rendered
+      strip (dabs stamped every 0.3 width, rotation and size jittered, area calibrated to the plain line) onto its chord, two
+      for a bent stroke; elsewhere the plain line, unchanged. Tiles padded for the dab's reach (sizes(dabbed=True)).
+      Measured on a synthetic 512 px tile of 6000 x 4500: normal 0.53 -> 0.59 s, fine 1.36 -> 1.72 s, finer 1.20 -> 1.58 s.
+- [x] 9.3 `refineDabs` (architecture-texture.ts) from the step's brushwork record; refine_to_goal passes it to every finish.
+- [ ] 9.4 Live: dab count and look per part on New Moscow at 6000 x 4500, time per refine with and without dabs.

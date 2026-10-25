@@ -13,7 +13,7 @@
 //   for such a move too (textureRequired). Sky, water, people, vehicles and trees never get texture.
 // The move's Undo (the step's Redo) removes the pass with the rest of the move: it is one of the move's passes.
 // A shipped Pi extension registered inline (src/extensions.mjs). It knows the studio only through TextureHost.
-import { brushworkPattern, type BrushworkRecord } from './goal-brushwork.ts';
+import { brushworkDabs, brushworkPattern, type BrushworkRecord } from './goal-brushwork.ts';
 import type { ExtensionAPI, ToolCallEvent, ToolCallEventResult, ToolResultEvent, ToolResultEventResult } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { partKind, materialById, type Material, type PartKind } from '../src/texture-library.ts';
@@ -110,6 +110,20 @@ export async function refineGrain(host: TextureHost, signal?: AbortSignal): Prom
       ...(goal && size > 0 ? [{ pattern: goal.name, inside_shape, tile_px: Math.min(4000, Math.max(8, Math.round(size * goal.scale))), strength: GRAIN_STRENGTH }] : [])];
   });
   return grain.length ? grain : null;
+}
+
+/** The Finish's dabs for a refine step's form strokes (goal 9): each architectural part's goal dabs (brush tips cut from the
+ * goal by the goal brushwork call), inside its found area; null when no part of the step has any. Sky, water, people,
+ * vehicles and trees are never architectural parts, so they never get one. */
+export async function refineDabs(host: TextureHost): Promise<Record<string, unknown>[] | null> {
+  const step = host.step(), parts = architecturalParts(step);
+  if (!step || !parts.length) return null;
+  const record = host.brushwork?.(step.key) ?? null;
+  const dab = parts.flatMap(part => {
+    const tips = brushworkDabs(record, part.name);
+    return tips ? [{ tips, inside_shape: { mask_path: part.area.mask_path, bounds: part.area.bounds } }] : [];
+  });
+  return dab.length ? dab : null;
 }
 
 /** Whether the step may not be met yet: it has architecture and its texture pass has not run. */

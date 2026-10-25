@@ -8,7 +8,7 @@ import { executionSettings, thinkingLevel, AUTO_REASONING_NOTE } from './executi
 import { panelSchema, DEFAULT_PLANNER } from './settings-schema.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS, mutates } from './craft.mjs';
 import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension, architectureTextureExtension, goalBrushworkExtension } from './extensions.mjs';
-import { textureRequired, refineGrain } from '../extensions/architecture-texture.ts';
+import { textureRequired, refineGrain, refineDabs } from '../extensions/architecture-texture.ts';
 import { cleanPlanSteps, markArtistMaterials, plannedMaterialsSchema } from './plan-materials.ts';
 import { chooseByLook, cropOut, SWATCH_PX } from './luna-materials.ts';
 import { ensureMaterial } from './texture-library.ts';
@@ -663,6 +663,8 @@ export class StudioRuntime extends PaintingRuntime {
   }
   /** The refine's form-stroke grain in an architectural refine step (refine-goal.ts, architecture-texture goal 6). */
   refineGrain() { return refineGrain(this.textureHost()); }
+  /** The refine's form strokes stamped with the goal's dabs in an architectural refine step (architecture-texture goal 9). */
+  refineDabs() { return refineDabs(this.textureHost()); }
   /** The plan step painted now: the Agent move's, else Autopilot's current one. */
   paintedStepIndex() { return this.mode === 'agent' ? this.currentMove?.step : this.study?.folder ? this.goal?.current_step : null; }
   /** Whether a step's texture pass ran: on the Agent move, else on the goal by step (Autopilot). */

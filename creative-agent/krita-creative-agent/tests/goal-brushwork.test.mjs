@@ -130,3 +130,16 @@ test('studio: the brushwork host gives the painted step, keeps the record on the
   assert.equal(await host.goal(), null, 'no placed goal: no patterns');
   assert.ok(studio.extensionFactories().some(e => e.name === 'goal-brushwork'), 'registered with the other shipped extensions');
 });
+
+import { brushworkDabs } from '../extensions/goal-brushwork.ts';
+
+test('a part’s goal dabs (goal 9): its brush tip names, or null when it has none', () => {
+  const record = { step: 'id:s3', goal: 'a', ms: 1, parts: [
+    { part: 'the church', pattern: 'Goal brushwork: the church', energy: 9, size: 128, scale: 1, dabs: ['Goal dab: the church 1'] },
+    { part: 'cobbled street', pattern: null, energy: 1, size: 0, scale: 1, reason: 'flat', dabs: [] },
+    { part: 'the bridge', pattern: null, energy: 1, size: 0, scale: 1 }] };
+  assert.deepEqual(brushworkDabs(record, 'The  Church'), ['Goal dab: the church 1']);
+  assert.equal(brushworkDabs(record, 'cobbled street'), null);
+  assert.equal(brushworkDabs(record, 'the bridge'), null, 'an older plugin reports no dabs');
+  assert.equal(brushworkDabs(null, 'the church'), null);
+});

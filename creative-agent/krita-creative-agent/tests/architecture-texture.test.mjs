@@ -307,3 +307,27 @@ test('studio: Luna’s picks go into the plan step once a revision, with probabi
   const before = structuredClone(studio.goal.brief.steps[1].materials);
   assert.deepEqual(await host.lunaMaterials(host.step(), architecturalParts(host.step())), before);
 });
+
+import { refineDabs } from '../extensions/architecture-texture.ts';
+
+test('the refine’s form strokes in an architectural part are stamped with its goal dabs; none without them (goal 9)', async () => {
+  const { host } = setup();
+  const [church, street] = partsOf(host.step());
+  assert.equal(await refineDabs(host), null, 'no brushwork record: plain strokes');
+  host.brushwork = key => ({ step: key, goal: 'abc', ms: 5, parts: [
+    { part: church.name, pattern: 'Goal brushwork: the church', energy: 9, size: 128, scale: 2.5, dabs: ['Goal dab: the church 1', 'Goal dab: the church 2'] },
+    { part: street.name, pattern: null, energy: 1, size: 0, scale: 2.5, reason: 'flat', dabs: [] }] });
+  assert.deepEqual(await refineDabs(host), [{ tips: ['Goal dab: the church 1', 'Goal dab: the church 2'], inside_shape: { mask_path: church.area.mask_path, bounds: church.area.bounds } }],
+    'the street gave no dab: its strokes stay plain');
+  // Sky, water, people, vehicles, trees never: only the step's architectural parts are looked up.
+  const sky = setup({ step: SKY_STEP });
+  sky.host.brushwork = key => ({ step: key, goal: 'abc', ms: 5, parts: [{ part: 'Moonlit sky', pattern: null, energy: 0, size: 0, scale: 1, dabs: ['Goal dab: Moonlit sky 1'] }] });
+  assert.equal(await refineDabs(sky.host), null);
+});
+
+test('studio: the refine’s dabs come from the step’s goal brushwork record (goal 9)', async () => {
+  const studio = studioState();
+  assert.equal(await studio.refineDabs(), null);
+  studio.goal.step_brushwork = { 'id:s3': { step: 'id:s3', goal: 'abc', ms: 1, parts: [{ part: 'the church', pattern: null, energy: 9, size: 0, scale: 2, dabs: ['Goal dab: the church 1'] }] } };
+  assert.deepEqual(await studio.refineDabs(), [{ tips: ['Goal dab: the church 1'], inside_shape: { mask_path: '/chat/.shapes/found-a.png', bounds: [2000, 800, 900, 1400] } }]);
+});

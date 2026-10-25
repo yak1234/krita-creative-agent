@@ -36,12 +36,15 @@ import threading
 import time
 import numpy as np
 
-FIELDS = ('name', 'goal', 'box', 'selection', 'inside_shape', 'detail', 'grain', 'stage_id', 'region', 'expected_revision', 'panel')
+FIELDS = ('name', 'goal', 'box', 'selection', 'inside_shape', 'detail', 'grain', 'dab', 'stage_id', 'region', 'expected_revision', 'panel')
 # grain (architecture-texture goal 6): in an architectural part, the form strokes carry its material's Krita pattern
 # (texture_patterns.py), at most GRAIN_STRENGTH, in at most GRAIN_PARTS parts a call.
 GRAIN_FIELDS = ('pattern', 'inside_shape', 'tile_px', 'strength')
 GRAIN_STRENGTH = 0.5
 GRAIN_PARTS = 8
+# dab (architecture-texture goal 9): in an architectural part, the form strokes are stamped with the part's goal dabs
+# (goal_dabs.py: brush tips cut from the goal, by name) instead of a plain line, in at most GRAIN_PARTS parts a call.
+DAB_FIELDS = ('tips', 'inside_shape')
 GOAL_FIELDS = ('path', 'sha256', 'size', 'source', 'target')
 SCALE_SIDE = 6000                             # the spike's canvas: every size below is in its pixels
 EDGE_SIGMA = 40                               # how far "how much structure is here" looks
@@ -92,9 +95,10 @@ def blur(image, sigma):
     return cv2.GaussianBlur(image, (2 * radius + 1, 2 * radius + 1), sigma) if radius > 0 else image
 
 
-def sizes(width, height, detail='normal'):
+def sizes(width, height, detail='normal', dabbed=False):
     """The spike's sizes on this canvas (or the fine try-out's, DETAILS): scaled by its long side against SCALE_SIDE, never
-    below a pixel or two. `k` also scales the gradient (a structure is as strong per picture, whatever the pixels)."""
+    below a pixel or two. `k` also scales the gradient (a structure is as strong per picture, whatever the pixels).
+    `dabbed`: some strokes are stamped with goal dabs, which reach goal_dabs.DAB_REACH of their width from their line."""
     if detail not in DETAILS:
         raise ValueError('detail is normal, fine or finer.')
     k = max(width, height) / SCALE_SIDE
@@ -108,7 +112,8 @@ def sizes(width, height, detail='normal'):
     out['steps'] = int(math.ceil(out['length'][1] / 2 / out['step']))
     # How far a stroke's pixels lie from its seed (its steps, half its widest width, anti-aliasing), and how far around
     # a point the goal is read for the soft mask and for a stroke's direction and colour.
-    out['reach'] = int(math.ceil(out['steps'] * out['step'] + out['width'][1] / 2 + 2))
+    from .goal_dabs import DAB_REACH
+    out['reach'] = int(math.ceil(out['steps'] * out['step'] + out['width'][1] * (DAB_REACH if dabbed else 0.5) + 2))
     out['mask_pad'] = reach3(out['edge']) + reach3(out['soft_blur']) + 1
     out['trace_pad'] = out['steps'] * int(math.ceil(out['step'])) + max(reach3(out['tensor']), reach3(out['colour'])) + 2
     out['goal_pad'] = out['reach'] + max(out['mask_pad'], out['trace_pad'])
@@ -279,11 +284,32 @@ def trace(x, y, longest, fx, fy, lab, origin, width, height, size):
     return points, first, last
 
 
-def strokes_for(rect, goal, goal_rect, hard, limit, width, height, size, breathe=None):
+def plain_mask(poly, w, rect):
+    """A stroke's line `poly` (n, 2, canvas px) drawn `w` wide over canvas `rect` [x, y, w, h] (uint8 0-255, anti-aliased)."""
+    import cv2
+    m = np.zeros((rect[3], rect[2]), np.uint8)
+    cv2.polylines(m, [((poly - (rect[0], rect[1])) * 4).astype(np.int32)], False, 255, max(1, int(w)), cv2.LINE_AA, shift=2)
+    return m
+
+
+def dab_parts(x, y, dabs):
+    """Which of `dabs` [(mask, mask rect, strips)] holds each seed (x, y): its index, -1 for none (the first part wins)."""
+    part = np.full(len(x), -1, np.int64)
+    xi, yi = np.floor(x).astype(np.int64), np.floor(y).astype(np.int64)
+    for index, (mask, (mx, my, mw, mh), _strips) in enumerate(dabs):
+        on = (part < 0) & (xi >= mx) & (yi >= my) & (xi < mx + mw) & (yi < my + mh)
+        j = np.flatnonzero(on)
+        part[j[mask[yi[j] - my, xi[j] - mx] > 127]] = index
+    return part
+
+
+def strokes_for(rect, goal, goal_rect, hard, limit, width, height, size, breathe=None, dabs=None):
     """The strokes layer of `rect` (premultiplied BGR and alpha, float32 h x w x 4) from the goal crop (BGR 0-1) at
     `goal_rect`, whose hard mask (1 - soft) is `hard`, and how many strokes touch it. Strokes are composited in their
-    seeds' order (a hash), so every tile draws a shared stroke the same. `breathe(count)` runs between strokes."""
-    import cv2
+    seeds' order (a hash), so every tile draws a shared stroke the same. `breathe(count)` runs between strokes.
+    `dabs` [(mask uint8, mask rect, strips)]: a stroke whose seed is inside a part's mask is stamped with its goal dabs
+    (goal_dabs.dab_mask, a variant by the seed's hash) instead of the plain line; size must then be sizes(dabbed=True)."""
+    from . import goal_dabs
     fx, fy, lab, colour = field(goal, size)
     gx0, gy0 = goal_rect[0], goal_rect[1]
     x, y, u = seeds(rect, size, intersect(limit, [0, 0, width, height]) or [0, 0, 0, 0])
@@ -297,6 +323,9 @@ def strokes_for(rect, goal, goal_rect, hard, limit, width, height, size, breathe
     widths = (size['width'][0] + u['width'] * (size['width'][1] - size['width'][0])) * (0.6 + 0.4 * np.minimum(1, count / 6))
     opacity = OPACITY[0] + u['opacity'] * (OPACITY[1] - OPACITY[0])
     colours = colour[yi, xi]
+    part = dab_parts(x, y, dabs) if dabs else np.full(len(x), -1, np.int64)
+    variant = (u['order'] * (1 << 20)).astype(np.int64) % goal_dabs.VARIANTS
+    bends = goal_dabs.bent(points, first, last, widths) if dabs else None
     rx, ry, rw, rh = rect
     out = np.zeros((rh, rw, 4), np.float32)
     drawn = 0
@@ -311,9 +340,12 @@ def strokes_for(rect, goal, goal_rect, hard, limit, width, height, size, breathe
         left, top, right, bottom = max(xa, rx), max(ya, ry), min(xb, rx + rw), min(yb, ry + rh)
         if right <= left or bottom <= top:
             continue
-        m = np.zeros((yb - ya, xb - xa), np.uint8)
-        cv2.polylines(m, [((poly - (xa, ya)) * 4).astype(np.int32)], False, 255, max(1, int(w)), cv2.LINE_AA, shift=2)
-        a = m[top - ya:bottom - ya, left - xa:right - xa].astype(np.float32) * np.float32(opacity[s] / 255)
+        if part[s] >= 0:
+            a = goal_dabs.dab_mask(poly, w, [left, top, right - left, bottom - top], dabs[part[s]][2], int(variant[s]), bool(bends[s]))
+            a *= np.float32(opacity[s])
+        else:
+            m = plain_mask(poly, w, [xa, ya, xb - xa, yb - ya])
+            a = m[top - ya:bottom - ya, left - xa:right - xa].astype(np.float32) * np.float32(opacity[s] / 255)
         view = out[top - ry:bottom - ry, left - rx:right - rx]
         view *= (1 - a)[..., None]
         view += a[..., None] * np.append(colours[s], 1).astype(np.float32)
@@ -323,7 +355,7 @@ def strokes_for(rect, goal, goal_rect, hard, limit, width, height, size, breathe
     return out, drawn
 
 
-def finish_tile(tile, canvas, canvas_rect, goal, goal_rect, limit, width, height, size, coverage=None, breathe=None):
+def finish_tile(tile, canvas, canvas_rect, goal, goal_rect, limit, width, height, size, coverage=None, breathe=None, dabs=None):
     """One tile's two layers as BGRA uint8 bytes (None where nothing shows) and what it did. `canvas` is the clean
     composite (BGRA uint8) at `canvas_rect` and `goal` the goal resampled onto the canvas (BGR uint8) at `goal_rect`, both
     padded around the tile; `coverage` (tile's h x w, 0-1) the area. Blend: the smoothed canvas, alpha the soft mask.
@@ -348,7 +380,7 @@ def finish_tile(tile, canvas, canvas_rect, goal, goal_rect, limit, width, height
         blend_bytes = pixels.tobytes()
     hard = 1 - soft_all
     if (hard[inner_goal] * keep).max() > 0:
-        layer, report['strokes'] = strokes_for(tile, goal_f, goal_rect, hard, limit, width, height, size, breathe)
+        layer, report['strokes'] = strokes_for(tile, goal_f, goal_rect, hard, limit, width, height, size, breathe, dabs)
         a = layer[..., 3]
         pixels = np.zeros((h, w, 4), np.uint8)
         shown = a > 0
@@ -528,6 +560,8 @@ class FinishCraft:
             self._region_shape_selection(doc, session, params['inside_shape'])
         if 'grain' in params:
             self._finish_grains(doc, session, params['grain'])
+        if 'dab' in params:
+            self._finish_dabs(doc, session, params['dab'])
         detail = params.get('detail', 'normal')
         sizes(doc.width(), doc.height(), detail)
         work = self._finish_work(doc, session, params)
@@ -569,6 +603,30 @@ class FinishCraft:
             out.append((np.frombuffer(data, np.uint8).reshape(rect[3], rect[2]), tuple(rect), height, float(tile), float(strength)))
         return out
 
+    def _finish_dabs(self, doc, session, entries):
+        """The dab list checked and read: [(mask, mask rect, strips)] for each part with at least one usable dab (a tip cut
+        in this session or a brush tip of that name, goal_dabs.dab_alpha); a part with none keeps the plain strokes."""
+        from krita import Krita
+        from .creative_validation import fields, text
+        from . import goal_dabs, shape_mask
+        if not isinstance(entries, list) or len(entries) > GRAIN_PARTS:
+            raise ValueError('dab is a list of at most %d parts {tips, inside_shape}.' % GRAIN_PARTS)
+        out = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError('A dab part is {tips, inside_shape}.')
+            fields(entry, DAB_FIELDS, DAB_FIELDS)
+            tips = entry['tips']
+            if not isinstance(tips, list) or not 1 <= len(tips) <= goal_dabs.MOST_DABS:
+                raise ValueError('dab tips is a list of 1-%d brush tip names.' % goal_dabs.MOST_DABS)
+            names = [text(tip, 'dab tip', 200) for tip in tips]
+            rect, data = shape_mask.read_shape(entry['inside_shape'], session.get('output'), doc.width(), doc.height())
+            app = Krita.instance()
+            alphas = [a for a in (goal_dabs.dab_alpha(app, name) for name in names) if a is not None]
+            if alphas:
+                out.append((np.frombuffer(data, np.uint8).reshape(rect[3], rect[2]), tuple(rect), goal_dabs.strips(alphas)))
+        return out
+
     def _finish_work(self, doc, session, params, limit=None):
         """The tiles to finish: the area's bounds where the goal sits, square by square."""
         width, height = doc.width(), doc.height()
@@ -582,7 +640,8 @@ class FinishCraft:
         from . import canvas_projection
         started = time.monotonic()
         width, height = doc.width(), doc.height()
-        size = sizes(width, height, params.get('detail', 'normal'))
+        dabs = self._finish_dabs(doc, session, params['dab']) if params.get('dab') else []
+        size = sizes(width, height, params.get('detail', 'normal'), dabbed=bool(dabs))
         limit = self._finish_limit(doc, session, params)
         work = self._finish_work(doc, session, params, limit)
         coverage_of = limit[0]
@@ -639,7 +698,7 @@ class FinishCraft:
             canvas_rect = grow(tile, size['canvas_pad'], width, height)
             own = crop(canvas, union, canvas_rect)
             blend, strokes, report = finish_tile(tile, own, canvas_rect, crop(goal_pixels, goal_union, goal_rect), goal_rect, target, width, height, size,
-                                                 coverage, lambda count: breathe(count))
+                                                 coverage, lambda count: breathe(count), dabs or None)
             if strokes is not None and grains:
                 from . import texture_patterns
                 strokes = texture_patterns.apply_grain(np.frombuffer(strokes, np.uint8).reshape(h, w, 4).copy(), tile, grains).tobytes()
@@ -665,7 +724,7 @@ class FinishCraft:
                 layer.remove()
         # whole: the whole picture at the default detail (the companion's "the whole picture is finished", from the passes).
         whole = size['detail'] == 'normal' and not any(params.get(k) for k in ('box', 'selection', 'inside_shape'))
-        out = dict(group, finish={'detail': size['detail'], 'whole': whole, **({'grain_parts': len(grains)} if grains else {}), 'tiles': done['tiles'], 'of_tiles': len(work), 'blend_tiles': done['blend_tiles'],
+        out = dict(group, finish={'detail': size['detail'], 'whole': whole, **({'grain_parts': len(grains)} if grains else {}), **({'dab_parts': len(dabs)} if dabs else {}), 'tiles': done['tiles'], 'of_tiles': len(work), 'blend_tiles': done['blend_tiles'],
                                   'stroke_tiles': done['stroke_tiles'], 'strokes': done['strokes'],
                                   'soft_share': round(done['soft'] / area, 3), 'ms': int((time.monotonic() - started) * 1000)},
                    layers={label: layer.uniqueId().toString() for label, layer in layers.items()

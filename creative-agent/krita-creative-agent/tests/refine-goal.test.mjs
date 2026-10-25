@@ -326,3 +326,15 @@ test('an architectural step’s form strokes carry its grain: every finish of th
   await plain.tool.execute('g2', {});
   assert.ok(plain.of('finish').every(c => !('grain' in c.params)), 'a grain that cannot be had never stops the refine');
 });
+
+test('an architectural step’s form strokes are stamped with its goal dabs: every finish of the refine gets them, none without (goal 9)', async t => {
+  const dab = [{ tips: ['Goal dab: the church 1'], inside_shape: { mask_path: '/chat/.shapes/found-a.png', bounds: [0, 0, 600, 600] } }];
+  const s = await setup(t);
+  s.runtime.refineDabs = async () => dab;
+  await s.tool.execute('d1', {});
+  assert.ok(s.of('finish').length > 0 && s.of('finish').every(c => JSON.stringify(c.params.dab) === JSON.stringify(dab)));
+  const plain = await setup(t);
+  plain.runtime.refineDabs = async () => { throw new Error('no record'); };
+  await plain.tool.execute('d2', {});
+  assert.ok(plain.of('finish').every(c => !('dab' in c.params)), 'dabs that cannot be had never stop the refine');
+});

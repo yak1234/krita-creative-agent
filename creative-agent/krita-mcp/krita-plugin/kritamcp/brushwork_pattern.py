@@ -23,6 +23,9 @@ their brush texture. The library material (goals 1, 6) adds the full-size detail
 Pure numpy/OpenCV in brushwork_tile (tests/test_brushwork_pattern.py, no Krita); BrushworkCraft is the plugin operation
 `brushwork_patterns`, dispatched by creative_tools.py. It changes no document (no pass, no checkpoint), like make_material.
 What each part got is kept in this process for the brush texture (goal 6): goal_brushwork_pattern(part).
+
+The same crop gives the part's goal dabs (goal 9, goal_dabs.py): a few impasto dabs registered with Krita.createBrushTip as
+"Goal dab: <part> <n>" (kept for the Finish's strokes even where Krita cannot make tips); `dabs` lists their names.
 """
 import time
 
@@ -130,7 +133,7 @@ def pattern_name(part):
 class BrushworkCraft:
     def _brushwork_patterns(self, doc, session, params):
         """Operation brushwork_patterns: {goal: {path, sha256, size, source, target}, parts: [{name, inside_shape}]} ->
-        {status, brushwork: [{part, pattern, energy, size, scale, reason?}]}. Everything is checked before any pattern is
+        {status, brushwork: [{part, pattern, energy, size, scale, dabs, reason?}]}. Everything is checked before any pattern is
         made; a part that is flat or tiny, or that Krita refuses, gets pattern None and its reason."""
         from krita import Krita
         from .creative_validation import fields, text
@@ -159,6 +162,7 @@ class BrushworkCraft:
     @staticmethod
     def _brushwork_part(app, picture, goal, name, rect, mask):
         from .qt_compat import QImage
+        from . import goal_dabs
         started = time.monotonic()
         sx, sy, sw, sh = goal['source']
         tx, ty, tw, th = goal['target']
@@ -168,17 +172,20 @@ class BrushworkCraft:
         gx1, gy1 = gx0 + w * kx, gy0 + h * ky
         px0, py0 = max(0, int(np.floor(gx0))), max(0, int(np.floor(gy0)))
         px1, py1 = min(picture.shape[1], int(np.ceil(gx1))), min(picture.shape[0], int(np.ceil(gy1)))
-        entry = {'part': name, 'pattern': None, 'energy': 0.0, 'size': 0, 'scale': round(1 / kx, 3)}
+        entry = {'part': name, 'pattern': None, 'energy': 0.0, 'size': 0, 'scale': round(1 / kx, 3), 'dabs': []}
         _REGISTERED.pop(_key(name), None)
-        if px1 - px0 < MIN_SIDE or py1 - py0 < MIN_SIDE:
-            entry['reason'] = 'tiny'
-        else:
+        crop = crop_mask = None
+        if px1 > px0 and py1 > py0:
             canvas_mask = np.frombuffer(mask, np.uint8).reshape(h, w)
             # The mask over the crop: the canvas mask resampled to the goal's pixels (nearest: it stays 0/255).
             gxs = np.clip(((np.arange(px0, px1) + 0.5 - gx0) / kx).astype(int), 0, w - 1)
             gys = np.clip(((np.arange(py0, py1) + 0.5 - gy0) / ky).astype(int), 0, h - 1)
             crop_mask = canvas_mask[gys][:, gxs]
             crop = np.ascontiguousarray(picture[py0:py1, px0:px1, :3])
+            entry['dabs'] = goal_dabs.register(app, name, crop, crop_mask, 1 / kx)
+        if px1 - px0 < MIN_SIDE or py1 - py0 < MIN_SIDE:
+            entry['reason'] = 'tiny'
+        else:
             tile, energy, reason = brushwork_tile(crop, crop_mask)
             entry['energy'] = round(energy, 2)
             if tile is None:

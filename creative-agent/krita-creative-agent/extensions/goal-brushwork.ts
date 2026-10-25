@@ -9,14 +9,16 @@
 //
 // The record (BrushworkRecord, kept by the studio per step: goal.step_brushwork[key]) says per part which pattern it got,
 // for the textured brushes (goal 6): brushworkPattern(record, part) -> {name, energy, scale} | null. `scale` is canvas px
-// per pattern px (the goal's enlargement), for the brush texture's scale.
+// per pattern px (the goal's enlargement), for the brush texture's scale. The same plugin call cuts each part's goal dabs
+// (goal 9, goal_dabs.py: brush tips "Goal dab: <part> <n>"): brushworkDabs(record, part) -> their names | null, which the
+// refine's form strokes in that part are stamped with (architecture-texture.ts refineDabs).
 // A shipped Pi extension registered inline (src/extensions.mjs). It knows the studio only through BrushworkHost.
 import type { ExtensionAPI, ToolCallEvent, ToolCallEventResult } from '@earendil-works/pi-coding-agent';
 import { architecturalParts, type TextureStep } from './architecture-texture.ts';
 import type { GoalSpec } from '../src/goal-spec.ts';
 
 /** What the plugin reports for one part: the pattern resource's name, or null with its reason (flat, tiny, refused). */
-export type BrushworkPart = { part: string; pattern: string | null; energy: number; size: number; scale: number; reason?: string; ms?: number };
+export type BrushworkPart = { part: string; pattern: string | null; energy: number; size: number; scale: number; dabs?: string[]; reason?: string; ms?: number };
 /** A step's goal brushwork: per architectural part, which pattern it got; `goal` is the goal file's sha256. */
 export type BrushworkRecord = { step: string; goal: string; parts: BrushworkPart[]; ms: number; error?: string };
 export type BrushworkRequest = { goal: GoalSpec; parts: { name: string; inside_shape: { mask_path: string; bounds: number[] } }[] };
@@ -44,6 +46,12 @@ const key = (name: string) => name.trim().split(/\s+/).join(' ').toLowerCase();
 export function brushworkPattern(record: BrushworkRecord | null | undefined, part: string): { name: string; energy: number; scale: number } | null {
   const found = record?.parts.find(p => key(p.part) === key(part));
   return found?.pattern ? { name: found.pattern, energy: found.energy, scale: found.scale } : null;
+}
+
+/** The goal dabs a part got (brush tip names, for its form strokes), or null: none cut (flat, small) or an older plugin. */
+export function brushworkDabs(record: BrushworkRecord | null | undefined, part: string): string[] | null {
+  const found = record?.parts.find(p => key(p.part) === key(part));
+  return found?.dabs?.length ? [...found.dabs] : null;
 }
 
 export default function goalBrushwork(host: BrushworkHost): (pi: ExtensionAPI) => void {

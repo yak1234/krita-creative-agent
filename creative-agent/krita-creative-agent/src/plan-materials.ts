@@ -8,7 +8,7 @@
 // shows them in plain words (materialsLine), and the texture pass takes a part's planned material (plannedChoice) instead
 // of asking the model at paint time. This module imports no .mjs.
 import { Type } from 'typebox';
-import { CATALOGUE, allowedMaterials, materialById, type Material, type PartKind } from './texture-library.ts';
+import { CATALOGUE, allowedMaterials, materialById, partKind, type Material, type PartKind } from './texture-library.ts';
 import { clampPart, tileFor, RECEDING, type PartChoice, type TexturePart } from './texture-choice.ts';
 
 export const ASPECTS = ['walls', 'roofs', 'windows', 'ground', 'trim'] as const;
@@ -59,6 +59,12 @@ export function cleanPlanSteps<S extends { title: string; materials?: unknown }>
     const { materials: given, ...rest } = step;
     if (given === undefined) return step;
     if (!refinePart(step)) { if (Array.isArray(given) && given.length) dropped.push(`step ${i + 1}: materials belong to a "Refine: <parts>" step`); return rest as S; }
+    // A step of people, vehicles, sky, water or trees only gets no texture, so its plan card names none.
+    const parts = String(step.title).replace(/^Refine:\s*/i, '').split(/\s*(?:,|\band\b|&)\s*/i).filter(Boolean);
+    if (!parts.some(part => partKind(part) !== null)) {
+      if (Array.isArray(given) && given.length) dropped.push(`step ${i + 1}: no architecture in "${step.title}", so no materials`);
+      return rest as S;
+    }
     const { materials, dropped: lost } = cleanMaterials(given);
     dropped.push(...lost.map(d => `step ${i + 1}: ${d}`));
     return (materials.length ? { ...rest, materials } : rest) as S;
@@ -73,7 +79,7 @@ export const materialsLine = (materials: readonly PlannedMaterial[] | undefined)
 /** The library for the planner (painting_tool_help name "materials"): one short line a material. */
 export function materialCatalogue(): { aspects: string; materials: string[] } {
   return { aspects: 'walls (walls, church, towers, bridge, skyscrapers), roofs (roofs and domes), windows (skyscraper window grids), ground (street), trim (railings, ledges)',
-    materials: CATALOGUE.map(m => `${m.id}: ${m.material} (${m.kinds.join(', ')}; ${m.metres} m)`) };
+    materials: CATALOGUE.map(m => `${m.id}: ${m.material} [${m.tags.join(' ')}] (${m.kinds.join(', ')}; ${m.metres} m)`) };
 }
 
 /** A part's choice from the plan: the planned material of its aspect (and a skyscraper's window grid), when its kind may get

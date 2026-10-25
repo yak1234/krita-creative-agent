@@ -44,6 +44,22 @@ test('only an architectural refine step keeps its materials', () => {
   assert.match(dropped.join(' '), /step 2/);
 });
 
+test('a refine step of people, vehicles or sky only keeps no materials (live test, 2026-10-25: the woman and the car got metal and snow)', () => {
+  const steps = [{ title: 'Refine: Woman back view and vintage convertible', done_when: 'x', materials: [{ aspect: 'trim', id: 'Metal027' }] },
+    { title: 'Refine: Moonlit sky and historic buildings', done_when: 'y', materials: [{ aspect: 'walls', id: 'ph_large_sandstone_blocks' }] }];
+  const { steps: cleaned, dropped } = cleanPlanSteps(steps, step => /^Refine:/.test(step.title));
+  assert.equal(cleaned[0].materials, undefined);
+  assert.match(dropped.join(' '), /step 1: .*no architecture/);
+  assert.deepEqual(cleaned[1].materials.map(m => m.id), ['ph_large_sandstone_blocks']);
+});
+
+test('the planner sees each material’s look, not only its name (live test: it chose red factory brick for cream facades)', () => {
+  const lines = materialCatalogue().materials;
+  assert.match(lines.find(l => l.startsWith('ph_castle_brick_02_red')), /kremlin/);
+  assert.match(lines.find(l => l.startsWith('ph_green_metal_rust')), /green/);
+  assert.match(lines.find(l => l.startsWith('ph_large_sandstone_blocks')), /sandstone|cream|stone/);
+});
+
 test('in plain words for the plan card', () => {
   assert.equal(materialsLine([{ aspect: 'walls', id: 'ph_castle_brick_02_red' }, { aspect: 'roofs', id: 'ph_green_metal_rust' }]),
     'walls: old red castle brick; roofs: rusty green metal');

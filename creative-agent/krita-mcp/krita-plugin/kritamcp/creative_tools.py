@@ -35,6 +35,7 @@ from .material_stamp import MaterialCraft, RESOURCE_PREFIX as STAMP_RESOURCE_PRE
 from .accent_adjust import AccentCraft
 from .finish_pass import FinishCraft
 from .texture_craft import TextureCraft
+from .brushwork_pattern import BrushworkCraft
 from .area_compare import AreaCompare
 from .guide_craft import GuideCraft
 from .tool_craft import ToolCraft, OPERATIONS as TOOL_OPERATIONS, PASS_TITLES as TOOL_TITLES, tool_functions_available
@@ -124,7 +125,7 @@ def merge_pass_record_error(result, error):
             'error': result['error'] + ' (' + note + ')' if result.get('error') else note}
 
 
-class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, FlattenCraft, ProtectionCraft, FeatureCraft, NativeCraft, MaterialCraft, ToolCraft, GuideCraft, AccentCraft, FinishCraft, TextureCraft, AreaCompare):
+class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, TransformCraft, CanvasView, ComicCraft, MergeCraft, FlattenCraft, ProtectionCraft, FeatureCraft, NativeCraft, MaterialCraft, ToolCraft, GuideCraft, AccentCraft, FinishCraft, TextureCraft, BrushworkCraft, AreaCompare):
     def cmd_creative(self, request):
         fields(request, ('operation', 'session_id', 'operation_id', 'params'), ('operation', 'params'))
         operation = request['operation']
@@ -566,6 +567,9 @@ class CreativeTools(LayerCraft, RegionCraft, FilterCraft, ColorizeCraft, Transfo
         if operation == 'register_patterns':
             # The texture library's materials as Krita patterns (texture_patterns.py): resources, not a canvas change.
             return self._texture_register(params)
+        if operation == 'brushwork_patterns':
+            # Goal brushwork patterns (brushwork_pattern.py): Krita resources, not paint, so no pass or checkpoint.
+            return self._brushwork_patterns(doc, session, params)
         if operation == 'krita_action' and self._native_action_kind(params) == 'selection':
             # A selection action saves a named selection: no pass or checkpoint, like select.
             return self._native_select_action(doc, session, params)

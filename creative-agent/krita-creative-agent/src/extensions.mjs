@@ -11,6 +11,7 @@ import seamCheck from '../extensions/seam-check.ts';
 import goalLikeness from '../extensions/goal-likeness.ts';
 import paintingWeight from '../extensions/painting-weight.ts';
 import architectureTexture from '../extensions/architecture-texture.ts';
+import goalBrushwork from '../extensions/goal-brushwork.ts';
 import argumentRepair from '../extensions/argument-repair.ts';
 
 export const LOOP_GUARDS = { name: 'loop-guards', factory: loopGuards };
@@ -31,6 +32,9 @@ export const materialStampExtension = host => ({ name: 'material-stamp', factory
 // The architecture texture of a "Refine: <parts>" step, bound to the studio's TextureHost (studio.mjs textureHost).
 /** @param {import('../extensions/architecture-texture.ts').TextureHost} host */
 export const architectureTextureExtension = host => ({ name: 'architecture-texture', factory: architectureTexture(host), tools: ['texture_architecture'] });
+// The goal brushwork patterns of a "Refine: <parts>" step, before its form strokes (studio.mjs brushworkHost).
+/** @param {import('../extensions/goal-brushwork.ts').BrushworkHost} host */
+export const goalBrushworkExtension = host => ({ name: 'goal-brushwork', factory: goalBrushwork(host) });
 // Saves the painting during the model's turn instead of during painting calls (studio.mjs saveHost).
 /** @param {import('../extensions/save-timing.ts').SaveHost} host */
 export const saveTimingExtension = host => ({ name: 'save-timing', factory: saveTiming(host) });

@@ -62,3 +62,14 @@
 - [x] 5.1 Companion unit suite and typecheck; plugin suite through agent/ci.sh --no-cpp.
 - [ ] 5.2 Live in Toska (not done here): a copy of New Moscow, time per part at 6000 x 4500, no visible tiling, no colour shift,
       sky, river, people and car untouched.
+
+## 6. Goal brushwork patterns (goal 8)
+
+- [x] 6.1 `brushwork_pattern.py` (numpy/OpenCV): the goal crop at a part's found area (through the goal's placement), the
+      square window with most of the part, high-pass by a mask-normalised Gaussian (sigma 5 goal px), seamless by offset and
+      tent blend per axis, a grey height map; energy (high-pass spread in luminance levels) below 2.5 is flat, a window under
+      24 goal px is tiny: no pattern. Operation `brushwork_patterns` registers "Goal brushwork: <part>" with
+      Krita.createPattern; `goal_brushwork_pattern(part)` -> {name, energy, size, scale} | None for the brush texture.
+- [x] 6.2 `extensions/goal-brushwork.ts`: before refine_to_goal or paint_finish in an architectural refine step, once per step
+      and goal, never blocking; the record per part on goal.step_brushwork[key]; `brushworkPattern(record, part)`.
+- [ ] 6.3 The textured brushes (goal 6) use it; the plan card names it (goal 7). Live: the energy threshold on New Moscow.

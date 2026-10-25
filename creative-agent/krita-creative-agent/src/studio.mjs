@@ -7,7 +7,7 @@ import {passCheck, progressCheck, moveCheck, seamCheck} from './visual-checks.ts
 import { executionSettings, thinkingLevel, AUTO_REASONING_NOTE } from './execution-settings.mjs';
 import { panelSchema, DEFAULT_PLANNER } from './settings-schema.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS, mutates } from './craft.mjs';
-import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension, architectureTextureExtension } from './extensions.mjs';
+import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension, architectureTextureExtension, goalBrushworkExtension } from './extensions.mjs';
 import { textureRequired, refineGrain } from '../extensions/architecture-texture.ts';
 import { cleanPlanSteps, plannedMaterialsSchema } from './plan-materials.ts';
 import { ensureMaterial } from './texture-library.ts';
@@ -636,7 +636,7 @@ export class StudioRuntime extends PaintingRuntime {
   // The Pi extensions the painter's session runs besides the loop guards (runtime.mjs).
   // Save timing comes after Luna review, so it saves each batch's final state, after any undo.
   // The architecture texture runs after the review extensions see refine_to_goal's result, so they judge the refine alone.
-  extensionFactories() { return [goalLikenessExtension(this.likenessHost()), lunaReviewExtension(this.reviewHost()), materialStampExtension(this.materialHost()), architectureTextureExtension(this.textureHost()), saveTimingExtension(this.saveHost()), seamCheckExtension(this.seamHost())]; }
+  extensionFactories() { return [goalLikenessExtension(this.likenessHost()), lunaReviewExtension(this.reviewHost()), materialStampExtension(this.materialHost()), goalBrushworkExtension(this.brushworkHost()), architectureTextureExtension(this.textureHost()), saveTimingExtension(this.saveHost()), seamCheckExtension(this.seamHost())]; }
   /** A "Refine: <parts>" step for the architecture texture (extensions/architecture-texture.ts): its parts with their found
    * areas (refinePartArea keeps them), folder notes and the step's own area; null for any other step. */
   textureStep(index) {
@@ -709,12 +709,33 @@ export class StudioRuntime extends PaintingRuntime {
       patterns: async materials => (await this.callNative('register_patterns', {materials}))?.patterns ?? {},
       // One decision a step and move: the refine's grain and the texture pass share it.
       decided: key => this.textureDecisions?.get(key + '@' + (this.currentMove?.number ?? 'run')),
+      brushwork: key => this.goal?.step_brushwork?.[key] ?? null,   // goal 8: the goal's brushwork joins the form strokes' grain
       remember: (key, decision) => (this.textureDecisions ??= new Map()).set(key + '@' + (this.currentMove?.number ?? 'run'), decision),
       status: message => this.emit({type:'status', phase:'painting', message}),
     };
   }
   /** The studio side of save timing (extensions/save-timing.ts): the same checkpoint as at review and run end. */
   saveHost() { return { painting: name => PACED_TOOLS.includes(name), checkpoint: () => this.flushCheckpoint() }; }
+  /** The studio side of the goal brushwork patterns (extensions/goal-brushwork.ts): the painted refine step, the placed goal
+   * (sharpened when it is), the record per step on the goal (goal.step_brushwork, read by the textured brushes). */
+  brushworkHost() {
+    return {
+      step: () => this.textureStep(this.paintedStepIndex()),
+      goal: async () => {
+        const canvas = this.decisionObservation ?? this.lastObservation, placed = canvas?.width ? await this.goalPlacement(canvas) : null;
+        return placed ? goalSpec({reference:placed.reference, source:placed.mapping.source, target:placed.mapping.target, from:placed.mapping.from}) : null;
+      },
+      recorded: key => this.goal?.step_brushwork?.[key] ?? null,
+      record: entry => {
+        if (this.goal) this.goal.step_brushwork = {...(this.goal.step_brushwork ?? {}), [entry.step]:entry};
+        this.diagnostics?.record({type:'goal_brushwork', step:entry.step, ms:entry.ms, error:entry.error ?? null,
+          parts:entry.parts.map(p => ({part:p.part, pattern:p.pattern, energy:p.energy, reason:p.reason ?? null}))});
+        this.persist().catch(() => {});
+      },
+      native: params => this.callNative('brushwork_patterns', params),
+      status: message => this.emit({type:'status', phase:'painting', message}),
+    };
+  }
   /** The studio side of make_material and stamp_material (extensions/material-stamp.ts). A stamp is a paced painting call. */
   materialHost() {
     return {

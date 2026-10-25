@@ -13,6 +13,7 @@
 //   for such a move too (textureRequired). Sky, water, people, vehicles and trees never get texture.
 // The move's Undo (the step's Redo) removes the pass with the rest of the move: it is one of the move's passes.
 // A shipped Pi extension registered inline (src/extensions.mjs). It knows the studio only through TextureHost.
+import { brushworkPattern, type BrushworkRecord } from './goal-brushwork.ts';
 import type { ExtensionAPI, ToolCallEvent, ToolCallEventResult, ToolResultEvent, ToolResultEventResult } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { partKind, materialById, type Material, type PartKind } from '../src/texture-library.ts';
@@ -43,6 +44,8 @@ export interface TextureHost {
   /** The materials as Krita patterns (the plugin's register_patterns): {id: pattern name}; absent or {} on stock Krita. */
   patterns?(materials: Record<string, unknown>): Promise<Record<string, string>>;
   decided?(key: string): Decision | undefined;          // this step's choice, when made already
+  /** The step's goal brushwork patterns (goal-brushwork.ts), when made: their grain joins the material's (goal 8). */
+  brushwork?(key: string): BrushworkRecord | null;
   remember?(key: string, decision: Decision): void;
   status?(message: string): void;
 }
@@ -89,8 +92,15 @@ export async function refineGrain(host: TextureHost, signal?: AbortSignal): Prom
   const ids = [...new Set(chosen.map(c => c.materials[0]!.id))], materials: Record<string, unknown> = {};
   for (const id of ids) materials[id] = await host.maps(materialById(id)!, signal);
   const names = await host.patterns(materials);
-  const grain = chosen.flatMap((c, i) => { const pattern = names[c.materials[0]!.id];
-    return pattern ? [{ pattern, inside_shape: { mask_path: parts[i]!.area.mask_path, bounds: parts[i]!.area.bounds }, tile_px: c.tile_px.near, strength: GRAIN_STRENGTH }] : []; });
+  const record = host.brushwork?.(step.key) ?? null;
+  const grain = chosen.flatMap((c, i) => {
+    const part = parts[i]!, inside_shape = { mask_path: part.area.mask_path, bounds: part.area.bounds };
+    const pattern = names[c.materials[0]!.id], goal = brushworkPattern(record, part.name);
+    const size = record?.parts.find(p => p.pattern === goal?.name)?.size ?? 0;
+    return [...(pattern ? [{ pattern, inside_shape, tile_px: c.tile_px.near, strength: GRAIN_STRENGTH }] : []),
+      // The goal's own brushwork over its crop (size pattern px x scale canvas px each): the painting's impasto rhythm.
+      ...(goal && size > 0 ? [{ pattern: goal.name, inside_shape, tile_px: Math.min(4000, Math.max(8, Math.round(size * goal.scale))), strength: GRAIN_STRENGTH }] : [])];
+  });
   return grain.length ? grain : null;
 }
 

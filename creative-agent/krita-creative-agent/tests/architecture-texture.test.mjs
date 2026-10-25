@@ -187,6 +187,14 @@ test('studio: a continue move on a step already textured by an earlier move of i
   assert.equal(studio.textureHost().done(), false, 'an undone move’s texture is gone with it');
 });
 
+test('studio: the texture host reads the step’s goal brushwork record (goal 8)', () => {
+  const studio = studioState();
+  const record = { step: 'id:s3', goal: 'abc', ms: 1, parts: [{ part: 'the church', pattern: 'Goal brushwork: the church', energy: 9, size: 128, scale: 2 }] };
+  studio.goal.step_brushwork = { 'id:s3': record };
+  assert.deepEqual(studio.textureHost().brushwork('id:s3'), record);
+  assert.equal(studio.textureHost().brushwork('id:s9'), null);
+});
+
 test('studio: the texture host records the pass on the Agent move', () => {
   const studio = studioState();
   studio.persist = async () => {};
@@ -214,7 +222,22 @@ test('a step with planned materials uses them and asks the model only for the pa
   assert.deepEqual(both.calls[0].params.parts.map(p => p.materials[0].id), ['Bricks008', 'PavingStones150']);
 });
 
-import { refineGrain, GRAIN_STRENGTH } from '../extensions/architecture-texture.ts';
+import { refineGrain, GRAIN_STRENGTH, architecturalParts as partsOf } from '../extensions/architecture-texture.ts';
+
+test('a part with goal brushwork carries that pattern too, at its own tile size, after its material (goal 8)', async () => {
+  const reply = { parts: [{ part: 'the church', materials: [{ id: 'Bricks008', weight: 1 }], tile_px: { near: 220, far: 220 }, strength: 0.2 }] };
+  const { host } = setup({ reply });
+  host.patterns = async materials => Object.fromEntries(Object.keys(materials).map(id => [id, 'Texture: ' + id]));
+  const church = partsOf(host.step())[0];
+  host.brushwork = key => ({ step: key, goal: 'abc', ms: 5, parts: [{ part: church.name, pattern: 'Goal brushwork: the church', energy: 9, size: 128, scale: 2.5 }] });
+  const grain = await refineGrain(host);
+  const ours = grain.filter(g => g.inside_shape.bounds.join() === church.area.bounds.join());
+  assert.deepEqual(ours.map(g => g.pattern), ['Texture: Bricks008', 'Goal brushwork: the church']);
+  assert.equal(ours[1].tile_px, 320, 'the pattern covers its goal crop: size x scale canvas px');
+  assert.equal(ours[1].strength, GRAIN_STRENGTH);
+  host.brushwork = () => null;
+  assert.ok((await refineGrain(host)).every(g => !g.pattern.startsWith('Goal brushwork')), 'no record: the material alone');
+});
 
 test('the refine’s form strokes carry each architectural part’s material as a Krita pattern, one decision for both passes', async () => {
   const reply = { parts: [{ part: 'the church', materials: [{ id: 'Bricks008', weight: 1 }], tile_px: { near: 220, far: 220 }, strength: 0.2 }] };

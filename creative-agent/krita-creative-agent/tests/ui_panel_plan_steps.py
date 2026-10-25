@@ -235,6 +235,16 @@ class PanelPlanSteps(unittest.TestCase):
         self.assertNotIn('materials', dialog.brief()['steps'][2])
         dialog.deleteLater()
 
+    def test_the_plan_dialog_shows_lunas_picks_and_an_unsure_one(self):
+        planned = [{'aspect': 'walls', 'part': 'Kremlin towers', 'id': 'ph_castle_brick_02_red', 'material': 'old red castle brick', 'source': 'luna'},
+                   {'aspect': 'walls', 'id': 'Bricks085', 'material': 'red brick', 'unsure': True}]
+        brief = dict(BRIEF, steps=[dict(step, id='s%d' % i, **({'materials': planned} if i == 2 else {})) for i, step in enumerate(BRIEF['steps'])])
+        dialog = module.PlanDialog(self.panel, {'brief': brief, 'limits': {'minutes': 0, 'passes': 0}, 'status': 'ready'})
+        self.assertIn('walls (Kremlin towers): old red castle brick; walls: red brick (unsure)', dialog.markdown())
+        dialog.steps.setCurrentCell(2, 0)
+        self.assertEqual(dialog.brief()['steps'][2]['materials'], planned, 'kept as shown: Luna\'s picks go back as they were')
+        dialog.deleteLater()
+
     def test_no_plan_steps_hides_the_list(self):
         self.goal([])
         self.assertFalse(self.panel.plan_steps.isVisible())

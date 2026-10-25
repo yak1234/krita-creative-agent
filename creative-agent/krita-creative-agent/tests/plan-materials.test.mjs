@@ -109,3 +109,46 @@ test('a brief keeps a refine step’s materials through the schema, normalising,
   const again = briefFromPlan({ title: 'New Moscow', steps: checked.steps.map(s => ({ title: s.title })) }, checked);
   assert.deepEqual(again.steps[1].materials, checked.steps[1].materials, 'an edit of PLAN.md keeps them by the step');
 });
+
+// Luna's picks by look (src/luna-materials.ts) in the plan: per part entries, their source, "(unsure)", the artist's edits winning.
+import { markArtistMaterials } from '../src/plan-materials.ts';
+
+test('the plan card names a part’s own material and marks an unsure one', () => {
+  assert.equal(materialsLine([{ aspect: 'walls', part: 'Kremlin towers', id: 'ph_castle_brick_02_red', source: 'luna' }, { aspect: 'walls', id: 'Bricks085', unsure: true }]),
+    'walls (Kremlin towers): old red castle brick; walls: red brick (unsure)');
+});
+
+test('a part’s own entry wins over its aspect’s; Luna’s pick is a choice of source luna', () => {
+  const planned = [{ aspect: 'walls', id: 'Bricks085' }, { aspect: 'walls', part: 'historic buildings', id: 'ph_old_sandstone_02', source: 'luna' }];
+  const own = plannedChoice({ name: 'Historic buildings', kind: 'wall', bounds: [0, 0, 500, 1500] }, planned, canvas);
+  assert.deepEqual(own.materials.map(m => m.id), ['ph_old_sandstone_02']);
+  assert.equal(own.source, 'luna');
+  const other = plannedChoice({ name: 'warehouses', kind: 'wall', bounds: [0, 0, 500, 1500] }, planned, canvas);
+  assert.deepEqual(other.materials.map(m => m.id), ['Bricks085']);
+  assert.equal(other.source, 'plan');
+});
+
+test('cleaning: "walls (part)" names a part; source and unsure kept only from a trusted brief (never from the planner)', () => {
+  const given = [{ aspect: 'walls (historic buildings)', id: 'old cream sandstone' }, { aspect: 'roofs', id: 'Metal021', source: 'luna', unsure: true }];
+  const planner = cleanMaterials(given).materials;
+  assert.deepEqual(planner[0], { aspect: 'walls', part: 'historic buildings', id: 'ph_old_sandstone_02', material: 'old cream sandstone' });
+  assert.equal(planner[1].source, undefined);
+  assert.equal(planner[1].unsure, undefined);
+  const kept = cleanMaterials(given, { trusted: true }).materials;
+  assert.equal(kept[1].source, 'luna');
+  assert.equal(kept[1].unsure, true);
+  assert.equal(cleanMaterials([{ aspect: 'walls', id: 'Bricks085' }, { aspect: 'walls', part: 'towers', id: 'Bricks094' }]).materials.length, 2, 'one per aspect and part');
+});
+
+test('the artist’s edits: a changed material is the artist’s; an unchanged one keeps its source', () => {
+  const before = [{ id: 's3', title: 'Refine: Kremlin', materials: [{ aspect: 'walls', id: 'ph_castle_brick_02_red', source: 'luna' }, { aspect: 'roofs', id: 'Metal021', unsure: true }] }];
+  const after = [{ id: 's3', title: 'Refine: Kremlin', materials: [{ aspect: 'walls', id: 'ph_castle_brick_02_red', source: 'luna' }, { aspect: 'roofs', id: 'ph_green_metal_rust', unsure: true }] }];
+  const marked = markArtistMaterials(before, after);
+  assert.deepEqual(marked[0].materials, [{ aspect: 'walls', id: 'ph_castle_brick_02_red', source: 'luna' }, { aspect: 'roofs', id: 'ph_green_metal_rust', source: 'artist' }]);
+});
+
+test('a brief with Luna’s picks passes the schema (the panel sends them back as shown)', () => {
+  const brief = { title: 't', objective: 'o', requirements: [], freedom: [], completion: ['done'], steps: [
+    { title: 'Refine: Kremlin', done_when: 'y', materials: [{ aspect: 'walls', part: 'Kremlin towers', id: 'ph_castle_brick_02_red', source: 'luna' }, { aspect: 'roofs', id: 'Metal021', unsure: true }] }] };
+  assert.ok(Value.Check(briefSchema, brief));
+});

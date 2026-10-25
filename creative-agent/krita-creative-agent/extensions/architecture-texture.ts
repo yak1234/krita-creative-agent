@@ -47,6 +47,8 @@ export interface TextureHost {
   /** The step's goal brushwork patterns (goal-brushwork.ts), when made: their grain joins the material's (goal 8). */
   brushwork?(key: string): BrushworkRecord | null;
   remember?(key: string, decision: Decision): void;
+  /** Luna's picks by look (src/luna-materials.ts): the step's materials with them applied, once a plan revision. */
+  lunaMaterials?(step: TextureStep, parts: ArchitecturalPart[], signal?: AbortSignal): Promise<PlannedMaterial[] | undefined>;
   status?(message: string): void;
 }
 export type ArchitecturalPart = TexturePart & { area: Area };
@@ -64,14 +66,20 @@ export function architecturalParts(step: TextureStep | null): ArchitecturalPart[
 }
 
 export type Decision = { chosen: PartChoice[]; model?: string; fallback?: string };
-/** Each architectural part's choice: the plan's materials first (goal 7), the model only for the parts they leave out. Made
- * once a step: the form strokes' grain (before the refine) and the texture pass (after it) share it (host.decided). */
+/** Each architectural part's choice: the plan's materials first (goal 7) with Luna's picks by look applied (at the step's
+ * first paint: the parts' found areas exist only from then), the model only for the parts they leave out. Made once a step:
+ * the form strokes' grain (before the refine) and the texture pass (after it) share it (host.decided). */
 export async function decideTextures(host: TextureHost, step: TextureStep, signal?: AbortSignal): Promise<Decision> {
   const known = host.decided?.(step.key);
   if (known) return known;
   const parts = architecturalParts(step), canvas = host.canvas();
   if (!canvas) throw new Error('Observe the canvas first.');
-  const planned = parts.map(p => plannedChoice(p, step.materials, canvas));
+  let materials = step.materials;
+  if (host.lunaMaterials && parts.length) {
+    host.status?.(`Texture: Luna is looking at the materials for ${step.label}…`);
+    materials = await host.lunaMaterials(step, parts, signal).catch(() => step.materials) ?? step.materials;   // never blocks the painting
+  }
+  const planned = parts.map(p => plannedChoice(p, materials, canvas));
   const open = parts.filter((_, i) => !planned[i]);
   const choice = open.length ? await chooseTextures({ reader: await host.reader(), view: await host.view().catch(() => null), canvas, parts: open, signal: signal ?? new AbortController().signal }) : null;
   let next = 0;

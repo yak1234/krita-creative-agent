@@ -9,7 +9,8 @@ import { panelSchema, DEFAULT_PLANNER } from './settings-schema.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS, mutates } from './craft.mjs';
 import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension, architectureTextureExtension, goalBrushworkExtension } from './extensions.mjs';
 import { textureRequired, refineGrain } from '../extensions/architecture-texture.ts';
-import { cleanPlanSteps, plannedMaterialsSchema } from './plan-materials.ts';
+import { cleanPlanSteps, markArtistMaterials, plannedMaterialsSchema } from './plan-materials.ts';
+import { chooseByLook, cropOut, SWATCH_PX } from './luna-materials.ts';
 import { ensureMaterial } from './texture-library.ts';
 import { transferJobId, underpaintingState, underpaintingRefusal, closedNote, UNDERPAINTING_MOVE_NOTE } from './underpainting-move.ts';
 import { goalSpec } from './goal-spec.ts';
@@ -274,6 +275,7 @@ const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist ap
 // A plan step that names guides: the artist asked for them when approving it.
 const GUIDES_STEP = /\b(guides?|trac(e|ing)|block-in|construction lines?)\b/i;
 const FOLDER_ANSWERS = ['Follow the edited plan','Keep the current plan'];
+const LUNA_MATERIALS_DEADLINE_MS = 20000;              // Luna's look at a step's materials, crops and swatches included: past it the plan's stay
 const TEXTURE_DOWNLOAD_MS = 120000;                    // one texture material's download at most (a few MB)
 const FOLDER_PLAN_ELEMENTS = 15;                       // a plan holds 16 steps: the underpainting and 15 elements
 function planStepRequest(goal) {
@@ -654,8 +656,8 @@ export class StudioRuntime extends PaintingRuntime {
   }
   /** A brief's planned texture materials checked against the library (plan-materials.ts): kept only on an architectural
    * "Refine: <parts>" step, unknown ids dropped; what was dropped, for the planner or the artist. */
-  cleanStepMaterials(brief) {
-    const {steps, dropped} = cleanPlanSteps(brief.steps, step => folderStepKind(step) === 'refine_part');
+  cleanStepMaterials(brief, {trusted = false} = {}) {
+    const {steps, dropped} = cleanPlanSteps(brief.steps, step => folderStepKind(step) === 'refine_part', {trusted});
     if (dropped.length) this.diagnostics?.record({type:'plan_materials_dropped', count:dropped.length});
     return {brief:{...brief, steps}, dropped};
   }
@@ -711,8 +713,79 @@ export class StudioRuntime extends PaintingRuntime {
       decided: key => this.textureDecisions?.get(key + '@' + (this.currentMove?.number ?? 'run')),
       brushwork: key => this.goal?.step_brushwork?.[key] ?? null,   // goal 8: the goal's brushwork joins the form strokes' grain
       remember: (key, decision) => (this.textureDecisions ??= new Map()).set(key + '@' + (this.currentMove?.number ?? 'run'), decision),
+      lunaMaterials: (step, parts, signal) => this.lunaStepMaterials(step, parts, signal),
       status: message => this.emit({type:'status', phase:'painting', message}),
     };
+  }
+  /** Luna's picks by look for the painted refine step (luna-materials.ts), at its first paint (its parts' found areas exist
+   * from then): once a plan revision, written into the plan step (the plan card shows them, "(unsure)" when Luna was not
+   * confident), each part's probabilities and cost in the diagnostics. Late, offline or failing: the step's materials stay. */
+  async lunaStepMaterials(step, parts, signal) {
+    const index = this.paintedStepIndex(), planned = Number.isInteger(index) ? this.goal?.brief?.steps?.[index] : null;
+    if (!planned || !parts.length) return step.materials;
+    const revision = this.goal.revision ?? 0;
+    if (this.goal.luna_materials?.[step.key]?.revision === revision) return planned.materials ?? step.materials;
+    const started = Date.now(), timer = new AbortController(), clock = setTimeout(() => timer.abort(), this.lunaMaterialsDeadlineMs ?? LUNA_MATERIALS_DEADLINE_MS);
+    let result = null, failed = null;
+    try {
+      const work = this.lunaChoose({parts, materials:step.materials, signal:signal ? AbortSignal.any([signal, timer.signal]) : timer.signal});
+      work.catch(() => {});
+      result = await Promise.race([work, new Promise(resolve => timer.signal.addEventListener('abort', () => resolve(null), {once:true}))]);
+      if (!result) failed = 'timeout';
+    } catch (error) { failed = 'error'; }
+    finally { clearTimeout(clock); }
+    if (signal?.aborted) return step.materials;
+    const picks = result?.picks ?? [];
+    this.diagnostics?.record({type:'luna_materials', step:step.key, revision, ms:Date.now() - started, ...(failed ? {fallback:failed} : {}),
+      cost:Math.round(picks.reduce((sum, p) => sum + (p.cost ?? 0), 0) * 1e6) / 1e6,
+      parts:picks.map(p => ({part:p.part, kind:p.kind, aspect:p.aspect, planned:p.planned, top:p.top, p:p.p, second:p.second, confident:p.confident,
+        probabilities:p.probabilities, cost:p.cost, input_tokens:p.input_tokens, elapsed_ms:p.elapsed_ms, ...(p.fallback ? {fallback:p.fallback} : {})}))});
+    // A late answer is asked again at the next move (the swatches' first downloads go on meanwhile); anything else once a revision.
+    if (failed !== 'timeout') this.goal.luna_materials = {...(this.goal.luna_materials ?? {}), [step.key]:{revision, at:stamp(),
+      parts:picks.map(p => ({part:p.part, top:p.top, p:p.p, confident:p.confident, ...(p.fallback ? {fallback:p.fallback} : {})}))}};
+    if (!result) { await this.persist().catch(() => {}); return step.materials; }
+    if (result.materials.length) planned.materials = result.materials; else delete planned.materials;
+    await this.persist().catch(() => {}); this.publish();
+    return result.materials;
+  }
+  /** Luna's look (luna-materials.ts chooseByLook) with the studio's client, the placed goal's crops and the swatches. */
+  async lunaChoose({parts, materials, signal}) {
+    const canvas = this.decisionObservation ?? this.lastObservation;
+    const client = await this.luna().catch(() => null);
+    const placed = canvas?.width ? await this.goalPlacement(canvas).catch(() => null) : null;
+    return chooseByLook({client, parts, materials, signal, crops:list => this.lunaPartCrops(placed, list), swatch:material => this.lunaSwatch(material)});
+  }
+  /** The placed goal (sharpened when it is) cut at each part's found bounds, at most cropOut's size (the plugin's comparison_crop). */
+  async lunaPartCrops(placed, parts) {
+    if (!placed) return parts.map(() => null);
+    const directory = this.study.directory, reference = placed.reference, size = [reference.width, reference.height];
+    const file = await boundedImage(directory, await containedFile(directory, reference.path), WORKING_PIXELS);
+    const sources = parts.map(p => goalSource(p.bounds, placed.mapping, size)), images = [];
+    for (let i = 0; i < sources.length; i += 8) {
+      const answer = await super.callNative('comparison_crop', {image_base64:file.data.toString('base64'), sha256:file.sha256, size,
+        crops:sources.slice(i, i + 8).map(source => ({source, out:cropOut(source)}))});
+      images.push(...answer.images.map(image => ({type:'image', data:image.image_base64, mimeType:image.mime_type ?? 'image/jpeg'})));
+    }
+    return images;
+  }
+  /** A material's swatch for Luna: its Color map's centre square at SWATCH_PX (downloaded and verified on first use), kept
+   * for the companion's life; a download goes on past a late decision, for the next one. */
+  lunaSwatch(material) {
+    const cache = this.lunaSwatches ??= new Map();
+    if (!cache.has(material.id)) {
+      const made = (async () => {
+        const dataDir = this.config?.data_dir ?? this.config?.output;
+        if (!dataDir && !this.textureTestFolder) throw new Error('The texture library needs the companion’s data folder, and none is set.');
+        const paths = await ensureMaterial({dataDir, material, signal:AbortSignal.timeout(TEXTURE_DOWNLOAD_MS), ...(this.textureTestFolder ? {testFolder:this.textureTestFolder} : {})});
+        const data = await readFile(paths.color), [w, h] = material.pixels, side = Math.min(w, h);
+        const answer = await super.callNative('comparison_crop', {image_base64:data.toString('base64'), sha256:createHash('sha256').update(data).digest('hex'), size:[w, h],
+          source:[Math.floor((w - side) / 2), Math.floor((h - side) / 2), side, side], out:[SWATCH_PX, SWATCH_PX]});
+        return {type:'image', data:answer.image_base64, mimeType:answer.mime_type ?? 'image/jpeg'};
+      })();
+      made.catch(() => cache.delete(material.id));
+      cache.set(material.id, made);
+    }
+    return cache.get(material.id);
   }
   /** The studio side of save timing (extensions/save-timing.ts): the same checkpoint as at review and run end. */
   saveHost() { return { painting: name => PACED_TOOLS.includes(name), checkpoint: () => this.flushCheckpoint() }; }
@@ -3048,7 +3121,8 @@ export class StudioRuntime extends PaintingRuntime {
     brief = normalizeBrief(structuredClone(brief));
     if (!this.goal || !Value.Check(briefSchema, brief)) throw new Error('Complete the objective, steps, and completion checks.');
     brief = this.folderScopes(brief);
-    const planned = this.cleanStepMaterials(brief); brief = planned.brief;
+    // The artist's edit: what the plan card showed keeps its source (Luna's picks); a material they changed is theirs.
+    const planned = this.cleanStepMaterials(brief, {trusted:true}); brief = {...planned.brief, steps:markArtistMaterials(this.goal?.brief?.steps ?? [], planned.brief.steps)};
     if (planned.dropped.length) this.emit({type:'action', seconds:0, message:'Not in the texture library, so left out: ' + planned.dropped.join('; ') + '.'});
     if (!this.study?.folder) brief = withStepIds(brief, this.goal.brief);   // a step keeps its id, and its marks, when reworded
     const comicProblem = this.goal.comic ? comicPlanProblems(brief, this.goal.comic.panels) : null;

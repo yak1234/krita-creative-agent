@@ -263,3 +263,47 @@ test('the refine’s form strokes carry each architectural part’s material as 
   const stock = setup();
   assert.equal(await refineGrain(stock.host), null, 'no patterns (stock Krita): no grain');
 });
+
+// Luna picks each part's material by look at the step's first paint (src/luna-materials.ts): the decision takes its result.
+import { decideTextures } from '../extensions/architecture-texture.ts';
+
+test('the paint-time decision asks Luna for the step’s materials first and uses its picks; a failure keeps the plan’s', async () => {
+  const { host } = setup({ step: { ...CHURCH_STEP, materials: [{ aspect: 'walls', id: 'Bricks085' }, { aspect: 'ground', id: 'PavingStones150' }] } });
+  let asked = null;
+  host.lunaMaterials = async (step, parts) => { asked = parts.map(p => p.name); return [{ aspect: 'walls', id: 'ph_old_sandstone_02', source: 'luna' }, { aspect: 'ground', id: 'PavingStones150' }]; };
+  host.reader = async () => { throw new Error('the model must not be asked'); };
+  const decision = await decideTextures(host, host.step());
+  assert.deepEqual(asked, ['the church', 'cobbled street']);
+  assert.deepEqual(decision.chosen.map(c => [c.materials[0].id, c.source]), [['ph_old_sandstone_02', 'luna'], ['PavingStones150', 'plan']]);
+  host.lunaMaterials = async () => { throw new Error('offline'); };
+  const kept = await decideTextures(host, host.step());
+  assert.deepEqual(kept.chosen.map(c => c.materials[0].id), ['Bricks085', 'PavingStones150']);
+});
+
+import { chooseByLook } from '../src/luna-materials.ts';
+
+test('studio: Luna’s picks go into the plan step once a revision, with probabilities and cost in the diagnostics; offline keeps the plan', async () => {
+  const studio = studioState(), records = [];
+  studio.goal.revision = 3;
+  studio.goal.brief.steps[1].materials = [{ aspect: 'walls', id: 'Bricks085', material: 'red brick' }];
+  Object.assign(studio, { persist: async () => {}, publish: () => {}, diagnostics: { record: r => records.push(r) }, lastObservation: { width: 6000, height: 4500 } });
+  let calls = 0;
+  studio.lunaChoose = async input => { calls++; return chooseByLook({ ...input, client: { decide: async ({ questions }) => {
+    const letters = Object.keys(questions.material.criteria);
+    return { answers: { material: { type: 'choice', choice: letters[1], probabilities: Object.fromEntries(letters.map((l, i) => [l, i === 1 ? 0.8 : 0.2 / (letters.length - 1)])) } }, model: 'fake', elapsed_ms: 5, usage: { input_tokens: 800, output_tokens: 3, cost: 0.002 } };
+  } }, crops: async parts => parts.map(() => ({ type: 'image', data: 'AAAA', mimeType: 'image/jpeg' })), swatch: async () => ({ type: 'image', data: 'AAAA', mimeType: 'image/jpeg' }) }); };
+  const host = studio.textureHost(), step = host.step();
+  const materials = await host.lunaMaterials(step, architecturalParts(step));
+  assert.equal(calls, 1);
+  assert.ok(materials.some(m => m.source === 'luna'));
+  assert.deepEqual(studio.goal.brief.steps[1].materials, materials, 'the plan card shows Luna’s picks');
+  const record = records.find(r => r.type === 'luna_materials');
+  assert.equal(record.step, 'id:s3');
+  assert.ok(record.parts.every(p => p.cost === 0.002 && Object.keys(p.probabilities).length > 0));
+  await host.lunaMaterials(host.step(), architecturalParts(host.step()));
+  assert.equal(calls, 1, 'once a plan revision');
+  studio.goal.revision = 4;
+  studio.lunaChoose = async () => { throw new Error('offline'); };
+  const before = structuredClone(studio.goal.brief.steps[1].materials);
+  assert.deepEqual(await host.lunaMaterials(host.step(), architecturalParts(host.step())), before);
+});

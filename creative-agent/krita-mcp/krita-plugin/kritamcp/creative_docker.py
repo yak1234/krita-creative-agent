@@ -611,15 +611,22 @@ class CharacterDelegate(QStyledItemDelegate):
 AI_IMAGE_CHOICES = ((0, 'No AI images'), (1, '1 AI image'), (3, '3 AI images'), (5, '5 AI images'), (-1, 'AI images: no limit'))
 
 
+def material_words(m):
+    """One planned material as the plan card shows it (the companion's plan-materials.ts materialsLine): "walls: red brick",
+    "walls (Kremlin towers): old red castle brick" for a part's own (Luna's pick), " (unsure)" when Luna was not confident."""
+    return '%s%s: %s%s' % (m.get('aspect', ''), ' (%s)' % m['part'] if m.get('part') else '', m.get('material') or m.get('id', ''),
+                           ' (unsure)' if m.get('unsure') else '')
+
+
 def materials_line(materials):
     """A step's planned materials in plain words: "walls: old red castle brick; roofs: rusty green metal"."""
-    return '; '.join('%s: %s' % (m.get('aspect', ''), m.get('material') or m.get('id', '')) for m in materials if isinstance(m, dict))
+    return '; '.join(material_words(m) for m in materials if isinstance(m, dict))
 
 
 def edited_materials(text, before):
     """The materials the artist's words name: an entry written as it was shown keeps its id and hints; a new one goes as
     {aspect, id: the words}, which the companion resolves against the library (an id or a material's name) or drops."""
-    shown = {'%s: %s' % (m.get('aspect', ''), m.get('material') or m.get('id', '')): m for m in before if isinstance(m, dict)}
+    shown = {material_words(m): m for m in before if isinstance(m, dict)}
     out = []
     for entry in (part.strip() for part in text.split(';')):
         if not entry:

@@ -30,7 +30,7 @@ export type Blend = typeof BLENDS[number];
 export type Rect = [number, number, number, number];
 export type TexturePart = { name: string; kind: PartKind; bounds: number[]; note?: string };
 export type PartChoice = { part: string; kind: PartKind; materials: { id: string; weight: number }[]; tile_px: { near: number; far: number };
-  direction_deg: number; vanishing: [number, number] | null; strength: number; blend: Blend; source: 'model' | 'default' | 'plan' | 'painter' };
+  direction_deg: number; vanishing: [number, number] | null; strength: number; blend: Blend; source: 'model' | 'default' | 'plan' | 'luna' | 'painter' };
 export type Choice = { parts: PartChoice[]; model?: string; cost?: number; ms: number; fallback?: string };
 
 // Buildings first: what reads as each kind when the model says nothing (plaster facades of classical buildings, Kremlin

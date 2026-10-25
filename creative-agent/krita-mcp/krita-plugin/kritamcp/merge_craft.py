@@ -1,5 +1,13 @@
 """Merge accepted stroke passes into one layer: fewer layers once the artist no longer needs per-pass undo.
 
+whole (layer-plan goal 4, Met merges): the stage's own groups merge whole, each into one paint layer in its place, named
+(and locked with lock, for the kept underpainting: goal 1). A group merges whole when it shows as it would on its own:
+visible, unlocked, normal blend, not pass-through, no clipping, holding only the agent's layers (a Finish or accents
+group's own layers count as the agent's) and never the guides. Its hidden leftovers (rejected passes, replaced
+originals) go with it (goal 5), and every pass inside points to the merged layer. On the fork Krita merges the group as it
+renders it (Document.mergeGroups); elsewhere the group's projection is copied to a new layer. A group that cannot merge
+whole falls back to the runs below.
+
 Runs inside the creative operation journal (creative_tools.py). Called when the artist keeps an
 Agent move and when an Autopilot review passes. Only adjacent plain stroke layers in the same
 group merge, so the picture looks the same: normal blend, no clipping, no masks, unlocked,
@@ -9,7 +17,7 @@ it and records one pass; the merged passes point to it (`merged_into`) and leave
 """
 from .creative_validation import fields, text
 
-MERGE_FIELDS = ('stage_id', 'name', 'expected_revision')
+MERGE_FIELDS = ('stage_id', 'name', 'whole', 'lock', 'expected_revision')
 
 
 class MergeCraft:
@@ -57,14 +65,97 @@ class MergeCraft:
         text(params['stage_id'], 'stage_id', 100)
         if 'name' in params:
             text(params['name'], 'name', 120)
+        for key in ('whole', 'lock'):
+            if not isinstance(params.get(key, False), bool):
+                raise ValueError('%s must be true or false' % key)
         self._craft_check_rgba(doc, 'Merging passes')
+
+    def _merge_whole_groups(self, doc, session):
+        """The stage's groups that merge whole (see the module docstring), oldest first, each with its nodes inside."""
+        stage = session['merge_stage']
+        entries = [e for e in session.get('passes', []) if e.get('stage_id') == stage and not e.get('merged_into')]
+        recorded = {e['layer_id'] for e in session.get('passes', []) if e.get('layer_id')}
+        owned = set(session.get('layers', ())) | recorded
+        guides = self._guide_group(doc)
+        found, seen = [], set()
+        for entry in entries:
+            identifier = entry.get('group_id')
+            if not identifier or identifier in seen:
+                continue
+            seen.add(identifier)
+            try:
+                group = self._creative_node(doc, identifier)
+            except ValueError:
+                continue
+            if (group.type() != 'grouplayer' or not group.visible() or group.locked() or group.blendingMode() != 'normal'
+                    or group.inheritAlpha() or not group.childNodes() or self._guide_holds(group, guides)
+                    or (hasattr(group, 'passThroughMode') and group.passThroughMode())):
+                continue
+            inside, mine = [], True
+            def walk(node, agent):
+                nonlocal mine
+                for child in node.childNodes():
+                    key = child.uniqueId().toString()
+                    # A pass's own layer (a Finish or accents group) holds only what that operation made.
+                    if not (agent or key in owned) or self._guide_is_group(child, doc):
+                        mine = False
+                    inside.append(child)
+                    walk(child, agent or key in recorded)
+            walk(group, False)
+            if mine:
+                found.append((group, inside))
+        return found
+
+    def _merge_group(self, doc, session, params, group, inside, remaining):
+        """One group into one paint layer in its place."""
+        name = params.get('name') or 'Merged passes'
+        parent = group.parentNode()
+        doc.waitForDone()
+        if hasattr(doc, 'mergeGroups'):
+            merged = doc.mergeGroups([group])
+            if merged is None:
+                raise RuntimeError('Krita could not merge "%s".' % group.name())
+        else:
+            rect = group.bounds()
+            x, y, w, h = rect.x(), rect.y(), rect.width(), rect.height()
+            merged = doc.createNode(name, 'paintlayer')
+            if merged is None:
+                raise RuntimeError('Could not create the merged layer.')
+            if w > 0 and h > 0 and merged.setPixelData(group.projectionPixelData(x, y, w, h), x, y, w, h) is False:
+                raise RuntimeError('Krita rejected the merged layer pixels.')
+            merged.setOpacity(group.opacity())
+            if not parent.addChildNode(merged, group):
+                raise RuntimeError('Could not add the merged layer.')
+            group.remove()
+        doc.waitForDone()
+        merged.setName(name)
+        if params.get('lock'):
+            merged.setLocked(True)
+        doc.refreshProjection()
+        old = {node.uniqueId().toString() for node in inside} | {group.uniqueId().toString()}
+        identifier = merged.uniqueId().toString()
+        session['layers'] -= old
+        session.get('clip_groups', set()).difference_update(old)
+        session['layers'].add(identifier)
+        operation = session.get('operation_id')
+        merged_ids = []
+        for entry in session.get('passes', []):
+            if (entry.get('layer_id') in old or entry.get('group_id') in old) and not entry.get('merged_into'):
+                entry['merged_into'] = operation
+                merged_ids.append(entry['id'])
+        return {'layer_id': identifier, 'layer_type': 'merged', 'merged_layers': len(old), 'merged_pass_ids': merged_ids,
+                'remaining_runs': remaining, 'whole': True, 'locked': bool(params.get('lock'))}
 
     def _merge_apply(self, doc, session, params):
         session['merge_stage'] = params['stage_id']
         try:
-            runs = self._merge_runs(doc, session)
+            groups = self._merge_whole_groups(doc, session) if params.get('whole') else []
+            runs = [] if groups else self._merge_runs(doc, session)
         finally:
             session.pop('merge_stage', None)
+        if groups:
+            group, inside = groups[0]
+            return self._merge_group(doc, session, params, group, inside, len(groups) - 1)
         if not runs:
             return {'merged_layers': 0, 'remaining_runs': 0}
         run = max(runs, key=len)

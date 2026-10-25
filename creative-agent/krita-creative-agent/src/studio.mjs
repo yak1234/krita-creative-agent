@@ -51,6 +51,7 @@ import { refineGroups, partsOf, unionFound } from './refine-parts.ts';
 import { goalSharpener, sharpenedContext, noMoreDetailNote, refineRequested, ENLARGEMENT } from './goal-sharpen.ts';
 import { sharpenFirstMessage } from './finish-tool.ts';
 import { ensureMassMaps } from './mass-map.ts';
+import { keptLayer, stackSummary } from './kept-layers.ts';
 import { writePlan, writePlanGoal, appendNote, readPlan, parsePlan, planDifference, briefFromPlan, remapTicks, stepFile, stepKeys, layerName } from './folder-notes.ts';
 import { planStepControls, stepMarksContext, withStepIds, STEP_ID } from './plan-steps.ts';
 import { applyPaintOnlyCommand, areaContext, adoptArea, askForArea, chipLine } from './paint-only-here.ts';
@@ -1421,15 +1422,17 @@ export class StudioRuntime extends PaintingRuntime {
     stopAfterTurn(this.session.agent, () => this.turns, turns => this.cancelRequested || this.faulted || this.yieldRequested || (this.mode === 'agent' && this.moveDone()) || turns >= 24 || (this.executionPhase === 'agent' && this.passAllowanceExceeded()));
   }
   // The native_craft setting hides the craft tools, in paint_batch too.
-  /** Merge each stage's kept stroke layers into one, once the artist no longer needs per-pass undo. Returns layers saved. */
-  async mergeKept(stageIds, label) {
+  /** Merge each stage's kept work into one layer, once the artist no longer needs per-pass undo: its group whole (Finish and
+   * accents groups, craft layers, hidden leftovers; layer-plan goal 4), else runs of plain strokes; `lock` locks the merged
+   * layer (the kept underpainting, goal 1). Returns layers saved. */
+  async mergeKept(stageIds, label, {lock = false} = {}) {
     if (!this.study?.bound || this.faulted) return 0;
     const merge = this.executionSettings?.merge_kept !== false;   // merging changes the layers; the artist may keep them apart
     let saved = 0;
     for (const stage of stageIds) {
       for (let round = 0; merge && round < 50; round++) {
         let result;
-        try { result = await super.callNative('merge_passes', {stage_id:stage, name:label(stage)}, randomUUID()); }
+        try { result = await super.callNative('merge_passes', {stage_id:stage, name:label(stage), whole:true, ...(lock ? {lock:true} : {})}, randomUUID()); }
         catch (error) {
           if (['outcome_unknown','partial_change','checkpoint_failed'].includes(error.code)) this.recordUncertain(error);
           this.emit({type:'action', message:'Kept passes were not merged: '+this.redact(error.message)});
@@ -1890,6 +1893,8 @@ export class StudioRuntime extends PaintingRuntime {
       folder: this.folderContext(phase),
       closeups: this.closeups?.context(),
       layer_need: phase==='agent' && this.layerNeed ? this.layerNeed : undefined,
+      // The stack in one line (layer-plan goal 6): the locked base, the groups, where this move paints.
+      layer_stack: phase==='agent' ? stackSummary((this.decisionObservation ?? this.lastObservation)?.layers,{move:this.mode==='agent' ? this.currentMove?.number : undefined}) : undefined,
       paint_only_here: areaContext(this.goal.paint_only_here),
     }) + '\n\n' + (this.goal.comic && COMIC_GUIDANCE[phase] ? COMIC_GUIDANCE[phase] + '\n\n' : '');
   }
@@ -1948,7 +1953,9 @@ export class StudioRuntime extends PaintingRuntime {
       mayContinue:auto=>this.mode==='agent' && !this.faulted && (!auto || (!this.cancelRequested && !this.runError && !this.pendingText.length)),
       keepMove:async move=>{
         move.status='kept'; await this.persist(); this.publish();
-        await this.mergeKept(['move-'+move.number],()=>'Move '+move.number+' · '+String(move.title ?? 'kept').slice(0,80));
+        // Met: the move's work becomes one layer named after its step; the underpainting's is locked (kept-layers.ts).
+        const index=move.step_key ? this.planSteps.indexOf(move.step_key) : move.step, kept=keptLayer(this.goal.brief?.steps?.[index],move);
+        await this.mergeKept(['move-'+move.number],()=>kept.name,{lock:kept.lock});
       },
       tickFolderStep:move=>this.tickFolderStep(move),
       rejectMove:move=>this.rejectMove(move),
@@ -3612,7 +3619,7 @@ export class StudioRuntime extends PaintingRuntime {
     if (['keep','undo'].includes(action) && this.planSteps.stepped(move)) return action === 'keep' ? this.planSteps.met(move) : this.planSteps.redo(move, note);
     if (action === 'keep') {
       move.status = 'kept'; await this.persist();
-      await this.mergeKept(['move-'+move.number], () => 'Move '+move.number+' · '+String(move.title ?? 'kept').slice(0,80));
+      await this.mergeKept(['move-'+move.number], () => keptLayer(undefined, move).name);
       // Kept guides are for the artist to see: a guides-only request leaves them showing, and nothing paints until asked.
       if (move.guides_only && (!move.request_done || Number.isInteger(move.step))) {
         this.goal.status = 'paused'; await this.persist(); this.publish();

@@ -2714,7 +2714,7 @@ test('the painter’s own observe still shows guides; a move with a guide: Keep 
   assert.ok(!painter.includes('unguided_path'),'host bookkeeping stays out of the painter’s results');
   await h.runtime.moveAction({action:'keep',move:1});
   const merges=h.calls.filter(c=>c.operation==='merge_passes');
-  assert.ok(merges.length && merges.every(c=>Object.keys(c.params).sort().join()==='name,stage_id' && !JSON.stringify(c.params).includes('guide-layer')),
+  assert.ok(merges.length && merges.every(c=>Object.keys(c.params).sort().join()==='name,stage_id,whole' && !JSON.stringify(c.params).includes('guide-layer')),
    'Keep merges the move’s stroke passes by stage; the plugin never takes the guide (test_guide_craft.py)');
   assert.ok(!h.calls.some(c=>c.operation==='review_pass'),'Keep hides nothing');
  } finally {await h.close();}
@@ -4137,6 +4137,10 @@ test('Met keeps a finished step and goes on; Redo undoes it and retries with wha
   assert.match(retry.request,/keep the sky darker/);
   await stepCommand(h,'met',0);
   assert.equal(h.runtime.goal.moves[1].status,'kept');
+  // layer-plan goals 1 and 4: Met merges the move whole into one layer named after its step; the underpainting is locked.
+  const kept=h.calls.find(c=>c.operation==='merge_passes' && c.params.stage_id==='move-2');
+  assert.deepEqual(kept?.params,{stage_id:'move-2',name:'Underpainting',whole:true,lock:true});
+  assert.ok(h.calls.indexOf(kept)<h.calls.findIndex(c=>c.operation==='paint_pass' && c.params.stage_id==='move-3'),'before the next step paints');
   assert.deepEqual(h.runtime.goal.done_steps,[0]);
   assert.equal(h.runtime.goal.moves[2]?.step,1);
   assert.match(await readFile(join(root,'PLAN.md'),'utf8'),/^- \[x\] 1\. Underpainting[^\n]* · met by the artist · redone 1 time$/m);

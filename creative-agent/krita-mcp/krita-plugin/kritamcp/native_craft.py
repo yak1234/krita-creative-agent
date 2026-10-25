@@ -350,6 +350,17 @@ class NativeCraft:
             node.remove()
             session['layers'].discard(identifier)
             removed.append(identifier)
+        # The stage's own groups it left empty go too (layer-plan goal 5: no empty "Creative Agent" groups stay behind).
+        for identifier in sorted({e['group_id'] for e in passes if e.get('group_id')}):
+            try:
+                node = self._creative_node(doc, identifier)
+            except ValueError:
+                continue
+            if (node.type() == 'grouplayer' and node.name().startswith(AGENT_GROUP) and not node.childNodes()
+                    and not self._guide_is_group(node, doc)):
+                doc.waitForDone()
+                node.remove()
+                removed.append(identifier)
         if removed:
             for entry in session.get('passes', []):
                 if entry.get('layer_id') in removed:

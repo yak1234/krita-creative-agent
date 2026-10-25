@@ -1369,11 +1369,11 @@ export class StudioRuntime extends PaintingRuntime {
   /** The chat's whole-picture goal and where it sits on the canvas (goal-likeness.ts goalMapping): where the most recent
    * kept, completed whole transfer of a goal reference put it, else a goal of the canvas's proportions over the whole
    * canvas. {mapping, reference} or null. Goal likeness, paint_finish and the "no more detail" note read the same goal. */
-  /** What the likeness checks compare with: the canvas reference while its area is the move's (an edit is not measured
-   * against the goal), else the goal's placement. */
+  /** What the likeness checks compare with: the canvas reference in a move painting toward it while its area is set (an edit
+   * is not measured against the goal), else the goal's placement. An area left over is not enough: Autopilot keeps it. */
   async likenessPlacement(canvas) {
-    const id=this.goal?.paint_only_here?.canvas_reference;
-    return (id && referencePlacement(this.goal.canvas_references?.[id], canvas)) || this.goalPlacement(canvas);
+    const id=this.currentMove?.canvas_reference;
+    return (id && this.goal?.paint_only_here?.canvas_reference===id && referencePlacement(this.goal.canvas_references?.[id], canvas)) || this.goalPlacement(canvas);
   }
   async goalPlacement(canvas, transfers) {
     const folder=join(this.study.directory,'reference-paintings');
@@ -4052,6 +4052,10 @@ export class StudioRuntime extends PaintingRuntime {
     const continued = command.move_kind === 'continue' && !command.start_plan ? this.goal.moves?.at(-1) : null;
     // Its title is its own (its first batch, its finish_move, or the request when it stops unfinished).
     if (continued?.request) Object.assign(move, {request:continued.request, continues:continued.continues ?? continued.number});
+    // The canvas reference it paints toward (its own move, a resumed held request, or a Keep continuing one): the likeness
+    // checks measure only this move against the reference.
+    const towards = command.canvas_reference ?? continued?.canvas_reference;
+    if (towards) move.canvas_reference = towards;
     this.goal.moves = [...(this.goal.moves ?? []), move]; this.currentMove = move;
     const element = this.folderElement(move.step);
     if (element) move.element = element.id;                  // a folder element step: judged against the goal once it is underpainted

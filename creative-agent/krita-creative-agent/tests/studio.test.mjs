@@ -4727,6 +4727,9 @@ test('goal likeness policy: Luna off leaves a typed move measure only; a folder 
   const refPath=join(refDir,'reference.png'); await writeFile(refPath,await readFile(goalPath));
   const record={id:'r1',state:'used',instruction:'add a ghost',reference_path:refPath,reference_size:[768,1024],canvas:[768,1024]};
   h.runtime.goal.canvas_references={r1:record}; h.runtime.goal.paint_only_here={bounds:[10,10,50,50],canvas_reference:'r1'};
+  await h.runtime.likenessFrame();
+  assert.equal(h.runtime.likenessPlaced.reference.path,goal.path,'only the move painting toward it: an area left over (Autopilot keeps it) is not enough');
+  h.runtime.currentMove={number:3,canvas_reference:'r1'};
   frame=await h.runtime.likenessFrame();
   assert.equal(frame.protect,true); assert.deepEqual(frame.target,[0,0,768,1024]);
   assert.equal(h.runtime.likenessPlaced.reference.path,refPath,'Luna and the full-size area read the same target');

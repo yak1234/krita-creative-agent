@@ -113,6 +113,9 @@ test('/canvas-reference makes the card and paints nothing; Use as the target pai
     assert.match(sent, /Painting only inside your selection/, 'the area is the painter\'s context');
     assert.equal(h.runtime.goal.paint_only_here.canvas_reference, card.id);
     assert.equal(h.runtime.goal.moves.at(-1).kind, 'canvas_reference');
+    assert.equal(h.runtime.goal.moves.at(-1).canvas_reference, card.id, 'the move knows its reference: only it is measured against it');
+    await h.runtime.prompt('Kept. Continue my request with the next move.', { chat_mode: 'agent', move_kind: 'continue' });
+    assert.equal(h.runtime.goal.moves.at(-1).canvas_reference, card.id, 'a Keep that continues it paints toward the same reference');
     // The next message ends the area: it belonged to that move.
     await h.runtime.prompt('/canvas-reference more snow');
     assert.equal(h.runtime.goal.paint_only_here, null);

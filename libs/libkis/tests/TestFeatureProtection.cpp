@@ -1406,8 +1406,8 @@ void TestFeatureProtection::testRefusedCutLeavesTheClipboard()
     d.protectBuildings();
     QClipboard *clipboard = QGuiApplication::clipboard();
     if (!clipboard) QSKIP("this runner has no clipboard");
-    // Krita layer data left on the clipboard is destroyed at exit after the tile store it points into: clear it whenever the test ends.
-    const auto clearClipboard = qScopeGuard([clipboard] { clipboard->clear(); });
+    // Krita layer data left on the clipboard is destroyed at exit after the tile store it points into: clear it whenever the test ends (with text: an empty clipboard has no mime data, which KisClipboard::clipboardDataChanged reads).
+    const auto clearClipboard = qScopeGuard([clipboard] { clipboard->setText(QStringLiteral("cleared")); });
     clipboard->setText("sentinel");
     if (clipboard->text() != "sentinel") QSKIP("this runner's clipboard does not hold text: not testable here");
 
@@ -1446,8 +1446,8 @@ void TestFeatureProtection::testPasteKeepsProtectedPixels()
     ProtectDocument d;
     QClipboard *clipboard = QGuiApplication::clipboard();
     if (!clipboard) QSKIP("this runner has no clipboard");
-    // Krita layer data left on the clipboard is destroyed at exit after the tile store it points into: clear it whenever the test ends.
-    const auto clearClipboard = qScopeGuard([clipboard] { clipboard->clear(); });
+    // Krita layer data left on the clipboard is destroyed at exit after the tile store it points into: clear it whenever the test ends (with text: an empty clipboard has no mime data, which KisClipboard::clipboardDataChanged reads).
+    const auto clearClipboard = qScopeGuard([clipboard] { clipboard->setText(QStringLiteral("cleared")); });
     // A red block to copy: on its own layer, before anything is protected.
     KisPaintLayerSP source = addLayer(d, "block", QRect(0, 0, 100, 100));
     source->paintDevice()->fill(QRect(0, 0, 100, 100), KoColor(Qt::red, source->paintDevice()->colorSpace()));

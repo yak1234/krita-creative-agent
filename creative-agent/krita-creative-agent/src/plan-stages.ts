@@ -137,11 +137,12 @@ export function planOrNot({ reading, act, text }: { reading: Reading | null; act
   if (read.confidence >= SURE) return { plan: read.choice === 'several', source: 'luna' };
   return keywords ?? { plan: null, source: 'ask' };
 }
-/** The plan-or-not card (the existing question card); Auto-approve takes its recommended option. */
+/** The plan-or-not card (the existing question card); Auto-approve takes its recommended option: Just do it, since the card
+ * comes only when Luna is unsure and the message has no step words ("then", stages, a list), which almost always means one thing. */
 export const PLAN_CARD = Object.freeze({
   question: 'Should I plan this step by step, or just do it? I could not tell from your message.',
   options: ['Plan it step by step', 'Just do it'] as string[],
-  recommended: 'Plan it step by step',
+  recommended: 'Just do it',
 });
 /** A plan-or-not card answer: true plans, false paints the held request, null is anything else (a new message). */
 export function planFromCard(answer: string): boolean | null {

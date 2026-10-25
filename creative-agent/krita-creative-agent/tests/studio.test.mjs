@@ -5426,7 +5426,7 @@ test('a single goal image: a sure "one thing" paints at once; an unsure reading 
   await h.runtime.prompt('Make it lovely.');
   const card=h.events.filter(e=>e.type==='question').at(-1);
   assert.deepEqual(card.options,['Plan it step by step','Just do it']);
-  assert.equal(card.recommended,'Plan it step by step','Auto-approve plans');
+  assert.equal(card.recommended,'Just do it','Auto-approve does it at once: no step words means one thing');
   assert.equal(h.runtime.goal.moves.length,1,'nothing painted while the card waits');
   await h.runtime.prompt('Just do it');
   assert.equal(h.runtime.goal.moves.length,2); assert.equal(h.runtime.goal.moves[1].request,'Make it lovely.','the held request is painted');

@@ -69,7 +69,7 @@ test('the policy: Luna acting and sure decides, the keywords otherwise, the card
 
 test('the plan-or-not card recommends planning; its answers', () => {
   assert.deepEqual(PLAN_CARD.options, ['Plan it step by step', 'Just do it']);
-  assert.equal(PLAN_CARD.recommended, 'Plan it step by step');
+  assert.equal(PLAN_CARD.recommended, 'Just do it', 'the card comes only when no step words were found: almost always one thing');
   assert.equal(planFromCard('Plan it step by step'), true);
   assert.equal(planFromCard(' Just do it '), false);
   assert.equal(planFromCard('paint the moon'), null);

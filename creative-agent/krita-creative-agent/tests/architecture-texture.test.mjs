@@ -120,3 +120,53 @@ test('an automatic pass that fails is told to the painter, never failing the ref
   assert.match(changed.content.at(-1).text, /could not|rejected/i);
   assert.equal((await handlers.tool_call({ type: 'tool_call', toolCallId: 'f', toolName: 'finish_move', input: {} })).block, true);
 });
+
+// The studio's side (studio.mjs textureStep, textureHost and the Met refusal) on a fake studio state.
+import { StudioRuntime } from '../src/studio.mjs';
+
+function studioState({ found = true } = {}) {
+  const steps = [{ title: 'Finish' }, { title: 'Refine: church and street', parts: ['03-church.png', '05-street.png'], id: 's3' }, { title: 'Refine: sky and moon', parts: ['01-sky.png'], id: 's1' }];
+  const state = Object.create(StudioRuntime.prototype);
+  Object.assign(state, {
+    mode: 'agent', currentMove: { number: 4, step: 1 }, study: { folder: { root: '/f' } },
+    goal: { brief: { steps }, current_step: 1, ...(found ? { step_part_areas: { 'id:s3': [
+      { name: '03-church.png', mask_path: '/chat/.shapes/found-a.png', bounds: [2000, 800, 900, 1400] },
+      { name: '05-street.png', mask_path: '/chat/.shapes/found-b.png', bounds: [0, 3600, 6000, 900] }] } } : {}) },
+    planSteps: { keyAt: i => 'id:' + steps[i].id, indexOf: key => steps.findIndex(s => 'id:' + s.id === key) },
+    folderElements: () => [{ name: '01-sky.png', guess: 'Moonlit sky' }, { name: '03-church.png', guess: 'the church' }, { name: '05-street.png', guess: 'cobbled street' }],
+    folderStudy: { noteOf: name => (name === '03-church.png' ? 'white church with green domes' : undefined) },
+  });
+  return state;
+}
+
+test('studio: a refine-part step gives its parts, their found areas and notes; other steps none', () => {
+  const studio = studioState();
+  const step = studio.textureStep(1);
+  assert.equal(step.key, 'id:s3');
+  assert.equal(step.label, 'church and street');
+  assert.deepEqual(step.parts.map(p => [p.guess, p.area?.bounds]), [['the church', [2000, 800, 900, 1400]], ['cobbled street', [0, 3600, 6000, 900]]]);
+  assert.equal(step.parts[0].note, 'white church with green domes');
+  assert.equal(studio.textureStep(0), null);
+  assert.deepEqual(architecturalParts(studio.textureStep(2)), []);
+});
+
+test('studio: Met of an architectural refine move is refused until the move has its texture', () => {
+  const studio = studioState();
+  const host = studio.planStepHost();
+  const move = { number: 4, step: 1, step_key: 'id:s3', status: 'ready' };
+  assert.match(host.metRefusal(move), /texture pass has not run/);
+  move.texture = { step: 'id:s3' };
+  assert.equal(host.metRefusal(move), null);
+  assert.equal(host.metRefusal({ number: 5, step: 2, step_key: 'id:s1' }), null, 'sky and moon: nothing owed');
+  assert.equal(studioState({ found: false }).planStepHost().metRefusal({ number: 4, step: 1, step_key: 'id:s3' }), null, 'no found areas: nothing to texture');
+});
+
+test('studio: the texture host records the pass on the Agent move', () => {
+  const studio = studioState();
+  studio.persist = async () => {};
+  const host = studio.textureHost();
+  assert.equal(host.done(), false);
+  host.record({ step: 'id:s3', parts: [], ms: 5, auto: true });
+  assert.equal(host.done(), true);
+  assert.equal(studio.currentMove.texture.step, 'id:s3');
+});

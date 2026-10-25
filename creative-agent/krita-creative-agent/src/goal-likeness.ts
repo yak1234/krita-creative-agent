@@ -223,14 +223,15 @@ export type AreaFull = { rect: number[]; before: { colour: number; edges: number
 /** Luna's goal comparisons in a move (luna-goal-reviewer goal 1): batches compared, found further (of which undone), closer. */
 export type MoveComparisons = { compared: number; further: number; closer: number; undone: number; cost?: number; ms?: number };
 export type MoveLikeness = { batches: number; before: number; after: number; undone: number; kept_worse: number; last_undone?: string; luna?: MoveComparisons;
-  area?: { before: number; after: number } };
+  area?: { before: number; after: number }; against?: 'reference' };
 /** The move card's line: the whole canvas's distance to the goal before the move's first batch and after its last. */
-export function likenessLine({ batches, before, after, undone, kept_worse, last_undone, luna, area }: MoveLikeness): string {
+export function likenessLine({ batches, before, after, undone, kept_worse, last_undone, luna, area, against }: MoveLikeness): string {
+  const target = against === 'reference' ? 'the reference' : 'the goal';
   const compared = luna?.compared ? `; Luna compared ${luna.compared} with the goal: ` + (luna.further || luna.closer
     ? [luna.further ? `${luna.further} further${luna.undone ? luna.undone === luna.further ? ' (undone)' : ` (${luna.undone} undone)` : ''}` : '', luna.closer ? `${luna.closer} closer` : ''].filter(Boolean).join(', ')
     : 'none further') : '';
-  return `Goal likeness: ΔE ${before.toFixed(1)} → ${after.toFixed(1)} over ${batches} batch${batches === 1 ? '' : 'es'}`
+  return `${against === 'reference' ? 'Likeness to the canvas reference' : 'Goal likeness'}: ΔE ${before.toFixed(1)} → ${after.toFixed(1)} over ${batches} batch${batches === 1 ? '' : 'es'}`
     + (undone ? `; undid ${undone}${last_undone ? ` (${last_undone})` : ''}` : '')
-    + (kept_worse ? `; ${kept_worse} less like the goal kept (accents, an asked-for change or free colours)` : '') + compared
+    + (kept_worse ? `; ${kept_worse} less like ${target} kept (accents, an asked-for change or free colours)` : '') + compared
     + (area ? `; the area at full size ΔE ${area.before.toFixed(1)} → ${area.after.toFixed(1)}` : '');
 }

@@ -4722,8 +4722,23 @@ test('goal likeness policy: Luna off leaves a typed move measure only; a folder 
   h.runtime.currentMove={number:4,element:'reference-sky'};
   assert.equal((await h.runtime.likenessFrame()).protect,false,'an element step with no goal underpainting yet is measured only');
   h.runtime.currentMove={number:3};
+  // A used canvas reference is the target while its area is the move's (the artist, 2026-10-25: not the goal for an edit).
+  const refDir=join(h.runtime.study.directory,'canvas-reference','r1'); await mkdir(refDir,{recursive:true});
+  const refPath=join(refDir,'reference.png'); await writeFile(refPath,await readFile(goalPath));
+  const record={id:'r1',state:'used',instruction:'add a ghost',reference_path:refPath,reference_size:[768,1024],canvas:[768,1024]};
+  h.runtime.goal.canvas_references={r1:record}; h.runtime.goal.paint_only_here={bounds:[10,10,50,50],canvas_reference:'r1'};
+  frame=await h.runtime.likenessFrame();
+  assert.equal(frame.protect,true); assert.deepEqual(frame.target,[0,0,768,1024]);
+  assert.equal(h.runtime.likenessPlaced.reference.path,refPath,'Luna and the full-size area read the same target');
+  assert.equal(asked.findLast(a=>a.image_base64)?.size?.[0],768);
+  h.runtime.goal.paint_only_here={bounds:[10,10,50,50]};
+  assert.equal((await h.runtime.likenessFrame(),h.runtime.likenessPlaced.reference.path),goal.path,'an area without the reference: the goal again');
+  h.runtime.goal.paint_only_here=null;
   // Sources are clamped inside the image after rounding.
-  await h.runtime.likenessGrid(goalPath.replace(h.output,h.output),{source:[-0.4,0.6,30.7,40.2],size:[30,40],grid:[8,8]}).catch(()=>{});
+  // The chat's own copy of the goal: the original is outside the study and is refused before the plugin is asked.
+  const before=asked.length;
+  await h.runtime.likenessGrid(goal.path,{source:[-0.4,0.6,30.7,40.2],size:[30,40],grid:[8,8]});
+  assert.equal(asked.length,before+1,'the clamped crop reached the plugin');
   const last=asked.at(-1);
   assert.ok(last.source[0]>=0 && last.source[1]>=0 && last.source[0]+last.source[2]<=30 && last.source[1]+last.source[3]<=40,JSON.stringify(last.source));
  } finally {await h.close();}

@@ -387,3 +387,10 @@ test('a batch ΔE finds clearly better is never compared or undone by Luna (revi
   assert.equal(await result(), undefined);
   assert.equal(calls.compare.length, 0); assert.equal(calls.undo.length, 0); assert.equal(calls.record[0].status, 'kept');
 });
+
+test('the move line says when a move was measured against its canvas reference, not the goal', () => {
+  assert.equal(likenessLine({ batches: 6, before: 9.1, after: 3.2, undone: 0, kept_worse: 0, against: 'reference', area: { before: 14, after: 4.9 } }),
+    'Likeness to the canvas reference: ΔE 9.1 → 3.2 over 6 batches; the area at full size ΔE 14.0 → 4.9');
+  assert.equal(likenessLine({ batches: 2, before: 9, after: 9.5, undone: 0, kept_worse: 1, against: 'reference' }),
+    'Likeness to the canvas reference: ΔE 9.0 → 9.5 over 2 batches; 1 less like the reference kept (accents, an asked-for change or free colours)');
+});

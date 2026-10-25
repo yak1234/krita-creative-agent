@@ -7,7 +7,7 @@ import { mkdtemp, readFile, rm, writeFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { canvasReferenceRequest, editPrompt, differenceMask, canvasMask, compareImage, canvasReferencer, referenceMoveNote,
+import { canvasReferenceRequest, editPrompt, differenceMask, canvasMask, compareImage, canvasReferencer, referenceMoveNote, referencePlacement,
   CANVAS_REFERENCE_OPTIONS, WIDE_SHARE, MASK_RULES } from '../src/canvas-reference.ts';
 import { decodeRgba } from '../src/png-rgba.ts';
 import { decodePlane, encodeRgba } from '../src/shapes/png.ts';
@@ -305,4 +305,14 @@ test('a change over a third of a flat picture is not cancelled by the tone match
   const mask = differenceMask(canvas, reference);
   assert.ok(inside(mask, 20, 45) && !inside(mask, 100, 45), 'the left third only');
   assert.ok(mask.share > 0.3 && mask.share < 0.45, String(mask.share));
+});
+
+test('a used canvas reference is the likeness target over the whole canvas; never an open, discarded or other-size one', () => {
+  const record = { id: 'r1', state: 'used', reference_path: '/chat/canvas-reference/r1/reference.png', reference_size: [1448, 1086], canvas: [1448, 1086] };
+  assert.deepEqual(referencePlacement(record, { width: 1448, height: 1086 }), {
+    mapping: { reference_id: 'canvas-reference-r1', source: [0, 0, 1448, 1086], target: [0, 0, 1448, 1086], from: 'transfer' },
+    reference: { id: 'canvas-reference-r1', path: '/chat/canvas-reference/r1/reference.png', width: 1448, height: 1086, source: 'canvas_reference' } });
+  for (const state of ['ready', 'discarded', 'replaced']) assert.equal(referencePlacement({ ...record, state }, { width: 1448, height: 1086 }), null, state);
+  assert.equal(referencePlacement(record, { width: 6000, height: 4500 }), null, 'the canvas was resized since');
+  assert.equal(referencePlacement(null, { width: 1448, height: 1086 }), null);
 });

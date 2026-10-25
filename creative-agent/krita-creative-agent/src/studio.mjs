@@ -72,7 +72,7 @@ import { piReader, studyModelRoute, STUDY_MODEL } from './folder-study.ts';
 import { withholdImages, sentImage } from './folder-study-chat.ts';
 import { constants as fsConstants, realpathSync } from 'node:fs';
 import { open as openFile } from 'node:fs/promises';
-import { canvasReferencer, canvasReferenceRequest, referenceMoveNote } from './canvas-reference.ts';
+import { canvasReferencer, canvasReferenceRequest, referenceMoveNote, referencePlacement } from './canvas-reference.ts';
 import { assertAiImageAllowed, assetBackend, attachAsset, pngFromImage, requestAssetImage } from './assets.mjs';
 import { decodeRgba } from './png-rgba.ts';
 
@@ -1166,7 +1166,7 @@ export class StudioRuntime extends PaintingRuntime {
   }
   async areaLikeness(rect) {
     try {
-      const canvas=this.decisionObservation ?? this.lastObservation, placed=canvas?.width ? await this.goalPlacement(canvas) : null;
+      const canvas=this.decisionObservation ?? this.lastObservation, placed=canvas?.width ? await this.likenessPlacement(canvas) : null;
       if (!placed) return null;
       const goal=await goalSpec({reference:placed.reference, source:placed.mapping.source, target:placed.mapping.target, from:placed.mapping.from});
       const {colour, edges}=await super.callNative('area_likeness',{goal, rect});
@@ -1351,7 +1351,7 @@ export class StudioRuntime extends PaintingRuntime {
   async likenessFrame() {
     const canvas=this.decisionObservation ?? this.lastObservation;
     if (!canvas?.width || !canvas?.height || !this.study) return null;
-    const placed=await this.goalPlacement(canvas);
+    const placed=await this.likenessPlacement(canvas);
     if (!placed) return null;
     const {mapping, reference}=placed;
     this.likenessPlaced=placed;                          // Luna's goal comparison crops the same goal (goalComparison)
@@ -1369,6 +1369,12 @@ export class StudioRuntime extends PaintingRuntime {
   /** The chat's whole-picture goal and where it sits on the canvas (goal-likeness.ts goalMapping): where the most recent
    * kept, completed whole transfer of a goal reference put it, else a goal of the canvas's proportions over the whole
    * canvas. {mapping, reference} or null. Goal likeness, paint_finish and the "no more detail" note read the same goal. */
+  /** What the likeness checks compare with: the canvas reference while its area is the move's (an edit is not measured
+   * against the goal), else the goal's placement. */
+  async likenessPlacement(canvas) {
+    const id=this.goal?.paint_only_here?.canvas_reference;
+    return (id && referencePlacement(this.goal.canvas_references?.[id], canvas)) || this.goalPlacement(canvas);
+  }
   async goalPlacement(canvas, transfers) {
     const folder=join(this.study.directory,'reference-paintings');
     // A transfer made on a canvas of another size (the painting was resized since) places nothing on this one.
@@ -1444,10 +1450,12 @@ export class StudioRuntime extends PaintingRuntime {
     const likeness=move.likeness ?? {batches:0,before:entry.whole.before,after:entry.whole.before,undone:0,kept_worse:0};
     if (entry.area_full && entry.status!=='undone') likeness.area={before:likeness.area?.before ?? entry.area_full.before.colour, after:entry.area_full.after.colour};
     likeness.batches++;
+    const reference=this.likenessPlaced?.reference?.source==='canvas_reference', target=reference ? 'the reference' : 'the goal';
+    if (reference) likeness.against='reference';
     if (entry.status==='undone') {
       likeness.undone++;
-      if (entry.worse) likeness.last_undone=`${entry.worse.what.join(' and ')} than the goal, ${entry.worse.where}`;
-      this.emit({type:'action',seconds:0,message:'Undid a batch that made the canvas less like the goal: '+entry.summary+'.'});
+      if (entry.worse) likeness.last_undone=`${entry.worse.what.join(' and ')} than ${target}, ${entry.worse.where}`;
+      this.emit({type:'action',seconds:0,message:`Undid a batch that made the canvas less like ${target}: `+entry.summary+'.'});
     } else likeness.after=entry.whole.after;
     if (entry.status==='worse_kept') likeness.kept_worse++;
     move.likeness=likeness;

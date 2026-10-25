@@ -276,6 +276,16 @@ export type CanvasReferenceRecord = {
   reference_path: string; reference_size: [number, number]; compare_path: string; mask_path: string; mask_size: [number, number];
   canvas: [number, number]; share: number; bounds: Rect | null; wide: boolean; model: string; made_at: string; asset_id?: string;
 };
+/** A used canvas reference as the likeness target of the moves painting toward it (the artist, 2026-10-25: an edit is not
+ * measured against the goal): the reference over the whole canvas. Outside its area it is the canvas, and Krita blocks
+ * writes there. Null when it is not used, or was made on a canvas of another size. */
+export function referencePlacement(record: Pick<CanvasReferenceRecord, 'id' | 'state' | 'reference_path' | 'reference_size' | 'canvas'> | null | undefined,
+  canvas: { width: number; height: number }) {
+  if (!record || record.state !== 'used' || record.canvas[0] !== canvas.width || record.canvas[1] !== canvas.height) return null;
+  const [width, height] = record.reference_size, id = 'canvas-reference-' + record.id;
+  return { mapping: { reference_id: id, source: [0, 0, width, height] as Rect, target: [0, 0, canvas.width, canvas.height] as Rect, from: 'transfer' as const },
+    reference: { id, path: record.reference_path, width, height, source: 'canvas_reference' } };
+}
 export type FoundPart = { mask_path: string; bounds: number[]; canvas: number[] };
 export type UseArea = { mask_path: string; bounds: Rect; canvas: [number, number]; share: number };
 type Goal = { ai_images_used?: number; canvas_reference_notice?: boolean; canvas_references?: Record<string, CanvasReferenceRecord> };

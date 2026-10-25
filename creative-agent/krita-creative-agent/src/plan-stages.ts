@@ -108,6 +108,8 @@ export function reviseStages({ current, reading, act, text }: { current: readonl
 export const STAGE_CARD = Object.freeze({
   question: 'Which stages should the plan hold? I could not tell from your message.',
   options: ['The underpainting only', 'Underpainting and finish', 'The whole plan'] as string[],
+  // Auto-approve's answer (auto-approve.ts): the whole plan, as when a message names no stage (stagePolicy's default).
+  recommended: 'The whole plan',
 });
 /** The stages a plan card answer gives, or null for anything else (typed text is read as a new message). */
 export function stagesFromCard(answer: string): PlanStage[] | null {

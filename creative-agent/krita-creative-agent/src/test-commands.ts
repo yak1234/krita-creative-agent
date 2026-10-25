@@ -17,7 +17,7 @@ export class CommandRefusal extends Error {}
 export type Rect = [number, number, number, number];
 /** The companion's found_area event: an outline (or the error of a find). */
 export type FoundEvent = { request_id?: string; part?: string | null; mask_path?: string; bounds?: number[]; canvas?: number[]; error?: string };
-export type Question = { id: string; question?: string; options?: string[]; select_area?: { part?: string; proposal?: { mask_path?: string; bounds?: number[]; canvas?: number[] } } };
+export type Question = { id: string; question?: string; options?: string[]; recommended?: string; select_area?: { part?: string; proposal?: { mask_path?: string; bounds?: number[]; canvas?: number[] } } };
 /** The Sharpen goal card the panel shows (goal-sharpen.ts): the offer, or the side by side after sharpening. */
 export type SharpenCard = { kind: 'offer' | 'review'; id: string; options: string[]; text: string; image_path?: string; progress?: string };
 export type CommandView = { testFolder: string; mode?: string | null; planSteps: StepView[]; question: Question | null;

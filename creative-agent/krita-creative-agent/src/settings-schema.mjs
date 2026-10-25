@@ -20,6 +20,11 @@ export const SETTINGS = Object.freeze([
   { key: 'merge_kept', type: 'boolean', default: true, panel: 'generic', label: 'Layers after accepting', accessible: 'Layers after accepting',
     error: 'merge_kept must be true or false.', options: [[true, 'Merge kept passes'], [false, 'Keep every pass']],
     tooltip: 'When you keep an Agent move or a review passes, adjacent stroke layers merge into one. Fills, clipped and blended layers stay separate.' },
+  // Auto-approve (auto-approve.ts; the artist 2026-10-25: "it's standard in agentic systems"): each card that waits for
+  // the artist takes its default answer after this delay, unless the artist acts first. The panel counts down.
+  { key: 'auto_approve', type: 'choice', default: 'off', panel: 'generic', label: 'Auto-approve', accessible: 'Auto-approve',
+    error: 'Auto-approve: choose Off, Immediately, 10, 30 or 60 seconds.', options: [['off', 'Off'], [0, 'Immediately'], [10, '10 s'], [30, '30 s'], [60, '60 s']],
+    tooltip: 'When a card waits for you, its default is taken after this delay, with a countdown: Met for a finished plan step, Keep for a move, Sharpen and Use sharpened for the goal image, and the recommended option of a question that has one. Undo, Redo, Stop, typing or any button stops the countdown. Start painting and anything that deletes or discards work are never pressed for you.' },
   // Guided trace (guide-tool.ts): the painter may sketch construction lines on a guide layer when the artist asks for them.
   // A combo, as merge_kept: the panel's checkbox starts unchecked until the settings arrive, which suits only a default-off setting.
   { key: 'guides', type: 'boolean', default: true, panel: 'generic', label: 'Guides', accessible: 'Draw guides from references',

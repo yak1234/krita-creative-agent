@@ -108,6 +108,7 @@ test('an aligned close-up is shown to the artist before its first use, with its 
   assert.match(asked[0].question, /11-woman-back-view\.png/);
   assert.match(asked[0].question, /4x/);
   assert.deepEqual(asked[0].options, CLOSEUP_ANSWERS);
+  assert.equal(asked[0].recommended, CLOSEUP_ANSWERS[0], 'Auto-approve takes Use the close-up there: the host found it aligned and sharper');
   assert.equal(asked[0].image_path, join(directory, record.preview));
   assert.equal(closeups.answer('woman', CLOSEUP_ANSWERS[0]), true);
   assert.equal(host.study.closeups.woman.confirmed, 'yes');

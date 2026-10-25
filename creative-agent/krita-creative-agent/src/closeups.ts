@@ -24,7 +24,7 @@ export type CloseupRecord = {
   goal_size?: [number, number]; closeup_size?: [number, number]; preview?: string; confirmed?: 'yes' | 'no';
   bytes?: number;
 };
-export type CloseupQuestion = { question: string; options: string[]; image_path?: string; closeup_id: string };
+export type CloseupQuestion = { question: string; options: string[]; recommended: string; image_path?: string; closeup_id: string };
 export type CloseupHost = {
   study?: { id?: string; directory: string; references: Ref[]; closeups?: Record<string, CloseupRecord> } | undefined;
   /** The open painting's size, to tell the whole picture from a part when there is no project folder. */
@@ -242,7 +242,8 @@ export function chatCloseups(host: CloseupHost) {
     return { closeup_id: record.closeup_id,
       question: `${record.name} matches part of the goal image (${record.area}): the box at ${x}, ${y}, ${w} x ${h} goal pixels, `
         + `about ${round(record.scale ?? 0)}x sharper there. Use it for detail in that area instead of enlarging the goal?`,
-      options: [...CLOSEUP_ANSWERS], ...(record.preview && host.study ? { image_path: join(host.study.directory, record.preview) } : {}) };
+      // Auto-approve's answer (auto-approve.ts): the host asks only for a close-up it found aligned and sharper there.
+      options: [...CLOSEUP_ANSWERS], recommended: CLOSEUP_ANSWERS[0], ...(record.preview && host.study ? { image_path: join(host.study.directory, record.preview) } : {}) };
   }
 
   /** Align the chat's close-ups that are new or changed (once per content of both images). Never throws for one image. */

@@ -22,6 +22,7 @@ import { comparisonArea, cropPlan, goalSource, compareWithGoal, withContext, CRO
 import { decodeGrid, departureRequested, goalMapping, gridSize, likenessLine, measure, returnToReference } from './goal-likeness.ts';
 import { layerNeedCheck, paintedRole } from './layer-need.mjs';
 import { mayBeDone, askWhenDoneNote } from './ask-when-done.ts';
+import { autoApproveRecord, recommendYouDecide } from './auto-approve.ts';
 import { unifyActions, unifyRefusal, WHOLE_CANVAS_SHARE } from './unify-pass.ts';
 import { COMIC_GUIDANCE, COMIC_REVIEW, comicContext, comicPlanProblems, panelId, storySchema } from './comic.mjs';
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
@@ -2033,7 +2034,7 @@ export class StudioRuntime extends PaintingRuntime {
       if (this.executionPhase === 'agent' && (this.goal.run_questions ?? 0) >= RUN_QUESTION_LIMIT)
         throw new Error('The run has already asked the artist '+RUN_QUESTION_LIMIT+' questions. Make this artistic decision yourself, consistent with the brief, and keep painting; the artist can redirect or stop at any time.');
       if (this.executionPhase === 'agent') this.goal.run_questions = (this.goal.run_questions ?? 0) + 1;
-      this.goal.question = { ...q, id: randomUUID(), asked_in: this.executionPhase }; this.goal.status = 'needs_input'; this.yieldRequested = true;
+      this.goal.question = { ...recommendYouDecide(q), id: randomUUID(), asked_in: this.executionPhase }; this.goal.status = 'needs_input'; this.yieldRequested = true;
       await this.persist(); this.publish(); this.emit({ type: 'question', ...this.goal.question });
       return { message: 'Question displayed. Stop now and wait for the user.' };
     });
@@ -2231,6 +2232,12 @@ export class StudioRuntime extends PaintingRuntime {
         this.emit({type:'closeup_question', ...this.goal.closeup_question});
       },
     };
+  }
+  /** Auto-approve (auto-approve.ts): the panel answered a card by itself after the delay; recorded for the diagnostics,
+   * never an error (the answer itself is the card's own command, sent beside this one). */
+  recordAutoApprove(command) {
+    const record = autoApproveRecord(command);
+    if (record) this.diagnostics?.record(record);
   }
   /** The panel's answer to a close-up question: applied only to the question it answers. "You decide" is a no. */
   async answerCloseup({question_id, answer} = {}) {
@@ -2537,7 +2544,7 @@ export class StudioRuntime extends PaintingRuntime {
       answer = stagePolicy({reading:reading?.reading ?? null, act:this.lunaMode() === 'guide', text});
     }
     if (!answer.stages) {
-      this.goal.question = {id:randomUUID(), question:STAGE_CARD.question, options:[...STAGE_CARD.options], asked_in:'agent', plan_stages:{request:String(text).slice(0,500)}};
+      this.goal.question = {id:randomUUID(), question:STAGE_CARD.question, options:[...STAGE_CARD.options], recommended:STAGE_CARD.recommended, asked_in:'agent', plan_stages:{request:String(text).slice(0,500)}};
       this.goal.status = 'needs_input'; await this.persist(); this.publish();
       this.emit({type:'question', ...this.goal.question});
       this.diagnostics?.record({type:'plan_stages', source:'ask'});

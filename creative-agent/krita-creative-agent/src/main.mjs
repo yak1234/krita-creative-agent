@@ -75,6 +75,7 @@ async function handle(command) {
       case 'move': await runtime.moveAction(command); break;
       case 'plan_step': await runtime.planStep(command); break;     // Skip, Restore, Good enough, Met, Redo (plan-steps.ts validates)
       case 'closeup_answer': await runtime.answerCloseup(command); break;   // the panel's answer to a closeup_question
+      case 'auto_approved': runtime.recordAutoApprove(command); break;   // Auto-approve answered a card (auto-approve.ts): a diagnostics row
       case 'paint_only_here': await runtime.setPaintOnlyHere(command); break;   // the panel's Paint only here area: set or clear
       case 'find_it': await runtime.findIt(command); break;   // Find it for me: a part's outline on the painting (found_area)
       case 'shapes_model': runtime.shapes.answer(['accept', 'enable'].includes(command.action) ? command.action : 'decline'); break;   // shapes_model_needed's answer, or Ask again

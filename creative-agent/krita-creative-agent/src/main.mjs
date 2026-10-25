@@ -55,6 +55,7 @@ async function handle(command) {
       case 'folder_goal': await runtime.setFolderGoal(command); break;      // the Folder tab's Goal image list
       case 'folder_study': await runtime.folderStudyCommand(command); break;   // the Folder tab's study menu and choice card
       case 'goal_sharpen': await runtime.goalSharpen.answer(command); break;   // Sharpen / Use as is, Use sharpened / Keep original, cancel
+      case 'canvas_reference': await runtime.canvasReference.answer(command); break;   // the canvas reference card: use, retry, discard
       case 'inspect_result': await runtime.inspectResult(); break;
       case 'reconcile': await runtime.reconcile(); break;
       case 'review_pass': await runtime.reviewPass(command); break;

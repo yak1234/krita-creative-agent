@@ -357,3 +357,24 @@ test('one edit request for a canvas reference: the backend the assets setting na
   assert.equal(requests[1].url, 'https://openrouter.ai/api/v1/images'); assert.equal(requests[1].body.model, ASSET_MODELS.edit.model);
   assert.equal(requests[1].body.aspect_ratio, 'auto', 'an edit keeps its input\'s framing');
 });
+
+test('a picture that is no plain PNG is converted in the sandbox for a canvas reference, and its work files go', { timeout: 180000 }, async () => {
+  const { pngFromImage } = await import('../src/assets.mjs');
+  const { decodeRgba } = await import('../src/png-rgba.ts');
+  const h = await studyRuntime();
+  try {
+    // A palette PNG (colour type 3), which the companion's own reader leaves alone.
+    const w = 3, h2 = 2, raw = Buffer.alloc((w + 1) * h2);
+    for (let y = 0; y < h2; y++) for (let x = 0; x < w; x++) raw[y * (w + 1) + 1 + x] = (x + y) % 2;
+    const chunk = (type, data) => { const len = Buffer.alloc(4); len.writeUInt32BE(data.length); const td = Buffer.concat([Buffer.from(type), data]); const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(td)); return Buffer.concat([len, td, crc]); };
+    const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h2, 4); ihdr.set([8, 3, 0, 0, 0], 8);
+    const palette = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('PLTE', Buffer.from([255, 0, 0, 0, 0, 255])), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+    assert.equal(decodeRgba(palette), null);
+    const png = await pngFromImage(h.runtime, palette);
+    const read = decodeRgba(png);
+    assert.deepEqual([read.width, read.height], [3, 2]);
+    assert.deepEqual([...read.data.subarray(0, 8)], [255, 0, 0, 255, 0, 0, 255, 255]);
+    const { readdir } = await import('node:fs/promises');
+    assert.deepEqual((await readdir(join(h.runtime.study.directory, 'assets'))).filter(n => n.startsWith('convert-')), []);
+  } finally { await h.close(); }
+});

@@ -19,7 +19,9 @@ export function pngSize(file: Uint8Array): { width: number; height: number } | n
   return { width: data.readUInt32BE(16), height: data.readUInt32BE(20) };
 }
 
-export function decodeRgba(file: Uint8Array, maxPixels = REFERENCE_PIXELS): { width: number; height: number; data: Buffer } | null {
+/** `ignoreColour`: read a PNG with a colour profile, gamma or chromaticities as if it were sRGB (a canvas reference compares
+ * an image model's PNG with the canvas view, both sRGB in practice; canvas-reference.ts). */
+export function decodeRgba(file: Uint8Array, maxPixels = REFERENCE_PIXELS, { ignoreColour = false }: { ignoreColour?: boolean } = {}): { width: number; height: number; data: Buffer } | null {
   const data = Buffer.from(file.buffer, file.byteOffset, file.byteLength), size = pngSize(data);
   if (!size || !size.width || !size.height || size.width * size.height > maxPixels) return null;
   const { width, height } = size, colour = data[25] ?? -1, channels = CHANNELS[colour];
@@ -29,7 +31,7 @@ export function decodeRgba(file: Uint8Array, maxPixels = REFERENCE_PIXELS): { wi
     if (at + 12 > data.length) return null;
     const length = data.readUInt32BE(at), kind = data.toString('latin1', at + 4, at + 8);
     if (at + 12 + length > data.length) return null;
-    if (COLOUR_CHUNKS.has(kind)) return null;
+    if (COLOUR_CHUNKS.has(kind) && !ignoreColour) return null;
     if (kind === 'IDAT') parts.push(data.subarray(at + 8, at + 8 + length));
     if (kind === 'IEND') break;
     at += 12 + length;

@@ -11,7 +11,7 @@
 import { defineTool } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { randomUUID } from 'node:crypto';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, join, resolve, sep } from 'node:path';
 import { existsSync, readdirSync } from 'node:fs';
 import { imageContent, imageInfo } from './files.mjs';
@@ -366,6 +366,18 @@ export function assetTools(runtime, { fetchImpl } = /** @type {{fetchImpl?: type
     },
   });
   return [makeAsset, runSkillScript];
+}
+
+/** Any image the sandbox's Pillow reads (JPEG, WebP, a palette PNG) as an RGBA PNG: for a canvas reference's picture from
+ * an image model that is not a plain PNG. The work files go from the chat's assets folder afterwards. */
+export async function pngFromImage(runtime, data, signal) {
+  const folder = await assetsFolder(runtime), stem = 'convert-' + randomUUID().slice(0, 8);
+  await writeFile(join(folder, stem + '.img'), data);
+  try {
+    await runPython({ work: folder, signal, args: { input: stem + '.img', output: stem + '.png' },
+      code: 'from PIL import Image\nImage.open("/work/" + ARGS["input"]).convert("RGBA").save("/work/" + ARGS["output"])\nRESULT = 1' });
+    return await readFile(join(folder, stem + '.png'));
+  } finally { await Promise.all([stem + '.img', stem + '.png'].map(name => rm(join(folder, name), { force: true }))); }
 }
 
 async function readImage(path) {

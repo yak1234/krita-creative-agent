@@ -26,7 +26,7 @@ import { autoApproveRecord, recommendYouDecide } from './auto-approve.ts';
 import { unifyActions, unifyRefusal, WHOLE_CANVAS_SHARE } from './unify-pass.ts';
 import { COMIC_GUIDANCE, COMIC_REVIEW, comicContext, comicPlanProblems, panelId, storySchema } from './comic.mjs';
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
-import { mkdir, readFile, readdir, rename, writeFile, rm, access, realpath, stat } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, writeFile, rm, access, realpath, stat, copyFile } from 'node:fs/promises';
 import { join, basename, relative, resolve } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { Type } from 'typebox';
@@ -72,6 +72,9 @@ import { piReader, studyModelRoute, STUDY_MODEL } from './folder-study.ts';
 import { withholdImages, sentImage } from './folder-study-chat.ts';
 import { constants as fsConstants, realpathSync } from 'node:fs';
 import { open as openFile } from 'node:fs/promises';
+import { canvasReferencer, canvasReferenceRequest, referenceMoveNote } from './canvas-reference.ts';
+import { assertAiImageAllowed, assetBackend, attachAsset, pngFromImage, requestAssetImage } from './assets.mjs';
+import { decodeRgba } from './png-rgba.ts';
 
 /** A Find it failure for the diagnostics: the message as the panel showed it, the FindError's code, and why the decision
  * model gave no answer (its fallback, HTTP status or error name, time and the picture it was sent) when that was it. */
@@ -319,6 +322,91 @@ export class StudioRuntime extends PaintingRuntime {
     this.goalSharpen = options.goalSharpen ?? goalSharpener(this.sharpenHost());
     // Folder study (folder-study-chat.ts): a note per folder image, read as text; tests give their own reader (null: none).
     this.studyReader = options.studyReader; this.studyModel = options.studyModel; this.folderStudy = new ChatFolderStudy(this.folderStudyHost());
+    // /canvas-reference (canvas-reference.ts): an image model's picture of the canvas with an edit, a target only when used.
+    // imageFetch is the image backend's fetch (tests fake it); referenceHeld a plan step that waits for its preview.
+    this.imageFetch = options.imageFetch; this.referenceHeld = null;
+    this.canvasReference = canvasReferencer(this.canvasReferenceHost());
+  }
+  /** What the canvas reference needs of the studio (canvas-reference.ts). */
+  canvasReferenceHost() {
+    const studio = this;
+    return {
+      get study() { return studio.study; },
+      get goal() { return studio.goal; },
+      backend: () => assetBackend(this),
+      allowance: () => assertAiImageAllowed(this.goal),
+      observe: async () => {
+        const bound = this.study?.bound ? this.study.target_document_id : undefined;
+        const captured = await this.captureCanvas({required:true, documentId:bound, selection:{...this.canvasSelection, selected:true}, display:false});
+        const seen = captured.snapshot;
+        return {image_path:resolve(this.study.directory, seen.image_path), width:seen.width, height:seen.height};
+      },
+      generate: ({prompt, input, aspect}) => requestAssetImage(this, {mode:'edit', prompt, inputs:[input], aspect, fetchImpl:this.imageFetch}),
+      decode: data => this.decodeImage(data),
+      findArea: part => this.proposeArea(part, {quiet:true}),
+      emit: event => this.emit(event),
+      persist: () => this.persist(),
+      publish: () => this.publish(),
+      busy: () => this.busy,
+      use: (record, area) => this.useCanvasReference(record, area),
+      discarded: async record => {
+        const held = this.referenceHeld?.id === record.id ? this.referenceHeld : null;
+        if (!held) return;
+        this.referenceHeld = null;                                    // the plan step paints as planned, without the reference
+        await this.prompt(held.text, {...held.command, reference_resumed:true});
+      },
+    };
+  }
+  /** An image's pixels: a PNG read here (colour chunks ignored: the canvas view and the image models' PNGs are sRGB), any
+   * other format converted in the Python sandbox first. */
+  async decodeImage(data) {
+    const direct = decodeRgba(data, undefined, {ignoreColour:true});
+    if (direct) return direct;
+    const png = await pngFromImage(this, data).catch(() => null);
+    return png ? decodeRgba(png, undefined, {ignoreColour:true}) : null;
+  }
+  /** Use as the target (canvas-reference.ts): the reference becomes a reference asset, the difference area the move's Paint
+   * only here area (protected on the painting, `auto` so it ends with the move), and a move paints toward it there: the
+   * plan step that waited for it, else a move of its own. */
+  async useCanvasReference(record, area) {
+    const id = 'asset-' + randomUUID().slice(0, 8), folder = join(this.study.directory, 'assets');
+    await mkdir(folder, {recursive:true});
+    const file = join(folder, id + '.png');
+    await copyFile(record.reference_path, file);
+    await attachAsset(this, {id, file, name:('Canvas reference: ' + record.instruction).slice(0, 200), notes:record.instruction, source:{canvas_reference:record.id, model:record.model}});
+    record.asset_id = id;
+    await this.adoptFoundArea(area, 'the canvas reference change', 'canvas-reference:' + record.id);
+    this.goal.paint_only_here = {...this.goal.paint_only_here, canvas_reference:record.id};
+    await this.persist(); this.publish();
+    const held = this.referenceHeld?.id === record.id ? this.referenceHeld : null;
+    this.referenceHeld = null;
+    if (held) { await this.prompt(held.text, {...held.command, canvas_reference:record.id, reference_resumed:true}); return; }
+    await this.prompt(`Paint the canvas reference: ${record.instruction}${record.part ? ' in ' + record.part : ''}.`,
+      {chat_mode:'agent', move_kind:'canvas_reference', canvas_reference:record.id, display_text:('Canvas reference: ' + record.instruction).slice(0, 500)});
+  }
+  /** The painter's instructions while a canvas reference's area is set (canvas-reference.ts referenceMoveNote), or ''. */
+  canvasReferenceNote() {
+    const area = this.goal?.paint_only_here, record = area?.canvas_reference ? this.goal.canvas_references?.[area.canvas_reference] : null;
+    return record?.asset_id ? referenceMoveNote(record, {asset_id:record.asset_id, canvas:record.canvas}) : '';
+  }
+  /** Preview additions (the setting): a plan's "Add: <thing>" step about to paint first shows a canvas reference of it, once a
+   * step; the step waits for the card (Use paints toward it, Discard paints as planned). True when it waits. */
+  async holdForCanvasReference(text, command) {
+    if (!this.executionSettings?.preview_additions || command.reference_resumed || command.canvas_reference || command.move_kind) return false;
+    const steps = this.goal?.brief?.steps ?? [];
+    if (!steps.length || !((this.folderPlanning() && this.folderPlanApproved()) || (this.singlePlanning() && this.singlePlanApproved()))) return false;
+    const retry = this.planSteps.indexOf(command.plan_step_key), index = retry >= 0 ? retry : Math.min(this.goal.current_step ?? 0, steps.length - 1);
+    if (folderStepKind(steps[index]) !== 'addition') return false;
+    const key = this.planSteps.keyAt(index) ?? String(index), previewed = (this.goal.canvas_reference_steps ??= []);
+    if (previewed.includes(key)) return false;
+    previewed.push(key);
+    const thing = String(steps[index].title ?? '').replace(/^\s*add\s*:\s*/i, '').trim();
+    try { assertAiImageAllowed(this.goal); }
+    catch (error) { this.emit({type:'action', seconds:0, message:`Preview additions: ${this.redact(error.message).split('. ')[0]}. "${thing}" paints without a canvas reference.`}); return false; }
+    const record = await this.canvasReference.start({instruction:'add ' + thing, part:null, step_key:key});
+    if (!record) return false;
+    this.referenceHeld = {id:record.id, text, command:{...command, chat_mode:'agent'}};
+    return true;
   }
   async importJournals() {
     const chats = await this.store.chatsWithJsonJournal();
@@ -2663,7 +2751,7 @@ export class StudioRuntime extends PaintingRuntime {
       if (!command.keep_follow && this.goal.single_plan && this.goal.brief) { this.goal.approved_revision = this.goal.revision; this.goal.done_steps ??= []; }
       return null;
     }
-    if (command.move_kind || moveKind || command.keep_follow || command.sharpen_resumed) return null;
+    if (command.move_kind || moveKind || command.keep_follow || command.sharpen_resumed || command.reference_resumed) return null;
     const said = String(text ?? '').trim();
     if (answered?.plan_or_not && answered.options?.includes(said)) {
       const plan = planFromCard(said);
@@ -3321,11 +3409,21 @@ export class StudioRuntime extends PaintingRuntime {
       await this.setPaintOnlyHere(command.paint_only_here);          // an area the message brings (Use my selection, the typed phrase)
       // A refine-part step's area stays while that step is painted (a continuation, a Redo); one left from another step goes.
       const stepArea = this.goal?.paint_only_here?.step_area ? this.goal.paint_only_here : null;
-      if (this.mode !== 'autopilot' && !(stepArea && stepArea.auto === this.autoAreaKey()))
-        await this.clearAutoArea(stepArea ? 'the step it was found for is over' : 'the area Autopilot found ended with its run');   // e.g. left by a crash
+      // A canvas reference's area stays for its own move and a Keep that continues it; any other message ends it.
+      const referenceArea = this.goal?.paint_only_here?.canvas_reference ? this.goal.paint_only_here : null;
+      const keepReference = referenceArea && (command.canvas_reference === referenceArea.canvas_reference || command.move_kind === 'continue');
+      if (this.mode !== 'autopilot' && !(stepArea && stepArea.auto === this.autoAreaKey()) && !keepReference)
+        await this.clearAutoArea(stepArea ? 'the step it was found for is over' : referenceArea ? 'the canvas reference move is over' : 'the area Autopilot found ended with its run');   // e.g. left by a crash
       this.goal.canvas_selection = this.canvasSelection; this.goal.region_selection=this.regionSelection;
       // A request held for the Sharpen goal card (holdForSharpen) is in the transcript already.
-      const message = command.sharpen_resumed ? this.goal.messages.findLast(m => m.role === 'user') : await this.remember('user', text,command.message_id);
+      const message = command.sharpen_resumed || command.reference_resumed ? this.goal.messages.findLast(m => m.role === 'user') : await this.remember('user', text,command.message_id);
+      // /canvas-reference (canvas-reference.ts): the studio's own command; the card waits for the artist, nothing paints.
+      const referenceAsk = canvasReferenceRequest(text);
+      if (referenceAsk) {
+        const made = await this.canvasReference.start(referenceAsk);
+        this.setActivity(made ? 'awaiting_user' : 'idle', made ? 'The canvas reference waits for your answer beside the chat.' : 'Say what the canvas reference should change.');
+        return;
+      }
       // "use 05-modern-skyline.png as the goal": the goal picker, typed. It changes the goal and paints nothing.
       const typedGoal = !command.start_plan && this.study?.folder && this.folderIndex ? goalNamed(text, goalChoices(this.folderIndex)) : null;
       if (typedGoal) { await this.setFolderGoal({name:typedGoal}, {typed:true}); this.setActivity('idle', `The goal image is now ${typedGoal}.`); return; }
@@ -3353,7 +3451,7 @@ export class StudioRuntime extends PaintingRuntime {
       // paint_accents' question: a yes is the first option (the panel sends it as typed) or a plain yes, nothing else.
       if (answered?.accents) this.goal.accents_answer = {...answered.accents,
         yes:text.trim().toLowerCase() === String(answered.options?.[0] ?? '').toLowerCase() || /^(y|yes|ok|okay|sure|go ahead|do it)\b[.!]*$/i.test(text.trim())};
-      else if (!command.start_plan && !command.sharpen_resumed) this.goal.user_updates.push(text);
+      else if (!command.start_plan && !command.sharpen_resumed && !command.reference_resumed) this.goal.user_updates.push(text);
       // A run's question allowance lasts until the artist starts or steers it again.
       if (answered?.asked_in !== 'agent') this.goal.run_questions = 0;
       this.goal.question = null; this.yieldRequested = false; this.startRequested = false;
@@ -3385,6 +3483,7 @@ export class StudioRuntime extends PaintingRuntime {
       const areaRequest = answered?.select_area?.request && answered.options?.includes(text.trim()) ? answered.select_area.request : addAnswer?.request ?? single?.request ?? null;
       const movePrompt = areaRequest ? `${areaRequest}\n\n(The artist answered "${answered.question}": ${text.trim()}.)` : modelText;
       if (this.mode === 'agent' && !moveKind && await this.holdForSharpen(text, command)) return;
+      if (this.mode === 'agent' && !moveKind && await this.holdForCanvasReference(text, command)) { this.setActivity('awaiting_user', 'The canvas reference waits for your answer beside the chat.'); return; }
       // The move is the artist's held request when a card answered it (its button is no request: review, 2026-10-24).
       const typed = !optionAnswer && !areaRequest && !addAnswer && !/^you decide[.!]*$/i.test(text.trim());
       if (this.mode === 'agent') { await this.runMove(movePrompt, images, {...command, display_text:areaRequest ?? text, typed, ...(moveKind ? {move_kind:moveKind} : {})}); return; }
@@ -3946,7 +4045,7 @@ export class StudioRuntime extends PaintingRuntime {
       // Refine after the whole-picture Finish (refine-goal.ts): the whole picture runs refine_to_goal, a part is asked for and refined fine.
       const refineNote = guidesOnly || command.move_kind || folderMove ? '' : refineToGoalNote({text:said, area:!!this.goal.paint_only_here,
         finished:this.wholeFinished(), reading:this.messageReading?.text === said ? this.messageReading.reading : null});
-      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + underpaintingNote + folderMove + continueNote + routesNote + detailNote + partNote + (refineNote ? '\n' + refineNote + '\n' : '') + (move.ask_next ? askWhenDoneNote(move.ask_next.reason, this.layerNeed.area, move.ask_next.elements) : '') + '\nArtist:\n' + text, images);
+      await super.runPrompt(this.context('agent') + agentMoveInstructions(this.executionSettings?.move_size, {referenceFirst:state, guidesOnly}) + referenceFirst + underpaintingNote + folderMove + continueNote + routesNote + detailNote + partNote + (refineNote ? '\n' + refineNote + '\n' : '') + (move.ask_next ? askWhenDoneNote(move.ask_next.reason, this.layerNeed.area, move.ask_next.elements) : '') + this.canvasReferenceNote() + '\nArtist:\n' + text, images);
     } finally {
       this.goal.used_ms += Date.now() - this.goalStartedAt; this.goalStartedAt = undefined;
       const guidesOnly = !move.actions && move.guides > 0;

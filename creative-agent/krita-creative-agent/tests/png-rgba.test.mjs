@@ -39,3 +39,13 @@ test('anything else is left to the plugin: colour profile, gamma, 16 bits, palet
   assert.equal(decodeRgba(file.subarray(0, file.length - 20)), null, 'cut short');
   assert.equal(decodeRgba(Buffer.from('not a png at all, not a png at all')), null);
 });
+
+test('a canvas reference reads an image model\'s PNG with colour chunks as sRGB when asked (ignoreColour)', () => {
+  const data = noise(48), file = encodePng({ width: 4, height: 4, channels: 3, data });
+  const c = Buffer.alloc(16); c.writeUInt32BE(4, 0); c.write('gAMA', 4, 'latin1');
+  const gamma = Buffer.concat([file.subarray(0, 33), c, file.subarray(33)]);
+  assert.equal(decodeRgba(gamma), null, 'the reference tools still leave it to the plugin');
+  const read = decodeRgba(gamma, undefined, { ignoreColour: true });
+  assert.deepEqual([read.width, read.height], [4, 4]);
+  assert.deepEqual([...read.data.subarray(0, 4)], [data[0], data[1], data[2], 255]);
+});

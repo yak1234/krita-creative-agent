@@ -2117,6 +2117,20 @@ test('an Agent move working in an area sees close-ups of it with each whole-canv
  } finally {await h.close();}
 });
 
+test('a plan step move is not stopped by the move timer: one long refine at full size ran 8 min (live, 2026-10-25); the call cap still holds',{timeout:30000},async()=>{
+ const h=await harness(()=>({content:'Hello.'}));
+ try {
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  const long=new Date(Date.now()-9*60000).toISOString();
+  h.runtime.currentMove={number:3,status:'painting',calls:1,started_at:long,step:2,step_key:'title:refine to the goal#0'};
+  assert.equal(h.runtime.moveDone(),false,'a plan step ends with its tool, not after 6 minutes');
+  h.runtime.currentMove={number:4,status:'painting',calls:8,started_at:long,step:2,step_key:'title:refine to the goal#0'};
+  assert.equal(h.runtime.moveDone(),true,'eight calls still end it');
+  h.runtime.currentMove={number:5,status:'painting',calls:1,started_at:long};
+  assert.equal(h.runtime.moveDone(),true,'a free move keeps its time limit');
+ } finally {h.runtime.currentMove=null; await h.close();}
+});
+
 test('a Subject move that reaches its limit stops for the artist and says so',{timeout:30000},async()=>{
  let painterCalls=0; let h;
  h=await harness(req=>{

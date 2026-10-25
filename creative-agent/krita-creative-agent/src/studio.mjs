@@ -1754,7 +1754,8 @@ export class StudioRuntime extends PaintingRuntime {
     if (move.finished) return true;
     if (move.ask_next && (move.calls ?? 0) >= 1) return true;           // ask when it may be done: one call, then the artist
     const limit = MOVE_LIMITS[this.executionSettings?.move_size ?? 'subject'] ?? MOVE_LIMITS.subject;
-    const late = limit.minutes > 0 && Date.now() - Date.parse(move.started_at) >= limit.minutes * 60000;
+    // A plan step's move ends with its own tool (one whole refine ran 8 min at 6000 x 4500, live 2026-10-25), not on the timer.
+    const late = !move.step_key && limit.minutes > 0 && Date.now() - Date.parse(move.started_at) >= limit.minutes * 60000;
     if (move.kind === 'guides') return (move.guides ?? 0) >= limit.calls || late;     // counted in guide calls: nothing else is offered
     const reached = (move.calls ?? 0) >= limit.calls || late;
     if (reached && limit.calls > 1) move.limited = true;

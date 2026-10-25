@@ -66,6 +66,14 @@ layer (no blend, mask, perspective or colour handling); it is not used, only its
    6000 px canvas; a Sharpen-ed goal is used when there is one). The plan names both per step (goal 7). A part too
    small or too flat to give a pattern (measured: too little high-pass energy) falls back to the library alone.
 
+9. **Brush dabs from the goal.** The artist, 2026-10-25 ("krita patterns when it can grab brushes from images";
+   "yes please"). For each architectural part, a few real impasto dabs are cut from the goal at the part's found area
+   (small patches of strong local contrast, cleaned into a soft-edged alpha shape). The Finish/refine stroke renderer
+   (finish_pass.strokes_for, Toska's own baked strokes, not Krita's brush engine) stamps that dab shape along each form
+   stroke in that part instead of a plain line, so stroke edges break up like the goal's paint. The dabs are also saved
+   with Krita.createBrushTip (tagged Agent), so the artist sees and can use the same tip. Speed must stay close to today's
+   at 6000 x 4500; a part with no usable dab keeps the plain stroke.
+
 ## Non-goals
 
 - No photo pasted as a visible layer; no AI image generation.

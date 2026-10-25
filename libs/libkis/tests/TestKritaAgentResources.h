@@ -10,7 +10,8 @@
 
 /**
  * Brush tips and presets made by scripts (krita-fork 5.1): Krita::createBrushTip() and Krita::createPreset() add
- * resources that are in the resource database at once, tagged "Agent", and paint.
+ * resources that are in the resource database at once, tagged "Agent", and paint. Krita::createPattern() does the same
+ * for patterns (brush textures; architecture-texture).
  */
 class TestKritaAgentResources : public QObject
 {
@@ -30,6 +31,9 @@ private Q_SLOTS:
     void testReplacingAnAgentTipKeepsOneResource();
     void testReplacingATipChangesItsPresets();
     void testTipApplicationLivesInTheDatabase();
+    void testPatternIsSavedAndListedAtOnce();
+    void testPatternRejectsBadInput();
+    void testSameNameAsAnArtistPatternLeavesItAlone();
 };
 
 #endif

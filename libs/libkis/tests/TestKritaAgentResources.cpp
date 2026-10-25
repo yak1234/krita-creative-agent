@@ -41,6 +41,7 @@
 #include <brushengine/kis_paintop_preset.h>
 #include <brushengine/kis_paintop_registry.h>
 #include <brushengine/kis_paintop_settings.h>
+#include <KoPattern.h>
 #include <kis_brush.h>
 #include <kis_gbr_brush.h>
 #include <kis_canvas_resource_provider.h>
@@ -560,5 +561,79 @@ void TestKritaAgentResources::testTipApplicationLivesInTheDatabase()
 
 // Offscreen: the painting test makes a main window, never shown.
 static const bool s_offscreen = (qputenv("QT_QPA_PLATFORM", QByteArray("offscreen")), true);
+
+void TestKritaAgentResources::testPatternIsSavedAndListedAtOnce()
+{
+    // A greyscale stone height map, as the texture library registers it.
+    QImage source(23, 17, QImage::Format_ARGB32);
+    for (int y = 0; y < source.height(); y++) {
+        for (int x = 0; x < source.width(); x++) {
+            const int g = (x * 11 + y * 7) % 256;
+            source.setPixel(x, y, qRgb(g, g, g));
+        }
+    }
+    QScopedPointer<Resource> pattern(Krita::instance()->createPattern(source, "agent pattern / stone: 1"));
+    QVERIFY(pattern);
+    QCOMPARE(pattern->type(), QString("pattern"));
+
+    // Listed by the scripting API and the resource model at once, without a restart, under the agent's tag.
+    QString type("pattern");
+    QMap<QString, Resource *> listed = Krita::instance()->resources(type);
+    const bool isListed = listed.contains("agent pattern / stone: 1");
+    qDeleteAll(listed);
+    QVERIFY(isListed);
+
+    KoResourceSP resource = findResource(ResourceType::Patterns, "agent pattern / stone: 1");
+    QVERIFY(resource);
+    QVERIFY(resource->active());
+    QVERIFY(isAgentTagged(ResourceType::Patterns, resource));
+
+    // Saved in the resource folder, and its pixels load back the same.
+    const QString path = KisResourceLocator::instance()->filePathForResource(resource);
+    QVERIFY2(QFile::exists(path), qPrintable(path));
+    KoPattern loaded(path);
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QVERIFY(loaded.loadFromDevice(&file, KisGlobalResourcesInterface::instance()));
+    const QImage image = loaded.pattern();
+    QCOMPARE(image.size(), source.size());
+    for (int y = 0; y < source.height(); y++) {
+        for (int x = 0; x < source.width(); x++) {
+            QCOMPARE(qGray(image.pixel(x, y)), qGray(source.pixel(x, y)));
+        }
+    }
+
+    // A second pattern of the same name replaces the first: one resource of that name, with the new pixels.
+    QScopedPointer<Resource> again(Krita::instance()->createPattern(testTipImage(QSize(5, 5)), "agent pattern / stone: 1"));
+    QVERIFY(again);
+    KisResourceModel model(ResourceType::Patterns);
+    QCOMPARE(model.resourcesForName("agent pattern / stone: 1").size(), 1);
+    QCOMPARE(model.resourcesForName("agent pattern / stone: 1").first().dynamicCast<KoPattern>()->pattern().width(), 5);
+}
+
+void TestKritaAgentResources::testPatternRejectsBadInput()
+{
+    QVERIFY(!Krita::instance()->createPattern(QImage(), "agent empty pattern"));
+    QVERIFY(!Krita::instance()->createPattern(testTipImage(), "  "));
+}
+
+void TestKritaAgentResources::testSameNameAsAnArtistPatternLeavesItAlone()
+{
+    // The artist's own pattern in the resource folder, not tagged for the agent.
+    QSharedPointer<KoPattern> artist(new KoPattern(testTipImage(QSize(9, 9)), "artist pattern", "artist_pattern.pat"));
+    artist->setValid(true);
+    KisResourceModel model(ResourceType::Patterns);
+    QVERIFY(model.addResourceDeduplicateFileName(artist));
+    const int id = artist->resourceId();
+    const QString md5 = artist->md5Sum();
+
+    QScopedPointer<Resource> pattern(Krita::instance()->createPattern(testTipImage(QSize(5, 5)), "artist pattern"));
+    QVERIFY(pattern);
+    QVERIFY2(pattern->name() != QString("artist pattern"), qPrintable(pattern->name()));
+    KoResourceSP still = model.resourceForId(id);
+    QCOMPARE(still->md5Sum(), md5);
+    QCOMPARE(still.dynamicCast<KoPattern>()->pattern().width(), 9);
+    QVERIFY(!isAgentTagged(ResourceType::Patterns, still));
+}
 
 KISTEST_TEMPORARY_HOME_MAIN(TestKritaAgentResources)

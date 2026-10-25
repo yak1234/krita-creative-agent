@@ -3,7 +3,7 @@
  *
  *  SPDX-License-Identifier: LGPL-2.0-or-later
  */
-// Krita Agent: brush tips and presets made by scripts (krita-fork 5.1).
+// Krita Agent: brush tips, presets and patterns made by scripts (krita-fork 5.1; patterns for architecture-texture).
 //
 // What the Custom Brush dialog's "Stamp" does (a KisGbrBrush from pixels, saved as a resource), and what the brush
 // editor does when it saves a preset with another tip, exposed to scripts. Both go through KisResourceModel, which
@@ -36,6 +36,7 @@
 #include <kis_gbr_brush.h>
 #include <kis_paint_device.h>
 #include <KoColorSpaceRegistry.h>
+#include <KoPattern.h>
 #include <kis_predefined_brush_factory.h>
 
 #include "Document.h"
@@ -345,4 +346,16 @@ Resource *Krita::createPreset(const QString &baseXml, Resource *brushTip, const 
         return nullptr;
     }
     return finishPreset(preset, tip, name);
+}
+
+Resource *Krita::createPattern(const QImage &image, const QString &name)
+{
+    if (image.isNull() || image.width() <= 0 || image.height() <= 0 || name.trimmed().isEmpty()) return nullptr;
+
+    // As the pattern chooser's import does: a KoPattern from the pixels, saved as a .pat in the resource folder.
+    QSharedPointer<KoPattern> pattern(new KoPattern(image.convertToFormat(QImage::Format_ARGB32), name,
+                                                    fileNameFor(name, QStringLiteral(".pat"))));
+    pattern->setValid(true);
+    if (!addToDatabase(ResourceType::Patterns, pattern)) return nullptr;
+    return new Resource(pattern, QStringLiteral("pattern"));
 }

@@ -5,7 +5,8 @@
 * Composition guides: thirds, centre lines or a horizon as Krita guides. They are a
   view setting, not paint: no pass or checkpoint. The artist's own guides come back
   when the chat ends.
-* Progress on the canvas: a short floating message when an operation starts.
+* Progress in the status bar: a short message when an operation starts (never floating over the
+  painting: the artist, 2026-10-25, it blocked the view).
 
 Everything here is best effort. A missing window or an older Krita never stops painting.
 """
@@ -52,8 +53,7 @@ class CanvasView:
         if view is None:
             return
         try:
-            from .qt_compat import QIcon
-            view.showFloatingMessage('Creative Agent · ' + message[:90], QIcon(), MESSAGE_MS, 1)
+            view.window().qwindow().statusBar().showMessage('Creative Agent · ' + message[:90], MESSAGE_MS)
         except Exception:
             pass
 

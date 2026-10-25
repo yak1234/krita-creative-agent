@@ -239,6 +239,22 @@ public Q_SLOTS:
     Resource *createBrushTip(const QImage &image, const QString &name, const QString &application = QString("alpha"));
 
     /**
+     * @brief createPattern makes a pattern from \p image and adds it to the resource database, as the pattern
+     * chooser's import does: listed and usable at once (a brush's Texture, a fill), without a restart, and tagged
+     * "Agent". Names follow createBrushTip(): a pattern the agent made earlier under \p name is replaced; any other
+     * resource of that name is left alone and the new pattern is named "name (2)" (or the next free number).
+     *
+     * @code
+     * stone = Application.createPattern(QImage("/path/stone_height.png"), "Texture: sandstone blocks")
+     * @endcode
+     *
+     * @param image the pattern's pixels, at their own size (a brush texture uses them as a height map)
+     * @param name the resource's name (its .pat file is named after it)
+     * @return the new pattern resource (type "pattern"), or 0 for a null or empty image or an empty name
+     */
+    Resource *createPattern(const QImage &image, const QString &name);
+
+    /**
      * @brief createBrushTip makes a brush tip from an area of \p document's rendered image (its projection), as the
      * Custom Brush dialog does from the image. See createBrushTip(QImage, ...).
      *

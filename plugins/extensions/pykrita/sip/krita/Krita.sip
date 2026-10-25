@@ -32,6 +32,7 @@ public Q_SLOTS:
     QList<Window *> windows() const /Factory/;
     QMap<QString, Resource *> resources(QString &type) const /Factory/;
     Resource *createBrushTip(const QImage &image, const QString &name, const QString &application = QString("alpha")) /Factory/;
+    Resource *createPattern(const QImage &image, const QString &name) /Factory/;
     Resource *createBrushTip(Document *document, const QRect &rect, const QString &name, const QString &application = QString("alpha")) /Factory/;
     Resource *createPreset(Resource *basePreset, Resource *brushTip, const QString &name) /Factory/;
     Resource *createPreset(const QString &baseXml, Resource *brushTip, const QString &name) /Factory/;

@@ -13,8 +13,15 @@ class Colour:
     def colorForCanvas(self, canvas): return types.SimpleNamespace(name=lambda: self.value)
 
 
+class StatusBar:
+    def __init__(self): self.messages = []
+    def showMessage(self, message, timeout): self.messages.append((message, timeout))
+
+
 class View:
-    def __init__(self, doc, selected): self.doc, self.selected, self.messages = doc, selected, []
+    def __init__(self, doc, selected):
+        self.doc, self.selected, self.messages, self.status = doc, selected, [], StatusBar()
+    def window(self): return types.SimpleNamespace(qwindow=lambda: types.SimpleNamespace(statusBar=lambda: self.status))
     def document(self): return self.doc
     def selectedNodes(self): return self.selected
     def canvas(self): return 'canvas'
@@ -63,9 +70,11 @@ class CanvasViewTests(region_tests.RegionSetup, unittest.TestCase):
         self.view.doc = Document()                                  # the artist looks at another painting
         self.assertIsNone(self.h._view_artist_focus(self.h.doc))
 
-    def test_an_operation_shows_a_short_message_on_the_canvas(self):
+    def test_an_operation_shows_a_short_message_in_the_status_bar_not_over_the_painting(self):
+        # The artist, 2026-10-25: the floating message blocked the view in the middle of painting.
         region_tests.run(self.h, 'create_layer', {'name': 'Sky flats', 'type': 'paint'}, 'sky')
-        self.assertEqual(self.view.messages, ['Creative Agent · Sky flats'])
+        self.assertEqual(self.view.messages, [])
+        self.assertEqual(self.view.status.messages, [('Creative Agent · Sky flats', view_module.MESSAGE_MS)])
 
     def test_list_brushes_returns_the_whole_library_and_only_takes_a_filter(self):
         asked = []

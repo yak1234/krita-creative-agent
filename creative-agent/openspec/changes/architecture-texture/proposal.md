@@ -14,10 +14,17 @@ layer (no blend, mask, perspective or colour handling); it is not used, only its
 
 ## Goals
 
-1. **Texture library.** 20 CC0 ambientCG materials (1K-JPG sets; chosen 2026-10-25): paving/cobble PavingStones046,
+1. **Texture library.** 50 CC0 ambientCG materials (1K-JPG sets; chosen 2026-10-25): paving/cobble PavingStones046,
    138, 150; brick Bricks085, 094, 097, 105; cut stone Tiles130, 143; rough stone Rock051, 063; plaster Plaster001,
    PaintedPlaster006, Concrete034; roofs RoofingTiles006, 013A; rust/streaks Metal021, 053B; wood PaintedWood005;
-   street Asphalt031. A committed catalogue holds each one's material, tags, metres per tile, URL and zip sha256; the
+   street Asphalt031. More at the artist's request ("can we get more textures"): domes Metal047B, 048C, 035,
+   PaintedMetal004, Metal027; slate fish-scale RoofingTiles001, 002, old clay 014B; stone Bricks083, 008, Concrete012,
+   Tiles144, Granite005A, Rock020; snow on street, railing, roofs and ledges Snow013, 012, 010A, 006; wet asphalt
+   Asphalt025C; planks Planks037A. Chosen by reading the goal (2026-10-25): Moscow City night glass and window grids
+   Facade001, 009, 013 (ambientCG); from Poly Haven (CC0, per-map 1K files, md5 then sha256 pinned) the Kremlin's old
+   red brick castle_brick_02_red, green tower roofs green_metal_rust, the Stalinist high-rise's stone
+   large_sandstone_blocks and old_sandstone_02, the embankment and railing posts granite_wall and granite_tile_03,
+   snowy slate roofs grey_roof_tiles_02 (50 in all). A committed catalogue holds each one's material, tags, metres per tile, URL and zip sha256; the
    zips are downloaded once on first use, checksum-verified (like the sharpening model) and only the Color,
    Displacement and AmbientOcclusion maps are kept. Nothing is committed but the catalogue. The artist creates nothing.
 2. **The decision model chooses, the host applies.** For each architectural part (folder notes help), the planner model
@@ -32,6 +39,14 @@ layer (no blend, mask, perspective or colour handling); it is not used, only its
 5. **A Pi extension, not a skill.** The decision, the tool and its how-to (in the tool's description) live in a Pi
    extension (like extensions/goal-likeness.ts and luna-review.ts). Its hook makes it mandatory: an architectural refine
    step cannot be met until its texture pass ran. The pixel work is a plugin operation (Krita side).
+
+6. **Textured brushes (Krita patterns).** Approved by the artist 2026-10-25 ("yes please"). On first use the
+   extension registers the library's maps as Toska patterns itself (no manual Manage Resources import). When Finish
+   or Refine paints form strokes on an architectural part, the brush carries that part's chosen material as its
+   Texture/Pattern at low strength, so the grain lives inside the paint strokes (fits the impasto goal). Pattern fill
+   layers are not used for structure (they tile flat, no perspective); the warped overlay of goal 3 keeps doing
+   windows, courses and scales. Buildings only, like the rest. The old manual `set_brush_texture` becomes a thin
+   wrapper over the same registration.
 
 ## Non-goals
 

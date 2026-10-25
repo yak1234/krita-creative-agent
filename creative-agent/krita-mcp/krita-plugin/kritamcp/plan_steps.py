@@ -226,8 +226,9 @@ class PlanStepsList:
     `rows[i]` holds step i's controls: the Now painting card's body for the current step, its list row otherwise;
     `list_rows[i]` is step i's row in the Plan tab's list. It holds the panel's callbacks weakly (`weak`)."""
 
-    def __init__(self, send, stop=None):
-        self.send = weak(send); self.stop = weak(stop)
+    def __init__(self, send, stop=None, pressed=None):
+        # pressed: any button of the list was pressed by the artist (Auto-approve stops its countdown, auto_approve.py)
+        self.send = weak(send); self.stop = weak(stop); self.pressed = weak(pressed)
         self.rows = []; self.list_rows = []; self.busy = False; self.structure = None; self.builds = 0
         self.expanded = False; self.root = ''; self.goal_image = ''; self.thumbs = {}
         self.strip = StepStrip()
@@ -454,6 +455,8 @@ class PlanStepsList:
         return editor
 
     def press(self, row, action):
+        pressed = self.pressed()
+        if pressed: pressed()
         if action == 'redo':                                    # first: what to change
             row['editor'].show(); row['editor'].findChild(QLineEdit).setFocus(); return
         self.send_command(row, action)

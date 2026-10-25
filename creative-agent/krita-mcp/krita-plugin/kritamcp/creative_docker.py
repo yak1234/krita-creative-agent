@@ -11,6 +11,7 @@ from .product_name import product_name
 from .crash_diagnostics import record as record_error
 from .panel_theme import panel_colors
 from .plan_steps import PlanStepsList, plan_steps_stylesheet, thumbnail
+from .auto_approve import AutoApprove, delay_of
 from krita import DockWidget, DockWidgetFactory, DockWidgetFactoryBase, Krita, Selection
 from .creative_document_identity import document_id, open_documents
 from . import node_runtime
@@ -1350,7 +1351,9 @@ class CreativeAgentDocker(DockWidget):
         # The artist's layout B (2026-10-23): under the header, the plan's progress strip and the Now painting card (and the
         # move card and activity line), pinned above the tabs so what paints is always on screen; then Chat · Plan · Folder.
         # The panel itself never scrolls: each tab has one scroll area (Chat its transcript, Plan and Folder their page).
-        self.plan_steps = PlanStepsList(self.send_plan_step, self.request_stop)
+        # Auto-approve (auto_approve.py): the card that waits counts down and takes its default answer unless the artist acts.
+        self.auto_approve = AutoApprove(self); self.auto_last = 60; self.settings_unsent = False
+        self.plan_steps = PlanStepsList(self.send_plan_step, self.request_stop, self.auto_approve.cancel)
         layout.addWidget(self.plan_steps.strip); layout.addWidget(self.plan_steps.now)
         # Start painting / Resume on the card when nothing paints, so it is reachable from every tab (the Plan tab's rule).
         self.card_start = QPushButton('Start painting'); self.card_start.setObjectName('primaryAction')
@@ -1359,6 +1362,7 @@ class CreativeAgentDocker(DockWidget):
         self.revealed_step = None
         self.card_reason = QLabel(''); self.card_reason.setObjectName('muted'); self.card_reason.setWordWrap(True)
         self.card_reason.setTextFormat(Qt.TextFormat.PlainText); self.card_reason.hide(); self.plan_steps.now_layout.addWidget(self.card_reason)
+        self.now_auto = self.auto_label(); self.plan_steps.now_layout.addWidget(self.now_auto)
         self.plan_steps.strip.tapped.connect(self.show_step)
         # Sharpen goal (goal-sharpen.ts): its progress on the Now card while it runs, with Cancel.
         self.sharpen_row = QWidget(); sharpen_layout = QVBoxLayout(self.sharpen_row); sharpen_layout.setContentsMargins(0, 0, 0, 0); sharpen_layout.setSpacing(3)
@@ -1607,6 +1611,7 @@ class CreativeAgentDocker(DockWidget):
         move_actions.addStretch()
         self.move_keep = QPushButton('Keep'); self.move_keep.setObjectName('primaryAction'); self.move_keep.setToolTip('Keep this move and paint the next one')
         self.move_keep.clicked.connect(lambda: self.move_command('keep')); move_actions.addWidget(self.move_keep)
+        self.move_auto = self.auto_label(); move_layout.addWidget(self.move_auto)
         move_layout.addLayout(move_actions); top_area.addWidget(self.move_bar); self.move_bar.hide(); self.current_move = None
         # Protected: the painting's features, each with a box the artist ticks to protect it (our Krita only).
         self.feature_changing = False
@@ -1627,6 +1632,11 @@ class CreativeAgentDocker(DockWidget):
                                         'It stops when the run pauses or ends. Turn it off in Settings: Screen.' % product_name())
         self.awake_indicator.hide(); activity.addWidget(self.awake_indicator)
         self.elapsed = QLabel(''); self.elapsed.setObjectName('muted'); self.elapsed.setAccessibleDescription('Activity elapsed time'); activity.addWidget(self.elapsed)
+        # Auto-approve's quick switch, always on screen (the artist switches it on while recording); the delay is in Settings.
+        self.auto_toggle = QCheckBox('Auto-approve'); self.auto_toggle.setAccessibleName('Auto-approve')
+        self.auto_toggle.setToolTip('Cards that wait for you take their default answer after a countdown (Settings: Auto-approve sets the delay). '
+                                    'Undo, Redo, Stop, typing or any button stops it. Start painting is never pressed for you.')
+        self.auto_toggle.toggled.connect(self.toggle_auto_approve); activity.addWidget(self.auto_toggle)
         top_area.addLayout(activity)
         self.composer = QFrame(); self.composer.setObjectName('composer')
         compose = QVBoxLayout(self.composer); compose.setContentsMargins(10, 9, 10, 8); compose.setSpacing(7)
@@ -1689,6 +1699,7 @@ class CreativeAgentDocker(DockWidget):
         self.prompt = ChatInput(); self.prompt.setAccessibleName('Message Creative Agent'); self.prompt.slash_menu = self.slash_menu
         self.prompt.setPlaceholderText('Ask about your painting…'); self.prompt.setFixedHeight(62)
         self.prompt.textChanged.connect(self.resize_composer); self.prompt.textChanged.connect(self.update_slash_menu); self.prompt.submitted.connect(self.submit)
+        self.prompt.textChanged.connect(lambda: self.auto_approve.cancel() if self.prompt.toPlainText().strip() else None)   # typing: the artist's turn
         self.prompt.filesAttached.connect(self.attach_paths); self.prompt.imageAttached.connect(self.attach_pasted_image)
         compose.addWidget(self.prompt)
         buttons = QHBoxLayout(); buttons.setSpacing(3)
@@ -1795,6 +1806,7 @@ class CreativeAgentDocker(DockWidget):
             QLabel#muted, QLabel#contextHint { color: %(muted)s; font-size: 11px; }
             QLabel#messageRole { color: %(muted)s; font-size: 11px; font-weight: 500; }
             QLabel#planSummary { font-size: 12px; }
+            QLabel#autoApprove { font-size: 12px; font-weight: 600; }
             QLabel#activityDot { color: %(accent)s; font-size: 12px; }
             QFrame#userMessage { background: %(raised)s; border: none; border-radius: 10px; }
             QFrame#assistantMessage, QFrame#actionMessage { background: transparent; border: none; }
@@ -1914,6 +1926,7 @@ class CreativeAgentDocker(DockWidget):
         if self.busy: self.request_stop()
 
     def request_stop(self):
+        self.auto_approve.cancel()
         # Krita stops starting painting actions at once, and a stroke pass ends after its current
         # stroke, without waiting for the companion: its next action often started before it heard.
         stop_requested.set()
@@ -2213,23 +2226,115 @@ class CreativeAgentDocker(DockWidget):
             self.generic_settings.addRow(field['label'], combo); self.setting_widgets[field['key']] = combo
             if field.get('note'):
                 note = QLabel(field['note']); note.setWordWrap(True); note.setObjectName('muted'); self.generic_settings.addRow(note)
-        self.update_controls()
+        self.update_controls(); self.sync_auto_approve()
 
     def apply_execution_settings(self, settings):
         """Show saved settings without sending them back."""
-        controls = [(widget, settings.get(key)) for key, widget in self.setting_widgets.items()] + [(self.reasoning_selector, settings.get('reasoning'))]
+        # A quick Auto-approve switch made while painting is saved at the next pause: until then it stays as the artist set it.
+        controls = [(widget, settings.get(key)) for key, widget in self.setting_widgets.items() if not (key == 'auto_approve' and self.settings_unsent)]
+        controls += [(self.reasoning_selector, settings.get('reasoning'))]
         for control, value in controls:
             if isinstance(control, QCheckBox):
                 if isinstance(value, bool): control.blockSignals(True); control.setChecked(value); control.blockSignals(False)
                 continue
             index = control.findData(value)
             if index >= 0: control.blockSignals(True); control.setCurrentIndex(index); control.blockSignals(False)
+        self.sync_auto_approve()
 
     def change_execution_settings(self, *_args):
+        self.sync_auto_approve()
         if self.busy: return
         settings = {key: widget.isChecked() if isinstance(widget, QCheckBox) else widget.currentData() for key, widget in self.setting_widgets.items()}
         settings.update({'reasoning': self.reasoning_selector.currentData(), 'native_craft': True})
+        self.settings_unsent = False
         self.send({'type': 'set_execution_settings', 'settings': settings})
+
+    # Auto-approve (auto_approve.py, openspec auto-approve): which cards count down, and with what answer.
+    def auto_label(self):
+        label = QLabel(''); label.setObjectName('autoApprove'); label.setWordWrap(True); label.setTextFormat(Qt.TextFormat.PlainText)
+        label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred); label.setMinimumWidth(0); label.hide()
+        return label
+
+    def card_auto_label(self, button):
+        """A countdown line on the chat card that holds `button`."""
+        label = self.auto_label(); layout = button.parentWidget().layout() if button.parentWidget() else None
+        if layout is not None: layout.addWidget(label)
+        return label
+
+    def sync_auto_approve(self):
+        """Follow the Auto-approve setting: the delay, the quick switch, and a countdown for the card that waits."""
+        combo = self.setting_widgets.get('auto_approve')
+        if combo is None: return
+        value = combo.currentData(); delay = delay_of(value)
+        if delay is not None: self.auto_last = delay
+        self.auto_toggle.blockSignals(True); self.auto_toggle.setChecked(delay is not None); self.auto_toggle.blockSignals(False)
+        if delay != self.auto_approve.delay: self.auto_approve.set_delay(value)
+        self.arm_auto_approve()
+
+    def toggle_auto_approve(self, on):
+        combo = self.setting_widgets.get('auto_approve')
+        if combo is None:                                       # no settings yet: nothing to switch
+            self.auto_toggle.blockSignals(True); self.auto_toggle.setChecked(False); self.auto_toggle.blockSignals(False); return
+        combo.blockSignals(True); combo.setCurrentIndex(max(0, combo.findData(self.auto_last if on else 'off'))); combo.blockSignals(False)
+        if self.busy: self.settings_unsent = True; self.sync_auto_approve()   # on at once; saved when the run pauses
+        else: self.change_execution_settings()
+
+    def show_auto_status(self, text):
+        """The countdown on the status line; '' takes a countdown away."""
+        if text: self.status.setText(text)
+        elif self.status.text().startswith('Auto-approve:'): self.status.setText('Waiting for you.')
+
+    def auto_answered(self, card):
+        """Auto-approve took a card's default: recorded in the diagnostics and said in the chat."""
+        self.send(dict(card, type='auto_approved'))
+        delay = card['delay']
+        self.status.setText('Auto-approve took %s%s.' % (card['answer'], ' after %d s' % delay if delay else ''))
+        QTimer.singleShot(0, self.arm_auto_approve)            # the next card that waits, once this answer is sent
+
+    def finished_step_row(self, key=None):
+        """The finished step whose Met is pressable now (not while the agent paints, nor once pressed)."""
+        return next((row for row in self.plan_steps.rows if row['state'] == 'finished' and (key is None or row['key'] == key)
+                     and any(action == 'met' and button.isEnabled() for action, button in row['buttons'])), None)
+
+    def ready_move_number(self):
+        moves = [m for m in (self.goal or {}).get('moves') or [] if m.get('status') == 'ready']
+        return moves[-1].get('number') if moves else (self.current_move or {}).get('number')
+
+    def arm_auto_approve(self):
+        """Count down for a finished plan step (Met) or a move outside a plan (Keep), unless a chat card counts already.
+        A move that reached its size limit is the same card. Start painting is never offered."""
+        auto = self.auto_approve
+        if not auto.on or (auto.counting() and auto.pending['kind'] not in ('plan_step', 'move')): return
+        move = self.current_move
+        row = self.finished_step_row()
+        if row is not None:
+            key = row['key']
+            def met(panel, key=key):
+                found = panel.finished_step_row(key)
+                if found is not None: panel.plan_steps.send_command(found, 'met')
+            auto.offer('%s@%s' % (key, self.ready_move_number()), 'plan_step', 'met', 'Met', 'Redo or type to stop', met,
+                       [self.now_auto] + ([self.move_auto] if move else []), ready=lambda panel: not panel.busy,
+                       still=lambda panel, key=key: panel.finished_step_row(key) is not None, card=key)
+        elif move and self.move_bar.isVisible():
+            number = move.get('number')
+            auto.offer('move:%s' % number, 'move', 'keep', 'Keeping', 'Undo or type to stop', lambda panel: panel.move_command('keep'),
+                       [self.move_auto], ready=lambda panel: not panel.busy,
+                       still=lambda panel, number=number: (panel.current_move or {}).get('number') == number)
+        elif auto.counting():
+            auto.drop()
+
+    def offer_choice(self, key, kind, button, answer, doing, hint='press a button or type to stop', ready=None):
+        """Count down for a chat card's button: pressed for the artist after the delay (the same path as their click)."""
+        if not self.auto_approve.on: return
+        self.auto_approve.offer(key, kind, answer, doing, hint, lambda panel: button.click(), [self.card_auto_label(button)],
+                                ready=ready, still=lambda panel: not sip.isdeleted(button) and button.isEnabled())
+
+    def offer_recommended(self, key, kind, controls, recommended, ready=None):
+        """A question's recommended option (the companion marks it, auto-approve.ts), when the card shows it."""
+        if not recommended: return
+        wanted = str(recommended).casefold().strip(' .')
+        button = next((b for b in controls or [] if b.text().casefold().strip(' .') == wanted), None)
+        if button is not None: self.offer_choice(key, kind, button, button.text(), '“%s”' % button.text(), ready=ready)
 
     def change_model(self, *_args):
         selected = self.model.currentData()
@@ -2264,6 +2369,7 @@ class CreativeAgentDocker(DockWidget):
         self.move_bar.show()
 
     def move_command(self, action):
+        self.auto_approve.cancel()
         if not self.current_move or self.busy: return
         self.send({'type': 'move', 'action': action, 'move': self.current_move['number']})
         self.answered_move = self.current_move; self.move_bar.hide(); self.current_move = None
@@ -2278,11 +2384,13 @@ class CreativeAgentDocker(DockWidget):
         if latest.get('status') == 'ready': self.show_move(latest)
 
     def send_plan_step(self, command):
+        self.auto_approve.cancel()
         if command.get('action') in ('met', 'redo') and self.current_move:   # the step answers the move card: Met keeps, Redo undoes
             self.answered_move = self.current_move; self.move_bar.hide(); self.current_move = None
         self.send(command)
 
     def start_plan(self):
+        self.auto_approve.cancel()
         if not self.goal or not self.goal.get('brief'): return
         # The plan is painted in Agent mode, one move per step for the artist to keep, undo or refine.
         self.mode_selector.setCurrentIndex(self.mode_selector.findData('agent'))
@@ -2470,7 +2578,7 @@ class CreativeAgentDocker(DockWidget):
         for label, value in choices:
             button = QPushButton(label); button.setObjectName('questionChoice')
             button.setMinimumWidth(0); button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-            button.clicked.connect(lambda _checked=False, chosen=value: ([b.setEnabled(False) for b in buttons], answer(chosen)))
+            button.clicked.connect(lambda _checked=False, chosen=value: ([b.setEnabled(False) for b in buttons], self.auto_approve.cancel(), answer(chosen)))
             item['layout'].addWidget(button); buttons.append(button)
         return buttons
 
@@ -2608,10 +2716,12 @@ class CreativeAgentDocker(DockWidget):
         self.show_references()
 
     def answer_question(self, text):
+        self.auto_approve.cancel()
         for button in self.question_controls: button.setEnabled(False)
         self.prompt.setPlainText(text); self.submit()
 
     def edit_plan(self):
+        self.auto_approve.cancel()
         if not self.goal or not self.goal.get('brief'): return
         dialog = PlanDialog(self, self.goal)
         if self.busy:
@@ -2719,6 +2829,7 @@ class CreativeAgentDocker(DockWidget):
         self.folder_card.hide(); self.folder_guesses = {}; self.folder_elements.clear(); self.clear_folder_masses(); self.folder_study.clear(); self.folder_shown = None
         self.plan_steps.show_steps([]); self.tabs.setTabVisible(self.plan_tab, False); self.tabs.setTabVisible(self.folder_tab, False)
         self.tabs.setCurrentIndex(self.chat_tab)
+        self.auto_approve.forget()
         self.goal = None; self.plan_bar.hide(); self.move_bar.hide(); self.current_move = None; self.question_id = None; self.question_controls = []; self.closeup_question_id = None; self.closeup_controls = []
         self.sharpen_controls = []; self.sharpen_row.hide(); self.plan_steps.set_side_task(False)
         self.pending_references = []; self.attached_references = []; self.show_references()
@@ -2979,7 +3090,7 @@ class CreativeAgentDocker(DockWidget):
             self.model.setToolTip(event.get('message') or 'Model route')
             if capability == 'failed': self.restore_accepted_model()
         elif kind == 'move':
-            self.show_move(event['move'])
+            self.show_move(event['move']); self.arm_auto_approve()
         elif kind == 'decisions':
             self.show_decisions(event)
         elif kind == 'skills':
@@ -3089,6 +3200,8 @@ class CreativeAgentDocker(DockWidget):
             self.activity_dot.setText('●' if self.busy else '')
             self.update_controls(); self.update_elapsed()
             self.return_button.setEnabled(not self.busy)
+            if not self.busy and self.settings_unsent: self.change_execution_settings()   # a quick switch made while painting
+            self.arm_auto_approve()
             if not self.busy and self.study_active and self.focus_after_restore:
                 self.focus_after_restore = False
                 self.return_to_painting(restored=True)
@@ -3184,7 +3297,7 @@ class CreativeAgentDocker(DockWidget):
                 self.plan_summary.setToolTip('%d painting passes · %d tokens used' % (self.goal.get('passes', 0), self.goal.get('tokens', 0)))
             if not self.goal.get('question'):
                 for button in self.question_controls: button.setEnabled(False)
-            self.update_controls()
+            self.update_controls(); self.arm_auto_approve()
         elif kind == 'folder':
             self.show_folder(event)
         elif kind == 'mode':
@@ -3196,9 +3309,11 @@ class CreativeAgentDocker(DockWidget):
                 self.closeup_question_id = event['id']
                 question_id = event['id']
                 def answer(value, question_id=question_id):
+                    self.auto_approve.cancel()
                     for button in self.closeup_controls: button.setEnabled(False)
                     self.send({'type': 'closeup_answer', 'question_id': question_id, 'answer': value})
                 self.closeup_controls = self.transcript.add_question(event['question'], event.get('options', []), answer, event.get('image_path'))
+                self.offer_recommended(question_id, 'closeup', self.closeup_controls, event.get('recommended'))
         elif kind == 'question':
             self.flush_stream(); self.reply_open = False
             if self.question_id != event['id']:
@@ -3206,6 +3321,7 @@ class CreativeAgentDocker(DockWidget):
                 # The painter asks for a selection (ask_for_selection): Select with Freehand, Use my selection, Paint everywhere.
                 self.question_controls = (self.paint_only.select_card(event) if event.get('select_area') else
                                           self.transcript.add_question(event['question'], event.get('options', []), self.answer_question, event.get('image_path')))
+                self.offer_recommended(event['id'], 'question', self.question_controls, event.get('recommended'), ready=lambda panel: not panel.busy)
             self.prompt.setPlaceholderText('Answer here, or choose an option above…')
         elif kind == 'review':
             self.flush_stream(); self.reply_open = False
@@ -3242,12 +3358,14 @@ class CreativeAgentDocker(DockWidget):
             answers = dict(zip(event.get('options') or ['Sharpen', 'Use as is'], ('sharpen', 'original')))
             self.sharpen_controls = self.choice_card('Goal image', event.get('message') or '', list(answers.items()),
                                                      lambda value, question_id=question_id: self.send({'type': 'goal_sharpen', 'id': question_id, 'action': value}))
+            if self.sharpen_controls: self.offer_choice('sharpen:' + question_id, 'sharpen_offer', self.sharpen_controls[0], 'sharpen', self.sharpen_controls[0].text(), 'press a button to stop')
         elif kind == 'goal_sharpen_review':
             question_id = event['id']
             answers = dict(zip(event.get('options') or ['Use sharpened', 'Keep original'], ('use', 'keep')))
             self.sharpen_controls = self.choice_card('Goal image', event.get('question') or '', list(answers.items()),
                                                      lambda value, question_id=question_id: self.send({'type': 'goal_sharpen', 'id': question_id, 'action': value}),
                                                      event.get('image_path'))
+            if self.sharpen_controls: self.offer_choice('sharpened:' + question_id, 'sharpen_review', self.sharpen_controls[0], 'use', self.sharpen_controls[0].text(), 'press a button to stop')
         elif kind == 'goal_sharpen_progress':
             self.show_sharpen_progress(event)
         elif kind == 'shapes_model_ready':
@@ -3351,6 +3469,7 @@ class CreativeAgentDocker(DockWidget):
         self.attach_paths(paths, 'construction-map' if role == 'map' else 'reference')
 
     def submit(self, _checked=False, force_start=False):
+        self.auto_approve.cancel()
         if getattr(self, 'move_bar', None) is not None: self.move_bar.hide(); self.current_move = None   # a message after a move refines it
         if not self.process or self.process.state() != QProcess.ProcessState.Running:
             self.status.setText('Connect the assistant before sending.'); return
@@ -3492,6 +3611,7 @@ class CreativeAgentDocker(DockWidget):
         return dialog
 
     def answer_shapes_model(self, choice, item=None):
+        self.auto_approve.cancel()
         for button in self.shapes_model_controls: button.setEnabled(False)
         self.send({'type': 'shapes_model', 'action': choice})
         if choice == 'decline' and item is not None:
@@ -3503,6 +3623,7 @@ class CreativeAgentDocker(DockWidget):
             item['layout'].addWidget(button); self.shapes_allow_button = button
 
     def answer_protection(self, area, choice):
+        self.auto_approve.cancel()
         for button in self.protection_controls: button.setEnabled(False)
         self.show_protection(area, False)
         doc = self.protection_document()

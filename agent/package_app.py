@@ -39,6 +39,10 @@ ROOT = Path(__file__).resolve().parent.parent
 PRODUCT_NAME = 'Toska'                      # what the artist sees: Dock, menu bar, window titles, prompts (the artist named it 2026-10-20)
 APP_NAME = PRODUCT_NAME + '.app'
 BUNDLE_ID = 'local.kritaagent'
+# The oldest macOS the app runs on (the public-download review, 2026-10-25): the bundled onnxruntime needs 14 (its models
+# would not load on 12 or 13), and every Apple Silicon Mac can install 14. Krita itself is still compiled for 12
+# (build-macos.sh): raising that would rebuild everything for no gain. check_bundle holds every binary to this.
+MINIMUM_MACOS = '14'
 SETTINGS_FOLDER = 'KritaAgent'
 PLUGIN_KEY = 'enable_kritamcp'
 SYSTEM_PREFIXES = ('/usr/lib/', '/System/Library/', '/Library/Apple/')
@@ -68,13 +72,13 @@ def is_macho(path):
 class MachO:
     """What a Mach-O file loads: dependencies (the names it asks for), rpaths, and its own install name."""
 
-    def __init__(self, deps, rpaths, ident):
-        self.deps, self.rpaths, self.ident = deps, rpaths, ident
+    def __init__(self, deps, rpaths, ident, minos=None):
+        self.deps, self.rpaths, self.ident, self.minos = deps, rpaths, ident, minos
 
 
 def parse_load_commands(text):
     """Parse the output of `otool -l` (all architectures merged, in order, without duplicates)."""
-    deps, rpaths, ident = [], [], None
+    deps, rpaths, ident, minos = [], [], None, None
     command = None
     for line in text.splitlines():
         stripped = line.strip()
@@ -87,11 +91,36 @@ def parse_load_commands(text):
                 deps.append(name)
         elif command == 'LC_ID_DYLIB' and stripped.startswith('name '):
             ident = re.match(r'name (.*) \(offset \d+\)$', stripped).group(1)
+        elif (command == 'LC_BUILD_VERSION' and stripped.startswith('minos ')) or (command == 'LC_VERSION_MIN_MACOSX' and stripped.startswith('version ')):
+            found = version_tuple(stripped.split()[1])
+            minos = found if minos is None else max(minos, found)       # the highest of the architectures merged
         elif command == 'LC_RPATH' and stripped.startswith('path '):
             path = re.match(r'path (.*) \(offset \d+\)$', stripped).group(1)
             if path not in rpaths:
                 rpaths.append(path)
-    return MachO(deps, rpaths, ident)
+    return MachO(deps, rpaths, ident, minos)
+
+
+def version_tuple(text):
+    """'14' and '14.0' compare equal: (14, 0, 0)."""
+    parts = [int(part) for part in str(text).split('.') if part.isdigit()][:3]
+    return tuple(parts + [0] * (3 - len(parts)))
+
+
+def version_problems(declared, needs):
+    """Binaries (bundle-relative path -> minimum macOS tuple) that need a newer macOS than Info.plist's LSMinimumSystemVersion."""
+    if not declared:
+        return []                          # nothing declared, nothing to hold them to (the packager always declares it)
+    floor = version_tuple(declared)
+    shown = lambda need: '.'.join(map(str, need[:2] if need[2] == 0 else need))
+    return ['%s: needs macOS %s but the app declares %s' % (where, shown(need), declared)
+            for where, need in sorted(needs.items()) if need > floor]
+
+
+def system_requirements(plist):
+    """The macOS the app declares it needs (MINIMUM_MACOS)."""
+    plist['LSMinimumSystemVersion'] = MINIMUM_MACOS
+    return plist
 
 
 def macho_load_commands(path):
@@ -271,6 +300,12 @@ def check_bundle(bundle, forbidden=()):
                 problems.append('%s: %s does not resolve inside the bundle' % (where, name))
             elif not inside(os.path.realpath(target), os.path.realpath(bundle)):
                 problems.append('%s: %s resolves outside the bundle (%s)' % (where, name, target))
+    # No binary may need a newer macOS than the app says it runs on (a stranger on an older one would get a broken feature).
+    plist_path = os.path.join(bundle, 'Contents', 'Info.plist')
+    if os.path.exists(plist_path):
+        with open(plist_path, 'rb') as stream:
+            declared = plistlib.load(stream).get('LSMinimumSystemVersion')
+        problems += version_problems(declared, {rel(path, bundle): info.minos for path, info in infos.items() if info.minos})
     return problems
 
 
@@ -841,6 +876,7 @@ class Packager:
         plist['CFBundleExecutable'] = 'krita'
         plist.update(notices.plist_entries(self.record))
         user_visible_strings(plist)
+        system_requirements(plist)
         with open(path, 'wb') as stream:
             plistlib.dump(plist, stream)
         return plist

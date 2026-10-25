@@ -106,6 +106,25 @@ Load command 14
         self.assertEqual(info.rpaths, ['@loader_path/../../..', '/Users/someone/forks/krita/_install/lib'])
         self.assertEqual(info.ident, '@rpath/libfoo.dylib')
 
+    def test_reads_the_minimum_macos_of_each_binary(self):
+        build = 'Load command 1\n      cmd LC_BUILD_VERSION\n  cmdsize 32\n platform 1\n    minos 14.0\n      sdk 15.0\n'
+        self.assertEqual(package_app.parse_load_commands(build).minos, (14, 0, 0))
+        old = 'Load command 1\n      cmd LC_VERSION_MIN_MACOSX\n  cmdsize 16\n  version 12.0\n      sdk 13.1\n'
+        self.assertEqual(package_app.parse_load_commands(old).minos, (12, 0, 0))
+        self.assertIsNone(package_app.parse_load_commands(self.SAMPLE).minos)
+
+    def test_a_binary_needing_a_newer_macos_than_the_app_declares_is_a_problem(self):
+        # onnxruntime (minos 14.0) shipped in an app that declared macOS 12: on 12 and 13 the models would not load.
+        needs = {'Contents/Resources/x/libonnxruntime.1.dylib': (14, 0, 0), 'Contents/MacOS/krita': (12, 0, 0), 'Contents/Frameworks/new.dylib': (15, 1, 0)}
+        self.assertEqual(package_app.version_problems('14', needs), ['Contents/Frameworks/new.dylib: needs macOS 15.1 but the app declares 14'])
+        self.assertEqual(len(package_app.version_problems('12', needs)), 2)
+        self.assertEqual(package_app.version_problems('15.1', needs), [])
+        self.assertEqual(package_app.version_problems(None, needs), [], 'nothing declared: the packager always declares it (below)')
+
+    def test_the_app_declares_macos_14(self):
+        self.assertEqual(package_app.MINIMUM_MACOS, '14')
+        self.assertEqual(package_app.system_requirements({'LSMinimumSystemVersion': '12'})['LSMinimumSystemVersion'], '14')
+
     def test_system_paths(self):
         self.assertTrue(package_app.is_system('/usr/lib/libz.1.dylib'))
         self.assertTrue(package_app.is_system('/System/Library/Frameworks/AppKit.framework/AppKit'))

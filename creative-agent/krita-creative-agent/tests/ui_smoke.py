@@ -564,7 +564,7 @@ SCHEMA=json.loads(subprocess.run(['node','-e',"import('./src/settings-schema.mjs
   cwd=str(Path(__file__).resolve().parents[1]),capture_output=True,text=True,check=True,env={**os.environ,'NODE_OPTIONS':''}).stdout)
 panel.handle_event({'type':'settings_schema','fields':SCHEMA})
 W=panel.setting_widgets
-assert list(W)==['concurrency','move_size','merge_kept','auto_approve','guides','reference_first','assets','ai_images','keep_screen_awake','sharpen_goal','view_size','planner_model','study_folder','routing'], 'one control per generic setting, in declaration order'
+assert list(W)==['concurrency','move_size','merge_kept','auto_approve','guides','reference_first','assets','ai_images','preview_additions','keep_screen_awake','sharpen_goal','view_size','planner_model','study_folder','routing'], 'one control per generic setting, in declaration order'
 W['concurrency'].setCurrentIndex(W['concurrency'].findData(2))
 assert commands[-1]=={'type':'set_execution_settings','settings':{'concurrency':2,'reasoning':'auto','routing':'off','native_craft':True,'move_size':'subject','merge_kept':True,'auto_approve':'off','guides':True,'reference_first':True,'assets':'codex','ai_images':0,'keep_screen_awake':False,'sharpen_goal':'ask','view_size':'auto','planner_model':'default','study_folder':True}}
 from creative_ui_test.qt_compat import QCheckBox as _QCheckBox

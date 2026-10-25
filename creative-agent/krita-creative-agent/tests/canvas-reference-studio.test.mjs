@@ -109,7 +109,7 @@ test('/canvas-reference makes the card and paints nothing; Use as the target pai
     assert.equal(asset.width / asset.height, 800 / 600);
     assert.equal(painted.length >= 1, true, 'a move painted');
     const sent = JSON.stringify(painted[0].messages);
-    assert.match(sent, /CANVAS REFERENCE/); assert.match(sent, new RegExp(asset.id)); assert.match(sent, /target \[0,0,800,600\]/);
+    assert.match(sent, /CANVAS REFERENCE: the artist approved/); assert.match(sent, new RegExp(asset.id)); assert.match(sent, /target \[0,0,800,600\]/);
     assert.match(sent, /Painting only inside your selection/, 'the area is the painter\'s context');
     assert.equal(h.runtime.goal.paint_only_here.canvas_reference, card.id);
     assert.equal(h.runtime.goal.moves.at(-1).kind, 'canvas_reference');
@@ -158,7 +158,7 @@ test('Preview additions: a plan\'s Add step waits for a canvas reference, then p
     await h.runtime.canvasReference.answer({ id: card.id, action: 'use' });
     assert.ok(painted.length >= 1, 'the step painted');
     const sent = JSON.stringify(painted[0].messages);
-    assert.match(sent, /PLAN MOVE/); assert.match(sent, /CANVAS REFERENCE/);
+    assert.match(sent, /PLAN MOVE/); assert.match(sent, /CANVAS REFERENCE: the artist approved/);
     assert.ok(h.calls.some(c => c.operation === 'paint_only_here' && c.params.action === 'set'));
   } finally { await h.close(); }
 });
@@ -175,7 +175,7 @@ test('Preview additions: Discard paints the Add step without a reference; the st
     await h.runtime.prompt('', { start_plan: true });
     await h.runtime.canvasReference.answer({ id: cards(h)[0].id, action: 'discard' });
     assert.ok(painted.length >= 1, 'the step painted without the reference');
-    assert.doesNotMatch(JSON.stringify(painted[0].messages), /CANVAS REFERENCE/);
+    assert.doesNotMatch(JSON.stringify(painted[0].messages), /CANVAS REFERENCE: the artist approved/);
     assert.ok(!h.calls.some(c => c.operation === 'paint_only_here'));
     assert.equal(h.images.length, 1, 'previewed once');
   } finally { await h.close(); }

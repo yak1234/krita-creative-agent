@@ -113,12 +113,29 @@ test('finish_move is blocked until an architectural step has its texture pass; t
   assert.equal(await handlers.tool_call({ ...call, toolName: 'paint_pass' }), undefined);
 });
 
-test('an automatic pass that fails is told to the painter, never failing the refine, and finish_move stays blocked', async () => {
-  const { handlers, host } = setup();
+test('an automatic pass that fails is told to the painter, never failing the refine; the honest attempt is recorded, so the step can finish', async () => {
+  const { handlers, host, records } = setup();
   host.native = async () => { throw new Error('Krita rejected the texture pixels.'); };
   const changed = await handlers.tool_result({ type: 'tool_result', toolCallId: 'r1', toolName: 'refine_to_goal', input: {}, isError: false, content: [{ type: 'text', text: '{}' }], details: {} });
   assert.match(changed.content.at(-1).text, /could not|rejected/i);
-  assert.equal((await handlers.tool_call({ type: 'tool_call', toolCallId: 'f', toolName: 'finish_move', input: {} })).block, true);
+  assert.match(records[0].failed, /rejected/);
+  assert.equal(await handlers.tool_call({ type: 'tool_call', toolCallId: 'f', toolName: 'finish_move', input: {} }), undefined, 'never a loop');
+});
+
+test('the automatic pass runs under the run’s signal: Stop ends it before anything is painted', async () => {
+  const { handlers, host, calls } = setup();
+  const seen = [];
+  const maps = host.maps;
+  host.maps = async (material, signal) => { seen.push(signal); return maps(material); };
+  const controller = new AbortController();
+  const event = { type: 'tool_result', toolCallId: 'r1', toolName: 'refine_to_goal', input: {}, isError: false, content: [], details: {} };
+  await handlers.tool_result(event, { signal: controller.signal });
+  assert.ok(seen.length && seen.every(s => s === controller.signal));
+  const stopped = setup();
+  const abort = new AbortController(); abort.abort();
+  await stopped.handlers.tool_result(event, { signal: abort.signal });
+  assert.equal(stopped.calls.length, 0, 'nothing painted after Stop');
+  assert.equal(calls.length, 1);
 });
 
 // The studio's side (studio.mjs textureStep, textureHost and the Met refusal) on a fake studio state.
@@ -154,11 +171,20 @@ test('studio: Met of an architectural refine move is refused until the move has 
   const studio = studioState();
   const host = studio.planStepHost();
   const move = { number: 4, step: 1, step_key: 'id:s3', status: 'ready' };
-  assert.match(host.metRefusal(move), /texture pass has not run/);
-  move.texture = { step: 'id:s3' };
-  assert.equal(host.metRefusal(move), null);
+  assert.match(host.metRefusal(move), /texture pass has not run.*Met again/);
+  assert.equal(host.metRefusal(move), null, 'the artist pressed Met again: kept without it, never a loop');
+  const textured = { number: 6, step: 1, step_key: 'id:s3', status: 'ready', texture: { step: 'id:s3' } };
+  assert.equal(host.metRefusal(textured), null);
   assert.equal(host.metRefusal({ number: 5, step: 2, step_key: 'id:s1' }), null, 'sky and moon: nothing owed');
   assert.equal(studioState({ found: false }).planStepHost().metRefusal({ number: 4, step: 1, step_key: 'id:s3' }), null, 'no found areas: nothing to texture');
+});
+
+test('studio: a continue move on a step already textured by an earlier move of it does not texture it again', () => {
+  const studio = studioState();
+  studio.goal.moves = [{ number: 3, step: 1, step_key: 'id:s3', status: 'kept', texture: { step: 'id:s3' } }, studio.currentMove];
+  assert.equal(studio.textureHost().done(), true);
+  studio.goal.moves[0].status = 'undone';
+  assert.equal(studio.textureHost().done(), false, 'an undone move’s texture is gone with it');
 });
 
 test('studio: the texture host records the pass on the Agent move', () => {

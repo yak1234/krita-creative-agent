@@ -18,6 +18,11 @@ export const STRENGTH: readonly [number, number] = [0.10, 0.30];
 export const DEFAULT_STRENGTH = 0.18;
 /** The smallest tile in canvas px: below it a 1K texture's detail is finer than the painting's strokes. */
 export const TILE_MIN = 48;
+/** What the plugin's texture operation takes (texture_craft.py TILE): every tile the host sends, near and far, is within it. */
+export const TILE_FLOOR = 16;
+export const TILE_MAX = 4000;
+/** A vanishing point must lie at least this share of the part's long side outside its bounds: closer, the tiles smear. */
+export const VANISHING_GAP = 0.25;
 /** The far tile is at least this share of the near one (a steeper perspective is a vanishing point's job). */
 export const FAR_SHARE = 0.2;
 export const BLENDS = ['soft_light', 'overlay'] as const;
@@ -42,8 +47,8 @@ const clamp = (v: number, low: number, high: number) => Math.min(high, Math.max(
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() && Number.isFinite(Number(v)) ? Number(v) : null);
 const longSide = (b: readonly number[]) => Math.max(Number(b[2]) || 0, Number(b[3]) || 0);
 const tileLimits = (part: TexturePart, canvas: { width: number; height: number }) => {
-  const canvasLong = Math.max(canvas.width, canvas.height), low = Math.max(TILE_MIN, Math.round(canvasLong / 125));
-  return { low, high: Math.max(low, Math.round(Math.min(Math.max(longSide(part.bounds), low), canvasLong / 3))) };
+  const canvasLong = Math.max(canvas.width, canvas.height), low = Math.max(TILE_MIN, TILE_FLOOR, Math.round(canvasLong / 125));
+  return { low, high: Math.min(TILE_MAX, Math.max(low, Math.round(Math.min(Math.max(longSide(part.bounds), low), canvasLong / 3)))) };
 };
 const strengthCap = (materials: readonly { id: string }[]) =>
   Math.max(STRENGTH[0], Math.min(STRENGTH[1], ...materials.map(m => materialById(m.id)?.max_strength ?? STRENGTH[1])));
@@ -79,7 +84,7 @@ export function clampPart(raw: any, part: TexturePart, canvas: { width: number; 
   const materials = picked.map(m => ({ id: m.id, weight: m.weight / total }));
   const limits = tileLimits(part, canvas);
   const near = Math.round(clamp(num(raw?.tile_px?.near) ?? fallback.tile_px.near, limits.low, limits.high));
-  const far = Math.round(clamp(num(raw?.tile_px?.far) ?? near, Math.max(1, near * FAR_SHARE), near));
+  const far = Math.round(clamp(num(raw?.tile_px?.far) ?? near, Math.min(near, Math.max(TILE_FLOOR, near * FAR_SHARE)), near));
   let direction = num(raw?.direction_deg) ?? fallback.direction_deg;
   direction = ((direction % 360) + 540) % 360 - 180;                 // into [-180, 180)
   const long = Math.max(canvas.width, canvas.height), [bx = 0, by = 0, bw = 0, bh = 0] = part.bounds.map(Number);
@@ -87,7 +92,8 @@ export function clampPart(raw: any, part: TexturePart, canvas: { width: number; 
   if (Array.isArray(raw?.vanishing) && raw.vanishing.length === 2) {
     const [vx, vy] = raw.vanishing.map(num);
     const fair = vx !== null && vy !== null && vx! >= -2 * long && vx! <= canvas.width + 2 * long && vy! >= -2 * long && vy! <= canvas.height + 2 * long;
-    const inside = fair && vx! >= bx && vx! <= bx + bw && vy! >= by && vy! <= by + bh;
+    const gap = VANISHING_GAP * Math.max(bw, bh);
+    const inside = fair && vx! >= bx - gap && vx! <= bx + bw + gap && vy! >= by - gap && vy! <= by + bh + gap;
     if (fair && !inside) vanishing = [Math.round(vx!), Math.round(vy!)];
   }
   const strength = round(clamp(num(raw?.strength) ?? DEFAULT_STRENGTH, STRENGTH[0], strengthCap(materials)));

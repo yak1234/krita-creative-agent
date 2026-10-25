@@ -4,7 +4,7 @@
 // validation and clamping; a default by part kind when the model is missing or useless. No model is called: a fake reader.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { texturePrompt, readChoice, clampPart, defaultPart, chooseTextures, STRENGTH, TILE_MIN } from '../src/texture-choice.ts';
+import { texturePrompt, readChoice, clampPart, defaultPart, chooseTextures, STRENGTH, TILE_MIN, TILE_FLOOR, TILE_MAX } from '../src/texture-choice.ts';
 
 const canvas = { width: 6000, height: 4500 };
 const facade = { name: 'left classical buildings', kind: 'wall', bounds: [0, 1500, 1800, 1600] };
@@ -43,6 +43,18 @@ test('the host clamps what the model chose: materials of the part kind only, siz
   assert.equal(clamped.source, 'model');
   const low = clampPart({ part: 'x', materials: [{ id: 'Bricks085', weight: 1 }], strength: 0.01 }, facade, canvas);
   assert.equal(low.strength, STRENGTH[0]);
+});
+
+test('every tile the host sends is within what the plugin takes (16-4000 px), far side included', () => {
+  assert.equal(TILE_FLOOR, 16); assert.equal(TILE_MAX, 4000);
+  const small = clampPart({ materials: [{ id: 'Bricks085' }], tile_px: { near: 1, far: 1 } }, { ...facade, bounds: [0, 0, 60, 60] }, { width: 600, height: 400 });
+  assert.ok(small.tile_px.near >= TILE_FLOOR && small.tile_px.far >= TILE_FLOOR, JSON.stringify(small.tile_px));
+  const huge = clampPart({ materials: [{ id: 'Bricks085' }], tile_px: { near: 1e6, far: 1e6 } }, { ...facade, bounds: [0, 0, 30000, 20000] }, { width: 30000, height: 20000 });
+  assert.ok(huge.tile_px.near <= TILE_MAX && huge.tile_px.far <= TILE_MAX);
+});
+
+test('a vanishing point close beside the part (off its axis) is dropped: it would smear the tiles', () => {
+  assert.equal(clampPart({ materials: [{ id: 'Bricks085' }], vanishing: [1900, 1400] }, facade, canvas).vanishing, null);
 });
 
 test('a window grid never goes above its own cap', () => {

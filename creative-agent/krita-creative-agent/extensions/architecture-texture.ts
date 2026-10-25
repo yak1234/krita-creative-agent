@@ -27,7 +27,8 @@ export type Area = { mask_path: string; bounds: number[] };
 export type StepPart = { name: string; guess?: string; note?: string; area?: Area | null };
 /** The refine step being painted: its identity, its label ("church and street"), its parts, its whole area. */
 export type TextureStep = { key: string; label: string; parts: StepPart[]; area?: Area | null; materials?: PlannedMaterial[] };
-export type TextureRecord = { step: string; parts: PartChoice[]; model?: string; fallback?: string; ms: number; layer_id?: string; auto: boolean };
+/** failed: the pass was tried and could not run (offline, a refusal): an honest attempt, so the step can still finish. */
+export type TextureRecord = { step: string; parts: PartChoice[]; model?: string; fallback?: string; ms: number; layer_id?: string; auto: boolean; failed?: string };
 /** What the studio provides (studio.mjs textureHost). */
 export interface TextureHost {
   step(): TextureStep | null;                 // the refine step painted now; null outside one
@@ -117,12 +118,19 @@ const DESCRIPTION = 'Subtle photo texture on the architecture of the "Refine: <p
   + 'or trees. Call it on its own, not inside paint_batch.';
 
 export default function architectureTexture(host: TextureHost): (pi: ExtensionAPI) => void {
+  /** A pass that could not run, recorded as an honest attempt (not after a Stop, and not for a step without architecture). */
+  function attempted(error: unknown, auto: boolean): void {
+    const step = host.step();
+    if ((error as Error)?.name === 'AbortError' || !step || !architecturalParts(step).length) return;
+    host.record({ step: step.key, parts: [], ms: 0, auto, failed: String((error as Error)?.message ?? error).slice(0, 300) });
+  }
   /** One texture pass over the step's architecture; `parts`: the painter's own choices (clamped). */
   async function run(id: string, auto: boolean, given: any[] | undefined, signal?: AbortSignal): Promise<Result> {
     const step = host.step(), parts = architecturalParts(step), canvas = host.canvas();
     if (!step || !parts.length) throw new Error('This step has no architectural part with a found area: nothing to texture (sky, water, people, vehicles and trees never get texture).');
     if (!canvas) throw new Error('Observe the canvas first.');
     const started = Date.now();
+    signal?.throwIfAborted();
     host.status?.(`Texture: choosing materials for ${step.label}…`);
     let chosen: PartChoice[], model: string | undefined, fallback: string | undefined;
     if (given?.length) {
@@ -134,6 +142,7 @@ export default function architectureTexture(host: TextureHost): (pi: ExtensionAP
     const ids = [...new Set(chosen.flatMap(c => c.materials.map(m => m.id)))];
     const materials: Record<string, unknown> = {};
     for (const materialId of ids) materials[materialId] = await host.maps(materialById(materialId)!, signal);
+    signal?.throwIfAborted();
     host.status?.(`Texture: ${step.label}…`);
     const sent = chosen.map((c, i) => ({ name: c.part, inside_shape: { mask_path: parts[i]!.area.mask_path, bounds: parts[i]!.area.bounds },
       materials: c.materials, tile_px: c.tile_px, direction_deg: c.direction_deg, vanishing: c.vanishing, strength: c.strength, blend: c.blend, seed: i + 1 }));
@@ -151,19 +160,27 @@ export default function architectureTexture(host: TextureHost): (pi: ExtensionAP
     pi.registerTool({
       name: 'texture_architecture', label: 'Texturing the architecture', executionMode: 'sequential', description: DESCRIPTION,
       parameters: Type.Object({ parts: Type.Optional(Type.Array(override, { minItems: 1, maxItems: 8 })) }, { additionalProperties: false }),
-      execute: async (id: string, params: any, signal?: AbortSignal) => run(id, false, params?.parts, signal),
+      execute: async (id: string, params: any, signal?: AbortSignal) => {
+        try { return await run(id, false, params?.parts, signal); }
+        catch (error) { attempted(error, false); throw error; }
+      },
     } as any);
 
     // Mandatory: the pass follows the refine of an architectural step, run by the host itself.
-    pi.on('tool_result', async (event: ToolResultEvent): Promise<ToolResultEventResult | undefined> => {
+    pi.on('tool_result', async (event: ToolResultEvent, ctx?: { signal?: AbortSignal | undefined }): Promise<ToolResultEventResult | undefined> => {
       if (event.isError || (event as { toolName: string }).toolName !== 'refine_to_goal') return undefined;
       if (!textureRequired(host.step(), host.done())) return undefined;
+      const signal = ctx?.signal;
+      if (signal?.aborted) return undefined;                // Stop: nothing more is painted
       try {
-        const done = await run(event.toolCallId + '/texture', true, undefined);
+        const done = await run(event.toolCallId + '/texture', true, undefined, signal);
         return { content: [...event.content, ...done.content.flatMap(c => c.type === 'text' ? [{ type: 'text' as const, text: String(c.text) }] : []), json({ host_texture: 'The host added the step’s architecture texture (texture_architecture): one layer, detail only.' })] };
       } catch (error) {
-        // A texture pass must never fail the refine: the painter is told, and the step stays unfinished until it runs.
-        return { content: [...event.content, json({ host_texture: `The architecture texture pass could not run: ${(error as Error)?.message ?? error}. Call texture_architecture before finish_move.` })] };
+        // A texture pass must never fail the refine: the painter is told. A Stop is not an attempt; anything else is, so the
+        // step can still be finished (never a loop of refusals when the library or the plugin cannot help).
+        if (signal?.aborted) return undefined;
+        attempted(error, true);
+        return { content: [...event.content, json({ host_texture: `The architecture texture pass could not run: ${(error as Error)?.message ?? error}. You may call texture_architecture once more; the step can finish without it.` })] };
       }
     });
 

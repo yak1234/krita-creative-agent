@@ -223,8 +223,18 @@ def _noise(x, y, cell, seed):
     return (top * (1 - fy) + bottom * fy).astype(np.float32)
 
 
+FEATHER_SIDE = 1536         # a mask larger than this is feathered at a lower resolution (a 6000 x 4500 part: about 1/4)
+
+
 def feather(mask, radius):
-    """The mask (uint8, 255 inside) as alpha 0-1 that fades in over about `radius` px inside its edge, 0 outside."""
+    """The mask (uint8, 255 inside) as alpha 0-1 that fades in over about `radius` px inside its edge, 0 outside. A large
+    mask is feathered on a copy at most FEATHER_SIDE a side and brought back (the fade is a few px; memory stays small)."""
+    h, w = mask.shape
+    step = int(math.ceil(max(h, w) / FEATHER_SIDE))
+    if step > 1:
+        small = feather(mask[::step, ::step], max(1, radius / step))
+        ys, xs = np.minimum(np.arange(h) // step, small.shape[0] - 1), np.minimum(np.arange(w) // step, small.shape[1] - 1)
+        return np.where(mask > 127, small[ys][:, xs], 0).astype(np.float32)
     inside = (mask > 127).astype(np.float32)
     r = max(1, int(radius))
     blurred = inside

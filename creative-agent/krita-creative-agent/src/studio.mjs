@@ -274,6 +274,7 @@ const FOLDER_PLAN = 'PROJECT FOLDER PLAN. Nothing is painted until the artist ap
 // A plan step that names guides: the artist asked for them when approving it.
 const GUIDES_STEP = /\b(guides?|trac(e|ing)|block-in|construction lines?)\b/i;
 const FOLDER_ANSWERS = ['Follow the edited plan','Keep the current plan'];
+const TEXTURE_DOWNLOAD_MS = 120000;                    // one texture material's download at most (a few MB)
 const FOLDER_PLAN_ELEMENTS = 15;                       // a plan holds 16 steps: the underpainting and 15 elements
 function planStepRequest(goal) {
   const steps = goal.brief.steps, index = Math.min(goal.current_step ?? 0, steps.length - 1);
@@ -663,7 +664,11 @@ export class StudioRuntime extends PaintingRuntime {
   /** The plan step painted now: the Agent move's, else Autopilot's current one. */
   paintedStepIndex() { return this.mode === 'agent' ? this.currentMove?.step : this.study?.folder ? this.goal?.current_step : null; }
   /** Whether a step's texture pass ran: on the Agent move, else on the goal by step (Autopilot). */
-  textureDone(key, move = this.mode === 'agent' ? this.currentMove : null) { return move ? !!move.texture : !!this.goal?.step_texture?.[key]; }
+  /** In Agent mode any move of the step that is not undone counts (a continue move does not texture the step again). */
+  textureDone(key, move = this.mode === 'agent' ? this.currentMove : null) {
+    if (!move) return !!this.goal?.step_texture?.[key];
+    return !!move.texture || (this.goal?.moves ?? []).some(m => m !== move && m.texture && m.status !== 'undone' && m.step_key === key);
+  }
   /** The studio side of the architecture texture (extensions/architecture-texture.ts). */
   textureHost() {
     return {
@@ -693,7 +698,9 @@ export class StudioRuntime extends PaintingRuntime {
         const dataDir = this.config?.data_dir ?? this.config?.output;
         if (!dataDir && !this.textureTestFolder) throw new Error('The texture library needs the companion’s data folder, and none is set.');
         this.emit({type:'status', phase:'painting', message:`Texture: the ${material.material} texture (downloaded once)…`});
-        const paths = await ensureMaterial({dataDir, material, ...(signal ? {signal} : {}), ...(this.textureTestFolder ? {testFolder:this.textureTestFolder} : {})});
+        // The run's Stop ends a download, and a download never hangs the move (TEXTURE_DOWNLOAD_MS).
+        const limit = AbortSignal.any([AbortSignal.timeout(TEXTURE_DOWNLOAD_MS), ...(signal ? [signal] : [])]);
+        const paths = await ensureMaterial({dataDir, material, signal:limit, ...(this.textureTestFolder ? {testFolder:this.textureTestFolder} : {})});
         const maps = {};
         for (const [key, path] of Object.entries(paths)) if (path) maps[key] = (await readFile(path)).toString('base64');
         return material.detail_from ? {...maps, detail_from:material.detail_from} : maps;
@@ -2088,9 +2095,12 @@ export class StudioRuntime extends PaintingRuntime {
         await this.mergeKept(['move-'+move.number],()=>kept.name,{lock:kept.lock,force:true});
       },
       // An architectural refine step is met only with its texture pass (extensions/architecture-texture.ts).
+      // Asked once: Met (Keep) pressed again keeps the move without it, never a loop.
       metRefusal:move=>{
         const index=move.step_key ? this.planSteps.indexOf(move.step_key) : move.step, step=this.textureStep(index);
-        return textureRequired(step, !!move.texture) ? `Step ${index + 1} has architecture and its texture pass has not run: press Redo to paint it again (the host adds the texture after its refine).` : null;
+        if (!textureRequired(step, !!move.texture || this.textureDone(step?.key, move)) || move.texture_waived) return null;
+        move.texture_waived = true;
+        return `Step ${index + 1} has architecture and its texture pass has not run (the host adds it after the step's refine). Press Met again to keep the step without it.`;
       },
       tickFolderStep:move=>this.tickFolderStep(move),
       rejectMove:move=>this.rejectMove(move),

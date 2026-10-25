@@ -122,6 +122,15 @@ class ApplyTest(unittest.TestCase):
         strong = raster.apply_detail(base, detail, alpha, 0.3, 'overlay')[..., 0].astype(int) - 128
         self.assertGreater(np.abs(strong).mean(), 2 * np.abs(weak).mean())
 
+    def test_a_large_mask_is_feathered_at_a_lower_resolution_with_the_same_rules(self):
+        mask = np.zeros((3000, 4500), np.uint8); mask[500:2500, 1000:4000] = 255
+        alpha = raster.feather(mask, 24)
+        self.assertEqual(alpha.shape, mask.shape)
+        self.assertEqual(alpha.dtype, np.float32)
+        self.assertEqual(float(alpha[:500].max()) + float(alpha[:, :1000].max()), 0.0, 'outside: nothing')
+        self.assertAlmostEqual(float(alpha[1500, 2500]), 1.0, places=3)
+        self.assertTrue(0 < alpha[502, 2500] < 1, 'a soft fade inside the edge')
+
     def test_feather_stays_inside_and_fades_at_the_edge(self):
         mask = np.zeros((60, 60), np.uint8); mask[10:50, 10:50] = 255
         alpha = raster.feather(mask, 4)

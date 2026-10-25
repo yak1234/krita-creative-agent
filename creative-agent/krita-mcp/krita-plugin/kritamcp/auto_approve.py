@@ -19,6 +19,9 @@ import weakref
 from .qt_compat import sip, QTimer
 
 DELAYS = (0, 10, 30, 60)
+# Cards never answered here, whatever the delay: a canvas reference (canvas-reference.ts) is the artist's own choice of
+# what the painting becomes (the companion's auto-approve.ts NEVER_AUTO_APPROVE keeps the same list).
+NEVER = ('canvas_reference',)
 MAX_ANSWERS = 2
 
 
@@ -65,7 +68,7 @@ class AutoApprove:
     def offer(self, key, kind, answer, doing, hint, act, labels=(), ready=None, still=None, card=None):
         """Count down for card `key` ({kind, answer, card} is what the diagnostics record; `card` defaults to the key);
         `act(owner)` answers it as its button would. A card already counting keeps its countdown; another replaces it."""
-        if not self.offers(key): return False
+        if kind in NEVER or not self.offers(key): return False
         if self.pending and self.pending['key'] == key: return True
         self.drop()
         self.pending = {'key': key, 'kind': kind, 'answer': answer, 'doing': doing, 'hint': hint, 'act': act, 'labels': list(labels),

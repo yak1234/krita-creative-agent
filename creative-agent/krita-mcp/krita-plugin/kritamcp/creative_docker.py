@@ -1377,7 +1377,7 @@ class CreativeAgentDocker(DockWidget):
         self.sharpen_bar = QProgressBar(); self.sharpen_bar.setRange(0, 1000); self.sharpen_bar.setTextVisible(False); self.sharpen_bar.setFixedHeight(6)
         self.sharpen_bar.setAccessibleName('Sharpening progress'); sharpen_layout.addWidget(self.sharpen_bar)
         self.sharpen_row.hide(); self.plan_steps.now_layout.addWidget(self.sharpen_row)
-        self.sharpen_controls = []
+        self.sharpen_controls = []; self.canvas_reference_controls = []
         top_area = QVBoxLayout(); top_area.setContentsMargins(0, 0, 0, 0); top_area.setSpacing(6); layout.addLayout(top_area)
         self.tabs = QTabWidget(); self.tabs.setObjectName('panelTabs'); self.tabs.setDocumentMode(True); self.tabs.setUsesScrollButtons(False)
         self.tabs.tabBar().setDrawBase(False); self.tabs.tabBar().setExpanding(False)
@@ -2565,8 +2565,9 @@ class CreativeAgentDocker(DockWidget):
                  'cancelled': 'is %.1fx smaller than the canvas: sharpening was stopped.'}.get(state.get('state'))
         return ('The goal image ' + words % factor) if words and factor else ''
 
-    def choice_card(self, title, text, choices, answer, image_path=None):
-        """A card in the chat with a picture (optional) and one button per (label, value): answered once, then disabled."""
+    def choice_card(self, title, text, choices, answer, image_path=None, notes=()):
+        """A card in the chat with a picture (optional), notes always shown under it, and one button per (label, value):
+        answered once, then disabled."""
         self.flush_stream(); self.reply_open = False; self.empty_state.hide()
         item = self.transcript.add_message(title, text, True)
         pixmap = QPixmap(image_path) if image_path else QPixmap()
@@ -2574,6 +2575,10 @@ class CreativeAgentDocker(DockWidget):
             picture = QLabel(); picture.setObjectName('questionImage')
             picture.setPixmap(pixmap.scaled(QSize(400, 300), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
             item['layout'].addWidget(picture)
+        for note in notes:
+            if not note.strip(): continue
+            line = QLabel(note.strip()); line.setObjectName('muted'); line.setWordWrap(True); line.setTextFormat(Qt.TextFormat.PlainText)
+            line.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred); item['layout'].addWidget(line)
         buttons = []
         for label, value in choices:
             button = QPushButton(label); button.setObjectName('questionChoice')
@@ -2831,7 +2836,7 @@ class CreativeAgentDocker(DockWidget):
         self.tabs.setCurrentIndex(self.chat_tab)
         self.auto_approve.forget()
         self.goal = None; self.plan_bar.hide(); self.move_bar.hide(); self.current_move = None; self.question_id = None; self.question_controls = []; self.closeup_question_id = None; self.closeup_controls = []
-        self.sharpen_controls = []; self.sharpen_row.hide(); self.plan_steps.set_side_task(False)
+        self.sharpen_controls = []; self.canvas_reference_controls = []; self.sharpen_row.hide(); self.plan_steps.set_side_task(False)
         self.pending_references = []; self.attached_references = []; self.show_references()
         self.paint_only.chat_ended()
         self.empty_state.show()
@@ -3368,6 +3373,14 @@ class CreativeAgentDocker(DockWidget):
             if self.sharpen_controls: self.offer_choice('sharpened:' + question_id, 'sharpen_review', self.sharpen_controls[0], 'use', self.sharpen_controls[0].text(), 'press a button to stop')
         elif kind == 'goal_sharpen_progress':
             self.show_sharpen_progress(event)
+        elif kind == 'canvas_reference':
+            # Canvas reference (canvas-reference.ts): the canvas and the reference side by side. Never offered to
+            # Auto-approve (auto_approve.NEVER): what the painting becomes is the artist's choice.
+            reference_id = event['id']; paragraphs = (event.get('message') or '').split('\n\n')
+            choices = list(zip(event.get('options') or [], event.get('actions') or []))
+            self.canvas_reference_controls = self.choice_card(event.get('title') or 'Canvas reference', paragraphs[0], choices,
+                                                              lambda value, reference_id=reference_id: self.send({'type': 'canvas_reference', 'id': reference_id, 'action': value}),
+                                                              event.get('image_path'), notes=paragraphs[1:])
         elif kind == 'shapes_model_ready':
             for button in self.shapes_model_controls: button.setEnabled(False)
             self.status.setText('The shape model is ready.')

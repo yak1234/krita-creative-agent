@@ -4124,6 +4124,18 @@ test('Good enough during a move: the batch in progress finishes, the step is met
  } finally {await h.close(); await rm(root,{recursive:true,force:true});}
 });
 
+test('Met merges its step into one layer even with Merge kept work off (the artist, 2026-10-25: option 2)',{timeout:60000},async()=>{
+ const root=await projectFolder();
+ const {h}=await folderMoves({root});
+ try {
+  await h.runtime.setExecutionSettings({merge_kept:false});
+  await h.runtime.prompt('',{start_plan:true});
+  await stepCommand(h,'met',0);
+  const kept=h.calls.find(c=>c.operation==='merge_passes' && c.params.stage_id==='move-1');
+  assert.deepEqual(kept?.params,{stage_id:'move-1',name:'Underpainting',whole:true,lock:true},"a plan step's Met always merges");
+ } finally {await h.close(); await rm(root,{recursive:true,force:true});}
+});
+
 test('Met keeps a finished step and goes on; Redo undoes it and retries with what the artist typed',{timeout:60000},async()=>{
  const root=await projectFolder();
  const {h}=await folderMoves({root});

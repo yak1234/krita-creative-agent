@@ -1424,10 +1424,10 @@ export class StudioRuntime extends PaintingRuntime {
   // The native_craft setting hides the craft tools, in paint_batch too.
   /** Merge each stage's kept work into one layer, once the artist no longer needs per-pass undo: its group whole (Finish and
    * accents groups, craft layers, hidden leftovers; layer-plan goal 4), else runs of plain strokes; `lock` locks the merged
-   * layer (the kept underpainting, goal 1). Returns layers saved. */
-  async mergeKept(stageIds, label, {lock = false} = {}) {
+   * layer (the kept underpainting, goal 1); `force` merges even with Merge kept work off (a plan step's Met). Returns layers saved. */
+  async mergeKept(stageIds, label, {lock = false, force = false} = {}) {
     if (!this.study?.bound || this.faulted) return 0;
-    const merge = this.executionSettings?.merge_kept !== false;   // merging changes the layers; the artist may keep them apart
+    const merge = force || this.executionSettings?.merge_kept !== false;   // merging changes the layers; the artist may keep them apart
     let saved = 0;
     for (const stage of stageIds) {
       for (let round = 0; merge && round < 50; round++) {
@@ -1954,8 +1954,9 @@ export class StudioRuntime extends PaintingRuntime {
       keepMove:async move=>{
         move.status='kept'; await this.persist(); this.publish();
         // Met: the move's work becomes one layer named after its step; the underpainting's is locked (kept-layers.ts).
+        // Always, whatever Merge kept work says (the artist, 2026-10-25: option 2).
         const index=move.step_key ? this.planSteps.indexOf(move.step_key) : move.step, kept=keptLayer(this.goal.brief?.steps?.[index],move);
-        await this.mergeKept(['move-'+move.number],()=>kept.name,{lock:kept.lock});
+        await this.mergeKept(['move-'+move.number],()=>kept.name,{lock:kept.lock,force:true});
       },
       tickFolderStep:move=>this.tickFolderStep(move),
       rejectMove:move=>this.rejectMove(move),

@@ -105,6 +105,20 @@ test('Always: no card; the time is estimated from this computer\u2019s measured 
   assert.match(last(next.events, 'goal_sharpen_offer').message, /\(about 15 s, nothing uploaded\)/, 'Ask: the card shows the measured time');
 });
 
+test('three checks at once (goal attached, chat started, first message) sharpen once, not three times (live, 2026-10-25: three workers fought for the CPU)', async t => {
+  const h = await setup(t, { setting: 'always', slow: true });
+  await Promise.all([h.sharpener.check(), h.sharpener.check(), h.sharpener.check()]);
+  await settle(h.sharpener);
+  assert.equal(h.jobs.length, 1, 'one sharpening job');
+  assert.equal(h.events.filter(e => e.type === 'action' && /sharpening it 4x/.test(e.message)).length, 1, 'said once');
+  // Several sharpeners on the same chat (one per runtime) share its record: still one job.
+  const two = await setup(t, { setting: 'always', slow: true });
+  const other = goalSharpener(two.host, { service: { upscale: async () => { two.jobs.push('second'); throw new Error('a second job'); } } });
+  await Promise.all([two.sharpener.check(), other.check(), other.check()]);
+  await settle(two.sharpener); await other.running();
+  assert.equal(two.jobs.length, 1, 'one job across sharpeners');
+});
+
 test('Always in an existing chat: a card offered before (or a result waiting for review) is taken without asking', async t => {
   const h = await setup(t);
   await h.sharpener.check();

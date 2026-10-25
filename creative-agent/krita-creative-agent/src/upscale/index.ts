@@ -71,17 +71,44 @@ export function forkUpscaler(modelDir: string, { runtimeModule }: { runtimeModul
   };
 }
 
+/** Jobs in flight by output file, shared by every service in this process: one companion started three workers on the same
+ * goal at once (live, 2026-10-25; several runtimes each sharpen a chat they load), and they fought for the CPU. */
+type Shared = { result: Promise<UpscaleReply>; listeners: Set<(done: number, total: number) => void>; wanted: number; link: UpscaleLink | null; killed: boolean };
+const inflight = new Map<string, Shared>();
+
 export function upscaleService({ modelDir, spawn = dir => forkUpscaler(dir) }: { modelDir: () => Promise<string>; spawn?: (modelDir: string) => UpscaleLink }): UpscaleService {
   return {
     async upscale(input, { onProgress = () => {}, signal } = {}) {
       if (signal?.aborted) throw stopped();
-      const link = spawn(await modelDir());
-      if (signal?.aborted) { link.kill(); throw stopped(); }
-      const abort = () => link.kill();
-      signal?.addEventListener('abort', abort, { once: true });
-      try { return await link.run({ ...input, op: 'upscale' }, onProgress); }
-      catch (error) { throw signal?.aborted ? stopped() : error instanceof UpscaleError ? error : upscaleFailure(error as Error); }
-      finally { signal?.removeEventListener('abort', abort); link.kill(); }
+      const key = input.outputs.full;
+      let job = inflight.get(key);
+      if (!job) {
+        const shared: Shared = { listeners: new Set(), wanted: 0, link: null, killed: false, result: null as unknown as Promise<UpscaleReply> };
+        shared.result = (async () => {
+          const link = spawn(await modelDir());
+          shared.link = link;
+          if (shared.killed) { link.kill(); throw stopped(); }
+          try { return await link.run({ ...input, op: 'upscale' }, (done, total) => { for (const listen of shared.listeners) listen(done, total); }); }
+          catch (error) { throw shared.killed ? stopped() : error instanceof UpscaleError ? error : upscaleFailure(error as Error); }
+          finally { link.kill(); if (inflight.get(key) === shared) inflight.delete(key); }
+        })();
+        shared.result.catch(() => {});
+        inflight.set(key, shared);
+        job = shared;
+      }
+      const shared = job;
+      shared.wanted++; shared.listeners.add(onProgress);
+      let leave: () => void = () => {};
+      const left = new Promise<never>((_, reject) => {
+        leave = () => {
+          shared.listeners.delete(onProgress);
+          if (--shared.wanted <= 0) { shared.killed = true; shared.link?.kill(); if (inflight.get(key) === shared) inflight.delete(key); }
+          reject(stopped());
+        };
+        signal?.addEventListener('abort', leave, { once: true });
+      });
+      try { return await Promise.race([shared.result, left]); }
+      finally { signal?.removeEventListener('abort', leave); shared.listeners.delete(onProgress); if (!signal?.aborted) shared.wanted--; }
     },
   };
 }

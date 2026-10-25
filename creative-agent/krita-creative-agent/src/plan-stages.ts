@@ -214,7 +214,13 @@ export function shapePlan(proposed: readonly Step[], { draft, elements, known, k
           stageSteps.push({ ...words(own, { ...theirs, title: '' }), title: own.title });
         }
         refined = true;
-      } else stageSteps.push(words(step, pool.get('refine_part')?.shift()));
+      } else {
+        // The host's group: the planner's words only from a step of exactly its parts (by position they described other
+        // parts: live, 2026-10-25, wrong titles and materials and a duplicate step).
+        const mine = new Set((Array.isArray(step.parts) ? step.parts : []).map(String));
+        const match = (pool.get('refine_part') ?? []).find((_, i) => theirParts[i]!.length === mine.size && theirParts[i]!.every(p => mine.has(p)));
+        stageSteps.push(words(step, match));
+      }
       continue;
     }
     stageSteps.push(words(step, pool.get(kind)?.shift()));

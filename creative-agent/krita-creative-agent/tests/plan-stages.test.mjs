@@ -183,6 +183,24 @@ test('the planner’s proposal is shaped by the host: the stages asked, in order
   assert.deepEqual(withElement.steps.map(s => s.kind), ['underpainting', 'element']);
 });
 
+test('groups the host replaces do not take the planner’s titles, words or materials (live, 2026-10-25: a duplicate step, wrong titles)', () => {
+  const groups = refineGroups(twelve), known = ['paint_from_reference', 'paint_finish', 'refine_to_goal', 'paint_accents'];
+  const draft = folderPlanSteps(['underpainting', 'finish', 'refine'], groups);
+  // The planner left three elements out: its groups are not used, and its step 1 described other parts than the host's group 1.
+  const theirs = [[1, 3], [4, 6], [7, 9], [8, 10], [11]].map(ix => ix.map(i => twelve[i].name));
+  const proposal = [{ title: 'Underpainting', done_when: 'Laid in.', kind: 'underpainting' }, { title: 'Finish', done_when: 'Blended.', kind: 'finish' },
+    ...theirs.map((parts, i) => ({ title: `Refine: their group ${i + 1}`, done_when: `Their group ${i + 1}.`, kind: 'refine_part', parts,
+      materials: [{ aspect: 'walls', id: 'Bricks085' }] }))];
+  const shaped = shapePlan(proposal, { draft, elements: twelve, known }).steps.filter(s => s.kind === 'refine_part');
+  assert.deepEqual(shaped.map(s => s.parts), groups.map(g => g.parts), 'the host’s groups');
+  assert.ok(shaped.every(s => !/their group/.test(s.title) && !/Their group/.test(s.done_when ?? '') && !s.materials), 'none of the planner’s words on groups it did not make');
+  assert.equal(new Set(shaped.map(s => s.title)).size, shaped.length, 'no duplicate titles');
+  // A host group the planner described with exactly the same parts keeps the planner’s words.
+  const same = [...proposal.slice(0, 2), { title: 'Refine: their exact group', done_when: 'Exact.', kind: 'refine_part', parts: groups[0].parts, materials: [{ aspect: 'walls', id: 'Bricks085' }] }];
+  const kept = shapePlan(same, { draft, elements: twelve, known }).steps.filter(s => s.kind === 'refine_part');
+  assert.equal(kept[0].done_when, 'Exact.');
+});
+
 test('a later request adds the next stages; the end of a plan offers the ones not in it', () => {
   const groups = refineGroups(twelve);
   const plan = folderPlanSteps(['underpainting'], groups);

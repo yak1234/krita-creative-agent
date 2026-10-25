@@ -215,6 +215,26 @@ class PanelPlanSteps(unittest.TestCase):
         self.assertEqual(dialog.brief()['steps'][1]['title'], 'A moonlit sky')
         dialog.deleteLater()
 
+    def test_the_plan_dialog_shows_and_edits_a_steps_materials_in_plain_words(self):
+        planned = [{'aspect': 'walls', 'id': 'ph_castle_brick_02_red', 'material': 'old red castle brick', 'scale': 'coarse'},
+                   {'aspect': 'roofs', 'id': 'ph_green_metal_rust', 'material': 'rusty green metal'}]
+        brief = dict(BRIEF, steps=[dict(step, id='s%d' % i, **({'materials': planned} if i == 2 else {})) for i, step in enumerate(BRIEF['steps'])])
+        dialog = module.PlanDialog(self.panel, {'brief': brief, 'limits': {'minutes': 0, 'passes': 0}, 'status': 'ready'})
+        self.assertIn('walls: old red castle brick; roofs: rusty green metal', dialog.markdown())
+        dialog.steps.setCurrentCell(2, 0)
+        self.assertEqual(dialog.stage_materials.text(), 'walls: old red castle brick; roofs: rusty green metal')
+        self.assertEqual(dialog.brief()['steps'][2]['materials'], planned, 'unchanged words keep the plan as it was (its scale too)')
+        dialog.stage_materials.setText('walls: old red castle brick; roofs: slate fish-scale; ground: PavingStones046')
+        dialog.steps.setCurrentCell(1, 0)
+        edited = dialog.brief()['steps'][2]['materials']
+        self.assertEqual(edited[0], planned[0], 'an entry kept as it was keeps its id and scale')
+        self.assertEqual(edited[1:], [{'aspect': 'roofs', 'id': 'slate fish-scale'}, {'aspect': 'ground', 'id': 'PavingStones046'}])
+        dialog.steps.setCurrentCell(2, 0)
+        dialog.stage_materials.setText('')
+        dialog.steps.setCurrentCell(1, 0)
+        self.assertNotIn('materials', dialog.brief()['steps'][2])
+        dialog.deleteLater()
+
     def test_no_plan_steps_hides_the_list(self):
         self.goal([])
         self.assertFalse(self.panel.plan_steps.isVisible())

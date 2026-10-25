@@ -611,6 +611,27 @@ class CharacterDelegate(QStyledItemDelegate):
 AI_IMAGE_CHOICES = ((0, 'No AI images'), (1, '1 AI image'), (3, '3 AI images'), (5, '5 AI images'), (-1, 'AI images: no limit'))
 
 
+def materials_line(materials):
+    """A step's planned materials in plain words: "walls: old red castle brick; roofs: rusty green metal"."""
+    return '; '.join('%s: %s' % (m.get('aspect', ''), m.get('material') or m.get('id', '')) for m in materials if isinstance(m, dict))
+
+
+def edited_materials(text, before):
+    """The materials the artist's words name: an entry written as it was shown keeps its id and hints; a new one goes as
+    {aspect, id: the words}, which the companion resolves against the library (an id or a material's name) or drops."""
+    shown = {'%s: %s' % (m.get('aspect', ''), m.get('material') or m.get('id', '')): m for m in before if isinstance(m, dict)}
+    out = []
+    for entry in (part.strip() for part in text.split(';')):
+        if not entry:
+            continue
+        if entry in shown:
+            out.append(shown[entry]); continue
+        aspect, _, name = entry.partition(':')
+        if aspect.strip() and name.strip():
+            out.append({'aspect': aspect.strip().lower(), 'id': name.strip()})
+    return out
+
+
 class PlanDialog(QDialog):
     """The durable brief is editable without asking the model to rewrite it."""
     def __init__(self, parent, goal):
@@ -622,7 +643,8 @@ class PlanDialog(QDialog):
         self.export_target = dict(getattr(parent, 'painting_target', {}) or {})
         self.original_brief = json.loads(json.dumps(goal['brief']))
         # Steps are a painting order; retired stage controls are dropped on save.
-        self.stage_metadata = [{key: step[key] for key in ('title', 'done_when', 'scope', 'id') if key in step} for step in goal['brief']['steps']]   # id: a reworded step keeps its marks
+        # id: a reworded step keeps its marks; materials: an architectural refine step's texture (architecture-texture goal 7)
+        self.stage_metadata = [{key: step[key] for key in ('title', 'done_when', 'scope', 'id', 'materials') if key in step} for step in goal['brief']['steps']]
         self.stage_index = -1
         layout = QVBoxLayout(self)
         self.title = QLineEdit(goal['brief']['title']); self.title.setAccessibleName('Plan title')
@@ -633,7 +655,8 @@ class PlanDialog(QDialog):
         brief = goal['brief']
         overview.setHtml(parent.transcript.render('## ' + brief['title'] + '\n\n' + brief['objective'] + '\n\n### Keep intact\n' +
             '\n'.join('- ' + rule for rule in brief['requirements']) + '\n\n### Painting order\n' +
-            '\n\n'.join('**%d. %s**\n\n%s' % (i + 1, step['title'], step['done_when']) for i, step in enumerate(brief['steps'])) +
+            '\n\n'.join('**%d. %s**\n\n%s' % (i + 1, step['title'], step['done_when']) + ('\n\nMaterials: ' + materials_line(step['materials']) if step.get('materials') else '')
+                         for i, step in enumerate(brief['steps'])) +
             '\n\n### Finished when\n' + '\n'.join('- ' + check for check in brief['completion'])))
         tabs.addTab(overview, 'Overview')
         if self.export_references:
@@ -685,7 +708,9 @@ class PlanDialog(QDialog):
         remove = QPushButton('Remove selected'); remove.clicked.connect(lambda: self.remove_stage())
         controls.addWidget(add); controls.addWidget(remove); controls.addStretch(); steps_layout.addLayout(controls)
         self.stage_scope = QLineEdit(); self.stage_scope.setPlaceholderText('What this step focuses on (optional)'); self.stage_scope.setAccessibleName('Step scope')
-        stage_form = QFormLayout(); stage_form.addRow('Step focus', self.stage_scope); steps_layout.addLayout(stage_form)
+        self.stage_materials = QLineEdit(); self.stage_materials.setPlaceholderText('Texture, e.g. walls: old red castle brick; roofs: rusty green metal')
+        self.stage_materials.setAccessibleName('Step materials')
+        stage_form = QFormLayout(); stage_form.addRow('Step focus', self.stage_scope); stage_form.addRow('Materials', self.stage_materials); steps_layout.addLayout(stage_form)
         order_note = QLabel('Steps are a suggested painting order. The Agent paints without stopping between them; one final review checks the finished painting.')
         order_note.setWordWrap(True); steps_layout.addWidget(order_note)
         self.steps.currentCellChanged.connect(lambda row, *_: self.select_stage(row))
@@ -739,11 +764,15 @@ class PlanDialog(QDialog):
         step = self.stage_metadata[self.stage_index]
         if self.stage_scope.text().strip(): step['scope'] = self.stage_scope.text().strip()
         else: step.pop('scope', None)
+        materials = edited_materials(self.stage_materials.text(), step.get('materials') or [])
+        if materials: step['materials'] = materials
+        else: step.pop('materials', None)
 
     def select_stage(self, index):
         self.save_stage(); self.stage_index = index
         step = self.stage_metadata[index] if 0 <= index < len(self.stage_metadata) else {}
         self.stage_scope.setText(step.get('scope', ''))
+        self.stage_materials.setText(materials_line(step.get('materials') or []))
 
     def markdown(self):
         brief = self.brief()
@@ -773,6 +802,7 @@ class PlanDialog(QDialog):
             lines += ['### %d. %s' % (index + 1, step['title']), '']
             if step.get('scope'): lines += ['Focus: ' + step['scope'], '']
             lines += ['Achieves: ' + step['done_when'], '']
+            if step.get('materials'): lines += ['Materials: ' + materials_line(step['materials']), '']
         lines += ['## Final visual checks', ''] + ['- ' + check for check in brief['completion']]
         lines += ['', '## Allowance', '', ('%d minutes' % self.minutes.value() if self.minutes.value() else 'No time limit') + ' · ' + ('%d painting operations' % self.passes.value() if self.passes.value() else 'No pass limit'),
                   'Paused time does not count. This is a work allowance, not a monetary spending limit.']

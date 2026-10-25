@@ -2,7 +2,7 @@
 // placement, softened at its edge, and the goal swapped (and back) as Sharpen swaps it.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { blendIntoGoal, adoptEditedGoal, originalGoal } from '../src/goal-edit.ts';
+import { blendIntoGoal, adoptEditedGoal, originalGoal, goalView } from '../src/goal-edit.ts';
 
 const RED = [255, 0, 0, 255], BLUE = [0, 0, 255, 255];
 const flat = (width, height, colour) => { const data = new Uint8Array(width * height * 4); for (let i = 0; i < width * height; i++) data.set(colour, i * 4); return { width, height, data }; };
@@ -50,4 +50,23 @@ test('the goal is swapped as Sharpen swaps it: same id and placement, the pictur
   Object.assign(goal, { path: '/chat/goal-sharpen/x4.png', width: 32, height: 32 });   // sharpened since
   originalGoal(goal);
   assert.deepEqual([goal.path, goal.width, goal.height], ['/chat/goal.png', 8, 8], 'its size too');
+});
+
+test('a sharpened goal: the edit gets its own small view for the painter and Find it; the sharpening record stays for transfers', () => {
+  const sharpened = { from: { path: '/chat/goal.png', width: 8, height: 8, sha256: 'a'.repeat(64) }, model: 'm', revision: 'r', scale: 4, full: '/chat/x4.png', at: 't' };
+  const goal = { id: 'g1', path: '/chat/goal-sharpen/x.reference.png', width: 32, height: 32, mimeType: 'image/png', sharpened };
+  assert.equal(goalView(goal), '/chat/goal.png', 'before an edit: the picture it was, as now');
+  adoptEditedGoal(goal, '/chat/goal-edits/r1.png', 'r1', 't1', '/chat/goal-edits/r1.view.png');
+  assert.equal(goalView(goal), '/chat/goal-edits/r1.view.png', 'the painter sees the edit');
+  assert.equal(goal.sharpened, sharpened, 'transfers made before sharpening still map through it');
+  assert.equal(goalView({ path: '/p.png' }), '/p.png');
+  // Sharpened after the edit, then /original-goal: back to exactly what it was, sharpening record and view included.
+  goal.sharpened = { ...sharpened, from: { ...sharpened.from, path: '/chat/goal-edits/r1.png' } };
+  originalGoal(goal);
+  assert.equal(goal.sharpened, sharpened); assert.equal(goal.view_path, undefined); assert.equal(goal.path, '/chat/goal-sharpen/x.reference.png');
+  const plain = { id: 'g2', path: '/chat/p.png', width: 8, height: 8 };
+  adoptEditedGoal(plain, '/chat/goal-edits/r2.png', 'r2', 't2');
+  plain.sharpened = sharpened;                                  // Always sharpened the edited picture
+  originalGoal(plain);
+  assert.equal(plain.sharpened, undefined, 'never sharpened before the edit: not sharpened after going back');
 });

@@ -85,12 +85,16 @@ export function upscaleService({ modelDir, spawn = dir => forkUpscaler(dir) }: {
       if (!job) {
         const shared: Shared = { listeners: new Set(), wanted: 0, link: null, killed: false, result: null as unknown as Promise<UpscaleReply> };
         shared.result = (async () => {
-          const link = spawn(await modelDir());
-          shared.link = link;
-          if (shared.killed) { link.kill(); throw stopped(); }
-          try { return await link.run({ ...input, op: 'upscale' }, (done, total) => { for (const listen of shared.listeners) listen(done, total); }); }
+          // Started inside the try: a worker that cannot start fails as any run fails and leaves no job behind to join.
+          let link: UpscaleLink | null = null;
+          try {
+            link = spawn(await modelDir());
+            shared.link = link;
+            if (shared.killed) throw stopped();
+            return await link.run({ ...input, op: 'upscale' }, (done, total) => { for (const listen of shared.listeners) listen(done, total); });
+          }
           catch (error) { throw shared.killed ? stopped() : error instanceof UpscaleError ? error : upscaleFailure(error as Error); }
-          finally { link.kill(); if (inflight.get(key) === shared) inflight.delete(key); }
+          finally { link?.kill(); if (inflight.get(key) === shared) inflight.delete(key); }
         })();
         shared.result.catch(() => {});
         inflight.set(key, shared);

@@ -68,6 +68,7 @@ export async function ensureMassMaps(host: MassHost, changed: () => void): Promi
     if (reference.mass_map?.version === MASS_MAP_VERSION || state.pending.has(reference.id) || !wantsMassMap(reference, canvas)) continue;
     state.pending.add(reference.id);
     let key = '';
+    const path = reference.path;                       // the picture read: an edit or Sharpen may swap it meanwhile
     try {
       const file = await stat(reference.path), stamp = `${file.size}:${file.mtimeMs}`;
       if (file.size > MAX_BYTES) continue;
@@ -79,7 +80,7 @@ export async function ensureMassMaps(host: MassHost, changed: () => void): Promi
       key = `${reference.id}:${known.sha256}`;
       if (state.failed.has(key)) continue;
       const record = await massMap(host, study.directory, reference, known.sha256, live);
-      if (record && live() && study.references.includes(reference)) { reference.mass_map = record; changed(); }
+      if (record && live() && study.references.includes(reference) && reference.path === path) { reference.mass_map = record; changed(); }
     } catch {
       // No mass map: the painter works without its summary, as before. Not again for this content in this chat.
       if (key) state.failed.add(key);

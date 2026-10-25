@@ -75,7 +75,7 @@ import { open as openFile } from 'node:fs/promises';
 import { canvasReferencer, canvasReferenceRequest, referenceMoveNote, referencePlacement } from './canvas-reference.ts';
 import { assertAiImageAllowed, assetBackend, attachAsset, pngFromImage, requestAssetImage } from './assets.mjs';
 import { decodeRgba } from './png-rgba.ts';
-import { blendIntoGoal, adoptEditedGoal, originalGoal } from './goal-edit.ts';
+import { blendIntoGoal, adoptEditedGoal, originalGoal, goalView } from './goal-edit.ts';
 import { encodeRgba } from './shapes/png.ts';
 
 /** A Find it failure for the diagnostics: the message as the panel showed it, the FindError's code, and why the decision
@@ -377,16 +377,29 @@ export class StudioRuntime extends PaintingRuntime {
     const canvas = {width:record.canvas[0], height:record.canvas[1]}, goal = pictureGoal(this.study.references, canvas);
     const placed = goal && await this.goalPlacement(canvas);
     if (!goal || placed?.reference.id !== goal.id) throw new Error('This chat has no goal picture to change.');
-    const data = await readFile(goal.path);
-    const pixels = decodeRgba(data) ?? await this.callNative('decode_reference', {image_base64:data.toString('base64'), sha256:createHash('sha256').update(data).digest('hex')})
-      .then(d => ({width:d.width, height:d.height, data:Buffer.from(d.rgba_base64, 'base64')})).catch(() => null);
-    const reference = await this.decodeImage(await readFile(record.reference_path));
+    const read = async path => {
+      const data = await readFile(path);
+      return decodeRgba(data) ?? await this.callNative('decode_reference', {image_base64:data.toString('base64'), sha256:createHash('sha256').update(data).digest('hex')})
+        .then(d => ({width:d.width, height:d.height, data:Buffer.from(d.rgba_base64, 'base64')})).catch(() => null);
+    };
+    const pixels = await read(goal.path), reference = await this.decodeImage(await readFile(record.reference_path));
     if (!pixels || !reference) throw new Error('The goal picture could not be read.');
     if (pixels.width !== goal.width || pixels.height !== goal.height) throw new Error('The goal picture is not the size the chat knows.');
     const folder = join(this.study.directory, 'goal-edits'), file = join(folder, record.id + '.png');
     await mkdir(folder, {recursive:true});
     await writeFile(file, encodeRgba(blendIntoGoal(pixels, reference, area, record.canvas, placed.mapping)));
-    adoptEditedGoal(goal, file, record.id, stamp());
+    // A sharpened goal is shown to the painter as the picture it was (goal-edit.ts goalView): the edit goes into that one
+    // too, through the same placement at its size, or the painter would be shown the goal without it.
+    let view;
+    const shown = goalView(goal);
+    if (shown !== goal.path) {
+      const small = await read(shown);
+      if (!small) throw new Error('The goal picture could not be read.');
+      const k = small.width / goal.width, source = placed.mapping.source.map(v => v * k);
+      view = join(folder, record.id + '.view.png');
+      await writeFile(view, encodeRgba(blendIntoGoal(small, reference, area, record.canvas, {source, target:placed.mapping.target})));
+    }
+    adoptEditedGoal(goal, file, record.id, stamp(), view);
     await this.goalPictureChanged();
     this.emit({type:'action', seconds:0, message:'The goal picture now includes this change, so later moves keep it. Type /original-goal to go back.'});
   }
@@ -399,6 +412,7 @@ export class StudioRuntime extends PaintingRuntime {
   }
   /** Whatever was read from the goal picture is read again (as after Sharpen: sharpenHost goalChanged). */
   async goalPictureChanged() {
+    this.goalSharpen.goalChanged();                     // a sharpening of the picture before stops; nothing of it lands on this one
     this.likenessGoal = null; this.startMassMaps(); this.emitFolder();
     await this.persist(); this.publish();
   }
@@ -1891,7 +1905,7 @@ export class StudioRuntime extends PaintingRuntime {
    * (a JPEG) is decoded there, reduced to the same size while read, and cached apart from the canvas view's. */
   async findGoalPixels(placed) {
     const directory = this.study.directory, goal = (this.study.references ?? []).find(r => r.path === placed.path);
-    const before = goal?.sharpened?.from?.path ? await containedFile(directory, goal.sharpened.from.path).catch(() => null) : null;
+    const before = goal && goalView(goal) !== goal.path ? await containedFile(directory, goalView(goal)).catch(() => null) : null;
     const bounded = await boundedPixels(directory, before ?? placed.path, FIND_PIXELS).catch(() => null);
     if (bounded) return {sha:bounded.sha, pixels:bounded.pixels};
     const side = Math.max(16, Math.min(8192, Math.floor(Math.sqrt(FIND_PIXELS * Math.max(placed.width, placed.height) / Math.max(1, Math.min(placed.width, placed.height))))));
@@ -3634,7 +3648,7 @@ export class StudioRuntime extends PaintingRuntime {
   async modelImage(ref) {
     // A sharpened goal (goal-sharpen.ts) is shown to the model as the picture it was: the same picture, already about the
     // model's size, so its tens of MB never go to Krita to be shrunk, nor to the model when Krita is away.
-    const original = await imageContent(this.study.directory, ref.sharpened?.from?.path ?? ref.path);
+    const original = await imageContent(this.study.directory, goalView(ref));
     const data = Buffer.from(original.content.data, 'base64'), sha256 = createHash('sha256').update(data).digest('hex');
     const images = this.store.sessions, kind = 'model-' + MODEL_IMAGE_SIDE;
     const known = images?.variant(sha256, kind);

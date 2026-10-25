@@ -48,3 +48,15 @@ test('a joined request that stops leaves the job running for the other; the last
   await assert.rejects(p2, /stopped/i);
   assert.equal(spawned[0].link.killed, true);
 });
+
+test('a worker that cannot start fails as an upscale error and never blocks the next request for that output', async () => {
+  const { spawned, spawn } = fakeSpawn();
+  let broken = true;
+  const service = upscaleService({ modelDir: async () => { if (broken) throw new Error('model folder unreadable'); return '/m'; }, spawn });
+  await assert.rejects(service.upscale(input('/chat/goal-sharpen/def.x4.png')), error => error.name === 'UpscaleError' || /UpscaleError/.test(error.constructor.name));
+  broken = false;
+  const again = service.upscale(input('/chat/goal-sharpen/def.x4.png'));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(spawned.length, 1, 'a new worker, not the failed job'); spawned[0].release();
+  assert.equal((await again).tiles, 1);
+});

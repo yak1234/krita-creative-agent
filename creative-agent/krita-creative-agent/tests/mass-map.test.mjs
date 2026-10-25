@@ -177,3 +177,16 @@ test('a large goal goes to the plugin as a bounded copy, listed at its own size;
     assert.ok((await readdir(join(folder, '.masses'))).includes(`${sha}.v${MASS_MAP_VERSION}.json`), 'kept by the goal\'s content');
   } finally { await rm(folder, { recursive: true, force: true }); }
 });
+
+test('a goal whose picture changed while its masses were found (an edit, Sharpen) gets no map of the old picture', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'mass-map-'));
+  try {
+    await writeFile(join(folder, 'goal.png'), 'goal image bytes'); await writeFile(join(folder, 'edited.png'), 'edited image bytes');
+    const study = goalStudy(folder), goal = study.references[0];
+    const host = { study, decisionObservation: null, async callNative(_o, params) { goal.path = join(folder, 'edited.png'); return smoothed(params); } };
+    let changed = 0;
+    await ensureMassMaps(host, () => { changed++; });
+    assert.equal(goal.mass_map, undefined, 'made from the old picture: not attached to the new one');
+    assert.equal(changed, 0);
+  } finally { await rm(folder, { recursive: true, force: true }); }
+});

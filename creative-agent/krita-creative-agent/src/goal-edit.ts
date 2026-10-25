@@ -14,8 +14,18 @@ export type Rgba = { width: number; height: number; data: Uint8Array };
 export type Area = { bounds: Rect; plane: Plane };
 /** Where the goal sits on the canvas: its `source` (goal pixels) shown at `target` (canvas pixels). */
 export type Placement = { source: Rect; target: Rect };
-export type GoalEdit = { from: { path: string; width?: number; height?: number; mimeType?: string }; canvas_reference: string; at: string };
-type EditableGoal = { path: string; width?: number; height?: number; mimeType?: string; mass_map?: unknown; edits?: GoalEdit[] };
+/** The goal as it was before an edit: its picture, and its sharpening record and view as they were (restored exactly). */
+export type GoalEdit = { from: { path: string; width?: number; height?: number; mimeType?: string; sharpened?: unknown; view_path?: string };
+  canvas_reference: string; at: string };
+type EditableGoal = { path: string; width?: number; height?: number; mimeType?: string; mass_map?: unknown; edits?: GoalEdit[];
+  sharpened?: { from: { path: string } }; view_path?: string };
+
+/** The picture the painter and Find it look at (studio.mjs modelImage, findGoalPixels): a sharpened goal is shown as the
+ * picture it was (about the model's size), and an edited sharpened goal as that picture with the edit (`view_path`). The
+ * sharpening record itself is left alone: transfers begun before sharpening map and resume through it (goalSourceFile). */
+export function goalView(goal: Pick<EditableGoal, 'path' | 'sharpened' | 'view_path'>): string {
+  return goal.view_path ?? goal.sharpened?.from?.path ?? goal.path;
+}
 
 /** The soft edge, as a share of the canvas's long side (about 24 px on a 6000 px canvas). */
 export const FEATHER_SHARE = 0.004;
@@ -82,11 +92,14 @@ export function blendIntoGoal(goal: Rgba, reference: Rgba, area: Area, [cw, ch]:
   return out;
 }
 
-/** The goal becomes the edited picture at `path` (same id, size and placement); the picture before is remembered. */
-export function adoptEditedGoal(goal: EditableGoal, path: string, canvasReference: string, at: string): void {
+/** The goal becomes the edited picture at `path` (same id, size and placement); the goal before is remembered. A sharpened
+ * goal also gets `view`: the edit in the picture it was, which the painter is shown. */
+export function adoptEditedGoal(goal: EditableGoal, path: string, canvasReference: string, at: string, view?: string): void {
   goal.edits = [...(goal.edits ?? []), { from: { path: goal.path, ...(goal.width ? { width: goal.width } : {}), ...(goal.height ? { height: goal.height } : {}),
-    ...(goal.mimeType ? { mimeType: goal.mimeType } : {}) }, canvas_reference: canvasReference, at }];
+    ...(goal.mimeType ? { mimeType: goal.mimeType } : {}), ...(goal.sharpened ? { sharpened: goal.sharpened } : {}),
+    ...(goal.view_path ? { view_path: goal.view_path } : {}) }, canvas_reference: canvasReference, at }];
   goal.path = path; goal.mimeType = 'image/png';
+  if (view) goal.view_path = view; else delete goal.view_path;
   delete goal.mass_map;
 }
 
@@ -97,6 +110,9 @@ export function originalGoal(goal: EditableGoal): boolean {
   goal.path = first.from.path;
   if (first.from.width && first.from.height) { goal.width = first.from.width; goal.height = first.from.height; }
   if (first.from.mimeType) goal.mimeType = first.from.mimeType; else delete goal.mimeType;
+  // As it was: sharpened since the edit or not, the record goes back to the original's (none when it never had one).
+  if (first.from.sharpened) goal.sharpened = first.from.sharpened as EditableGoal['sharpened']; else delete goal.sharpened;
+  if (first.from.view_path) goal.view_path = first.from.view_path; else delete goal.view_path;
   delete goal.edits; delete goal.mass_map;
   return true;
 }

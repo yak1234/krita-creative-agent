@@ -14,6 +14,7 @@ import { ModelRuntime } from '@earendil-works/pi-coding-agent';
 import { StudioRuntime } from '../src/studio.mjs';
 import { encodeRgba } from '../src/shapes/png.ts';
 import { decodeRgba } from '../src/png-rgba.ts';
+import { goalView } from '../src/goal-edit.ts';
 
 const call = (name, args) => ({ tool_calls: [{ index: 0, id: 'call-' + Math.random().toString(36).slice(2), type: 'function', function: { name, arguments: JSON.stringify(args) } }] });
 function picture(w, h, patch) {
@@ -209,5 +210,30 @@ test('Use as the new goal pastes the change into the goal picture, paints toward
     await h.runtime.prompt('/original-goal');
     assert.ok(h.events.some(e => e.type === 'action' && /never changed/.test(e.message)));
     assert.equal(painted.length, moved, '/original-goal never reaches the painter');
+  } finally { await h.close(); }
+});
+
+test('a sharpened goal: the edit goes into both pictures, the painter is shown it, Sharpen is told, and /original-goal restores the sharpening', { timeout: 60000 }, async () => {
+  const { h } = await agentChat((req, n) => n === 1 ? call('finish_move', { summary: 'Painted the ghosts.' }) : { content: 'Done.' });
+  try {
+    const goal = h.runtime.study.references.find(r => r.purpose === 'general');
+    // As goal-sharpen.ts use() leaves it: the reference is the bigger picture, the one it was is remembered.
+    const big = join(h.output, 'sharpened.png'); await writeFile(big, picture(400, 300));
+    const sharpened = { from: { path: goal.path, width: 200, height: 150, sha256: 'a'.repeat(64) }, model: 'm', revision: 'r', scale: 2, full: big, at: 't' };
+    Object.assign(goal, { path: big, width: 400, height: 300, sharpened });
+    let told = 0; const changed = h.runtime.goalSharpen.goalChanged; h.runtime.goalSharpen.goalChanged = () => { told++; changed(); };
+    await h.runtime.prompt('/canvas-reference add more ghosts and ghost-like lighting');
+    await h.runtime.canvasReference.answer({ id: cards(h)[0].id, action: 'goal' });
+    const px = (img, x, y) => [...img.data.subarray((y * img.width + x) * 4, (y * img.width + x) * 4 + 3)];
+    const edited = decodeRgba(await readFile(goal.path)), view = decodeRgba(await readFile(goal.view_path));
+    assert.deepEqual([edited.width, edited.height, view.width, view.height], [400, 300, 200, 150]);
+    assert.deepEqual(px(edited, 240, 110), [250, 250, 250], 'the change in the sharpened picture');
+    assert.deepEqual(px(view, 120, 55), [250, 250, 250], 'and in the picture the painter is shown');
+    assert.equal(goalView(goal), goal.view_path);
+    assert.equal(goal.sharpened, sharpened, 'transfers begun before sharpening still map');
+    assert.equal(told, 1, 'Sharpen is told: nothing for the old picture lands on the new one');
+    await h.runtime.prompt('/original-goal');
+    assert.deepEqual([goal.path, goal.width, goal.sharpened, goal.view_path], [big, 400, sharpened, undefined]);
+    assert.equal(told, 2);
   } finally { await h.close(); }
 });

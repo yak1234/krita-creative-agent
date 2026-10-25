@@ -70,14 +70,14 @@ async function harness(respond) {
   return { runtime, requests, calls, events, images, output,
     async close() { if (runtime.busy) runtime.stop(); await runtime.writeQueue; await runtime.end().catch(() => {}); runtime.dispose(); server.closeAllConnections(); await new Promise(r => server.close(r)); await rm(output, { recursive: true, force: true }); } };
 }
-async function agentChat(respond) {
+async function agentChat(respond, goalPicture = VIEW) {
   const painted = [];
   const h = await harness(req => {
     if (!req.tools.some(t => t.function.name === 'paint_batch')) return { content: 'Hello.' };
     painted.push(req);
     return respond(req, painted.length);
   });
-  const goal = join(h.output, 'final_goal.png'); await writeFile(goal, VIEW);
+  const goal = join(h.output, 'final_goal.png'); await writeFile(goal, goalPicture);
   await h.runtime.start({ provider: 'local-test', model: 'vision-test', chat_mode: 'ask', prompt: 'Hello', mode: 'copy', references: [{ path: goal, purpose: 'general' }] });
   await h.runtime.setExecutionSettings({ move_size: 'quick' }); await h.runtime.setMode('agent');
   await h.runtime.setLimits({ minutes: 0, passes: 0, ai_images: 3 });
@@ -186,11 +186,13 @@ test('Preview additions: Discard paints the Add step without a reference; the st
   } finally { await h.close(); }
 });
 
-test('Use as the new goal pastes the change into the goal picture, paints toward it, and /original-goal goes back', { timeout: 60000 }, async () => {
-  const { h, painted } = await agentChat((req, n) => n === 1 ? call('finish_move', { summary: 'Painted the ghosts.' }) : { content: 'Done.' });
+test('Use as the new goal makes the canvas with the change the goal, paints toward it, and /original-goal goes back', { timeout: 60000 }, async () => {
+  // A goal that is not the canvas (the painting has moved on from it): the new goal is the canvas with the change, never the
+  // old goal with the change pasted in (the artist, 2026-10-25: "it went back to the original goal painting again then added fog").
+  const { h, painted } = await agentChat((req, n) => n === 1 ? call('finish_move', { summary: 'Painted the ghosts.' }) : { content: 'Done.' }, picture(200, 150, [0, 0, 200, 150]));
   try {
     const goal = h.runtime.study.references.find(r => r.purpose === 'general'), started = goal.path;
-    await h.runtime.prompt('/canvas-reference add more ghosts and ghost-like lighting');
+    await h.runtime.prompt('/canvas-edit-ref add more ghosts and ghost-like lighting');
     const [card] = cards(h);
     await h.runtime.canvasReference.answer({ id: card.id, action: 'goal' });
     assert.notEqual(goal.path, started); assert.match(goal.path, /goal-edits/);
@@ -200,9 +202,11 @@ test('Use as the new goal pastes the change into the goal picture, paints toward
     const px = (img, x, y) => [...img.data.subarray((y * img.width + x) * 4, (y * img.width + x) * 4 + 3)];
     // The change, white on the reference at [100, 40, 40, 30] of 200 x 150, lands at the same place on the goal.
     assert.deepEqual(px(after, 120, 55), [250, 250, 250], 'inside the change: the reference');
-    assert.deepEqual(px(after, 20, 120), px(before, 20, 120), 'far from it: the goal untouched');
+    const canvas = decodeRgba(VIEW);
+    assert.deepEqual(px(after, 20, 120), px(canvas, 20, 120), 'far from it: the canvas, not the old goal');
+    assert.notDeepEqual(px(before, 20, 120), px(canvas, 20, 120), 'the old goal differs there');
     assert.ok(painted.length >= 1, 'the move paints toward it, as Use does');
-    assert.ok(h.events.some(e => e.type === 'action' && /goal picture now includes this change/.test(e.message)));
+    assert.ok(h.events.some(e => e.type === 'action' && /goal is now the canvas with this change/.test(e.message)));
     const moved = painted.length;
     await h.runtime.prompt('/original-goal');
     assert.equal(goal.path, started, 'back to the picture the chat started from');

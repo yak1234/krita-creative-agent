@@ -31,7 +31,7 @@ test('one table: every command names a bundled skill (or is one the studio answe
 test('the slash menu lists the short commands, then /skill:<name> for every bundled skill', () => {
   const skills = listSkills();
   const menu = slashMenu(skills);
-  assert.deepEqual(menu.slice(0, 4).map(m => m.command), ['/colour', '/refine', '/canvas-reference', '/original-goal'], 'no /trace in the menu');
+  assert.deepEqual(menu.slice(0, 4).map(m => m.command), ['/colour', '/refine', '/canvas-edit-ref', '/original-goal'], 'no /trace in the menu');
   assert.deepEqual(menu.find(m => m.command === '/colour').aliases, ['/color', '/from-reference']);
   assert.deepEqual(menu.slice(4).map(m => m.command), skills.map(s => '/skill:' + s.name));
   for (const m of menu) assert.ok(m.description && !m.description.includes('\n'), m.command);
@@ -58,12 +58,13 @@ test('short commands match whatever the case, with trailing punctuation on the c
   assert.equal(skillCommand('/ref.ine'), null);
 });
 
-test('/canvas-reference is a command the studio answers itself: it previews an edit, the painter never reads it as a request', () => {
-  const command = skillCommand('/canvas-reference add more ghosts in the sky');
-  assert.equal(command.name, 'canvas-reference'); assert.equal(command.action, 'canvas_reference');
+test('/canvas-edit-ref is a command the studio answers itself: it previews an edit of the canvas, the painter never reads it as a request', () => {
+  const command = skillCommand('/canvas-edit-ref add more ghosts in the sky');
+  assert.equal(command.name, 'canvas-edit-ref'); assert.equal(command.action, 'canvas_reference');
   assert.equal(command.rest, 'add more ghosts in the sky');
-  assert.equal(skillCommand('/preview more snow').name, 'canvas-reference', 'its short alias');
-  assert.match(SKILL_COMMANDS.find(c => c.name === 'canvas-reference').description, /reference/);
+  assert.equal(skillCommand('/preview more snow').name, 'canvas-edit-ref', 'its short alias');
+  assert.equal(skillCommand('/canvas-reference more snow').name, 'canvas-edit-ref', 'its old name still works');
+  assert.match(SKILL_COMMANDS.find(c => c.name === 'canvas-edit-ref').description, /canvas/);
 });
 
 test('/original-goal is a command the studio answers itself: back to the goal picture the chat started from', () => {

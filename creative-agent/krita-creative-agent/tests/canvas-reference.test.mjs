@@ -38,6 +38,8 @@ test('the command: an instruction, and "in <part>" at its end for an area', () =
   assert.deepEqual(canvasReferenceRequest('/canvas-reference add more ghosts and ghost-like lighting'), { instruction: 'add more ghosts and ghost-like lighting', part: null });
   assert.deepEqual(canvasReferenceRequest('/canvas-reference more snow and crisp effects in the sky'), { instruction: 'more snow and crisp effects', part: 'the sky' });
   assert.deepEqual(canvasReferenceRequest('/Canvas-Reference: brighter windows in the left buildings.'), { instruction: 'brighter windows', part: 'the left buildings' });
+  assert.deepEqual(canvasReferenceRequest('/canvas-edit-ref add fog'), { instruction: 'add fog', part: null }, 'its name (the artist, 2026-10-25: "it\'s not an edit of the goal")');
+  assert.deepEqual(canvasReferenceRequest('/preview add fog in the sky'), { instruction: 'add fog', part: 'the sky' }, 'its short alias');
   assert.deepEqual(canvasReferenceRequest('/skill:canvas-reference add a moon'), { instruction: 'add a moon', part: null }, 'the skill\'s own spelling too');
   assert.deepEqual(canvasReferenceRequest('/canvas-reference'), { instruction: '', part: null }, 'alone: the studio says how to use it');
   assert.equal(canvasReferenceRequest('add more ghosts'), null);

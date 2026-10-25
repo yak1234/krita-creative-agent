@@ -1,11 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 // SPDX-License-Identifier: GPL-3.0-or-later
-// /canvas-reference (openspec canvas-reference; the artist, 2026-10-25: "it uses the chatgpt image generation to take image
+// /canvas-edit-ref (openspec canvas-reference; renamed from /canvas-reference, the artist: "it's not an edit of the goal"; 2026-10-25: "it uses the chatgpt image generation to take image
 // of canvas say dostoevsky's painting … what would happen if we added more ghosts, ghost-like lighting, or more snow and
 // crisp effects … not make the edits but make a reference generation of what the edit would look like. That way the agent
 // has a visual of what it would look like"). The flow:
 //
-//   /canvas-reference <instruction> [in <part>]
+//   /canvas-edit-ref <instruction> [in <part>]
 //     -> the canvas as observed goes to the image model (the `assets` setting: Codex by default) with an edit prompt that
 //        keeps everything else identical; "in <part>" limits the comparison to Find it's outline of the part
 //     -> a card beside the chat: the canvas and the reference side by side, the changed area outlined in red
@@ -13,8 +13,8 @@
 //        (auto-approve.ts NEVER_AUTO_APPROVE); Use as the new goal only when the chat has a goal picture
 //     -> Use as the target: the difference area becomes the move's Paint only here area (Krita blocks every write outside
 //        it) and the move paints toward the reference there (referenceMoveNote); faces and everything outside stay.
-//     -> Use as the new goal: the same move, and the change is pasted into the goal picture first (goal-edit.ts), so
-//        later moves keep it; /original-goal goes back.
+//     -> Use as the new goal: the same move, and the reference (the canvas with the change) becomes the goal picture first
+//        (goal-edit.ts), so later moves keep it; /original-goal goes back.
 //
 // The difference area (differenceMask), at the comparison size (the canvas view, at most MASK_RULES.side on its long side):
 //   1. tone: each channel of the reference is shifted by its median difference to the canvas, then fitted to it (gain
@@ -59,10 +59,10 @@ const FOLDER = 'canvas-reference';
 
 // ----- the command ------------------------------------------------------------------------------------------------------
 
-/** "/canvas-reference <instruction> [in the <part>]" (or /skill:canvas-reference): the instruction, and the part when the
+/** "/canvas-edit-ref <instruction> [in the <part>]" (or /preview, the old /canvas-reference, /skill:canvas-reference): the instruction, and the part when the
  * message ends with "in the …" (up to five words); null for any other message. */
 export function canvasReferenceRequest(text: string | undefined): { instruction: string; part: string | null } | null {
-  const match = /^\/(?:skill:)?canvas-reference[.,:;!?]*(?:\s+([\s\S]*))?$/i.exec(String(text ?? '').trim());
+  const match = /^\/(?:canvas-edit-ref|preview|(?:skill:)?canvas-reference)[.,:;!?]*(?:\s+([\s\S]*))?$/i.exec(String(text ?? '').trim());
   if (!match) return null;
   const said = (match[1] ?? '').trim().replace(/[.!]+$/, '').trim();
   const part = /^(.*\S)\s+in\s+(the\s+(?:[\p{L}\p{N}'-]+\s*){1,5})$/iu.exec(said);
@@ -352,7 +352,7 @@ export function canvasReferencer(host: CanvasReferenceHost) {
     lines.push(...notes);
     const options = record.bounds ? [CANVAS_REFERENCE_OPTIONS.use, ...(host.makeGoal && host.hasGoal?.() ? [CANVAS_REFERENCE_OPTIONS.goal] : []),
       CANVAS_REFERENCE_OPTIONS.retry, CANVAS_REFERENCE_OPTIONS.discard] : [CANVAS_REFERENCE_OPTIONS.retry, CANVAS_REFERENCE_OPTIONS.discard];
-    host.emit({ type: 'canvas_reference', id: record.id, title: 'Canvas reference', message: lines.join('\n\n'), image_path: record.compare_path,
+    host.emit({ type: 'canvas_reference', id: record.id, title: 'Canvas edit reference', message: lines.join('\n\n'), image_path: record.compare_path,
       options, actions: options.map(label => (Object.keys(CANVAS_REFERENCE_OPTIONS) as CanvasReferenceAction[]).find(k => CANVAS_REFERENCE_OPTIONS[k] === label)),
       share: record.share, wide: record.wide, bounds: record.bounds, auto_approve: false });
   };
@@ -363,7 +363,7 @@ export function canvasReferencer(host: CanvasReferenceHost) {
   async function start({ instruction, part, step_key }: { instruction: string; part: string | null; step_key?: string }): Promise<CanvasReferenceRecord | null> {
     const goal = host.goal, study = host.study;
     if (!goal || !study) throw new Error('Start a chat first: a canvas reference belongs to a chat.');
-    if (!instruction.trim()) { say('Say what to change: /canvas-reference add more snow on the roofs (add "in the sky" to change one part).'); return null; }
+    if (!instruction.trim()) { say('Say what to change: /canvas-edit-ref add more snow on the roofs (add "in the sky" to change one part).'); return null; }
     host.allowance();                                    // before anything is sent: a refused image costs nothing
     host.emit({ type: 'status', phase: 'asset', message: `Making a canvas reference: ${instruction}…` });
     const seen = await host.observe(), view = await readFile(seen.image_path);

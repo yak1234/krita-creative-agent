@@ -28,10 +28,11 @@ export const SKILL_COMMANDS: readonly SkillCommand[] = Object.freeze([
   { name: 'refine', aliases: [], skill: 'repaint-area',
     description: 'Refine painted work: keep its forms, add light, edges and detail.' },
   // The artist, 2026-10-25: "not make the edits but make a reference generation of what the edit would look like".
-  { name: 'canvas-reference', aliases: ['preview'], skill: 'canvas-reference', action: 'canvas_reference',
-    description: 'Preview an edit: an image model shows the canvas changed as a reference; nothing is painted until you use it.' },
+  // Renamed from /canvas-reference (the artist, 2026-10-25: "it's not an edit of the goal"); the old name still works.
+  { name: 'canvas-edit-ref', aliases: ['preview', 'canvas-reference'], skill: 'canvas-reference', action: 'canvas_reference',
+    description: 'Preview an edit of the canvas as it is now: an image model shows it changed; nothing is painted until you use it.' },
   { name: 'original-goal', aliases: [], action: 'original_goal',
-    description: 'Go back to the original goal picture after a canvas reference was used as the new goal.' },
+    description: 'Go back to the original goal picture after a canvas edit reference was used as the new goal.' },
 ]);
 
 /** The short command that starts the artist's message, and the text after it; null for anything else. Any case, and

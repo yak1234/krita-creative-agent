@@ -3378,7 +3378,7 @@ class CreativeAgentDocker(DockWidget):
             # Auto-approve (auto_approve.NEVER): what the painting becomes is the artist's choice.
             reference_id = event['id']; paragraphs = (event.get('message') or '').split('\n\n')
             choices = list(zip(event.get('options') or [], event.get('actions') or []))
-            self.canvas_reference_controls = self.choice_card(event.get('title') or 'Canvas reference', paragraphs[0], choices,
+            self.canvas_reference_controls = self.choice_card(event.get('title') or 'Canvas edit reference', paragraphs[0], choices,
                                                               lambda value, reference_id=reference_id: self.send({'type': 'canvas_reference', 'id': reference_id, 'action': value}),
                                                               event.get('image_path'), notes=paragraphs[1:])
         elif kind == 'shapes_model_ready':

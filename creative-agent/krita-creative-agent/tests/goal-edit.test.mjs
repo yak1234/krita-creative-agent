@@ -27,6 +27,12 @@ test('through the placement: a goal placed on part of the canvas, an area off th
   for (let x = 0; x < 4; x++) assert.deepEqual(pixel(on, x, 3), x >= 2 ? BLUE : RED, `column ${x}`);
 });
 
+test('the whole reference (the artist, 2026-10-25: "it went back to the original goal painting again then added fog"): every goal pixel on the canvas becomes the canvas with the change; the part cropped off the canvas keeps the goal', () => {
+  // A goal 4 x 8 whose top half is placed on the whole 4 x 4 canvas: its bottom half is cropped off.
+  const out = blendIntoGoal(flat(4, 8, RED), flat(4, 4, BLUE), null, [4, 4], { source: [0, 0, 4, 4], target: [0, 0, 4, 4] });
+  for (let y = 0; y < 8; y++) for (let x = 0; x < 4; x++) assert.deepEqual(pixel(out, x, y), y < 4 ? BLUE : RED, `${x},${y}`);
+});
+
 test('the edge is softened so the pasted change does not show a seam', () => {
   const out = blendIntoGoal(flat(8, 8, RED), flat(8, 8, BLUE), area([3, 3, 2, 2]), [8, 8], { source: [0, 0, 8, 8], target: [0, 0, 8, 8] }, 1);
   const [r, , b] = pixel(out, 3, 3);

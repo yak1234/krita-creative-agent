@@ -326,7 +326,7 @@ export class StudioRuntime extends PaintingRuntime {
     this.goalSharpen = options.goalSharpen ?? goalSharpener(this.sharpenHost(), options.sharpenModel ?? {});   // tests fake the model
     // Folder study (folder-study-chat.ts): a note per folder image, read as text; tests give their own reader (null: none).
     this.studyReader = options.studyReader; this.studyModel = options.studyModel; this.folderStudy = new ChatFolderStudy(this.folderStudyHost());
-    // /canvas-reference (canvas-reference.ts): an image model's picture of the canvas with an edit, a target only when used.
+    // /canvas-edit-ref (canvas-reference.ts): an image model's picture of the canvas with an edit, a target only when used.
     // imageFetch is the image backend's fetch (tests fake it); referenceHeld a plan step that waits for its preview.
     this.imageFetch = options.imageFetch; this.referenceHeld = null;
     this.canvasReference = canvasReferencer(this.canvasReferenceHost());
@@ -371,7 +371,7 @@ export class StudioRuntime extends PaintingRuntime {
     const png = await pngFromImage(this, data).catch(() => null);
     return png ? decodeRgba(png, undefined, {ignoreColour:true}) : null;
   }
-  /** Use as the new goal (goal-edit.ts): the reference inside the difference area pasted into the goal picture through the
+  /** Use as the new goal (goal-edit.ts): the whole reference (the canvas with the change) into the goal picture through the
    * goal's placement on this canvas, written in the chat's folder (never over the artist's file), and the goal swapped. */
   async makeGoalFromReference(record, area) {
     const canvas = {width:record.canvas[0], height:record.canvas[1]}, goal = pictureGoal(this.study.references, canvas);
@@ -387,7 +387,7 @@ export class StudioRuntime extends PaintingRuntime {
     if (pixels.width !== goal.width || pixels.height !== goal.height) throw new Error('The goal picture is not the size the chat knows.');
     const folder = join(this.study.directory, 'goal-edits'), file = join(folder, record.id + '.png');
     await mkdir(folder, {recursive:true});
-    await writeFile(file, encodeRgba(blendIntoGoal(pixels, reference, area, record.canvas, placed.mapping)));
+    await writeFile(file, encodeRgba(blendIntoGoal(pixels, reference, null, record.canvas, placed.mapping)));
     // A sharpened goal is shown to the painter as the picture it was (goal-edit.ts goalView): the edit goes into that one
     // too, through the same placement at its size, or the painter would be shown the goal without it.
     let view;
@@ -397,11 +397,11 @@ export class StudioRuntime extends PaintingRuntime {
       if (!small) throw new Error('The goal picture could not be read.');
       const k = small.width / goal.width, source = placed.mapping.source.map(v => v * k);
       view = join(folder, record.id + '.view.png');
-      await writeFile(view, encodeRgba(blendIntoGoal(small, reference, area, record.canvas, {source, target:placed.mapping.target})));
+      await writeFile(view, encodeRgba(blendIntoGoal(small, reference, null, record.canvas, {source, target:placed.mapping.target})));
     }
     adoptEditedGoal(goal, file, record.id, stamp(), view);
     await this.goalPictureChanged();
-    this.emit({type:'action', seconds:0, message:'The goal picture now includes this change, so later moves keep it. Type /original-goal to go back.'});
+    this.emit({type:'action', seconds:0, message:'The goal is now the canvas with this change, so later moves keep both. Type /original-goal to go back.'});
   }
   /** /original-goal: the goal picture the chat started from (or its sharpened copy), after Use as the new goal. */
   async restoreOriginalGoal() {
@@ -3518,7 +3518,7 @@ export class StudioRuntime extends PaintingRuntime {
       this.goal.canvas_selection = this.canvasSelection; this.goal.region_selection=this.regionSelection;
       // A request held for the Sharpen goal card (holdForSharpen) is in the transcript already.
       const message = command.sharpen_resumed || command.reference_resumed ? this.goal.messages.findLast(m => m.role === 'user') : await this.remember('user', text,command.message_id);
-      // /canvas-reference (canvas-reference.ts): the studio's own command; the card waits for the artist, nothing paints.
+      // /canvas-edit-ref (canvas-reference.ts): the studio's own command; the card waits for the artist, nothing paints.
       if (skillCommand(text)?.action === 'original_goal') { await this.restoreOriginalGoal(); this.setActivity('idle', 'Ready for your next message.'); return; }
       const referenceAsk = canvasReferenceRequest(text);
       if (referenceAsk) {

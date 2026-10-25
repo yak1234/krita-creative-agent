@@ -88,7 +88,9 @@ export function stagePolicy({ reading, act, text }: { reading: Reading | null; a
   const read = reading && !reading.fallback ? reading.stages : null;
   if (!act || !read) return minus(fallback);
   const scope = read.scope && read.scope.confidence >= SURE ? read.scope.choice : null;
-  if (scope === 'whole') return minus({ stages: ALL(), whole: true, source: 'luna' });
+  // Stages the message names win over a "whole" scope reading ("paint this scene: an underpainting, then the finish" got all
+  // four, live 2026-10-25); a message naming all four, or none, still gets the whole plan.
+  if (scope === 'whole') return minus(keywords && !keywords.whole ? keywords : { stages: ALL(), whole: true, source: 'luna' });
   if (scope === 'stages') {
     const asked = PLAN_STAGES.filter(stage => (read.asked[stage] ?? 0) >= SURE);
     if (asked.length) return minus({ stages: asked, whole: false, source: 'luna' });

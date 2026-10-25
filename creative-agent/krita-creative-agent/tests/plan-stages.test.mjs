@@ -278,3 +278,12 @@ test('a step\u2019s tool is only ever a known tool name: free text is dropped', 
   const known = ['paint_batch', 'fill_region'];
   assert.deepEqual(stepTool({ kind: 'whole', tool: 'paint_batch with fill_region for the disc' }, known), { note: 'paint_batch with fill_region for the disc is not a painting tool' });
 });
+
+test('stages the message names win over Luna reading its scope as the whole painting (live, 2026-10-25: "an underpainting, then the finish" got four steps)', () => {
+  const reading = { stages: { scope: { choice: 'whole', confidence: 0.77 }, asked: { underpainting: 1, finish: 0.62, refine: 0, accents: 0 } } };
+  const answer = stagePolicy({ reading, act: true, text: 'Paint this scene from the goal image: an underpainting, then the finish.' });
+  assert.deepEqual(answer.stages, ['underpainting', 'finish']);
+  assert.equal(answer.whole, false);
+  const all = stagePolicy({ reading, act: true, text: 'Paint the whole scene from the goal image.' });
+  assert.equal(all.whole, true, 'no stage named: the whole plan');
+});

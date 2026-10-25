@@ -52,6 +52,20 @@ class FlattenTests(finish_tests.FinishOperationTests):
         self.assertFalse(self.stage().childNodes()[-1].visible())
         self.assertLessEqual(float(np.abs(self.shown() - self.before_passes).max()), 1)
 
+    def test_passes_at_the_bottom_of_the_move_flatten_without_move_layer_down(self):
+        # Live, 2026-10-25: the flattened layer went in below the bottom pass with Krita's Move Layer Down, which moves a
+        # layer INTO a group below it (each pass is a group): "'{...}' is not in list", a partial change, and the texture
+        # pass after it refused. The layer now goes above the top pass, where nothing has to move.
+        self.three_passes()
+        before = self.shown()
+        def no_lowering(doc, node):
+            raise AssertionError('Move Layer Down moves a layer into the group below it in Krita')
+        self.h._craft_lower = no_lowering
+        result = self.flatten(['f1', 'f2', 'f3'])
+        self.assertEqual(result['status'], 'ok', result.get('error'))
+        self.assertEqual(self.labels(), ['Refine 1'])
+        self.assertLessEqual(float(np.abs(self.shown() - before).max()), 1, 'the picture is the same')
+
     def test_it_writes_only_the_squares_that_hold_paint(self):
         self.run_finish('f1', box=[0, 0, 100, 100], detail='fine')
         result = self.flatten(['f1'])

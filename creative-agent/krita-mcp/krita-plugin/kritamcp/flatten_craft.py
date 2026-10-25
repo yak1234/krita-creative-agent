@@ -105,7 +105,10 @@ class FlattenCraft:
         width, height = doc.width(), doc.height()
         nodes, entries = self._flatten_nodes(doc, session, params)
         layer = doc.createNode(params['name'], 'paintlayer')
-        if layer is None or not self._craft_insert_below(doc, nodes[0], layer):
+        # Above the top pass: the passes go below, so it ends in their place. Never below the bottom one with Move Layer
+        # Down, which in Krita moves a layer INTO a group below it (every pass is a group; live, 2026-10-25).
+        parent = nodes[-1].parentNode()
+        if layer is None or not parent.addChildNode(layer, nodes[-1]):
             raise RuntimeError('Krita could not add the flattened layer.')
         layer.setBlendingMode('normal')
         bounds = [b for b in (self._flatten_bounds(node, width, height) for node in nodes) if b]

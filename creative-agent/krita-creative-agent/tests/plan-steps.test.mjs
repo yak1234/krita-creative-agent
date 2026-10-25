@@ -359,3 +359,18 @@ test('crisp-accents: a paint_accents call running at Good enough finishes, then 
   assert.deepEqual(host.goal.step_marks, { [keys[0]]: { met: 'good_enough' } });
   assert.ok(host.calls.some(c => c.startsWith('keepMove 1')), 'the move (with its Accents group) is kept');
 });
+
+test('Met is refused while the move still owes a mandatory pass (an architectural refine step without its texture)', async () => {
+  const host = fakeHost({ folder: false, goal: { status: 'move_ready' } });
+  const move = { number: 1, status: 'ready', step: 0, step_key: keys[0] };
+  host.goal.moves = [move];
+  let owed = 'The texture pass of this step has not run.';
+  host.metRefusal = m => (m === move ? owed : null);
+  const controls = planStepControls(host);
+  await assert.rejects(controls.met(move), /texture pass/);
+  assert.equal(move.status, 'ready', 'nothing was kept');
+  assert.equal(controls.working(), false);
+  owed = null;
+  await controls.met(move);
+  assert.equal(move.status, 'kept');
+});

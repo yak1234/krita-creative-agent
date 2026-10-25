@@ -7,7 +7,9 @@ import {passCheck, progressCheck, moveCheck, seamCheck} from './visual-checks.ts
 import { executionSettings, thinkingLevel, AUTO_REASONING_NOTE } from './execution-settings.mjs';
 import { panelSchema, DEFAULT_PLANNER } from './settings-schema.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS, mutates } from './craft.mjs';
-import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension } from './extensions.mjs';
+import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension, architectureTextureExtension } from './extensions.mjs';
+import { textureRequired } from '../extensions/architecture-texture.ts';
+import { ensureMaterial } from './texture-library.ts';
 import { transferJobId, underpaintingState, underpaintingRefusal, closedNote, UNDERPAINTING_MOVE_NOTE } from './underpainting-move.ts';
 import { goalSpec } from './goal-spec.ts';
 import { refineToGoalNote, TOUCH_UP } from './refine-goal.ts';
@@ -627,7 +629,64 @@ export class StudioRuntime extends PaintingRuntime {
   }
   // The Pi extensions the painter's session runs besides the loop guards (runtime.mjs).
   // Save timing comes after Luna review, so it saves each batch's final state, after any undo.
-  extensionFactories() { return [goalLikenessExtension(this.likenessHost()), lunaReviewExtension(this.reviewHost()), materialStampExtension(this.materialHost()), saveTimingExtension(this.saveHost()), seamCheckExtension(this.seamHost())]; }
+  // The architecture texture runs after the review extensions see refine_to_goal's result, so they judge the refine alone.
+  extensionFactories() { return [goalLikenessExtension(this.likenessHost()), lunaReviewExtension(this.reviewHost()), materialStampExtension(this.materialHost()), architectureTextureExtension(this.textureHost()), saveTimingExtension(this.saveHost()), seamCheckExtension(this.seamHost())]; }
+  /** A "Refine: <parts>" step for the architecture texture (extensions/architecture-texture.ts): its parts with their found
+   * areas (refinePartArea keeps them), folder notes and the step's own area; null for any other step. */
+  textureStep(index) {
+    const step = Number.isInteger(index) ? (this.goal?.brief?.steps ?? [])[index] : null;
+    if (!step || folderStepKind(step) !== 'refine_part') return null;
+    const key = this.planSteps.keyAt(index) ?? String(index), elements = this.folderElements(), found = this.goal.step_part_areas?.[key] ?? [];
+    const label = String(step.scope && !/\.(png|jpe?g|gif)$/i.test(step.scope) ? step.scope : layerName(step.title).replace(/^\s*refine\s*:\s*/i, ''));
+    const parts = partsOf(step, elements).map(name => {
+      const area = found.find(f => f.name === name), note = this.folderStudy?.noteOf?.(name);
+      return {name, guess:elements.find(e => e.name === name)?.guess ?? name, ...(note ? {note} : {}), ...(area ? {area:{mask_path:area.mask_path, bounds:area.bounds}} : {})};
+    });
+    const chosen = this.goal.paint_only_here;
+    return {key, label:label.slice(0, 80), parts, area:chosen?.auto === key && chosen.mask_path ? {mask_path:chosen.mask_path, bounds:chosen.bounds} : null};
+  }
+  /** The plan step painted now: the Agent move's, else Autopilot's current one. */
+  paintedStepIndex() { return this.mode === 'agent' ? this.currentMove?.step : this.study?.folder ? this.goal?.current_step : null; }
+  /** Whether a step's texture pass ran: on the Agent move, else on the goal by step (Autopilot). */
+  textureDone(key, move = this.mode === 'agent' ? this.currentMove : null) { return move ? !!move.texture : !!this.goal?.step_texture?.[key]; }
+  /** The studio side of the architecture texture (extensions/architecture-texture.ts). */
+  textureHost() {
+    return {
+      step: () => this.textureStep(this.paintedStepIndex()),
+      done: () => { const step = this.textureStep(this.paintedStepIndex()); return !!step && this.textureDone(step.key); },
+      record: entry => {
+        const move = this.mode === 'agent' ? this.currentMove : null;
+        if (move) move.texture = entry;
+        else if (this.goal) this.goal.step_texture = {...(this.goal.step_texture ?? {}), [entry.step]:entry};
+        this.diagnostics?.record({type:'architecture_texture', step:entry.step, auto:entry.auto, ms:entry.ms, model:entry.model ?? null, fallback:entry.fallback ?? null,
+          parts:entry.parts.map(p => ({part:p.part, kind:p.kind, materials:p.materials.map(m => m.id), strength:p.strength, source:p.source}))});
+        this.persist().catch(() => {});
+      },
+      canvas: () => { const seen = this.decisionObservation ?? this.lastObservation; return seen?.width ? {width:seen.width, height:seen.height} : null; },
+      view: async () => {
+        const seen = this.decisionObservation ?? this.lastObservation, path = seen?.unguided_path ?? seen?.image_path;
+        if (!path) return null;
+        const image = (await imageContent(this.study.directory, path)).content;
+        return {label:'CANVAS', picture:{data:image.data, mimeType:image.mimeType}};
+      },
+      reader: async () => {
+        if (this.studyReader !== undefined) return this.studyReader;      // a test's fake reader
+        const model = this.plannerModel();
+        return model?.input?.includes('image') ? piReader(this.models, model) : null;
+      },
+      maps: async (material, signal) => {
+        const dataDir = this.config?.data_dir ?? this.config?.output;
+        if (!dataDir && !this.textureTestFolder) throw new Error('The texture library needs the companion’s data folder, and none is set.');
+        this.emit({type:'status', phase:'painting', message:`Texture: the ${material.material} texture (downloaded once)…`});
+        const paths = await ensureMaterial({dataDir, material, ...(signal ? {signal} : {}), ...(this.textureTestFolder ? {testFolder:this.textureTestFolder} : {})});
+        const maps = {};
+        for (const [key, path] of Object.entries(paths)) if (path) maps[key] = (await readFile(path)).toString('base64');
+        return material.detail_from ? {...maps, detail_from:material.detail_from} : maps;
+      },
+      native: (params, id, signal) => nativeExecute(this, 'texture')(id, params, signal),
+      status: message => this.emit({type:'status', phase:'painting', message}),
+    };
+  }
   /** The studio side of save timing (extensions/save-timing.ts): the same checkpoint as at review and run end. */
   saveHost() { return { painting: name => PACED_TOOLS.includes(name), checkpoint: () => this.flushCheckpoint() }; }
   /** The studio side of make_material and stamp_material (extensions/material-stamp.ts). A stamp is a paced painting call. */
@@ -1413,7 +1472,7 @@ export class StudioRuntime extends PaintingRuntime {
     // Skills (read opens skill files only) and image assets, while planning and painting.
     if (vision && (phase === 'plan' || phase === 'agent')) names.push('read','make_asset','run_skill_script');
     if (phase === 'plan' && this.mode === 'autopilot' && this.goal?.brief) names.push('start_painting');
-    if (phase === 'agent') names.push('ask_for_selection','propose_protection','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_finish','refine_to_goal','paint_accents','list_brushes','paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer',...CRAFT_TOOLS,...GUIDE_TOOLS,'letter','finish_move','painting_toolbox','painting_tool_help','ask_question','record_progress','request_review');
+    if (phase === 'agent') names.push('ask_for_selection','propose_protection','paint_from_reference','continue_reference_painting','paint_reference_edges','paint_reference_surface','paint_finish','refine_to_goal','texture_architecture','paint_accents','list_brushes','paint_batch','paint_pass','paint_recipe','paint_contours','adjust_layer',...CRAFT_TOOLS,...GUIDE_TOOLS,'letter','finish_move','painting_toolbox','painting_tool_help','ask_question','record_progress','request_review');
     // Agent (collaborative) paints one move per turn: no review or progress bookkeeping tools.
     // With Luna pacing, Autopilot's host tracks plan steps; request_review stays as a backstop.
     const hidden = phase !== 'agent' ? [] : this.mode === 'agent' ? ['record_progress','request_review','ask_question',...(this.executionSettings?.move_size === 'quick' ? ['finish_move'] : [])]
@@ -1686,6 +1745,8 @@ export class StudioRuntime extends PaintingRuntime {
     if (found.length) {
       try {
         const union = await unionFound(this.study.directory, found);
+        // Each part's own outline, for the architecture texture (it confines each material to its part).
+        this.goal.step_part_areas = {...(this.goal.step_part_areas ?? {}), [key]:found.map((f, i) => ({name:parts[i], mask_path:f.mask_path, bounds:f.bounds}))};
         this.diagnostics?.record({type:'refine_part_area', step:index, parts:parts.length, share:union.share});
         await this.adoptFoundArea(union, label.slice(0, 60), key);
         this.goal.paint_only_here = {...this.goal.paint_only_here, step_area:true};
@@ -1986,6 +2047,11 @@ export class StudioRuntime extends PaintingRuntime {
         // Always, whatever Merge kept work says (the artist, 2026-10-25: option 2).
         const index=move.step_key ? this.planSteps.indexOf(move.step_key) : move.step, kept=keptLayer(this.goal.brief?.steps?.[index],move);
         await this.mergeKept(['move-'+move.number],()=>kept.name,{lock:kept.lock,force:true});
+      },
+      // An architectural refine step is met only with its texture pass (extensions/architecture-texture.ts).
+      metRefusal:move=>{
+        const index=move.step_key ? this.planSteps.indexOf(move.step_key) : move.step, step=this.textureStep(index);
+        return textureRequired(step, !!move.texture) ? `Step ${index + 1} has architecture and its texture pass has not run: press Redo to paint it again (the host adds the texture after its refine).` : null;
       },
       tickFolderStep:move=>this.tickFolderStep(move),
       rejectMove:move=>this.rejectMove(move),
@@ -2478,7 +2544,7 @@ export class StudioRuntime extends PaintingRuntime {
         const area = this.goal.paint_only_here;
         // A touch-up after the whole-picture refine (refine-goal.ts TOUCH_UP); a part step of a plan without one refines in full.
         const touchUp = this.touchUpStep(move.step);
-        if (area && touchUp) return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}": a touch-up of its parts after the whole-picture refine, with refine_to_goal inside the Paint only here area (${chipLine(area)}; refine_to_goal works in it by default). The host limits it to one round in ${TOUCH_UP.budget_minutes} minutes and paints only the regions there still above the bar, at the level the whole-picture refine has not given them; it may find nothing left. One call; then look at the canvas and finish_move. No typed strokes and no other painting in this step.\n`;
+        if (area && touchUp) return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}": a touch-up of its parts after the whole-picture refine, with refine_to_goal inside the Paint only here area (${chipLine(area)}; refine_to_goal works in it by default). The host limits it to one round in ${TOUCH_UP.budget_minutes} minutes and paints only the regions there still above the bar, at the level the whole-picture refine has not given them; it may find nothing left. One call; on buildings, church, towers, bridge, street, railing, walls and roofs the host then adds their texture (texture_architecture) by itself. Then look at the canvas and finish_move. No typed strokes and no other painting in this step.\n`;
         if (area) return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}": refine its parts to ${goalText} with refine_to_goal inside the Paint only here area (${chipLine(area)}; refine_to_goal works in it by default: the regions there still furthest from the goal at full size, a fine finish, then accents, finer where needed). One call; then look at the canvas and finish_move. No typed strokes and no other painting in this step.\n`;
         return `\nPROJECT FOLDER MOVE: step ${move.step + 1} of the approved plan, "${name}": the artist chose to refine without an area, so refine the whole picture to ${goalText} with refine_to_goal. One call; then look at the canvas and finish_move. No typed strokes and no other painting in this step.\n`;
       }

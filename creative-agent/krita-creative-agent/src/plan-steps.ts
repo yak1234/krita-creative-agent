@@ -60,6 +60,8 @@ export interface PlanStepHost {
   /** May the plan go on to the next step by itself? `auto`: after a run (not after Stop, an error, a fault, a mode
    * switch or a message the artist typed meanwhile); else the artist's own Met or Keep. */
   mayContinue(auto: boolean): boolean;
+  /** Why this move may not be met yet (a pass its step makes mandatory has not run: the architecture texture), or null. */
+  metRefusal?(move: Move): string | null;
   /** Keep the move: its status kept (published at once, so no other Keep or Undo can follow) and its layers merged. */
   keepMove(move: Move): Promise<void>;
   /** A folder chat: tick the kept move's step by identity (NOTES.md, its guide, PLAN.md). Returns the first open step. */
@@ -337,6 +339,8 @@ export function planStepControls(host: PlanStepHost) {
     /** Met: the move kept, the step met by the artist, the next open step painted. The move card's Keep comes here. */
     async met(move: Move): Promise<void> {
       const goal = goalOf(), { index } = checkReady(goal, move);
+      const owed = host.metRefusal?.(move);
+      if (owed) throw new Error(owed);
       working = true;
       try { await stepMet(goal, index, move, 'artist', false); } finally { working = false; }
     },

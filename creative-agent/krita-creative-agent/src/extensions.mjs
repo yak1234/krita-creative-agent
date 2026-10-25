@@ -10,6 +10,7 @@ import saveTiming from '../extensions/save-timing.ts';
 import seamCheck from '../extensions/seam-check.ts';
 import goalLikeness from '../extensions/goal-likeness.ts';
 import paintingWeight from '../extensions/painting-weight.ts';
+import architectureTexture from '../extensions/architecture-texture.ts';
 
 export const LOOP_GUARDS = { name: 'loop-guards', factory: loopGuards };
 // What makes the painting heavy for Krita, told to the painter from the observations' `weight` (painting_weight.py).
@@ -23,6 +24,9 @@ export const goalLikenessExtension = host => ({ name: 'goal-likeness', factory: 
 // make_material and stamp_material, bound to the studio's MaterialHost (studio.mjs materialHost).
 /** @param {import('../extensions/material-stamp.ts').MaterialHost} host */
 export const materialStampExtension = host => ({ name: 'material-stamp', factory: materialStamp(host), tools: ['make_material', 'stamp_material'] });
+// The architecture texture of a "Refine: <parts>" step, bound to the studio's TextureHost (studio.mjs textureHost).
+/** @param {import('../extensions/architecture-texture.ts').TextureHost} host */
+export const architectureTextureExtension = host => ({ name: 'architecture-texture', factory: architectureTexture(host), tools: ['texture_architecture'] });
 // Saves the painting during the model's turn instead of during painting calls (studio.mjs saveHost).
 /** @param {import('../extensions/save-timing.ts').SaveHost} host */
 export const saveTimingExtension = host => ({ name: 'save-timing', factory: saveTiming(host) });

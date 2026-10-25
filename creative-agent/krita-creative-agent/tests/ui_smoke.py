@@ -47,8 +47,8 @@ commands = []
 panel.process = types.SimpleNamespace(state=lambda: QProcess.ProcessState.Running, write=lambda data: commands.append(json.loads(data)))
 panel.handle_event({'type':'ready','models':[{'provider':'openrouter','id':'deepseek/deepseek-v4.1-flash','name':'DeepSeek V4.1 Flash','configured':True}], 'bridge':{}, 'build':{'version':'1.0.0','build_id':'test-build'}})
 assert commands[-1] == {'type':'context','action':'inspect'}
-# Nothing chosen yet (a fresh install): OpenRouter's Qwen3 VL is pre-selected when it is connected (the artist,
-# 2026-10-24); a model the artist chose, or one the companion reports as selected, is never overridden.
+# Nothing chosen yet (a fresh install): DeepSeek's deepseek-flash is pre-selected as the painter when it is connected
+# (the artist, 2026-10-24: Qwen3 VL plans, deepseek-flash paints); a model the artist chose, or one the companion reports as selected, is never overridden.
 _qwen = {'provider':'openrouter','id':'qwen/qwen3-vl-235b-a22b-instruct','name':'Qwen3 VL 235B','configured':True}
 _deepseek = {'provider':'openrouter','id':'deepseek/deepseek-v4.1-flash','name':'DeepSeek V4.1 Flash','configured':True}
 _direct = {'provider':'deepseek','id':'deepseek-flash','name':'DeepSeek Flash','configured':True}
@@ -56,9 +56,9 @@ def _fresh_panel(models, **extra):
     fresh = module.CreativeAgentDocker(); fresh.process = types.SimpleNamespace(state=lambda: QProcess.ProcessState.Running, write=lambda data: None)
     fresh.handle_event({'type':'ready','models':models,'bridge':{},'build':{'version':'1.0.0','build_id':'test-build'},**extra})
     selected = fresh.model.currentData(); fresh.deleteLater(); return selected
-assert _fresh_panel([_direct, _deepseek, _qwen]) == {'provider':'openrouter','id':_qwen['id']}, 'fresh install: Qwen3 VL'
-assert _fresh_panel([_direct, _deepseek, dict(_qwen, configured=False)]) != {'provider':'openrouter','id':_qwen['id']}, 'not connected: today\u2019s choice'
-assert _fresh_panel([_direct, _deepseek, _qwen], selected={'provider':'deepseek','id':'deepseek-flash'}) == {'provider':'deepseek','id':'deepseek-flash'}, 'the artist\u2019s choice stays'
+assert _fresh_panel([_qwen, _deepseek, _direct]) == {'provider':'deepseek','id':'deepseek-flash'}, 'fresh install: deepseek-flash'
+assert _fresh_panel([_qwen, _deepseek, dict(_direct, configured=False)]) != {'provider':'deepseek','id':'deepseek-flash'}, 'not connected: today\u2019s choice'
+assert _fresh_panel([_direct, _deepseek, _qwen], selected={'provider':'openrouter','id':_qwen['id']}) == {'provider':'openrouter','id':_qwen['id']}, 'the artist\u2019s choice stays'
 assert _fresh_panel([_direct, _deepseek]) == {'provider':'deepseek','id':'deepseek-flash'}, 'without it: today\u2019s behaviour (first connected provider)'
 # A generated stand-in canvas, so the test runs on a fresh clone.
 (root / 'output').mkdir(parents=True, exist_ok=True)
@@ -566,7 +566,7 @@ panel.handle_event({'type':'settings_schema','fields':SCHEMA})
 W=panel.setting_widgets
 assert list(W)==['concurrency','move_size','merge_kept','guides','reference_first','assets','ai_images','keep_screen_awake','sharpen_goal','view_size','planner_model','study_folder','routing'], 'one control per generic setting, in declaration order'
 W['concurrency'].setCurrentIndex(W['concurrency'].findData(2))
-assert commands[-1]=={'type':'set_execution_settings','settings':{'concurrency':2,'reasoning':'auto','routing':'off','native_craft':True,'move_size':'subject','merge_kept':True,'guides':True,'reference_first':True,'assets':'codex','ai_images':0,'keep_screen_awake':False,'sharpen_goal':'ask','view_size':'auto','planner_model':'painter','study_folder':True}}
+assert commands[-1]=={'type':'set_execution_settings','settings':{'concurrency':2,'reasoning':'auto','routing':'off','native_craft':True,'move_size':'subject','merge_kept':True,'guides':True,'reference_first':True,'assets':'codex','ai_images':0,'keep_screen_awake':False,'sharpen_goal':'ask','view_size':'auto','planner_model':'default','study_folder':True}}
 from creative_ui_test.qt_compat import QCheckBox as _QCheckBox
 assert isinstance(W['keep_screen_awake'], _QCheckBox) and not W['keep_screen_awake'].isChecked(), 'the screen setting is a checkbox, off'
 assert W['keep_screen_awake'].accessibleName() == 'Keep the screen awake while painting'
@@ -580,7 +580,7 @@ panel.handle_event({'type':'keep_awake','active':True,'display':True}); assert n
 panel.handle_event({'type':'keep_awake','active':False,'display':False}); assert panel.awake_indicator.isHidden()
 panel.handle_event({'type':'execution_settings','settings':{**commands[-1]['settings'],'keep_screen_awake':False}})   # back to off for the checks below
 panel.reasoning_selector.setCurrentIndex(panel.reasoning_selector.findData('high'))
-assert commands[-1]['settings']=={'concurrency':2,'reasoning':'high','routing':'off','native_craft':True,'move_size':'subject','merge_kept':True,'guides':True,'reference_first':True,'assets':'codex','ai_images':0,'keep_screen_awake':False,'sharpen_goal':'ask','view_size':'auto','planner_model':'painter','study_folder':True}
+assert commands[-1]['settings']=={'concurrency':2,'reasoning':'high','routing':'off','native_craft':True,'move_size':'subject','merge_kept':True,'guides':True,'reference_first':True,'assets':'codex','ai_images':0,'keep_screen_awake':False,'sharpen_goal':'ask','view_size':'auto','planner_model':'default','study_folder':True}
 W['move_size'].setCurrentIndex(W['move_size'].findData('large'))
 assert commands[-1]['settings']['move_size']=='large' and W['move_size'].accessibleName()=='Agent move size'
 panel.handle_event({'type':'execution_settings','settings':{'concurrency':1,'reasoning':'auto','routing':'off','native_craft':True,'move_size':'quick'}})

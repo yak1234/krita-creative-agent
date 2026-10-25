@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { executionSettings, thinkingLevel } from '../src/execution-settings.mjs';
 import { StudioRuntime } from '../src/studio.mjs';
 test('execution defaults preserve one painter and capability-aware reasoning',()=>{
- assert.deepEqual(executionSettings(),{concurrency:1,reasoning:'auto',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,guides:true,reference_first:true,assets:'codex',ai_images:0,keep_screen_awake:false,sharpen_goal:'ask',view_size:'auto',planner_model:'painter',study_folder:true,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
+ assert.deepEqual(executionSettings(),{concurrency:1,reasoning:'auto',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,guides:true,reference_first:true,assets:'codex',ai_images:0,keep_screen_awake:false,sharpen_goal:'ask',view_size:'auto',planner_model:'default',study_folder:true,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
  assert.equal(thinkingLevel(executionSettings(),{reasoning:true}),'low');
  assert.equal(thinkingLevel(executionSettings({reasoning:'high'}),{reasoning:true}),'high');
  assert.equal(thinkingLevel(executionSettings({reasoning:'high'}),{reasoning:false}),'off');
@@ -96,14 +96,15 @@ test('canvas view size (luna-goal-reviewer goal 3, eyes-and-history 1): Auto by 
 });
 
 // A planner model (plan-from-request goal 4, the artist 2026-10-24): plan turns may use another model than the painter.
-test('Planner model: the painter by default; a provider/model route; the panel lists the routes it is given, and the saved one', async () => {
+test('Planner model: Qwen3 VL by default (the painter when it is not connected); a provider/model route; the panel lists the routes it is given, and the saved one', async () => {
  const { panelSchema } = await import('../src/settings-schema.mjs');
- assert.equal(executionSettings().planner_model,'painter');
+ assert.equal(executionSettings().planner_model,'default');
+ assert.equal(executionSettings({planner_model:'painter'}).planner_model,'painter');
  assert.equal(executionSettings({planner_model:'openrouter/z-ai/glm-5.3-flash'}).planner_model,'openrouter/z-ai/glm-5.3-flash');
  assert.throws(()=>executionSettings({planner_model:'glm'}),/Planner model/);
  assert.throws(()=>executionSettings({planner_model:42}),/Planner model/);
- assert.deepEqual(panelSchema().find(f=>f.key==='planner_model').options,[{value:'painter',label:'Same as the painter'}]);
+ assert.deepEqual(panelSchema().find(f=>f.key==='planner_model').options,[{value:'default',label:'Default: Qwen3 VL 235B A22B Instruct (openrouter/qwen/qwen3-vl-235b-a22b-instruct)'},{value:'painter',label:'Same as the painter'}]);
  const field=panelSchema({models:[{route:'openrouter/qwen/qwen3.8-flash',label:'Qwen3.8 Flash (openrouter)'}]}).find(f=>f.key==='planner_model');
- assert.deepEqual(field.options,[{value:'painter',label:'Same as the painter'},{value:'openrouter/qwen/qwen3.8-flash',label:'Qwen3.8 Flash (openrouter)'}]);
+ assert.deepEqual(field.options,[{value:'default',label:'Default: Qwen3 VL 235B A22B Instruct (openrouter/qwen/qwen3-vl-235b-a22b-instruct)'},{value:'painter',label:'Same as the painter'},{value:'openrouter/qwen/qwen3.8-flash',label:'Qwen3.8 Flash (openrouter)'}]);
  assert.match(field.tooltip,/plan/i);
 });

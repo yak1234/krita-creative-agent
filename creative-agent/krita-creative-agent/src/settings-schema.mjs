@@ -3,6 +3,9 @@
 // builds its controls from the `generic` ones (sent as a settings_schema event). Adding a setting is one
 // entry here, with no panel change. panel: generic (a combo box built from options), custom (the panel
 // has its own control: reasoning levels depend on the model) or hidden (fixed, not shown).
+// The default planner (the artist, 2026-10-24: "I want planner Qwen VL" for its image reading; deepseek-flash paints). Used
+// when connected; otherwise plan turns quietly run on the painter.
+export const DEFAULT_PLANNER = 'openrouter/qwen/qwen3-vl-235b-a22b-instruct';
 export const SETTINGS = Object.freeze([
   { key: 'reasoning', type: 'choice', default: 'auto', panel: 'custom', error: 'Unknown reasoning level.',
     options: [['auto', 'Auto'], ['off', 'Off'], ['minimal', 'Minimal'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Maximum']] },
@@ -53,8 +56,8 @@ export const SETTINGS = Object.freeze([
   // Planner model (plan-from-request goal 4, the artist 2026-10-24: try stronger planners for planning only): a
   // provider/model route, or the painter's own. Its options are the routes the companion lists (panelSchema({models})):
   // the connected models measured by the resolution probe (model-resolutions.json), the painter's and the saved one.
-  { key: 'planner_model', type: 'model', default: 'painter', panel: 'generic', label: 'Planner model', accessible: 'Planner model',
-    error: 'Planner model: choose Same as the painter or a connected provider/model.', options: [['painter', 'Same as the painter']],
+  { key: 'planner_model', type: 'model', default: 'default', panel: 'generic', label: 'Planner model', accessible: 'Planner model',
+    error: 'Planner model: choose Same as the painter or a connected provider/model.', options: [['default', `Default: Qwen3 VL 235B A22B Instruct (${DEFAULT_PLANNER})`], ['painter', 'Same as the painter']],
     tooltip: 'The model that makes and revises the plan (a project folder\'s plan, Plan mode). Painting always uses the painter model chosen above. A model that is not connected plans as the painter.' },
   // Folder study (folder-study.ts, approved 2026-10-24): a vision model writes a short note per project folder image, so the
   // planner and painter read the notes as text and open an image only when they need it. Off: file names only, as before.
@@ -73,7 +76,7 @@ export const SETTING_DEFAULTS = Object.freeze(Object.fromEntries(SETTINGS.map(s 
 /** The value, or throws the setting's own message when it is not allowed. */
 export function validSetting(setting, value) {
   const ok = setting.type === 'boolean' ? typeof value === 'boolean'
-    : setting.type === 'model' ? value === setting.default || (typeof value === 'string' && value.length <= 200 && /^[A-Za-z0-9][\w.-]*\/\S+$/.test(value))
+    : setting.type === 'model' ? value === setting.default || (setting.options ?? []).some(([option]) => option === value) || (typeof value === 'string' && value.length <= 200 && /^[A-Za-z0-9][\w.-]*\/\S+$/.test(value))
     : setting.options.some(([v]) => v === value);
   if (!ok) throw new Error(setting.error);
   return value;

@@ -5,7 +5,7 @@ import { chatShapes } from './shapes/chat.ts';
 import { chatCloseups } from './closeups.ts';
 import {passCheck, progressCheck, moveCheck, seamCheck} from './visual-checks.ts';
 import { executionSettings, thinkingLevel, AUTO_REASONING_NOTE } from './execution-settings.mjs';
-import { panelSchema } from './settings-schema.mjs';
+import { panelSchema, DEFAULT_PLANNER } from './settings-schema.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS, mutates } from './craft.mjs';
 import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension } from './extensions.mjs';
 import { transferJobId, underpaintingState, underpaintingRefusal, closedNote, UNDERPAINTING_MOVE_NOTE } from './underpainting-move.ts';
@@ -944,12 +944,12 @@ export class StudioRuntime extends PaintingRuntime {
     const add=(route,label)=>{ if(!seen.has(route)){ seen.add(route); routes.push({route,label}); } };
     for (const m of this.models?.getModels?.() ?? []) {
       const painter=this.study && m.provider===this.study.provider && m.id===this.study.model;
-      if (this.models.hasConfiguredAuth(m.provider) && isInteractiveModel(m) && (painter || measured.has(modelKey(m.provider, m.id)))) add(`${m.provider}/${m.id}`, `${m.name || m.id} (${m.provider})`);
+      if (this.models.hasConfiguredAuth(m.provider) && isInteractiveModel(m) && (painter || measured.has(modelKey(m.provider, m.id)))) add(`${m.provider}/${m.id}`, `${m.name || m.id} (${m.provider}/${m.id})`);
     }
     const saved=this.executionSettings?.planner_model;
     if (saved && saved!=='painter' && !seen.has(saved)) {
       const slash=saved.indexOf('/'), m=slash>0 ? this.models?.getModel?.(saved.slice(0,slash),saved.slice(slash+1)) : null;
-      add(saved, m && this.models.hasConfiguredAuth(m.provider) ? `${m.name || m.id} (${m.provider})` : `${saved} (not connected)`);
+      add(saved, m && this.models.hasConfiguredAuth(m.provider) ? `${m.name || m.id} (${saved})` : `${saved} (not connected)`);
     }
     return routes;
   }
@@ -964,6 +964,10 @@ export class StudioRuntime extends PaintingRuntime {
   plannerModel() {
     const painter=this.models.getModel(this.study.provider,this.study.model), route=this.executionSettings?.planner_model;
     if (!route || route==='painter') return painter;
+    if (route==='default') {                       // Qwen3 VL when connected, else the painter, without a message
+      const slash=DEFAULT_PLANNER.indexOf('/'), model=this.models.getModel(DEFAULT_PLANNER.slice(0,slash),DEFAULT_PLANNER.slice(slash+1));
+      return model && isInteractiveModel(model) && this.models.hasConfiguredAuth(model.provider) ? model : painter;
+    }
     const slash=route.indexOf('/'), model=slash>0 ? this.models.getModel(route.slice(0,slash),route.slice(slash+1)) : null;
     if (!model || !isInteractiveModel(model) || !this.models.hasConfiguredAuth(model.provider)) {
       if (this.plannerMissing!==route) { this.plannerMissing=route; this.emit({type:'action',seconds:0,message:`The planner model ${route} is not connected: the painter model plans.`}); }

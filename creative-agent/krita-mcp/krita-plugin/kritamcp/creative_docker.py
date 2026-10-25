@@ -63,7 +63,7 @@ def canvas_details(canvas):
 
 
 # The painter pre-selected when the artist has chosen none yet and it is connected.
-DEFAULT_PAINTER = ('openrouter', 'qwen/qwen3-vl-235b-a22b-instruct')
+DEFAULT_PAINTER = ('deepseek', 'deepseek-flash')
 
 def provider_name(identifier):
     return {'openrouter': 'OpenRouter', 'opencode-go': 'OpenCode Go', 'opencode': 'OpenCode',

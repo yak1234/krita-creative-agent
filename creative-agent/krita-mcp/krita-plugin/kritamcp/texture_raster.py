@@ -253,8 +253,11 @@ def apply_detail(base, detail, alpha, strength, blend):
     lum = 0.114 * pixels[..., 0] + 0.587 * pixels[..., 1] + 0.299 * pixels[..., 2]
     grey = np.clip(0.5 + CONTRAST * detail, 0, 1)
     change = np.round(strength * (_blend(lum, grey, blend) - lum) * 255).astype(np.int16)
+    channels = base[..., :3].astype(np.int16)
+    # Never past black or white on any channel: a clipped channel would shift the hue, so the change stops at the headroom.
+    change = np.clip(change, -channels.min(axis=2), 255 - channels.max(axis=2))
     out = np.empty(base.shape, np.uint8)
-    out[..., :3] = np.clip(base[..., :3].astype(np.int16) + change[..., None], 0, 255).astype(np.uint8)
+    out[..., :3] = (channels + change[..., None]).astype(np.uint8)
     out[..., 3] = np.round(np.clip(alpha, 0, 1) * 255).astype(np.uint8)
     return out
 

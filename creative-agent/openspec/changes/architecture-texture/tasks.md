@@ -21,8 +21,8 @@
 ## 3. The pixel operation (plugin)
 
 - [x] 3.1 `texture_raster.py` (numpy only): each material's detail (high-pass luminance of colour, displacement and AO, unit
-      spread, a mip chain); a one-point perspective map from tile size near/far, direction and vanishing point; two shifted
-      samplings mixed by low-frequency noise so no tile repeats visibly; the part's mask feathered inside its edge; the detail
+      spread, a mip chain); a one-point perspective map from tile size near/far, direction and vanishing point; texture bombing
+      (random offsets per cell, whole courses for regular patterns) so no tile repeats visibly; the part's mask feathered inside its edge; the detail
       applied to the painting's luminance only (Overlay or Soft Light at the strength), so hue and chroma never change.
 - [x] 3.2 `texture_craft.py`: operation `texture`, validated before anything changes; one paint layer "Texture: <part>" in the
       move's group, written only in squares that hold detail; a reversible pass (the move's Undo / Redo removes it).

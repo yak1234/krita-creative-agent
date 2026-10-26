@@ -8,6 +8,9 @@ stays or type a correction. A separate reviewer checks the result against your r
 features a script needs to paint well, among them pen pressure and tilt, background stroke jobs, one-step agent moves and named
 regions of the canvas. The agent comes with the app.
 
+<p align="center"><img src="creative-agent/docs/gallery/the-last-minute.jpg" alt="The Last Minute, a painting of Dostoevsky in a white shroud before the mock execution on Semyonovsky Square, snow falling at sunrise" width="800"><br>
+<em>The Last Minute</em> (Dostoevsky before his mock execution, Semyonovsky Square, 1849), painted in Toska.</p>
+
 > Status: pre-alpha, built and run on macOS (Apple silicon). Toska was called "Krita Agent" while it was being made, and the
 > repository, the settings folder (`KritaAgent`) and the app's bundle identifier (`local.kritaagent`) keep that name for now (see the
 > "Product name" section of AGENT-FORK.md). Toska is based on Krita, the free digital painting program by the Krita developers

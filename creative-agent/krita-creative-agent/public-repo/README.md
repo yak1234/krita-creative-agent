@@ -50,7 +50,7 @@ flowchart TB
       brushes["Native brushwork"]
       refs["Reference images, each with a job:<br/>direction, likeness, composition,<br/>palette, material"]
       images["AI image generator<br/>assets and canvas edit references"]
-      effects["Effects<br/>snow, fog and custom effects"]
+      effects["Effects<br/>falling and settled snow"]
     end
   end
 

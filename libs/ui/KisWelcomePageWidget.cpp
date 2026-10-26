@@ -332,6 +332,11 @@ void KisWelcomePageWidget::slotUpdateThemeColors()
 
     // make the welcome screen labels a subtle color so it doesn't clash with the main UI elements
     blendedColor = KisPaintingTweaks::blendColors(textColor, backgroundColor, 0.8);
+    // Krita Agent: over Toska's painting the faded colour was hard to read (the artist, 2026-10-25): white text on the
+    // dark themes, charcoal on Toska Day (KisWelcomeBackgroundLayout::textColorFor)
+    if (!m_ownBackground.isNull()) {
+        blendedColor = KisWelcomeBackgroundLayout::textColorFor(backgroundColor.lightness());
+    }
     // only apply color to the widget itself, not to the tooltip or something
     blendedStyle = "QWidget{color: " + blendedColor.name() + "}";
 
@@ -404,8 +409,16 @@ void KisWelcomePageWidget::slotUpdateThemeColors()
     QString translationNoFeed = i18n("You can <a href=\"ignored\" style=\"color: COLOR_PLACEHOLDER; text-decoration: underline;\">enable news</a> from krita.org in various languages with the menu above");
     labelNoFeed->setText(translationNoFeed.replace("COLOR_PLACEHOLDER", blendedColor.name()));
 
-    const QColor faintTextColor = KisPaintingTweaks::blendColors(textColor, backgroundColor, 0.4);
-    const QString &faintTextStyle = "QWidget{color: " + faintTextColor.name() + "}";
+    const QColor faintTextColor = m_ownBackground.isNull() ? KisPaintingTweaks::blendColors(textColor, backgroundColor, 0.4)
+                                                           : blendedColor;
+    QString faintTextStyle = "QWidget{color: " + faintTextColor.name() + "}";
+    if (!m_ownBackground.isNull()) {
+        // Krita Agent: the empty-state lines sit over the painting's brightest strokes: a backing of the window colour
+        QColor fill = backgroundColor;
+        fill.setAlphaF(float(KisWelcomeBackgroundLayout::kEmptyStateFill));
+        faintTextStyle = QString("QLabel{color: %1; background-color: rgba(%2, %3, %4, %5); padding: 8px 12px; border-radius: 6px}")
+                             .arg(faintTextColor.name()).arg(fill.red()).arg(fill.green()).arg(fill.blue()).arg(fill.alphaF());
+    }
     labelNoRecentDocs->setStyleSheet(faintTextStyle);
     labelNoFeed->setStyleSheet(faintTextStyle);
 

@@ -63,6 +63,15 @@ void KisWelcomeBackgroundLayoutTest::testEmptyInputsGiveNoRect()
     QVERIFY(KisWelcomeBackgroundLayout::coverSourceRect(kPainting, QSize(0, 900)).isEmpty());
 }
 
+void KisWelcomeBackgroundLayoutTest::testTextIsWhiteOrCharcoal()
+{
+    // White on the dark themes; Toska Day's charcoal on its cream (#efe8dc)
+    QCOMPARE(KisWelcomeBackgroundLayout::textColorFor(QColor(0x14, 0x1b, 0x25).lightness()), QColor(Qt::white));
+    QCOMPARE(KisWelcomeBackgroundLayout::textColorFor(QColor(0xef, 0xe8, 0xdc).lightness()), QColor(0x1f, 0x1a, 0x16));
+    QVERIFY(KisWelcomeBackgroundLayout::kEmptyStateFill > KisWelcomeBackgroundLayout::kVeilLight);
+    QVERIFY(KisWelcomeBackgroundLayout::kEmptyStateFill < 1.0);
+}
+
 void KisWelcomeBackgroundLayoutTest::testLightThemesGetTheStrongerVeil()
 {
     // Toska Night's window #141b25 and Toska Day's #efe8dc

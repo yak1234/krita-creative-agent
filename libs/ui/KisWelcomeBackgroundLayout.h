@@ -6,6 +6,7 @@
 #ifndef KISWELCOMEBACKGROUNDLAYOUT_H
 #define KISWELCOMEBACKGROUNDLAYOUT_H
 
+#include <QColor>
 #include <QRect>
 #include <QSize>
 #include <QtGlobal>
@@ -56,6 +57,18 @@ inline qreal veilFor(int windowLightness)
 {
     return windowLightness > 127 ? kVeilLight : kVeil;
 }
+
+/**
+ * The welcome page's text over the painting (the artist, 2026-10-25: the grey text was hard to read): white on the
+ * dark themes, a warm charcoal on Toska Day, like ink on its cream paper (about 15:1 against #efe8dc).
+ */
+inline QColor textColorFor(int windowLightness)
+{
+    return windowLightness > 127 ? QColor(0x1f, 0x1a, 0x16) : QColor(Qt::white);
+}
+
+/// Behind the empty-state lines in the middle of the page: the window colour at this opacity, so they read over the strokes.
+inline constexpr qreal kEmptyStateFill = 0.78;
 }
 
 #endif // KISWELCOMEBACKGROUNDLAYOUT_H

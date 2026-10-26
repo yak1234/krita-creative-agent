@@ -16,6 +16,7 @@ private Q_SLOTS:
     void testAnchoredRightKeepsTheMoonInView();
     void testEmptyInputsGiveNoRect();
     void testLightThemesGetTheStrongerVeil();
+    void testTextIsWhiteOrCharcoal();
     void testShippedPaintingDecodes();
     void testOwnWelcomeOnlyInTheBuildNamedToska();
 };

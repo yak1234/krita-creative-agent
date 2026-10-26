@@ -1377,7 +1377,7 @@ class CreativeAgentDocker(DockWidget):
         self.sharpen_bar = QProgressBar(); self.sharpen_bar.setRange(0, 1000); self.sharpen_bar.setTextVisible(False); self.sharpen_bar.setFixedHeight(6)
         self.sharpen_bar.setAccessibleName('Sharpening progress'); sharpen_layout.addWidget(self.sharpen_bar)
         self.sharpen_row.hide(); self.plan_steps.now_layout.addWidget(self.sharpen_row)
-        self.sharpen_controls = []; self.canvas_reference_controls = []
+        self.sharpen_controls = []; self.canvas_reference_controls = []; self.effect_build_controls = []; self.effect_build_cards = []
         top_area = QVBoxLayout(); top_area.setContentsMargins(0, 0, 0, 0); top_area.setSpacing(6); layout.addLayout(top_area)
         self.tabs = QTabWidget(); self.tabs.setObjectName('panelTabs'); self.tabs.setDocumentMode(True); self.tabs.setUsesScrollButtons(False)
         self.tabs.tabBar().setDrawBase(False); self.tabs.tabBar().setExpanding(False)
@@ -2201,7 +2201,8 @@ class CreativeAgentDocker(DockWidget):
         self.decision_note.setText(note)
 
     def build_generic_settings(self, fields):
-        """One labelled combo box per declared setting (see the companion's settings-schema.mjs)."""
+        """One labelled combo box (or checkbox) per declared setting, with its button when it declares one (see the
+        companion's settings-schema.mjs)."""
         while self.generic_settings.rowCount(): self.generic_settings.removeRow(0)
         self.setting_widgets = {}
         for field in fields:
@@ -2216,6 +2217,7 @@ class CreativeAgentDocker(DockWidget):
                 row_layout.addWidget(box, 0, Qt.AlignmentFlag.AlignTop); row_layout.addWidget(text, 1)
                 if field.get('tooltip'): box.setToolTip(field['tooltip']); text.setToolTip(field['tooltip'])
                 box.toggled.connect(self.change_execution_settings)
+                if field.get('button'): row_layout.addWidget(self.setting_button(field['button']), 0, Qt.AlignmentFlag.AlignTop)
                 self.generic_settings.addRow(field['label'], row); self.setting_widgets[field['key']] = box
                 continue
             combo = QComboBox(); combo.setAccessibleName(field.get('accessible') or field['label'])
@@ -2223,10 +2225,27 @@ class CreativeAgentDocker(DockWidget):
             for option in field.get('options', []): combo.addItem(option['label'], option['value'])
             if field.get('tooltip'): combo.setToolTip(field['tooltip'])
             combo.currentIndexChanged.connect(self.change_execution_settings)
-            self.generic_settings.addRow(field['label'], combo); self.setting_widgets[field['key']] = combo
+            field_widget = combo
+            if field.get('button'):                             # the combo with its button beside it
+                field_widget = QWidget(); field_layout = QHBoxLayout(field_widget); field_layout.setContentsMargins(0, 0, 0, 0); field_layout.setSpacing(6)
+                field_layout.addWidget(combo, 1); field_layout.addWidget(self.setting_button(field['button']))
+            self.generic_settings.addRow(field['label'], field_widget); self.setting_widgets[field['key']] = combo
             if field.get('note'):
                 note = QLabel(field['note']); note.setWordWrap(True); note.setObjectName('muted'); self.generic_settings.addRow(note)
         self.update_controls(); self.sync_auto_approve()
+
+    def setting_button(self, button):
+        """A declared setting's button (settings-schema.mjs `button`): asks `confirm` first, then sends its command; No sends nothing."""
+        widget = QPushButton(button['label']); widget.setAccessibleName(button['label'].rstrip('…'))
+        def press(_checked=False, button=button):
+            if button.get('confirm') and not self.confirm(button['label'].rstrip('…'), button['confirm']): return
+            self.send(dict(button['command']))
+        widget.clicked.connect(press)
+        return widget
+
+    # Dialog helper, replaceable in tests (no dialog opens there).
+    def confirm(self, title, text):
+        return QMessageBox.question(self, title, text, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
 
     def apply_execution_settings(self, settings):
         """Show saved settings without sending them back."""
@@ -2321,7 +2340,7 @@ class CreativeAgentDocker(DockWidget):
                        [self.move_auto], ready=lambda panel: not panel.busy,
                        still=lambda panel, number=number: (panel.current_move or {}).get('number') == number)
         elif auto.counting():
-            auto.drop()
+            auto.drop('main')
 
     def offer_choice(self, key, kind, button, answer, doing, hint='press a button or type to stop', ready=None):
         """Count down for a chat card's button: pressed for the artist after the delay (the same path as their click)."""
@@ -2335,6 +2354,43 @@ class CreativeAgentDocker(DockWidget):
         wanted = str(recommended).casefold().strip(' .')
         button = next((b for b in controls or [] if b.text().casefold().strip(' .') == wanted), None)
         if button is not None: self.offer_choice(key, kind, button, button.text(), '“%s”' % button.text(), ready=ready)
+
+    # Custom effects (openspec custom-effects; effects/build.ts): the build's card and its answers.
+    def show_effect_build(self, event):
+        """The canvas and the canvas with the new effect side by side, with Keep / Try again / Discard (or Remove effect once
+        kept: the companion sends the card again), each sent once. Auto-approve presses Keep after the card's
+        auto_keep_seconds (at least 20 s, whatever its delay) and says so (`auto`), and never presses another button. Its
+        countdown runs beside a move's or a plan step's (auto_approve.BESIDE): nothing waits for the card."""
+        build_id = event['id']; paragraphs = (event.get('message') or '').split('\n\n')
+        actions = list(event.get('actions') or []); choices = list(zip(event.get('options') or [], actions))
+        buttons = self.choice_card(event.get('title') or 'Custom effect', paragraphs[0], choices,
+                                   lambda value, build_id=build_id: self.send({'type': 'effect_build', 'id': build_id, 'action': value}),
+                                   event.get('image_path'), notes=paragraphs[1:])
+        self.effect_build_controls = buttons; self.effect_build_cards.append(buttons)
+        if 'keep' not in actions or not self.auto_approve.on: return
+        keep = buttons[actions.index('keep')]
+        def act(panel, build_id=build_id, buttons=buttons):
+            for button in buttons:
+                if not sip.isdeleted(button): button.setEnabled(False)
+            panel.send({'type': 'effect_build', 'id': build_id, 'action': 'keep', 'auto': True})
+        self.auto_approve.offer('effect:' + build_id, 'effect_build', 'keep', 'Keeping', 'press a button or type to stop', act,
+                                [self.card_auto_label(keep)], still=lambda panel, keep=keep: not sip.isdeleted(keep) and keep.isEnabled(),
+                                at_least=event.get('auto_keep_seconds'))
+
+    def close_effect_build_cards(self):
+        """The companion stopped or restarted: its builds lived only in that process, so no open custom effect card can be
+        answered any more. Its buttons go, with a line saying why; the effect was not kept."""
+        self.auto_approve.drop('beside')
+        for buttons in self.effect_build_cards:
+            open_buttons = [b for b in buttons if not sip.isdeleted(b) and b.isEnabled()]
+            if not open_buttons: continue
+            for button in open_buttons: button.setEnabled(False)
+            layout = open_buttons[0].parentWidget().layout() if open_buttons[0].parentWidget() else None
+            if layout is None: continue
+            line = QLabel('Closed: the companion restarted or stopped, so this build is gone. Nothing was added to your effects.')
+            line.setObjectName('muted'); line.setWordWrap(True); line.setTextFormat(Qt.TextFormat.PlainText)
+            line.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred); layout.addWidget(line)
+        self.effect_build_controls = []; self.effect_build_cards = []
 
     def change_model(self, *_args):
         selected = self.model.currentData()
@@ -2836,7 +2892,8 @@ class CreativeAgentDocker(DockWidget):
         self.tabs.setCurrentIndex(self.chat_tab)
         self.auto_approve.forget()
         self.goal = None; self.plan_bar.hide(); self.move_bar.hide(); self.current_move = None; self.question_id = None; self.question_controls = []; self.closeup_question_id = None; self.closeup_controls = []
-        self.sharpen_controls = []; self.canvas_reference_controls = []; self.sharpen_row.hide(); self.plan_steps.set_side_task(False)
+        self.sharpen_controls = []; self.canvas_reference_controls = []; self.effect_build_controls = []; self.effect_build_cards = []
+        self.sharpen_row.hide(); self.plan_steps.set_side_task(False)
         self.pending_references = []; self.attached_references = []; self.show_references()
         self.paint_only.chat_ended()
         self.empty_state.show()
@@ -3036,6 +3093,7 @@ class CreativeAgentDocker(DockWidget):
         if not self.process_ui_alive():
             return
         self.busy = False; self.study_active = False; stop_requested.clear()
+        self.close_effect_build_cards()
         self.start_button.setEnabled(True)
         self.start_button.setText('Reconnect assistant')
         self.start_button.show()
@@ -3180,6 +3238,7 @@ class CreativeAgentDocker(DockWidget):
                         break
             self.model.blockSignals(False)
             if kind == 'ready':
+                self.close_effect_build_cards()                   # a new companion process: the old one's builds are gone
                 self.status.setText(event.get('bridge', {}).get('error') or 'Ready')
                 self.versions = event.get('versions') or event.get('build') or {}
                 try:
@@ -3381,6 +3440,8 @@ class CreativeAgentDocker(DockWidget):
             self.canvas_reference_controls = self.choice_card(event.get('title') or 'Canvas edit reference', paragraphs[0], choices,
                                                               lambda value, reference_id=reference_id: self.send({'type': 'canvas_reference', 'id': reference_id, 'action': value}),
                                                               event.get('image_path'), notes=paragraphs[1:])
+        elif kind == 'effect_build':
+            self.show_effect_build(event)
         elif kind == 'shapes_model_ready':
             for button in self.shapes_model_controls: button.setEnabled(False)
             self.status.setText('The shape model is ready.')

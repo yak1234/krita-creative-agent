@@ -26,8 +26,16 @@ export function listSkills(directory = SKILLS_DIR) {
   if (!existsSync(directory)) return [];
   return readdirSync(directory, { withFileTypes: true }).filter(entry => entry.isDirectory())
     .map(entry => join(directory, entry.name, 'SKILL.md')).filter(existsSync)
-    .map(file => { const { fields } = frontmatter(readFileSync(file, 'utf8')); return { name: fields.name, description: fields.description, filePath: file, baseDir: join(file, '..') }; })
-    .filter(skill => skill.name && skill.description);
+    .map(file => { const { fields } = frontmatter(readFileSync(file, 'utf8')); return { name: fields.name, description: fields.description, filePath: file, baseDir: join(file, '..'), hidden: fields['disable-model-invocation'] === 'true' }; })
+    // A skill marked disable-model-invocation (effect-building: the effect builder's worker reads it) is neither the
+    // painter's (Pi leaves it out of the prompt too) nor in the artist's / menu.
+    .filter(skill => skill.name && skill.description && !skill.hidden).map(({ hidden, ...skill }) => skill);
+}
+
+/** A bundled skill's instructions without its frontmatter, by folder name (for a worker that is given them directly). */
+export function skillBody(name, directory = SKILLS_DIR) {
+  if (!/^[a-z0-9-]+$/.test(name)) throw new Error('A skill name is lowercase letters, digits and hyphens.');
+  return frontmatter(readFileSync(join(directory, name, 'SKILL.md'), 'utf8')).body.trim();
 }
 
 // The artist's "/skill:name rest" (Pi's form) or "/name rest" (the panel's slash menu) becomes the

@@ -10,8 +10,9 @@
 /** The delays the setting offers, in seconds (0: Immediately); 'off' is the default. */
 export const AUTO_APPROVE_DELAYS = Object.freeze([0, 10, 30, 60] as const);
 /** The cards the panel may answer: a finished plan step (Met), a move outside a plan (Keep), the Sharpen goal offer
- * (Sharpen) and its review (Use sharpened), and a question or close-up question that marks a recommended option. */
-export const AUTO_APPROVE_KINDS = Object.freeze(['plan_step', 'move', 'sharpen_offer', 'sharpen_review', 'question', 'closeup'] as const);
+ * (Sharpen) and its review (Use sharpened), a question or close-up question that marks a recommended option, and a custom
+ * effect build (Keep, never sooner than the policy's auto_keep_min_seconds: effects/build.ts sends auto_keep_seconds). */
+export const AUTO_APPROVE_KINDS = Object.freeze(['plan_step', 'move', 'sharpen_offer', 'sharpen_review', 'question', 'closeup', 'effect_build'] as const);
 export type AutoApproveKind = typeof AUTO_APPROVE_KINDS[number];
 /** Cards Auto-approve never answers: a canvas reference (canvas-reference.ts) is the artist's own choice of what the painting
  * becomes, so Use as the target, Try again (an AI image) and Discard always wait for them. The panel keeps the same list

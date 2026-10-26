@@ -2,7 +2,8 @@
 // Every execution setting, declared once: the companion validates and defaults from here, and the panel
 // builds its controls from the `generic` ones (sent as a settings_schema event). Adding a setting is one
 // entry here, with no panel change. panel: generic (a combo box built from options), custom (the panel
-// has its own control: reasoning levels depend on the model) or hidden (fixed, not shown).
+// has its own control: reasoning levels depend on the model) or hidden (fixed, not shown). A generic setting may carry
+// a `button` beside its control: {label, command (sent as is), confirm (asked first; No sends nothing)}.
 // The default planner (the artist, 2026-10-24: "I want planner Qwen VL" for its image reading; deepseek-flash paints). Used
 // when connected; otherwise plan turns quietly run on the painter.
 export const DEFAULT_PLANNER = 'openrouter/qwen/qwen3-vl-235b-a22b-instruct';
@@ -48,6 +49,13 @@ export const SETTINGS = Object.freeze([
   { key: 'preview_additions', type: 'boolean', default: false, panel: 'generic', label: 'Preview additions', accessible: 'Preview additions with a canvas reference',
     error: 'preview_additions must be true or false.', options: [[false, 'Off'], [true, 'Preview with a canvas reference']],
     tooltip: 'Before a plan step that adds something (Add: snow, Add: ghosts) paints, an image model shows the canvas with it added: a canvas reference beside the chat. Use it as the target and the step paints toward it only where it differs; each picture is one AI image of the chat\'s allowance.' },
+  // Custom effects (openspec custom-effects): the painter uses the effect library (fog, snow and the artist's own) through
+  // paint_effect. Off by default: no paint_effect, and paint_snow unchanged.
+  // Its button: Reset custom effects… (studio.mjs resetEffects) deletes the artist's own effects after the panel asks.
+  { key: 'custom_effects', type: 'boolean', default: false, panel: 'generic', control: 'checkbox', label: 'Custom effects (experimental)', accessible: 'Custom effects',
+    error: 'custom_effects must be true or false.', options: [[false, 'Off'], [true, 'Paint effects from the effect library']],
+    tooltip: 'Off by default. When painting an effect fails twice, Toska builds a new effect from tested building blocks and asks you to keep it. Keep it, try again or discard it; Reset removes all your own effects.',
+    button: { label: 'Reset custom effects…', command: { type: 'reset_effects' }, confirm: 'Remove all your own effects? Fog and snow stay. This cannot be undone.' } },
   // Off by default: a screen that never sleeps must be the artist's choice. The panel shows when it holds.
   { key: 'keep_screen_awake', type: 'boolean', default: false, panel: 'generic', control: 'checkbox', label: 'Screen', accessible: 'Keep the screen awake while painting',
     error: 'keep_screen_awake must be true or false.', options: [[false, 'Let the screen sleep'], [true, 'Keep the screen awake while painting']],
@@ -96,7 +104,8 @@ export function validSetting(setting, value) {
 /** What the panel needs to build the generic controls, in display order. `models`: the routes a model setting offers
  * after its own options ([{route: 'provider/id', label}]), listed by the companion. */
 export function panelSchema({ models = [] } = {}) {
-  return SETTINGS.filter(s => s.panel === 'generic').map(({ key, type, label, accessible, options, tooltip, note, control }) =>
+  return SETTINGS.filter(s => s.panel === 'generic').map(({ key, type, label, accessible, options, tooltip, note, control, button }) =>
     ({ key, label, accessible, tooltip: tooltip ?? '', note: note ?? '', control: control ?? 'combo',
-      options: [...options.map(([value, text]) => ({ value, label: text })), ...(type === 'model' ? models.map(m => ({ value: m.route, label: m.label })) : [])] }));
+      options: [...options.map(([value, text]) => ({ value, label: text })), ...(type === 'model' ? models.map(m => ({ value: m.route, label: m.label })) : [])],
+      ...(button ? { button } : {}) }));
 }

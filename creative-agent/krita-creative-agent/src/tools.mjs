@@ -3,6 +3,9 @@ import { defineTool } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { Value } from 'typebox/value';
 import { createHash } from 'node:crypto';
+import { basename, join } from 'node:path';
+import { copyFile, mkdir } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { imageContent } from './files.mjs';
 import {referenceTools,findReferenceAccents} from './reference-tool.mjs';
 import { mapReferencePoint } from './reference-generator.mjs';
@@ -10,6 +13,8 @@ import { guideTools } from './guide-tool.ts';
 import { accentTools } from './accents-tool.ts';
 import { finishTools } from './finish-tool.ts';
 import { snowTools } from './snow-tool.ts';
+import { effectTools, effectCatalogueWithin } from './effects/effect-tool.ts';
+import { loadEffects } from './effects/library.ts';
 import { refineTools } from './refine-goal.ts';
 import { materialCatalogue } from './plan-materials.ts';
 import { selectionTools } from './paint-only-here.ts';
@@ -20,8 +25,17 @@ import { brushCards } from './brush-catalog.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, mutates } from './craft.mjs';
 import { assetTools } from './assets.mjs';
 import { skillReadTool, SKILLS_DIR } from './skills.mjs';
-import { toolCatalogue, toolHelp, toolboxIndex, toolboxHelp } from './tool-catalogue.ts';
+import { HELP_LIMIT, toolCatalogue, toolHelp, toolboxIndex, toolboxHelp } from './tool-catalogue.ts';
 import { repairArguments, repairBatchActions, fieldHint } from './argument-repair.ts';
+
+// The bundled effects (effects/ beside src/, as skills/; the release copies it beside the bundled src/main.mjs).
+export const EFFECTS_DIR = fileURLToPath(new URL('../effects/', import.meta.url));
+/** The effect library's folders: the bundled one and the artist's own in the companion's data folder (never the painting's
+ * folder); without a data folder, only the bundled effects. @param {any} runtime */
+export function effectFolders(runtime) {
+  const data = runtime.config?.data_dir;   // not config.output: that can be a paintings folder
+  return { bundled: EFFECTS_DIR, own: data ? join(data, 'effects') : '' };   // '' reads as no folder (library.ts: ENOENT is empty)
+}
 
 /** @template {import('typebox').TProperties} T @param {T} properties */
 const object = properties => Type.Object(properties, { additionalProperties: false });
@@ -392,6 +406,19 @@ export function paintingTools(runtime) {
   tools.push(...snowTools(runtime, { snow: nativeExecute(runtime, 'snow'), addition: () => runtime.additionStepNow?.() ?? null,
     findPart: async name => { const found = runtime.proposeArea ? await runtime.proposeArea(name, { quiet: true }) : null;
       return found?.mask_path ? { mask_path: found.mask_path, bounds: found.bounds } : null; } }));
+  // Custom effects (effects/effect-tool.ts, openspec custom-effects): the library's effects through one tool, one reversible
+  // pass of the plugin's effect operation (effect_craft.py). Offered only with the custom_effects setting on (studio.mjs).
+  // The library is read per call, so an effect the artist just kept is usable at once.
+  tools.push(...effectTools(runtime, { effect: nativeExecute(runtime, 'effect'),
+    findPart: async name => { const found = runtime.proposeArea ? await runtime.proposeArea(name, { quiet: true }) : null;
+      return found?.mask_path ? { mask_path: found.mask_path, bounds: found.bounds } : null; },
+    library: () => loadEffects(effectFolders(runtime)),
+    // A kept texture is copied into this chat's folder: the plugin reads images only from there.
+    textureInto: async source => {
+      const folder = join(runtime.study.directory, 'effect-textures'), target = join(folder, basename(source));
+      await mkdir(folder, { recursive: true }); await copyFile(source, target);
+      return target;
+    } }));
   // A flat fill anywhere in a batch is nudged before anything paints (studio.mjs fillNudge), so the batch is refused whole.
   tools.push(batchTool(tools, name => runtime.toolOffered?.(name) ?? true,
     async actions => { if (actions.some(a => a.tool === 'fill_region')) await runtime.fillNudge?.({batch:true}); return prepareBatchShapes(runtime, actions); },
@@ -406,9 +433,12 @@ export function paintingTools(runtime) {
 /** painting_tool_help (plan-from-request goal 3, tool-catalogue.ts): a name looks up that tool among the painter's own
  * (the whole list, built last); no name while planning is the catalogue; no name while painting is the plugin's toolbox
  * help, as before. Each lookup is recorded for the diagnostics (the planner's lookups show there). */
-function helpLookup(runtime, tools) {
-  const help = tools.find(t => t.name === 'painting_tool_help');
+function helpLookup(runtime, everyTool) {
+  const help = everyTool.find(t => t.name === 'painting_tool_help');
   help.execute = async (id, args = {}, signal) => {
+    // paint_effect only with Custom effects on (studio.mjs toolOffered): off, neither the planner nor the painter sees it here.
+    const effectsOn = runtime.toolOffered?.('paint_effect') ?? true;
+    const tools = effectsOn ? everyTool : everyTool.filter(t => t.name !== 'paint_effect');
     const name = typeof args.name === 'string' && args.name.trim() ? args.name.trim() : null, planning = runtime.executionPhase === 'plan';
     runtime.diagnostics?.record?.({ type: planning ? 'planner_tool_help' : 'painter_tool_help', ...(name ? { name } : {}) });
     const canvas = runtime.decisionObservation ?? runtime.lastObservation ?? runtime.canvasContext?.canvas ?? null;
@@ -424,6 +454,20 @@ function helpLookup(runtime, tools) {
     else if (!name) value = planning ? toolCatalogue({ tools, canvas: size }) : toolboxIndex(await toolbox());
     else if (tools.some(t => t.name === name) || planning) value = await toolHelp(name, { tools, canvas: size, skillsDir: SKILLS_DIR });
     else value = toolboxHelp(await toolbox(), name) ?? await toolHelp(name, { tools, canvas: size, skillsDir: SKILLS_DIR });
+    // The effect library, read now (an effect the artist just kept shows at once): its list in paint_effect's help and in
+    // the planner's catalogue entry for it, one line per effect, each cue quoted (effect-tool.ts effectCatalogue).
+    const answer = /** @type {any} */ (value);
+    const entry = name === 'paint_effect' && answer?.name === 'paint_effect' ? answer
+      : !name && planning && effectsOn ? answer?.tools?.find?.(/** @param {any} t */ t => t.name === 'paint_effect') : null;
+    if (entry) {
+      try {
+        // Within what is left of the help limit (JSON escapes cost a little, hence the margin).
+        const room = Math.max(300, Math.min(name ? 2500 : 1200, HELP_LIMIT - JSON.stringify(value).length - 200));
+        entry.effects = effectCatalogueWithin((await loadEffects(effectFolders(runtime))).effects, room);
+      } catch (error) {
+        entry.effects = `The effect library could not be read (${error?.message ?? error}).`;
+      }
+    }
     return { content: [{ type: 'text', text: JSON.stringify(value) }], details: value };
   };
 }

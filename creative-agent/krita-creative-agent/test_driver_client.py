@@ -139,7 +139,8 @@ def register_test_tools(mcp):
         bounds, canvas, name?} with a mask inside the test chat's folder; answer {text, question_id?, area?: proposal
         | found} (a question card: 'Use this' with area proposal, 'Paint everywhere', or typed); closeup_answer
         {answer}; folder_guess {name, guess}; folder_study {action: choose (choice: plan|all|pick|none, picked?)|study|exclude|include (name)|stop}; sharpen_answer {action: sharpen|original on the offer, use|keep on the
-        side by side, cancel while it sharpens}; set_mode {mode}; stop {}. An area is protected in Krita only on the test
+        side by side, cancel while it sharpens}; effect_build_answer {action: keep|retry|discard, remove after keep} (the
+        custom effect card); set_mode {mode}; stop {}. An area is protected in Krita only on the test
         chat's own document (the result says so)."""
         return _call('POST', '/command', {'type': type, 'params': params or {}})
 

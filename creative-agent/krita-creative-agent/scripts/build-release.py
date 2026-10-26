@@ -232,6 +232,7 @@ def bundle_companion(root, dependency_root, companion, lock, arch):
     shutil.copy2(root / 'src/pyodide-runner.mjs', companion / 'src/pyodide-runner.mjs')
     shutil.copytree(dependency_root / 'pyodide', companion / 'node_modules/pyodide', ignore=shutil.ignore_patterns('*.map', '*.html', '*.d.ts'))
     shutil.copytree(root / 'skills', companion / 'skills', ignore=shutil.ignore_patterns('__pycache__'))
+    shutil.copytree(root / 'effects', companion / 'effects')   # the bundled custom effects and policy.yaml (src/effects/library.ts, policy.ts)
     fetch = ("import(process.argv[1]).then(async ({loadPyodide}) => { const py = await loadPyodide({packageCacheDir: process.argv[2]});"
              " await py.loadPackage(process.argv[3].split(',')); })")
     subprocess.run([shutil.which('node') or 'node', '-e', fetch, (companion / 'node_modules/pyodide/pyodide.mjs').as_uri(),

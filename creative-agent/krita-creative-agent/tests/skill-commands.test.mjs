@@ -20,7 +20,7 @@ test('the short commands expand to their skill plus the artist\'s text', () => {
 test('one table: every command names a bundled skill (or is one the studio answers) and has a one-line description', () => {
   const skills = listSkills().map(s => s.name);
   for (const c of SKILL_COMMANDS) {
-    assert.ok(c.skill ? skills.includes(c.skill) : c.action === 'original_goal', c.name);
+    assert.ok(c.skill ? skills.includes(c.skill) : ['original_goal', 'new_effect'].includes(c.action), c.name);
     assert.ok(c.description.length > 20 && c.description.length <= 120 && !c.description.includes('\n'), c.name);
   }
   assert.equal(skillCommand('/trace the moon'), null, '/trace is gone with visible tracing (crisp-accents)');
@@ -31,9 +31,9 @@ test('one table: every command names a bundled skill (or is one the studio answe
 test('the slash menu lists the short commands, then /skill:<name> for every bundled skill', () => {
   const skills = listSkills();
   const menu = slashMenu(skills);
-  assert.deepEqual(menu.slice(0, 4).map(m => m.command), ['/colour', '/refine', '/canvas-edit-ref', '/original-goal'], 'no /trace in the menu');
+  assert.deepEqual(menu.slice(0, 5).map(m => m.command), ['/colour', '/refine', '/canvas-edit-ref', '/original-goal', '/new-effect'], 'no /trace in the menu');
   assert.deepEqual(menu.find(m => m.command === '/colour').aliases, ['/color', '/from-reference']);
-  assert.deepEqual(menu.slice(4).map(m => m.command), skills.map(s => '/skill:' + s.name));
+  assert.deepEqual(menu.slice(5).map(m => m.command), skills.map(s => '/skill:' + s.name));
   for (const m of menu) assert.ok(m.description && !m.description.includes('\n'), m.command);
 });
 
@@ -72,4 +72,11 @@ test('/original-goal is a command the studio answers itself: back to the goal pi
   assert.equal(command.name, 'original-goal'); assert.equal(command.action, 'original_goal'); assert.equal(command.skill, undefined);
   assert.match(SKILL_COMMANDS.find(c => c.name === 'original-goal').description, /original goal/i);
   assert.equal(expandSkillCommand('/original-goal'), '/original-goal', 'no skill: left as typed for the studio');
+});
+
+test('/new-effect is a command the studio answers itself: it starts building the effect it names', () => {
+  const command = skillCommand('/new-effect rain');
+  assert.equal(command.name, 'new-effect'); assert.equal(command.action, 'new_effect'); assert.equal(command.skill, undefined);
+  assert.equal(command.rest, 'rain');
+  assert.equal(expandSkillCommand('/new-effect rain'), '/new-effect rain', 'no skill: left as typed for the studio');
 });

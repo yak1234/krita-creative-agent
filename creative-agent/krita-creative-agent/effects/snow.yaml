@@ -1,0 +1,26 @@
+name: snow
+cue: snow falling in the air, flurries, a snowstorm, snow settled on things
+lesson: Falling snow is far flakes small and dim, near flakes few and large, slanted by the wind; settled snow lies on the tops of things.
+layer: "Effect: snow"
+keep_clear: [faces, hair]
+options:
+  density:
+    default: 1
+    min: 0.2
+    max: 3
+    describe: 1 a steady snowfall, 0.5 light flurries, 2 heavy, 3 a blizzard.
+  wind_deg:
+    default: 10
+    min: -60
+    max: 60
+    describe: The flakes' slant from straight down in degrees; positive drifts right.
+  thickness:
+    default: 1
+    min: 0.6
+    max: 1.6
+    describe: How deep settled snow lies (0.6 thin, 1 normal, 1.6 thick).
+blocks:
+  - { block: particles, layers: 3, density: density, wind_deg: wind_deg }
+  # `settle_on` is a placeholder: the paint_effect tool replaces this block by one per part the painter names
+  # (settle_on: ["hats", "posts"]), and drops it when none is named.
+  - { block: caps, part: settle_on, thickness: thickness }

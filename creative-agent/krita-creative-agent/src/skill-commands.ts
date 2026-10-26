@@ -18,8 +18,9 @@ export type SkillCommand = {
   needs?: 'guides';
   /** The studio answers the command itself, never the painter: canvas_reference makes a reference picture of an edit
    * (canvas-reference.ts); its skill is what the painter reads when it paints toward it. original_goal puts back the goal
-   * picture a canvas reference changed (goal-edit.ts). */
-  action?: 'canvas_reference' | 'original_goal';
+   * picture a canvas reference changed (goal-edit.ts). new_effect starts building the effect it names at once, even after
+   * a Discard, with Custom effects on (effects/failures.ts); off, it says how to enable them. */
+  action?: 'canvas_reference' | 'original_goal' | 'new_effect';
 };
 
 export const SKILL_COMMANDS: readonly SkillCommand[] = Object.freeze([
@@ -33,6 +34,8 @@ export const SKILL_COMMANDS: readonly SkillCommand[] = Object.freeze([
     description: 'Preview an edit of the canvas as it is now: an image model shows it changed; nothing is painted until you use it.' },
   { name: 'original-goal', aliases: [], action: 'original_goal',
     description: 'Go back to the original goal picture after a canvas edit reference was used as the new goal.' },
+  { name: 'new-effect', aliases: [], action: 'new_effect',
+    description: 'Build a new effect for the library now (Custom effects): /new-effect rain.' },
 ]);
 
 /** The short command that starts the artist's message, and the text after it; null for anything else. Any case, and

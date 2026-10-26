@@ -36,7 +36,7 @@ export type TestState = { folder: string; chat_id: string | null; ready: boolean
   project_folder: FolderCard | null; references: string[]; plan: { title: string | null; status: string | null; steps: string[] } | null;
   plan_steps: StepView[]; now: NowCard | null; closeup_question: Question | null; paint_only_here: AreaView | null; found_areas: FoundEvent[];
   /** The part a find_it sent is looking for until its found_area arrives (the companion is not busy meanwhile). */
-  finding: string | null; sharpen: SharpenCard | null; canvas_reference: ReferenceCard | null;
+  finding: string | null; sharpen: SharpenCard | null; canvas_reference: ReferenceCard | null; effect_build: ReferenceCard | null;
   painting_target: { document_id?: string | null; filename?: string | null } | null };
 const CAPTIONS: Record<string, string> = { painting: 'Now painting', finishing: 'Finishing', finished: 'Finished · keep it?', open: 'Up next' };
 const FOUND_KEPT = 10;
@@ -74,7 +74,7 @@ export class TestCompanion {
     this.closeRetryMs = closeRetryMs;
     this.status = { folder, chat_id: null, ready: false, busy: false, activity: null, moves: [], question: null, canvas: null, copy: null, errors: [], exited: false,
       shape_timings: [], shapes_model_needed: null, mode: null, project_folder: null, references: [], plan: null, plan_steps: [], now: null,
-      closeup_question: null, paint_only_here: null, found_areas: [], finding: null, sharpen: null, canvas_reference: null, painting_target: null };
+      closeup_question: null, paint_only_here: null, found_areas: [], finding: null, sharpen: null, canvas_reference: null, effect_build: null, painting_target: null };
   }
 
   /** Start a test chat in Agent mode. With `painting` (relative to the project root) a copy is opened in Krita;
@@ -261,7 +261,7 @@ export class TestCompanion {
     const planned = panelCommand(type, params, { testFolder: this.folder, mode: s.mode, planSteps: s.plan_steps, question: s.question,
       closeupQuestion: s.closeup_question, foundAreas: s.found_areas, folderElements: (s.project_folder?.elements ?? []).map(e => e.name),
       folderImages: [...(s.project_folder?.goal ? [s.project_folder.goal] : []), ...(s.project_folder?.elements ?? []).map(e => e.name)], sharpen: s.sharpen,
-      canvasReference: s.canvas_reference });
+      canvasReference: s.canvas_reference, effectBuild: s.effect_build });
     const result: Record<string, unknown> = { status: 'ok', type };
     if (planned.area) result.krita = await this.applyArea(planned.area);
     if (planned.command) {
@@ -271,6 +271,7 @@ export class TestCompanion {
       // Answered: the panel's card goes; Sharpen keeps it, with the progress, until the side by side replaces it.
       if (planned.command.type === 'goal_sharpen' && ['original', 'use', 'keep'].includes(String(planned.command.action))) s.sharpen = null;
       if (planned.command.type === 'canvas_reference') s.canvas_reference = null;
+      if (planned.command.type === 'effect_build') s.effect_build = null;     // after Keep, the card comes back with Remove effect
     }
     return result;
   }
@@ -334,6 +335,9 @@ export class TestCompanion {
           text: String(event.message ?? event.question ?? ''), ...(event.image_path ? { image_path: String(event.image_path) } : {}) };
       if (event.type === 'canvas_reference')
         s.canvas_reference = { id: String(event.id), options: (event.options ?? []).map(String), actions: (event.actions ?? []).map(String),
+          text: String(event.message ?? ''), ...(event.image_path ? { image_path: String(event.image_path) } : {}) };
+      if (event.type === 'effect_build')
+        s.effect_build = { id: String(event.id), options: (event.options ?? []).map(String), actions: (event.actions ?? []).map(String),
           text: String(event.message ?? ''), ...(event.image_path ? { image_path: String(event.image_path) } : {}) };
       const card = s.sharpen;
       if (event.type === 'goal_sharpen_progress' && card && card.id === event.id && !event.finished) card.progress = String(event.message ?? '');

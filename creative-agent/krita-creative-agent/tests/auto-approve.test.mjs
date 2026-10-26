@@ -27,7 +27,7 @@ test('an auto-answer record: a known card kind, its answer and the delay; anythi
   assert.deepEqual(autoApproveRecord({ type: 'auto_approved', kind: 'plan_step', answer: 'met', delay: 30, card: 'title:sky#0' }),
     { type: 'auto_approve', kind: 'plan_step', answer: 'met', delay: 30, card: 'title:sky#0' });
   assert.deepEqual(autoApproveRecord({ kind: 'move', answer: 'keep', delay: 0 }), { type: 'auto_approve', kind: 'move', answer: 'keep', delay: 0 });
-  assert.deepEqual([...AUTO_APPROVE_KINDS], ['plan_step', 'move', 'sharpen_offer', 'sharpen_review', 'question', 'closeup']);
+  assert.deepEqual([...AUTO_APPROVE_KINDS], ['plan_step', 'move', 'sharpen_offer', 'sharpen_review', 'question', 'closeup', 'effect_build']);
   assert.equal(autoApproveRecord({ kind: 'delete_layers', answer: 'yes', delay: 0 }), null, 'an unknown card');
   assert.equal(autoApproveRecord({ kind: 'move', answer: 'keep', delay: 45 }), null, 'a delay the setting never offers');
   assert.equal(autoApproveRecord({ kind: 'move', answer: '', delay: 10 }), null);
@@ -56,5 +56,14 @@ test('choice cards mark a recommended option only where a default answer is safe
 test('the canvas reference card is never auto-approved: it is the artist\'s own choice of what to paint', () => {
   assert.ok(NEVER_AUTO_APPROVE.includes('canvas_reference'));
   assert.ok(!AUTO_APPROVE_KINDS.some(kind => NEVER_AUTO_APPROVE.includes(kind)));
+  assert.equal(autoApproveRecord({ kind: 'canvas_reference', answer: 'use', delay: 0 }), null);
+});
+
+test('effect_build is auto-approvable, canvas_reference still never', () => {
+  assert.ok(AUTO_APPROVE_KINDS.includes('effect_build'), 'Keep on a custom effect card is a default answer');
+  assert.ok(!NEVER_AUTO_APPROVE.includes('effect_build'));
+  assert.deepEqual(autoApproveRecord({ type: 'auto_approved', kind: 'effect_build', answer: 'keep', delay: 10, card: 'effect:e1' }),
+    { type: 'auto_approve', kind: 'effect_build', answer: 'keep', delay: 10, card: 'effect:e1' }, 'the diagnostics row of an auto Keep');
+  assert.deepEqual([...NEVER_AUTO_APPROVE], ['canvas_reference']);
   assert.equal(autoApproveRecord({ kind: 'canvas_reference', answer: 'use', delay: 0 }), null);
 });

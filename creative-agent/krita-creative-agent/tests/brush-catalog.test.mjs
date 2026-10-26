@@ -104,7 +104,10 @@ test('guided-trace pairs guides with a reference colour pass, never fills a guid
 test('every bundled skill has a trigger line in the prompt', () => {
   const skills = readdirSync(new URL('../skills/', import.meta.url), { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name);
   assert.ok(skills.includes('repaint-area') && skills.includes('repeat-motif'));
-  for (const name of skills) assert.ok(PAINTING_INSTRUCTIONS.includes(`load the \`${name}\` skill`), name);
+  // A skill marked disable-model-invocation is not the painter's (effect-building: the effect builder's worker reads it).
+  const painters = skills.filter(name => !/^disable-model-invocation: true$/m.test(readFileSync(new URL(`../skills/${name}/SKILL.md`, import.meta.url), 'utf8')));
+  assert.ok(painters.length < skills.length && !painters.includes('effect-building'));
+  for (const name of painters) assert.ok(PAINTING_INSTRUCTIONS.includes(`load the \`${name}\` skill`), name);
 });
 
 test('the worked examples are skills with their trigger in the description', () => {

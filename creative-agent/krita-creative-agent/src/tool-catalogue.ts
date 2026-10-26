@@ -50,6 +50,7 @@ export const STAGE_TOOLS: readonly StageTool[] = Object.freeze([
 /** Painting tools outside the stages with a measured time: the catalogue gives their rough time on this canvas too. */
 export const MEASURED_TOOLS: Readonly<Record<string, { seconds: [number, number]; source: string }>> = Object.freeze({
   paint_snow: { seconds: [5, 30], source: 'offline on a 6000 x 4500 canvas (openspec snow): falling 2 s of pixels, a 2500 x 1500 roof cap 2.5 s; plus Krita\u2019s read and writes and 2-6 s of Find it per named part' },
+  paint_effect: { seconds: [3, 30], source: 'the engine\u2019s cap (openspec custom-effects): at most 30 s of pixels per call on 6000 x 4500, eight mixed blocks timed in test_effect_blocks.py; plus Krita\u2019s read and write and 2-6 s of Find it per named part' },
 });
 
 const trim = (n: number) => String(Math.round(n * 10) / 10);

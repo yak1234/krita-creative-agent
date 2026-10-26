@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { executionSettings, thinkingLevel } from '../src/execution-settings.mjs';
 import { StudioRuntime } from '../src/studio.mjs';
 test('execution defaults preserve one painter and capability-aware reasoning',()=>{
- assert.deepEqual(executionSettings(),{concurrency:1,reasoning:'auto',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,auto_approve:'off',guides:true,reference_first:true,assets:'codex',ai_images:0,preview_additions:false,keep_screen_awake:false,sharpen_goal:'always',view_size:'auto',planner_model:'default',study_folder:true,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
+ assert.deepEqual(executionSettings(),{concurrency:1,reasoning:'auto',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,auto_approve:'off',guides:true,reference_first:true,assets:'codex',ai_images:0,preview_additions:false,custom_effects:false,keep_screen_awake:false,sharpen_goal:'always',view_size:'auto',planner_model:'default',study_folder:true,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
  assert.equal(thinkingLevel(executionSettings(),{reasoning:true}),'low');
  assert.equal(thinkingLevel(executionSettings({reasoning:'high'}),{reasoning:true}),'high');
  assert.equal(thinkingLevel(executionSettings({reasoning:'high'}),{reasoning:false}),'off');
@@ -27,7 +27,7 @@ test('settings are declared once: validation, defaults and the panel schema come
   if (setting.panel==='generic') assert.ok(setting.label && setting.accessible && setting.options.length>=(setting.type==='model' ? 1 : 2),setting.key+' can be built by the panel');
  }
  const schema=panelSchema();
- assert.deepEqual(schema.map(f=>f.key),['concurrency','move_size','merge_kept','auto_approve','guides','reference_first','assets','ai_images','preview_additions','keep_screen_awake','sharpen_goal','view_size','planner_model','study_folder','routing'],'reasoning is custom and native_craft hidden');
+ assert.deepEqual(schema.map(f=>f.key),['concurrency','move_size','merge_kept','auto_approve','guides','reference_first','assets','ai_images','preview_additions','custom_effects','keep_screen_awake','sharpen_goal','view_size','planner_model','study_folder','routing'],'reasoning is custom and native_craft hidden');
  assert.deepEqual(schema.find(f=>f.key==='merge_kept').options,[{value:true,label:'Merge kept passes'},{value:false,label:'Keep every pass'}]);
  assert.deepEqual(Object.keys(schema[0]).sort(),['accessible','control','key','label','note','options','tooltip']);
  assert.equal(schema.find(f=>f.key==='keep_screen_awake').control,'checkbox');assert.equal(schema[0].control,'combo');

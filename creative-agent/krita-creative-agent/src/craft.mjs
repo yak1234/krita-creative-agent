@@ -11,8 +11,9 @@ export const CRAFT_OPERATIONS = ['create_layer','set_layer','fill_region','apply
 // The full-size checks (area_compare.py) read a whole 6000 px canvas in squares: the long operations' time too.
 // flatten_passes (flatten_craft.py) composites a refine round's passes square by square over the area they cover.
 // texture (texture_craft.py) samples each architectural part's area at full size (about 0.5 µs a pixel offline).
-export const LONG_OPERATIONS = ['apply_filter','colorize_flats','split_by_color','finish','area_likeness','area_accents','refine_map','flatten_passes','texture','snow'];
+export const LONG_OPERATIONS = ['apply_filter','colorize_flats','split_by_color','finish','area_likeness','area_accents','refine_map','flatten_passes','texture','snow','effect'];
 // Comic page operations: comic_page is called by the host when painting starts; letter by the painter.
 export const COMIC_OPERATIONS = ['comic_page','letter'];
-/** Native operations that change the painting (journalled, expected_revision checked). */
-export const mutates = op => ['paint_pass','adjust_layer','painting_toolbox','stamp','draw_guide','accents','finish','flatten_passes','texture','snow',...CRAFT_OPERATIONS,...COMIC_OPERATIONS].includes(op);
+/** Native operations that change the painting (journalled, expected_revision checked). effect_preview (effect_craft.py)
+ * renders over a picture of the canvas view and touches no document: not one of them. */
+export const mutates = op => ['paint_pass','adjust_layer','painting_toolbox','stamp','draw_guide','accents','finish','flatten_passes','texture','snow','effect',...CRAFT_OPERATIONS,...COMIC_OPERATIONS].includes(op);

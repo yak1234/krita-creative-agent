@@ -183,7 +183,7 @@ export function exemption(tool: string, args: Args = {}, { departure = null }: {
   if (tool === 'paint_accents' || (actions?.length && actions.every(a => a?.tool === 'paint_accents'))) return 'accents';
   if (tool === 'paint_finish' || tool === 'refine_to_goal') return 'finish';   // refine_to_goal: fine finishes and accents (goal 8)
   if (tool === 'paint_from_reference' || tool === 'continue_reference_painting') return 'transfer';
-  if (tool === 'paint_snow') return 'effect';   // weather the artist asked for, which the goal image does not have (openspec snow)
+  if (tool === 'paint_snow' || tool === 'paint_effect') return 'effect';   // weather the artist asked for, which the goal image does not have (openspec snow)
   if (LAYER_SETTINGS.includes(tool) || actions?.some(a => LAYER_SETTINGS.includes(String(a?.tool)))) return 'layer_settings';
   return departure ? 'departure' : null;
 }

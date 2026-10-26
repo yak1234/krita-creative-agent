@@ -1,0 +1,13 @@
+# The build policy for custom effects: how often, how much and how long Toska builds an effect on its own.
+# A missing or invalid value falls back to the number written here; the engine's hard limits hold whatever this says.
+failures_before_build: 2    # the same effect failing this many times in a chat starts a build
+candidates: 3               # recipes built per attempt (at most 3)
+retries: 1                  # one retry for an invalid candidate (at most 1)
+minutes: 4                  # the whole build (at most 4)
+preview_side: 1024          # candidates render at this long side, px (at most 1024)
+auto_keep_min_seconds: 20   # Auto-approve presses Keep after at least this long
+# A token effort counts as a failure (no Luna, no images: the move's own counts). A move whose request names an effect and
+# that painted it by hand with fewer strokes than this, with no fill and no effect tool (paint_snow, paint_effect), failed;
+# an effect tool's move failed when its report painted nothing. 0 turns the check off. The live snow test of 2026-10-25
+# made about 20 dashes in 12 strokes and called it done.
+token_effort: 40

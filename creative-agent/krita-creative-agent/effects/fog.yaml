@@ -1,0 +1,19 @@
+name: fog
+cue: fog, mist, haze in the air; distance fading
+lesson: Mist lies low and thickens toward the ground; far things lose contrast and take the colour of the air.
+layer: "Effect: fog"
+keep_clear: [faces, hair]
+options:
+  density:
+    default: 1
+    min: 0.3
+    max: 2
+    describe: How thick the fog is; 0.3 a thin haze, 1 fog, 2 a heavy bank.
+  height:
+    default: 0.4
+    min: 0.1
+    max: 1
+    describe: How much of the picture, from the bottom, the fog fills (0.4 is the lower two fifths).
+blocks:
+  - { block: wash, from: bottom, falloff: "min(1, 1.5 * height)", lower_contrast: 0.3, opacity: 0.5 * density }
+  - { block: noise, scale: large, opacity: 0.25 * density, band: { from: bottom, share: height } }

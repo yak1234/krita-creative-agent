@@ -39,6 +39,32 @@ python3 scripts/install.py --bundle /path/to/release-folder --project /path/to/t
 
 Never run a staging test against the real Krita profile. `python3 -m unittest discover -s tests -p test_packaging.py` creates its own throwaway profile, runtime and artwork fixtures.
 
+## Releasing a signed download
+
+For other Macs the app is signed with your Developer ID Application identity, notarized by Apple and shipped as a `.dmg`. Once, store the notary credentials in the keychain (notarytool asks for them; nothing is written to the repository):
+
+```sh
+security find-identity -v -p codesigning          # the exact name of your Developer ID Application identity
+xcrun notarytool store-credentials toska-notary   # Apple ID, team ID and an app-specific password, kept in the keychain
+```
+
+Then, from the fork's root:
+
+```sh
+export KRITA_AGENT_SIGN_IDENTITY="Developer ID Application: <your name> (<team ID>)"
+agent/package-app.sh --out /path/to/dist --notarize --dmg
+agent/package-app.sh --check /path/to/dist/Toska.app      # names the signer; verifies codesign --deep --strict
+```
+
+`--notarize` submits the app, waits for Apple's answer, prints every issue if it is refused, and otherwise staples the ticket and checks that `spctl --assess --type execute` accepts it. `--dmg` then makes `Toska-<version>.dmg` beside the app (the app and an `/Applications` link), signs it, and with `--notarize` notarizes and staples it too. The companion release built for the app signs its own native files with the same identity before its manifest records them, so the first-run install check still matches byte for byte. For an app already packaged:
+
+```sh
+/usr/bin/python3 agent/package_app.py notarize /path/to/dist/Toska.app --profile toska-notary
+/usr/bin/python3 agent/package_app.py dmg /path/to/dist/Toska.app --out /path/to/dist --notarize --profile toska-notary
+```
+
+A release built separately for the app takes the identity too: `python3 scripts/build-release.py --output /path/to/new/release-folder --sign-identity "$KRITA_AGENT_SIGN_IDENTITY"`; the packager refuses a release whose native files are not signed with the app's identity.
+
 ## Project records and migration
 
 New records use `.creative-agent/project.json` and `.creative-agent/studies/<conversation-id>/`. Each study's `record.json` is the authoritative atomic record containing both painting metadata and its goal; `study.json` and `goal.json` are readable compatibility mirrors. References, snapshots and session locations are stored relative to the project and resolved when used. Artwork remains in ordinary `.kra` files in the chosen folder.

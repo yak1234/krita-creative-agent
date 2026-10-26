@@ -8,9 +8,18 @@ only, because the script runs with the Command Line Tools' /usr/bin/python3.
 
     package_app.py package [INSTALL] --out DIR [--packages DIR] [--source DIR] [--release DIR] [--allow-dirty]
                            [--allow-stale-build] [--allow-unpublished] [--source-url URL] [--no-sign]
+                           [--notarize] [--dmg] [--profile NAME]
     package_app.py smoke BUNDLE            headless imports from a temporary copy, with the build trees unreadable
-    package_app.py check BUNDLE            the self-containment and layout checks (exit 1 on any problem)
-    package_app.py sign BUNDLE             sign inside-out (KRITA_AGENT_SIGN_IDENTITY, else ad-hoc)
+    package_app.py check BUNDLE            the self-containment and layout checks, and the signature: a Developer ID bundle is
+                                           verified --deep --strict and its signer named (exit 1 on any problem)
+    package_app.py sign BUNDLE             sign inside-out (KRITA_AGENT_SIGN_IDENTITY, else ad-hoc; a named identity gets a
+                                           secure timestamp and the hardened runtime)
+    package_app.py notarize BUNDLE [--profile NAME]
+                                           submit a Developer-ID-signed app to Apple (notarytool, keychain profile, default
+                                           toska-notary), print each issue if refused, else staple and check Gatekeeper
+    package_app.py dmg BUNDLE --out DIR [--notarize] [--profile NAME]
+                                           Toska-<version>.dmg (the app and an /Applications link), signed with
+                                           KRITA_AGENT_SIGN_IDENTITY, notarized and stapled with --notarize
 
 The logic that has to be right is in plain functions (macho_load_commands, check_bundle, layout_problems,
 merge_first_run_defaults, ...) so that tests run them on a small fake bundle.
@@ -1004,8 +1013,9 @@ class Packager:
                 raise Refused('no release given and creative-agent/krita-creative-agent has no node_modules: run npm ci there, or '
                               'build a release with scripts/build-release.py and pass --release')
             self.log('building the companion release (build-release.py) ...')
+            # The release signs its own native files with the app's identity, before its manifest records them (build-release.py).
             result = subprocess.run(['/usr/bin/python3', str(script), '--output', str(release)], capture_output=True, text=True,
-                                    cwd=str(script.parent.parent), env={'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'HOME': os.environ.get('HOME', '')})
+                                    cwd=str(script.parent.parent), env=release_environment(self.options.get('sign_identity')))
             if result.returncode != 0:
                 shutil.rmtree(scratch, ignore_errors=True)
                 raise Refused('build-release.py failed: %s' % (result.stderr or result.stdout).strip()[-500:])
@@ -1023,6 +1033,10 @@ class Packager:
                 manifest = bundled_release.verify_companion(target)
             except bundled_release.BundledReleaseError as error:
                 raise Refused('the release does not match its manifest: %s' % error)
+            identity = self.options.get('sign_identity')
+            unsigned = native_signing_problems(target, identity, shown_from=self.resources) if identity else []
+            if unsigned:
+                raise Refused('the release is not signed for this app: %s' % '; '.join(unsigned[:3]))
             onnx = onnxruntime_problems(target / 'companion', 'darwin/' + NODE_ARCH.get(self.arch, self.arch))
             if onnx:
                 raise Refused('the release is not for this app: %s' % '; '.join(onnx))
@@ -1038,6 +1052,15 @@ class Packager:
         finally:
             if scratch:
                 shutil.rmtree(scratch, ignore_errors=True)
+
+
+def release_environment(identity, environ=None):
+    """The environment build-release.py runs in: a plain PATH, HOME, and the signing identity when the app gets one."""
+    environ = os.environ if environ is None else environ
+    env = {'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'HOME': environ.get('HOME', '')}
+    if identity:
+        env['KRITA_AGENT_SIGN_IDENTITY'] = identity
+    return env
 
 
 def load_bundled_release():
@@ -1227,7 +1250,9 @@ def sign_bundle(bundle, identity=None, entitlements=None, log=print):
                            % identity)
     identity_arg = identity or '-'
     entitlements = entitlements or (ROOT / 'packaging' / 'macos' / 'entitlements.plist')
-    base = ['codesign', '--force', '--sign', identity_arg, '--timestamp=none']
+    # A Developer ID signature carries a secure timestamp from Apple's server (notarization refuses one without it); ad hoc
+    # signatures have none.
+    base = ['codesign', '--force', '--sign', identity_arg, '--timestamp' if identity else '--timestamp=none']
     if identity:
         base += ['--options', 'runtime']
     with_entitlements = base + ['--entitlements', str(entitlements)]
@@ -1254,7 +1279,7 @@ def sign_bundle(bundle, identity=None, entitlements=None, log=print):
         list(pool.map(lambda group: [sign_one(f) for f in group], groups.values()))
     frameworks = nested_bundles(files, bundle)
     for folder in frameworks:
-        run(['codesign', '--force', '--sign', identity_arg, '--timestamp=none'] + (['--options', 'runtime'] if identity else []) + [folder])
+        run(base + [folder])
     run(with_entitlements + ['--identifier', BUNDLE_ID, str(bundle)])
     log('  signed %d files, %d nested bundles and the app (%s)' % (len(files), len(frameworks), identity or 'ad hoc'))
 
@@ -1279,6 +1304,192 @@ def sign_and_report(bundle, identity, out=print):
 def verify_signature(bundle):
     result = subprocess.run(['codesign', '--verify', '--deep', '--strict', '--verbose=2', str(bundle)], capture_output=True, text=True)
     return result.returncode == 0, (result.stderr or result.stdout).strip()
+
+
+# ------------------------------------------------------------------------------- Developer ID: the check, notarization, the .dmg
+# Each step takes a `runner` (a command list -> CompletedProcess), so tests fake codesign, notarytool, stapler, spctl, ditto and
+# hdiutil; nothing in the tests signs for real or talks to Apple.
+
+DEVELOPER_ID_PREFIX = 'Developer ID Application:'
+NOTARY_PROFILE = 'toska-notary'
+
+
+class NotarizationFailed(RuntimeError):
+    pass
+
+
+def run_tool(command):
+    return subprocess.run([str(part) for part in command], capture_output=True, text=True)
+
+
+def tool_text(result):
+    return ((result.stderr or '') + (result.stdout or '')).strip()
+
+
+def signature_details(path, runner=None):
+    """(returncode, text) of `codesign -dvv`: Authority=, Timestamp=, flags=...(runtime), Signature=adhoc."""
+    result = (runner or run_tool)(['codesign', '-dvv', str(path)])
+    return result.returncode, tool_text(result)
+
+
+def authorities(text):
+    return re.findall(r'^Authority=(.*)$', text, re.M)
+
+
+def companion_signing_problems(bundle, identity, runner=None):
+    """The companion's Mach-O files (onnxruntime-node's binaries) are signed by build-release.py, before its manifest, and the
+    packager never touches them: with a Developer ID each must already carry that identity, a secure timestamp and the
+    hardened runtime, or notarization refuses the app. A release built without the identity is caught here."""
+    return native_signing_problems(os.path.join(str(bundle), COMPANION_FOLDER), identity, runner, bundle)
+
+
+def native_signing_problems(folder, identity, runner=None, shown_from=None):
+    """companion_signing_problems for the Mach-O files under `folder` (paths shown relative to `shown_from`)."""
+    problems = []
+    for path in macho_files(folder) if os.path.isdir(str(folder)) else []:
+        code, text = signature_details(path, runner)
+        where = rel(path, shown_from or folder)
+        flags = re.search(r'flags=0x[0-9a-f]+\(([^)]*)\)', text)
+        if code != 0 or identity not in authorities(text):
+            problems.append('%s: not signed with %s (build the release with KRITA_AGENT_SIGN_IDENTITY set)' % (where, identity))
+        elif not re.search(r'^Timestamp=', text, re.M):
+            problems.append('%s: no secure timestamp in its signature' % where)
+        elif not flags or 'runtime' not in flags.group(1).split(','):
+            problems.append('%s: signed without the hardened runtime' % where)
+    return problems
+
+
+def signing_report(bundle, runner=None):
+    """(lines, problems) about how `bundle` is signed. A Developer ID bundle is also verified deeply and strictly, and the
+    companion's files must carry the same identity; an ad-hoc or unsigned bundle is only reported."""
+    runner = runner or run_tool
+    code, text = signature_details(bundle, runner)
+    if code != 0:
+        return ['signature: none (%s)' % text.splitlines()[-1] if text else 'signature: none'], []
+    found = authorities(text)
+    if 'Signature=adhoc' in text or not found:
+        return ['signature: ad hoc'], []
+    authority = found[0]
+    lines, problems = ['signature: signed by %s%s' % (authority, '' if re.search(r'^Timestamp=', text, re.M) else ' (no secure timestamp)')], []
+    if authority.startswith(DEVELOPER_ID_PREFIX):
+        verify = runner(['codesign', '--verify', '--deep', '--strict', '--verbose=2', str(bundle)])
+        if verify.returncode != 0:
+            problems.append('codesign --verify --deep --strict: %s' % tool_text(verify)[-500:])
+        else:
+            lines.append('codesign --verify --deep --strict: ok')
+        problems += companion_signing_problems(bundle, authority, runner)
+    return lines, problems
+
+
+def require_developer_id(path, runner=None):
+    """The Developer ID Application authority `path` is signed with, or NotarizationFailed (Apple notarizes nothing else)."""
+    code, text = signature_details(path, runner)
+    found = authorities(text) if code == 0 else []
+    if not found or not found[0].startswith(DEVELOPER_ID_PREFIX):
+        raise NotarizationFailed('%s is not signed with a Developer ID Application identity (%s): sign it with '
+                                 'KRITA_AGENT_SIGN_IDENTITY set first' % (path, 'ad hoc' if 'Signature=adhoc' in text else
+                                                                          (found[0] if found else 'not signed')))
+    return found[0]
+
+
+def notary_issues(text):
+    """The issues of a `notarytool log` answer (JSON): [(path, message)]."""
+    try:
+        issues = json.loads(text).get('issues') or []
+    except (ValueError, AttributeError):
+        return []
+    return [(issue.get('path') or '?', issue.get('message') or '?') for issue in issues if isinstance(issue, dict)]
+
+
+def notarize(path, profile=NOTARY_PROFILE, runner=None, log=print):
+    """Notarize an app (zipped with ditto) or a .dmg (as it is) with the notarytool credentials stored in the keychain profile
+    `profile`, wait for Apple's answer, and on Accepted staple the ticket and check that Gatekeeper accepts it. Anything
+    else raises NotarizationFailed; an Invalid answer first prints every issue of the notarization log (path: message)."""
+    runner = runner or run_tool
+    path = Path(path)
+    disk_image = path.suffix == '.dmg'
+    scratch = None if disk_image else Path(tempfile.mkdtemp(prefix='toska-notarize-'))
+    try:
+        upload = path
+        if scratch:
+            upload = scratch / (path.stem + '.zip')
+            zipped = runner(['ditto', '-c', '-k', '--keepParent', str(path), str(upload)])
+            if zipped.returncode != 0:
+                raise NotarizationFailed('ditto could not zip %s: %s' % (path, tool_text(zipped)[-300:]))
+        log('submitting %s to Apple (notarytool, profile %s) and waiting ...' % (path.name, profile))
+        submit = runner(['xcrun', 'notarytool', 'submit', str(upload), '--keychain-profile', profile, '--wait', '--output-format', 'json'])
+        try:
+            answer = json.loads(submit.stdout or '')
+        except ValueError:
+            answer = None
+        if not isinstance(answer, dict) or not answer.get('status'):
+            raise NotarizationFailed('notarytool submit gave no answer (%d): %s' % (submit.returncode, tool_text(submit)[-500:]))
+        status, submission = answer['status'], answer.get('id', '')
+        log('notarization %s: %s' % (submission, status))
+        if status != 'Accepted':
+            issues = []
+            if submission:
+                fetched = runner(['xcrun', 'notarytool', 'log', submission, '--keychain-profile', profile])
+                issues = notary_issues(fetched.stdout)
+            for where, message in issues:
+                log('ISSUE %s: %s' % (where, message))
+            raise NotarizationFailed('notarization of %s is %s (submission %s, %d issues)' % (path.name, status, submission, len(issues)))
+        stapled = runner(['xcrun', 'stapler', 'staple', str(path)])
+        if stapled.returncode != 0:
+            raise NotarizationFailed('stapling the ticket to %s failed: %s' % (path.name, tool_text(stapled)[-300:]))
+        kind = ['--type', 'open', '--context', 'context:primary-signature'] if disk_image else ['--type', 'execute']
+        assessed = runner(['spctl', '--assess'] + kind + ['-vv', str(path)])
+        text = tool_text(assessed)
+        if assessed.returncode != 0 or not re.search(r':\s*accepted\b', text):
+            raise NotarizationFailed('Gatekeeper does not accept %s after stapling: %s' % (path.name, text[-300:]))
+        log(text)
+        return {'id': submission, 'status': status, 'assessment': text}
+    finally:
+        if scratch:
+            shutil.rmtree(scratch, ignore_errors=True)
+
+
+def app_version(bundle):
+    try:
+        with open(os.path.join(str(bundle), 'Contents', 'Info.plist'), 'rb') as stream:
+            return str(plistlib.load(stream).get('CFBundleShortVersionString') or 'unknown')
+    except (OSError, plistlib.InvalidFileException):
+        return 'unknown'
+
+
+def make_dmg(bundle, out, identity=None, profile=None, runner=None, log=print):
+    """Toska-<version>.dmg in `out`: a compressed (UDZO) image named "Toska" holding the app and a link to /Applications, signed
+    with `identity` (a secure timestamp) and, with a notary `profile`, notarized and stapled. Returns its path."""
+    runner = runner or run_tool
+    bundle, out = Path(bundle), Path(out)
+    if profile and not identity:
+        raise NotarizationFailed('notarizing the disk image needs a Developer ID Application identity (KRITA_AGENT_SIGN_IDENTITY)')
+    if inside(fold(out), fold(bundle)):
+        raise Refused('%s is inside the app: the image goes somewhere else' % out)
+    out.mkdir(parents=True, exist_ok=True)
+    dmg = out / ('%s-%s.dmg' % (PRODUCT_NAME, app_version(bundle)))
+    staging = Path(tempfile.mkdtemp(prefix='toska-dmg-'))
+    try:
+        (staging / bundle.name).mkdir()
+        copied = runner(['ditto', str(bundle), str(staging / bundle.name)])            # keeps signatures, links and the ticket
+        if copied.returncode != 0:
+            raise RuntimeError('ditto could not copy %s: %s' % (bundle, tool_text(copied)[-300:]))
+        os.symlink('/Applications', staging / 'Applications')
+        log('making %s ...' % dmg.name)
+        created = runner(['hdiutil', 'create', '-volname', PRODUCT_NAME, '-srcfolder', str(staging), '-ov', '-format', 'UDZO', str(dmg)])
+        if created.returncode != 0:
+            raise RuntimeError('hdiutil create failed: %s' % tool_text(created)[-300:])
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    if identity:
+        signed = runner(['codesign', '--force', '--sign', identity, '--timestamp', str(dmg)])
+        if signed.returncode != 0:
+            raise RuntimeError('signing %s failed: %s' % (dmg.name, tool_text(signed)[-300:]))
+    else:
+        log('  %s is not signed (no KRITA_AGENT_SIGN_IDENTITY): for local use only' % dmg.name)
+    if profile:
+        notarize(dmg, profile, runner, log)
+    return dmg
 
 
 def size_report(bundle):
@@ -1552,6 +1763,9 @@ def main(argv=None):
     pack.add_argument('--allow-unpublished', action='store_true', help='package a commit that is not in public/main yet (stamped)')
     pack.add_argument('--overlay-plugin', help='use this checkout\'s plugin folder (kritamcp) instead of the installed one (stamped)')
     pack.add_argument('--no-sign', action='store_true')
+    pack.add_argument('--notarize', action='store_true', help='notarize and staple the signed app (needs KRITA_AGENT_SIGN_IDENTITY, a Developer ID)')
+    pack.add_argument('--dmg', action='store_true', help='also make Toska-<version>.dmg in --out (notarized too with --notarize)')
+    pack.add_argument('--profile', default=NOTARY_PROFILE, help='the notarytool keychain profile (default: %s)' % NOTARY_PROFILE)
     check = sub.add_parser('check')
     check.add_argument('bundle')
     smoke = sub.add_parser('smoke')
@@ -1559,10 +1773,22 @@ def main(argv=None):
     smoke.add_argument('--deny', action='append', default=[], help='a folder to make unreadable during the run (repeatable)')
     signer = sub.add_parser('sign')
     signer.add_argument('bundle')
+    notary = sub.add_parser('notarize')
+    notary.add_argument('bundle')
+    notary.add_argument('--profile', default=NOTARY_PROFILE, help='the notarytool keychain profile (default: %s)' % NOTARY_PROFILE)
+    image = sub.add_parser('dmg')
+    image.add_argument('bundle')
+    image.add_argument('--out', required=True, help='the folder Toska-<version>.dmg is made in')
+    image.add_argument('--notarize', action='store_true', help='notarize and staple the image (needs KRITA_AGENT_SIGN_IDENTITY)')
+    image.add_argument('--profile', default=NOTARY_PROFILE, help='the notarytool keychain profile (default: %s)' % NOTARY_PROFILE)
     args = parser.parse_args(argv)
+    identity = os.environ.get('KRITA_AGENT_SIGN_IDENTITY') or None
 
     if args.command == 'check':
-        problems = check_everything(args.bundle)
+        lines, signing = signing_report(args.bundle)
+        problems = check_everything(args.bundle) + signing
+        for line in lines:
+            print(line)
         for problem in problems:
             print('PROBLEM', problem)
         print('%d Mach-O files checked, %d problems' % (len(macho_files(args.bundle)), len(problems)))
@@ -1584,6 +1810,24 @@ def main(argv=None):
             print(message)
             return 0 if ok else 1
         return status
+    if args.command == 'notarize':
+        try:
+            print('signed by', require_developer_id(args.bundle))
+            notarize(args.bundle, args.profile)
+        except NotarizationFailed as error:
+            print('NOT NOTARIZED:', error)
+            return 1
+        return 0
+    if args.command == 'dmg':
+        try:
+            print(make_dmg(args.bundle, args.out, identity, args.profile if args.notarize else None))
+        except (NotarizationFailed, Refused, RuntimeError) as error:
+            print('NO DISK IMAGE:', error)
+            return 1
+        return 0
+    if args.notarize and (args.no_sign or not identity):
+        print('--notarize needs the app signed with a Developer ID: set KRITA_AGENT_SIGN_IDENTITY (and no --no-sign)', file=sys.stderr)
+        return 2
 
     install = Path(args.install or ROOT.parent / 'krita-master' / '_install')
     if not (install / 'bin' / 'krita.app').is_dir():
@@ -1595,7 +1839,7 @@ def main(argv=None):
         Path(args.out).mkdir(parents=True, exist_ok=True)
         options = {'allow_dirty': args.allow_dirty, 'allow_stale': args.allow_stale_build,
                    'allow_unpublished': args.allow_unpublished, 'source_url': args.source_url,
-                   'overlay_plugin': args.overlay_plugin}
+                   'overlay_plugin': args.overlay_plugin, 'sign_identity': None if args.no_sign else identity}
         packager = Packager(install, args.out, args.packages, source, options=options, release=args.release)
         print('Packaging %s' % install)
         problems = packager.package()
@@ -1619,7 +1863,17 @@ def main(argv=None):
         for problem in found:
             print('PROBLEM', problem)
         problems = problems + found
-    return 1 if problems else 0
+    if problems:
+        return 1
+    try:
+        if args.notarize:
+            notarize(packager.bundle, args.profile)
+        if args.dmg:
+            print(make_dmg(packager.bundle, args.out, None if args.no_sign else identity, args.profile if args.notarize else None))
+    except (NotarizationFailed, Refused, RuntimeError) as error:
+        print('PROBLEM', error)
+        return 1
+    return 0
 
 
 if __name__ == '__main__':

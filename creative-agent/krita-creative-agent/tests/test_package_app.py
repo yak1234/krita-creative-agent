@@ -5,11 +5,15 @@ agent/install-app.sh, on small fake bundles built in a temporary folder (never t
 
 The Mach-O tests compile tiny programs with `cc`; they are skipped where there is no compiler or not macOS.
 """
+import contextlib
+import hashlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -1522,7 +1526,7 @@ class CompanionInTheAppTests(unittest.TestCase):
     class Stub(package_app.Packager):
         def __init__(self, release, resources):
             self.release, self.resources, self.log, self.trees, self.release_info = pathlib.Path(release), pathlib.Path(resources), (lambda *_: None), [], None
-            self.arch = 'arm64'
+            self.arch, self.options = 'arm64', {}
             plugin = self.resources / 'krita' / 'pykrita' / 'kritamcp'                    # the app's plugin, copied before the release
             plugin.mkdir(parents=True, exist_ok=True)
             (plugin / '__init__.py').write_text('')
@@ -1566,6 +1570,21 @@ class CompanionInTheAppTests(unittest.TestCase):
         self.assertEqual(info['protocol_version'], self.manifest.get('protocol_version', 2))
         for heavy in ('files', 'node_runtime', 'dependencies'):
             self.assertNotIn(heavy, info)
+
+    def test_with_a_developer_id_a_release_whose_native_files_are_not_signed_with_it_is_refused(self):
+        native = 'companion/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64/libonnxruntime.1.dylib'
+        bundled, _ = make_release(self.root / 'signed', extra_files={native: FAKE_MACHO.decode('latin-1')})
+        (bundled / native).write_bytes(FAKE_MACHO)                                        # make_release writes text: the real bytes
+        manifest = json.loads((bundled / 'release-manifest.json').read_text())
+        manifest['files'][native] = hashlib.sha256(FAKE_MACHO).hexdigest()
+        (bundled / 'release-manifest.json').write_text(json.dumps(manifest))
+        stub = self.Stub(bundled, self.root / 'Resources-signed')
+        stub.options = {'sign_identity': DEVELOPER_ID}
+        unsigned = FakeTools([(('codesign', '-dvv'), 1, '', 'code object is not signed at all')])
+        with mock.patch.object(package_app, 'run_tool', side_effect=unsigned):
+            with self.assertRaisesRegex(package_app.Refused, re.escape('not signed with %s' % DEVELOPER_ID)):
+                stub.copy_release()
+        self.assertTrue(unsigned.calls[0][-1].endswith('libonnxruntime.1.dylib'))
 
     def test_a_release_that_does_not_match_its_manifest_or_is_no_release_is_refused(self):
         (self.release / 'companion' / 'src' / 'main.mjs').write_text('tampered')
@@ -1631,6 +1650,343 @@ class PackageScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn('agent/package-app.sh [INSTALL_DIR]', result.stdout)
         self.assertNotIn('set -euo', result.stdout)
+
+# --------------------------------------------------------------------------- Developer ID signing, notarization, the .dmg
+# Every tool is faked (no codesign, no network, nothing uploaded to Apple): these tests check the decisions and the commands.
+
+DEVELOPER_ID = 'Developer ID Application: Test Signer (TEAM123456)'
+FAKE_MACHO = b'\xcf\xfa\xed\xfe' + b'\0' * 60
+
+
+class FakeTools:
+    """A runner for package_app's tool calls: records each command and answers from `answers`, a list of (prefix, returncode,
+    stdout, stderr) matched by the command's first words (the first match wins; unmatched commands succeed silently)."""
+
+    def __init__(self, answers=()):
+        self.answers = list(answers)
+        self.calls = []
+
+    def __call__(self, command):
+        command = [str(part) for part in command]
+        self.calls.append(command)
+        for prefix, code, out, err in self.answers:
+            if command[:len(prefix)] == list(prefix):
+                return subprocess.CompletedProcess(command, code, out, err)
+        return subprocess.CompletedProcess(command, 0, '', '')
+
+    def named(self, *prefix):
+        return [call for call in self.calls if call[:len(prefix)] == list(prefix)]
+
+
+def fake_app(root, companion=True):
+    """A bundle of fake Mach-O files (magic only): an executable, a framework's library, and the companion's native file."""
+    app = pathlib.Path(root) / 'Toska.app'
+    files = ['Contents/MacOS/krita', 'Contents/MacOS/krita-app', 'Contents/Frameworks/QtCore.framework/Versions/A/QtCore',
+             'Contents/Frameworks/libfoo.dylib']
+    if companion:
+        files.append(package_app.COMPANION_FOLDER + '/companion/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64/libonnxruntime.1.dylib')
+    for name in files:
+        (app / name).parent.mkdir(parents=True, exist_ok=True)
+        (app / name).write_bytes(FAKE_MACHO)
+    with open(app / 'Contents' / 'Info.plist', 'wb') as stream:
+        plistlib.dump({'CFBundleIdentifier': 'local.kritaagent', 'CFBundleShortVersionString': '6.1.0'}, stream)
+    return app
+
+
+class DeveloperIdSigningTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='krita-agent-test-')
+        self.addCleanup(self.temp.cleanup)
+        self.app = fake_app(self.temp.name)
+
+    def signing_commands(self, identity):
+        calls = []
+        with mock.patch.object(package_app, 'run', side_effect=lambda command, **_: calls.append([str(c) for c in command]) or ''), \
+             mock.patch.object(package_app, 'identity_available', return_value=True):
+            package_app.sign_bundle(self.app, identity, log=lambda *_: None)
+        return calls
+
+    def test_a_developer_id_signs_files_nested_bundles_and_the_app_with_a_secure_timestamp(self):
+        calls = self.signing_commands(DEVELOPER_ID)
+        targets = [call[-1] for call in calls]
+        self.assertIn(str(self.app / 'Contents/Frameworks/QtCore.framework'), targets)
+        self.assertEqual(targets[-1], str(self.app))
+        for call in calls:
+            self.assertEqual(call[:4], ['codesign', '--force', '--sign', DEVELOPER_ID])
+            self.assertIn('--timestamp', call, call)
+            self.assertNotIn('--timestamp=none', call)
+            self.assertEqual(call[call.index('--options') + 1], 'runtime')
+        # The companion's files are the release's (signed by build-release.py before its manifest): never re-signed here.
+        self.assertFalse(any('creative-agent-bundle' in target for target in targets))
+
+    def test_ad_hoc_signing_stays_without_a_timestamp(self):
+        calls = self.signing_commands(None)
+        for call in calls:
+            self.assertEqual(call[:4], ['codesign', '--force', '--sign', '-'])
+            self.assertIn('--timestamp=none', call)
+            self.assertNotIn('--timestamp', call)
+            self.assertNotIn('runtime', call)
+
+    def test_the_release_is_built_with_the_identity_the_app_is_signed_with(self):
+        self.assertEqual(package_app.release_environment(DEVELOPER_ID, {'HOME': '/h'})['KRITA_AGENT_SIGN_IDENTITY'], DEVELOPER_ID)
+        self.assertNotIn('KRITA_AGENT_SIGN_IDENTITY', package_app.release_environment(None, {'HOME': '/h'}))
+        self.assertEqual(package_app.release_environment(None, {'HOME': '/h'})['HOME'], '/h')
+
+    def test_companion_files_not_signed_by_the_identity_are_problems(self):
+        native = str(self.app / package_app.COMPANION_FOLDER / 'companion/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64/libonnxruntime.1.dylib')
+        good = ('Executable=%s\nAuthority=%s\nAuthority=Developer ID Certification Authority\nTimestamp=26 Oct 2026\n'
+                'CodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1\n' % (native, DEVELOPER_ID))
+        tools = FakeTools([(('codesign', '-dvv'), 0, '', good)])
+        self.assertEqual(package_app.companion_signing_problems(self.app, DEVELOPER_ID, tools), [])
+        self.assertEqual([call[-1] for call in tools.calls], [native])                     # only the companion's Mach-O files
+        unsigned = FakeTools([(('codesign', '-dvv'), 1, '', 'code object is not signed at all')])
+        self.assertIn('not signed with %s' % DEVELOPER_ID, ' '.join(package_app.companion_signing_problems(self.app, DEVELOPER_ID, unsigned)))
+        no_time = FakeTools([(('codesign', '-dvv'), 0, '', good.replace('Timestamp=26 Oct 2026', 'Signed Time=26 Oct 2026'))])
+        self.assertIn('secure timestamp', ' '.join(package_app.companion_signing_problems(self.app, DEVELOPER_ID, no_time)))
+        no_runtime = FakeTools([(('codesign', '-dvv'), 0, '', good.replace('0x10000(runtime)', '0x2(adhoc)'))])
+        self.assertIn('hardened runtime', ' '.join(package_app.companion_signing_problems(self.app, DEVELOPER_ID, no_runtime)))
+
+
+class NotarizationTests(unittest.TestCase):
+    PROFILE = 'test-profile'
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='krita-agent-test-')
+        self.addCleanup(self.temp.cleanup)
+        self.app = fake_app(self.temp.name)
+        self.lines = []
+
+    def notarize(self, tools, path=None):
+        return package_app.notarize(path or self.app, self.PROFILE, runner=tools, log=self.lines.append)
+
+    def accepted(self, assessment='%s: accepted\nsource=Notarized Developer ID\n'):
+        return FakeTools([(('xcrun', 'notarytool', 'submit'), 0, json.dumps({'id': 'abc-123', 'status': 'Accepted', 'message': 'ok'}), ''),
+                          (('spctl',), 0, '', assessment % self.app)])
+
+    def test_an_accepted_app_is_zipped_submitted_stapled_and_assessed(self):
+        tools = self.accepted()
+        result = self.notarize(tools)
+        self.assertEqual(result['status'], 'Accepted')
+        ditto = tools.named('ditto')[0]
+        self.assertEqual(ditto[:4], ['ditto', '-c', '-k', '--keepParent'])
+        self.assertEqual(ditto[4], str(self.app))
+        upload = ditto[5]
+        self.assertTrue(upload.endswith('.zip'))
+        submit = tools.named('xcrun', 'notarytool', 'submit')[0]
+        self.assertEqual(submit[3], upload)
+        self.assertEqual(submit[submit.index('--keychain-profile') + 1], self.PROFILE)
+        self.assertIn('--wait', submit)
+        self.assertEqual(tools.named('xcrun', 'stapler', 'staple')[0][-1], str(self.app))
+        spctl = tools.named('spctl')[0]
+        self.assertEqual(spctl[:4], ['spctl', '--assess', '--type', 'execute'])
+        self.assertEqual(spctl[-1], str(self.app))
+        order = [call[0] if call[0] != 'xcrun' else call[1] + ' ' + call[2] for call in tools.calls]
+        self.assertEqual(order, ['ditto', 'notarytool submit', 'stapler staple', 'spctl'])
+        self.assertFalse(pathlib.Path(upload).exists(), 'the zip is removed afterwards')
+        self.assertIn('accepted', ' '.join(self.lines))
+
+    def test_an_invalid_submission_prints_each_issue_and_fails_without_stapling(self):
+        log = {'status': 'Invalid', 'issues': [
+            {'severity': 'error', 'path': 'Toska.zip/Toska.app/Contents/Frameworks/libfoo.dylib', 'message': 'The binary is not signed with a valid Developer ID certificate.'},
+            {'severity': 'error', 'path': 'Toska.zip/Toska.app/Contents/MacOS/krita', 'message': 'The signature does not include a secure timestamp.'}]}
+        tools = FakeTools([(('xcrun', 'notarytool', 'submit'), 1, json.dumps({'id': 'abc-123', 'status': 'Invalid'}), ''),
+                           (('xcrun', 'notarytool', 'log'), 0, json.dumps(log), '')])
+        with self.assertRaises(package_app.NotarizationFailed) as raised:
+            self.notarize(tools)
+        self.assertIn('Invalid', str(raised.exception))
+        fetched = tools.named('xcrun', 'notarytool', 'log')[0]
+        self.assertEqual(fetched[3], 'abc-123')
+        self.assertEqual(fetched[fetched.index('--keychain-profile') + 1], self.PROFILE)
+        text = '\n'.join(self.lines)
+        self.assertIn('Contents/Frameworks/libfoo.dylib: The binary is not signed with a valid Developer ID certificate.', text)
+        self.assertIn('Contents/MacOS/krita: The signature does not include a secure timestamp.', text)
+        self.assertEqual(tools.named('xcrun', 'stapler'), [])
+        self.assertEqual(tools.named('spctl'), [])
+
+    def test_a_submission_that_never_got_an_answer_fails_with_what_notarytool_said(self):
+        tools = FakeTools([(('xcrun', 'notarytool', 'submit'), 69, '', 'Error: No Keychain password item found for profile')])
+        with self.assertRaises(package_app.NotarizationFailed) as raised:
+            self.notarize(tools)
+        self.assertIn('No Keychain password item found', str(raised.exception))
+        self.assertEqual(tools.named('xcrun', 'notarytool', 'log'), [])
+        self.assertEqual(tools.named('xcrun', 'stapler'), [])
+
+    def test_a_failed_staple_or_a_rejected_assessment_fails(self):
+        staple = self.accepted()
+        staple.answers.insert(0, (('xcrun', 'stapler'), 65, '', 'Could not validate ticket'))
+        with self.assertRaisesRegex(package_app.NotarizationFailed, 'stapl'):
+            self.notarize(staple)
+        rejected = FakeTools([(('xcrun', 'notarytool', 'submit'), 0, json.dumps({'id': 'x', 'status': 'Accepted'}), ''),
+                              (('spctl',), 3, '', '%s: rejected\nsource=Unnotarized Developer ID\n' % self.app)])
+        with self.assertRaisesRegex(package_app.NotarizationFailed, 'rejected'):
+            self.notarize(rejected)
+
+    def test_a_dmg_is_submitted_as_it_is_and_assessed_as_a_disk_image(self):
+        dmg = pathlib.Path(self.temp.name) / 'Toska-6.1.0.dmg'
+        dmg.write_bytes(b'dmg')
+        tools = FakeTools([(('xcrun', 'notarytool', 'submit'), 0, json.dumps({'id': 'd', 'status': 'Accepted'}), ''),
+                           (('spctl',), 0, '', '%s: accepted\nsource=Notarized Developer ID\n' % dmg)])
+        self.notarize(tools, dmg)
+        self.assertEqual(tools.named('ditto'), [])
+        self.assertEqual(tools.named('xcrun', 'notarytool', 'submit')[0][3], str(dmg))
+        spctl = tools.named('spctl')[0]
+        self.assertEqual(spctl[:6], ['spctl', '--assess', '--type', 'open', '--context', 'context:primary-signature'])
+
+    def test_notarizing_needs_a_developer_id_signature(self):
+        tools = FakeTools([(('codesign', '-dvv'), 0, '', 'Signature=adhoc\n')])
+        with self.assertRaisesRegex(package_app.NotarizationFailed, 'Developer ID'):
+            package_app.require_developer_id(self.app, tools)
+        signed = FakeTools([(('codesign', '-dvv'), 0, '', 'Authority=%s\nTimestamp=26 Oct 2026\n' % DEVELOPER_ID)])
+        self.assertEqual(package_app.require_developer_id(self.app, signed), DEVELOPER_ID)
+
+
+class DiskImageTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='krita-agent-test-')
+        self.addCleanup(self.temp.cleanup)
+        self.app = fake_app(self.temp.name)
+        self.out = pathlib.Path(self.temp.name) / 'dist'
+        self.staged = {}
+
+    def tools(self, *answers):
+        tools = FakeTools(answers)
+        original = tools.__call__
+
+        def look(command):
+            command = [str(part) for part in command]
+            if command[0] == 'hdiutil':                     # what the image would hold, seen while the staging folder exists
+                folder = pathlib.Path(command[command.index('-srcfolder') + 1])
+                self.staged = {child.name: (os.readlink(child) if child.is_symlink() else 'folder') for child in folder.iterdir()}
+            return original(command)
+        return look, tools
+
+    def test_the_image_holds_the_app_and_an_applications_link_and_is_signed(self):
+        runner, tools = self.tools()
+        dmg = package_app.make_dmg(self.app, self.out, DEVELOPER_ID, runner=runner, log=lambda *_: None)
+        self.assertEqual(dmg, self.out / 'Toska-6.1.0.dmg')
+        self.assertEqual(self.staged, {'Toska.app': 'folder', 'Applications': '/Applications'})
+        copy = tools.named('ditto')[0]
+        self.assertEqual(copy[1], str(self.app))
+        create = tools.named('hdiutil', 'create')[0]
+        self.assertEqual(create[create.index('-format') + 1], 'UDZO')
+        self.assertEqual(create[create.index('-volname') + 1], 'Toska')
+        self.assertEqual(create[-1], str(dmg))
+        sign = tools.named('codesign', '--force', '--sign')[0]
+        self.assertEqual(sign, ['codesign', '--force', '--sign', DEVELOPER_ID, '--timestamp', str(dmg)])
+        self.assertEqual(tools.named('xcrun'), [])                                         # not notarized unless asked
+        self.assertFalse(pathlib.Path(create[create.index('-srcfolder') + 1]).exists(), 'the staging folder is removed')
+
+    def test_with_notarize_the_signed_image_is_notarized_and_stapled(self):
+        runner, tools = self.tools((('xcrun', 'notarytool', 'submit'), 0, json.dumps({'id': 'd', 'status': 'Accepted'}), ''),
+                                   (('spctl',), 0, '', 'x.dmg: accepted\nsource=Notarized Developer ID\n'))
+        dmg = package_app.make_dmg(self.app, self.out, DEVELOPER_ID, profile='test-profile', runner=runner, log=lambda *_: None)
+        order = [call[0] if call[0] not in ('xcrun', 'hdiutil') else ' '.join(call[:2] if call[0] == 'hdiutil' else call[1:3]) for call in tools.calls]
+        self.assertEqual(order, ['ditto', 'hdiutil create', 'codesign', 'notarytool submit', 'stapler staple', 'spctl'])
+        self.assertEqual(tools.named('xcrun', 'notarytool', 'submit')[0][3], str(dmg))
+        self.assertEqual(tools.named('xcrun', 'stapler', 'staple')[0][-1], str(dmg))
+
+    def test_notarizing_without_an_identity_is_refused_before_anything_is_made(self):
+        runner, tools = self.tools()
+        with self.assertRaisesRegex(package_app.NotarizationFailed, 'identity'):
+            package_app.make_dmg(self.app, self.out, None, profile='test-profile', runner=runner, log=lambda *_: None)
+        self.assertEqual(tools.calls, [])
+        self.assertFalse(self.out.exists())
+
+    def test_without_an_identity_the_image_is_left_unsigned(self):
+        runner, tools = self.tools()
+        package_app.make_dmg(self.app, self.out, None, runner=runner, log=lambda *_: None)
+        self.assertEqual(tools.named('codesign'), [])
+
+    def test_the_image_is_never_written_inside_the_app(self):
+        runner, tools = self.tools()
+        with self.assertRaises(package_app.Refused):
+            package_app.make_dmg(self.app, self.app / 'Contents', None, runner=runner, log=lambda *_: None)
+        self.assertEqual(tools.calls, [])
+
+
+class SigningReportTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='krita-agent-test-')
+        self.addCleanup(self.temp.cleanup)
+        self.app = fake_app(self.temp.name, companion=False)
+
+    def test_an_ad_hoc_bundle_reports_ad_hoc_and_is_not_verified_deeply(self):
+        tools = FakeTools([(('codesign', '-dvv'), 0, '', 'Identifier=local.kritaagent\nSignature=adhoc\n')])
+        lines, problems = package_app.signing_report(self.app, tools)
+        self.assertEqual(problems, [])
+        self.assertIn('ad hoc', ' '.join(lines))
+        self.assertEqual(tools.named('codesign', '--verify'), [])
+
+    def test_a_developer_id_bundle_is_verified_deeply_and_names_its_authority(self):
+        details = 'Authority=%s\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA\nTimestamp=26 Oct 2026\n' % DEVELOPER_ID
+        tools = FakeTools([(('codesign', '-dvv'), 0, '', details)])
+        lines, problems = package_app.signing_report(self.app, tools)
+        self.assertEqual(problems, [])
+        self.assertIn('signed by %s' % DEVELOPER_ID, ' '.join(lines))
+        verify = tools.named('codesign', '--verify')[0]
+        self.assertEqual(verify[:4], ['codesign', '--verify', '--deep', '--strict'])
+        self.assertEqual(verify[-1], str(self.app))
+        broken = FakeTools([(('codesign', '-dvv'), 0, '', details), (('codesign', '--verify'), 1, '', 'a sealed resource is missing or invalid')])
+        lines, problems = package_app.signing_report(self.app, broken)
+        self.assertEqual(len(problems), 1)
+        self.assertIn('a sealed resource is missing or invalid', problems[0])
+
+
+class ReleaseCommandTests(unittest.TestCase):
+    """package_app.py notarize / dmg and package-app.sh --notarize, with the tools faked."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='krita-agent-test-')
+        self.addCleanup(self.temp.cleanup)
+        self.app = fake_app(self.temp.name)
+
+    def main(self, *argv, tools, identity=None):
+        environment = {'KRITA_AGENT_SIGN_IDENTITY': identity} if identity else {}
+        with mock.patch.object(package_app, 'run_tool', side_effect=tools), mock.patch.dict(os.environ, environment, clear=False), \
+             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            if not identity:
+                os.environ.pop('KRITA_AGENT_SIGN_IDENTITY', None)
+            return package_app.main([str(part) for part in argv])
+
+    def test_notarize_refuses_an_app_without_a_developer_id_signature(self):
+        tools = FakeTools([(('codesign', '-dvv'), 0, '', 'Signature=adhoc\n')])
+        self.assertEqual(self.main('notarize', self.app, '--profile', 'p', tools=tools), 1)
+        self.assertEqual(tools.named('xcrun'), [])
+        self.assertEqual(tools.named('ditto'), [])
+
+    def test_notarize_submits_with_the_named_profile(self):
+        tools = FakeTools([(('codesign', '-dvv'), 0, '', 'Authority=%s\nTimestamp=x\n' % DEVELOPER_ID),
+                           (('xcrun', 'notarytool', 'submit'), 0, json.dumps({'id': 'i', 'status': 'Accepted'}), ''),
+                           (('spctl',), 0, '', 'Toska.app: accepted\nsource=Notarized Developer ID\n')])
+        self.assertEqual(self.main('notarize', self.app, '--profile', 'my-profile', tools=tools), 0)
+        submit = tools.named('xcrun', 'notarytool', 'submit')[0]
+        self.assertEqual(submit[submit.index('--keychain-profile') + 1], 'my-profile')
+
+    def test_dmg_with_notarize_needs_the_identity(self):
+        tools = FakeTools()
+        self.assertEqual(self.main('dmg', self.app, '--out', pathlib.Path(self.temp.name) / 'dist', '--notarize', tools=tools), 1)
+        self.assertEqual(tools.calls, [])
+        made = FakeTools([(('xcrun', 'notarytool', 'submit'), 0, json.dumps({'id': 'i', 'status': 'Accepted'}), ''),
+                          (('spctl',), 0, '', 'x.dmg: accepted\nsource=Notarized Developer ID\n')])
+        self.assertEqual(self.main('dmg', self.app, '--out', pathlib.Path(self.temp.name) / 'dist', '--notarize', '--profile', 'p',
+                                   tools=made, identity=DEVELOPER_ID), 0)
+        self.assertEqual(made.named('codesign', '--force', '--sign')[0][3], DEVELOPER_ID)
+        self.assertEqual(len(made.named('xcrun', 'stapler', 'staple')), 1)
+
+    @unittest.skipUnless(MACOS, 'macOS only')
+    def test_package_app_sh_refuses_notarize_without_an_identity_before_anything_is_made(self):
+        with tempfile.TemporaryDirectory(prefix='krita-agent-test-') as root:
+            env = {'PATH': '/usr/bin:/bin', 'HOME': root}
+            install = pathlib.Path(root) / 'src' / '_install'
+            (install / 'bin' / 'krita.app').mkdir(parents=True)
+            refused = run('/bin/zsh', AGENT / 'package-app.sh', install, '--out', pathlib.Path(root) / 'out', '--notarize', env=env)
+            self.assertEqual(refused.returncode, 2, refused.stderr)
+            self.assertIn('KRITA_AGENT_SIGN_IDENTITY', refused.stderr)
+            self.assertFalse(pathlib.Path(root, 'out').exists())
+            no_sign = run('/bin/zsh', AGENT / 'package-app.sh', install, '--out', pathlib.Path(root) / 'out', '--dmg', '--notarize', '--no-sign',
+                          env={**env, 'KRITA_AGENT_SIGN_IDENTITY': DEVELOPER_ID})
+            self.assertEqual(no_sign.returncode, 2, no_sign.stderr)
+            self.assertFalse(pathlib.Path(root, 'out').exists())
 
 
 if __name__ == '__main__':

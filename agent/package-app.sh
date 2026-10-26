@@ -6,8 +6,10 @@
 # /Applications, without the build tree. It never writes into the install tree and never builds.
 #
 #   agent/package-app.sh [INSTALL_DIR] [--out DIR] [--packages DIR] [--source DIR] [--release DIR] [--source-url URL]
-#                        [--allow-dirty] [--allow-stale-build] [--allow-unpublished] [--no-sign]
-#   agent/package-app.sh --check BUNDLE        self-containment and layout checks on a bundle (also: --verify, --sizes, --smoke: headless imports from a temporary copy)
+#                        [--allow-dirty] [--allow-stale-build] [--allow-unpublished] [--no-sign] [--notarize] [--dmg] [--profile NAME]
+#   agent/package-app.sh --check BUNDLE        self-containment and layout checks on a bundle, and how it is signed (a Developer ID
+#                                              bundle is also verified with codesign --deep --strict); also: --verify, --sizes,
+#                                              --smoke: headless imports from a temporary copy
 #
 #   INSTALL_DIR   the finished build (default: the main checkout's _install, next to this worktree's folder)
 #   --out DIR     where "Toska.app" is made (default: ./_package; never /Applications: agent/install-app.sh does that)
@@ -23,9 +25,17 @@
 #                 to date; stamped into the notices)
 #   --source-url  the public repository named in the source offer (default: https://github.com/yak1234/toska)
 #
-# Signing: with KRITA_AGENT_SIGN_IDENTITY set to a keychain identity name the bundle is signed with it (hardened runtime);
-# otherwise ad hoc. A stable identity is what lets macOS remember "allow access to Documents" across rebuilds: see
-# AGENT-FORK.md, "Packaging", for making one.
+# Signing: with KRITA_AGENT_SIGN_IDENTITY set to a keychain identity name the bundle is signed with it (hardened runtime, a
+# secure timestamp from Apple's server, so signing needs the network); otherwise ad hoc. A stable identity is what lets macOS
+# remember "allow access to Documents" across rebuilds: see AGENT-FORK.md, "Packaging", for making one. The companion release
+# built for the app signs its own native files with the same identity before its manifest records them (build-release.py).
+#
+# A download for other Macs (your Developer ID Application identity in KRITA_AGENT_SIGN_IDENTITY, notarytool credentials
+# stored once with `xcrun notarytool store-credentials toska-notary`; no password is ever passed here):
+#   --notarize    after the checks pass, submit the app to Apple's notary service (keychain profile --profile, default
+#                 toska-notary), wait, print every issue if it is refused, else staple the ticket and check Gatekeeper accepts it
+#   --dmg         also make Toska-<version>.dmg in --out (the app and an /Applications link, signed; notarized and stapled
+#                 too with --notarize). For a bundle already made: agent/package_app.py notarize BUNDLE / dmg BUNDLE --out DIR
 #
 # Layout, first-run default and licences: AGENT-FORK.md, "Packaging". The work is in agent/package_app.py.
 set -euo pipefail
@@ -46,8 +56,8 @@ extra=()
 while (( $# )); do
   case $1 in
     --out) out=${2:?--out needs a folder}; shift 2 ;;
-    --packages|--source|--release|--source-url|--overlay-plugin) extra+=("$1" "${2:?$1 needs a value}"); shift 2 ;;
-    --no-sign|--allow-dirty|--allow-stale-build|--allow-unpublished) extra+=("$1"); shift ;;
+    --packages|--source|--release|--source-url|--overlay-plugin|--profile) extra+=("$1" "${2:?$1 needs a value}"); shift 2 ;;
+    --no-sign|--allow-dirty|--allow-stale-build|--allow-unpublished|--notarize|--dmg) extra+=("$1"); shift ;;
     -*) echo "unknown option $1" >&2; exit 2 ;;
     *) install=$1; shift ;;
   esac

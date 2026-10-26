@@ -276,7 +276,62 @@ def validate_companion(node, companion):
             if process.poll() is None: process.kill()
 
 
-def build(destination, node=None, root=ROOT, plugin=None, node_spec=None, dependencies=None, runtime_cache=None):
+MACHO_MAGICS = {b'\xfe\xed\xfa\xce', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xcf\xfa\xed\xfe', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca'}
+
+
+def is_macho(path):
+    """A Mach-O file (thin or universal; a fat header with 30 or more architectures is a Java class)."""
+    if path.is_symlink() or not path.is_file(): return False
+    with path.open('rb') as stream: head = stream.read(8)
+    if head[:4] not in MACHO_MAGICS: return False
+    return head[:4] not in (b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca') or int.from_bytes(head[4:8], 'big') < 30
+
+
+def signing_identity(given=None, environment=None):
+    """The Developer ID to sign the companion's native files with: the one given, else KRITA_AGENT_SIGN_IDENTITY (which
+    agent/package-app.sh sets); None (an empty value too) leaves them as npm shipped them."""
+    environment = os.environ if environment is None else environment
+    return given or environment.get('KRITA_AGENT_SIGN_IDENTITY') or None
+
+
+def sign_native_files(companion, identity, runner=subprocess.run):
+    """With a named identity, sign every Mach-O file of the companion (onnxruntime-node's binaries) as a notarized app needs:
+    a secure timestamp and the hardened runtime. This happens BEFORE the manifest is written: the plugin checks the companion
+    byte for byte against it on first run, so the manifest must record the signed bytes. Returns the files signed."""
+    if not identity: return []
+    signed = []
+    for path in sorted(Path(companion).rglob('*')):
+        if not is_macho(path): continue
+        os.chmod(path, path.stat().st_mode | 0o200)
+        result = runner(['codesign', '--force', '--sign', identity, '--timestamp', '--options', 'runtime', str(path)], capture_output=True, text=True)
+        if result.returncode:
+            raise ValueError('Signing %s failed: %s' % (path.relative_to(companion), (result.stderr or result.stdout).strip()[-500:]))
+        signed.append(path)
+    return signed
+
+
+def finish_release(staging, package, details, node_spec, packages):
+    """Stamp the build identity and write the manifest of every file (signed native files included: sign them first)."""
+    companion = staging / 'companion'
+    # The digest covers physical payloads. Derived manifests are excluded
+    # from their own digest and then separately covered by the file list.
+    old_info = companion / 'build-info.json'
+    if old_info.exists(): old_info.unlink()
+    payload = inventory(staging)
+    build_id = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    info = {'version': package['version'], 'protocol_version': 2, 'build_id': build_id,
+            'platform': 'darwin', 'architecture': details['architecture'], 'node': 'v' + node_spec['version'], 'validation': 'staged-sdk-import-passed',
+            'live_krita_verified': False, 'clean_mac_verified': False,
+            'krita_support': 'Krita 5.2/5.3 candidate; exact-version live compatibility validation required'}
+    (staging / 'plugin/kritamcp').mkdir(parents=True, exist_ok=True)
+    for target in (companion / 'build-info.json', staging / 'plugin/kritamcp/build-info.json'):
+        target.write_text(json.dumps(info, indent=2) + '\n')
+    manifest = {**info, 'node_runtime': node_spec, 'dependencies': packages, 'files': inventory(staging)}
+    (staging / 'release-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    return manifest
+
+
+def build(destination, node=None, root=ROOT, plugin=None, node_spec=None, dependencies=None, runtime_cache=None, identity=None):
     destination, root = Path(destination).resolve(), Path(root).resolve()
     plugin = Path(plugin).resolve() if plugin else root.parent / 'krita-mcp/krita-plugin'
     if destination.exists(): raise ValueError('Choose a new release output folder; existing files are never overwritten.')
@@ -323,6 +378,8 @@ def build(destination, node=None, root=ROOT, plugin=None, node_spec=None, depend
             packages[name] = installed['version']
         # One bundled file instead of ~17,500 node_modules files (~180 MB → ~14 MB).
         bundle_companion(root, dependency_root, companion, lock, details['architecture'])
+        # Signed now, before the checks below load them and before the manifest records their bytes (sign_native_files).
+        sign_native_files(companion, signing_identity(identity))
         shutil.copytree(plugin / 'kritamcp', staging / 'plugin/kritamcp',
                         ignore=shutil.ignore_patterns('__pycache__', '*.pyc', 'creative-agent-config.json', 'build-info.json', '.DS_Store'))
         shutil.copy2(plugin / 'kritamcp.desktop', staging / 'plugin/kritamcp.desktop')
@@ -333,20 +390,7 @@ def build(destination, node=None, root=ROOT, plugin=None, node_spec=None, depend
         validate_shape_worker(node, companion)
         validate_upscale_worker(node, companion)
         validate_external_packages(node, companion)
-        # The digest covers physical payloads. Derived manifests are excluded
-        # from their own digest and then separately covered by the file list.
-        old_info = companion / 'build-info.json'
-        if old_info.exists(): old_info.unlink()
-        payload = inventory(staging)
-        build_id = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-        info = {'version': package['version'], 'protocol_version': 2, 'build_id': build_id,
-                'platform': 'darwin', 'architecture': details['architecture'], 'node': 'v' + node_spec['version'], 'validation': 'staged-sdk-import-passed',
-                'live_krita_verified': False, 'clean_mac_verified': False,
-                'krita_support': 'Krita 5.2/5.3 candidate; exact-version live compatibility validation required'}
-        for target in (companion / 'build-info.json', staging / 'plugin/kritamcp/build-info.json'):
-            target.write_text(json.dumps(info, indent=2) + '\n')
-        manifest = {**info, 'node_runtime': node_spec, 'dependencies': packages, 'files': inventory(staging)}
-        (staging / 'release-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+        manifest = finish_release(staging, package, details, node_spec, packages)
         staging.rename(destination)
         return {key: manifest[key] for key in ('version','build_id','platform','architecture','node','validation','live_krita_verified','clean_mac_verified')}
     finally:
@@ -371,11 +415,12 @@ def main():
     parser.add_argument('--node', type=Path, help='Node used only to validate the staged companion (default: the pinned managed runtime)')
     parser.add_argument('--node-spec', type=Path, help='Pinned runtime spec JSON (default: fetched from nodejs.org SHASUMS256.txt)')
     parser.add_argument('--dependencies', type=Path, help='Complete physical node_modules from npm ci; defaults to the source checkout')
+    parser.add_argument('--sign-identity', help='Developer ID Application identity to sign the native files with before the manifest is written (default: KRITA_AGENT_SIGN_IDENTITY; none: left as npm shipped them)')
     parser.add_argument('--keep-builds', type=int, default=2, help='Release bundles to keep beside --output, including this one (default 2)')
     args = parser.parse_args()
     try:
         spec = json.loads(args.node_spec.read_text()) if args.node_spec else None
-        result = build(args.output, args.node, node_spec=spec, dependencies=args.dependencies)
+        result = build(args.output, args.node, node_spec=spec, dependencies=args.dependencies, identity=args.sign_identity)
         result['pruned_builds'] = prune_builds(args.output, args.keep_builds)
         print(json.dumps(result, indent=2))
     except (ValueError, OSError, subprocess.SubprocessError) as error: raise SystemExit(str(error))

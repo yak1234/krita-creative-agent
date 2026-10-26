@@ -2,11 +2,15 @@
 
 <p align="center"><img src="creative-agent/docs/branding/toska-logo.png" alt="Toska" width="480"></p>
 
+
+**Toska** - Toska (тоска) is a Russian word expressing a deep, often indescribable longing. I chose it out of my appreciation for Russian literature and the emotion the word captures. I'm not a native Russian speaker, and the name reflects a literary and artistic interest, not an endorsement of the Russian government. I believe there's a particular kind of **Toska** in creativity, the longing to bring something you can vividly imagine into existence, but not quite having the means to express it. I
+
+
 **Agentic painting inside Krita.** Toska is a fork of [Krita](https://krita.org) (master, Qt 6) with an AI painter built in.
 You chat with it in a panel. It makes one substantial move at a time on layers you can undo, and you decide whether each move
 stays or type a correction. A separate reviewer checks the result against your reference. Underneath, Toska adds the engine
-features a script needs to paint well, among them pen pressure and tilt, background stroke jobs, one-step agent moves and named
-regions of the canvas. The agent comes with the app.
+features a script needs to paint well, among them pen pressure and tilt, background stroke jobs, one step agent moves and named
+regions of the canvas. 
 
 <p align="center"><img src="creative-agent/docs/gallery/five-minutes.jpg" alt="Pyat' minut (Five Minutes), a painting of Dostoevsky in a white shroud on Semyonovsky Square, snow falling at sunrise" width="800"><br>
 <em>Pyat' minut</em> (Five Minutes). Dostoevsky on Semyonovsky Square in 1849, waiting to be shot, not knowing the Tsar had already pardoned him. Painted in Toska.</p>

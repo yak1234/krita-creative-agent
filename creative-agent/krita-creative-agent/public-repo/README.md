@@ -23,14 +23,13 @@
   - Visual decisions run only on models that pass a two-image check ([docs](docs/decision-models.md)).
 - **API keys only.** Model and decision connections use API keys, so a lapsed OAuth sign-in can't break a chat.
 - **Observability and a training-data pipeline.** Optional [Langfuse](https://langfuse.com) tracing records each chat as a session: every model call, tool call, review score and typed decision, with canvas images. A labelling queue and an exporter turn those into decision-model training rows ([docs](docs/tracing.md)).
-- **MCP server.** `mcp-server/` exposes the same Krita bridge to Claude or any other MCP client.
+- **For developers: an MCP server.** `mcp-server/` lets a coding agent drive the same bridge, which is how we test Toska. Painting never needs it.
 
 ## Architecture
 
 ```mermaid
 flowchart TB
   artist(["Artist"])
-  outside(["Other agents<br/>Claude Code, Codex"])
 
   subgraph toska["Toska, our fork of Krita"]
     panel["Agent panel<br/>chat, plan, approval cards"]
@@ -65,10 +64,13 @@ flowchart TB
   canvas --> checks
   checks --> studio
   reviewer --> studio
-  outside -- MCP --> bridge
 ```
 
-Toska is our fork of Krita. Inside it, a small plugin owns the canvas: it checks every operation before it runs, paints on Krita's own main thread with native brushes, and keeps every pass on a layer you can undo. The agents live next door in the companion, built on Agent Pi. The studio runs each chat and hands work to the agent that suits it: a planner that reads your references and splits the job into steps, a painter that makes one move at a time, preparation workers that draft moves in parallel, and a reviewer that comes in with fresh eyes. A fast vision model checks each pass as it lands and decides whether it stays, whether to slow down, and whether the goal has been reached. You stay in the loop through cards in the panel, and other agents such as Claude Code can drive Toska over MCP. More detail is in [docs/architecture.md](docs/architecture.md).
+Toska is our fork of Krita. Inside it, a small plugin owns the canvas: it checks every operation before it runs, paints on Krita's own main thread with native brushes, and keeps every pass on a layer you can undo. The agents live next door in the companion, built on Agent Pi. The studio runs each chat and hands work to the agent that suits it: a planner that reads your references and splits the job into steps, a painter that makes one move at a time, preparation workers that draft moves in parallel, and a reviewer that comes in with fresh eyes. A fast vision model checks each pass as it lands and decides whether it stays, whether to slow down, and whether the goal has been reached. You stay in the loop through cards in the panel.
+
+For development and testing, an MCP server (`mcp-server/`) lets a coding agent such as Claude Code drive Toska the same way. You don't need it to paint.
+
+More detail is in [docs/architecture.md](docs/architecture.md).
 
 ## Speed
 

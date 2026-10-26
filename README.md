@@ -39,35 +39,36 @@ regions of the canvas.
 ```mermaid
 flowchart TD
     artist(["Artist"])
-
-    subgraph toska["Toska, our fork of Krita"]
-        panel["Agent panel<br/>chat, plan, approval cards"]
-        bridge["Bridge plugin<br/>checks every paint operation"]
-        canvas["Canvas<br/>native layers, full undo"]
-    end
-
-    subgraph companion["Companion: agents on Agent Pi"]
-        studio["Studio<br/>runs each chat"]
-        planner["Planner<br/>vision model"]
-        reviewer["Reviewer<br/>fresh eyes on the plan"]
-        painter["Painter<br/>tool-calling model"]
-        prep["Preparation workers<br/>draft moves in parallel"]
-        kit["The painter's kit<br/>brushwork, references with a job,<br/>AI images, snow"]
-        checks["Checks<br/>vision model: keep or undo, pace, done"]
-    end
+    panel["Agent panel<br/>chat, plan, approval cards"]
+    planner["Planner<br/>reads your references,<br/>breaks the job into steps"]
+    prep["Preparation workers<br/>draft the next moves"]
+    painter["Painter<br/>makes one move at a time"]
+    kit["Painter's kit<br/>brushwork, references,<br/>AI images, effects"]
+    bridge["Bridge plugin<br/>checks each operation"]
+    canvas["Canvas<br/>native layers, full undo"]
+    checks["Checks<br/>keep, slow down or done"]
+    reviewer["Reviewer<br/>judges the step<br/>against the plan"]
 
     artist <--> panel
-    panel <--> studio
-    studio --> planner
-    studio --> reviewer
-    studio --> painter
+    panel --> planner
+    planner --> painter
     prep -.->|drafts| painter
     painter --> kit
-    kit -->|paints through| bridge
+    kit --> bridge
     bridge --> canvas
-    canvas -.->|looks at| checks
-    checks -.->|verdicts| studio
+    canvas --> checks
+    checks -.->|next move| painter
+    checks -->|step done| reviewer
+
+    classDef person fill:#FFFFFF,stroke:#1F1A16,color:#1F1A16
+    classDef toska fill:#F3E6D8,stroke:#8A5A3B,color:#1F1A16
+    classDef companion fill:#E4ECF4,stroke:#3F6B8C,color:#1F1A16
+    class artist person
+    class panel,bridge,canvas toska
+    class planner,prep,painter,kit,checks,reviewer companion
 ```
+
+Warm boxes run inside Toska; blue boxes run in the companion app.
 
 Toska is Krita with an agent built in. A small plugin inside it is the only part that changes the painting. It checks every
 operation before running it and puts each pass on a layer you can undo.

@@ -201,7 +201,8 @@ test('the worker is a real child process: it studies, finds shapes, measures its
   const service = shapeService({ modelDir: async () => '/model', cacheDir: () => dir, model: MODEL, spawn });
   t.after(() => service.close());
   const study = await service.study('hash-a', pixels(), W, H);
-  assert.equal(study.provider, 'cpu');
+  // The real worker tries this platform's providers in order (CUDA first on Linux, DirectML on Windows); the fake loads any.
+  assert.equal(study.provider, providerOrder()[0]);
   assert.ok(study.peak_mb > 10, 'the child process measures its own peak memory: ' + study.peak_mb);
   const shape = await service.shape('hash-a', { box: [100, 60, 312, 140] });
   assert.ok(Math.abs(shape.score - 0.93) < 1e-6);

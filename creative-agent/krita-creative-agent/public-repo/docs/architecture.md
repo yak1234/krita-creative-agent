@@ -1,27 +1,26 @@
 # Architecture
 
-Three processes cooperate. Krita owns the canvas, the companion owns the agent, and the model providers are remote.
+Toska (our fork of Krita) owns the canvas, and the companion owns the agents. The models behind them are whichever ones you connect; the diagram names them by the job they do.
+
+Every painting session is the same loop, one move at a time:
 
 ```mermaid
-sequenceDiagram
-  participant Artist
-  participant Panel as Panel (PyQt dock, in Krita)
-  participant Companion as Node companion
-  participant Pi as Agent Pi session
-  participant Bridge as Bridge plugin (in Krita)
-  participant Luna as Decision model
-  Artist->>Panel: message / Start painting
-  Panel->>Companion: JSON line on stdin
-  Companion->>Pi: prompt + brief + canvas image
-  Pi->>Companion: paint_batch([...])
-  Companion->>Bridge: paint_pass / paint_recipe / ... (HTTP, one per action)
-  Bridge-->>Companion: compact result (+ canvas preview path)
-  Companion->>Luna: pace: next step? review? progress?
-  Luna-->>Companion: typed answer with probabilities
-  Companion-->>Pi: one result + one canvas image (+ host_pacing)
-  Companion->>Pi: independent reviewer session (when paced or requested)
-  Companion-->>Panel: status, passes, canvas, plan
+flowchart LR
+  ask["You ask for something,<br/>or accept a plan"] --> step["The next step<br/>of the plan"]
+  step --> move["The painter makes one move:<br/>a batch of native strokes,<br/>an effect, or a reference transfer"]
+  move --> look["It looks at the canvas again"]
+  look --> check{"Checks:<br/>did that pass help?"}
+  check -- "no" --> undo["The pass is undone"] --> move
+  check -- "yes" --> done{"Is the step done?"}
+  done -- "not yet" --> move
+  done -- "yes" --> review["The reviewer judges the canvas<br/>against the plan, with evidence"]
+  review -- "something is missing" --> move
+  review -- "met" --> you{"Agent mode or Autopilot?"}
+  you -- "Agent" --> card["You keep it, undo it,<br/>or type a correction"] --> step
+  you -- "Autopilot" --> step
 ```
+
+When a picture would help, the painter can ask for one: an AI image to repaint as an asset, or a canvas edit reference that shows the change before anything is painted. Both cost from the chat's AI image allowance, which is off unless you turn it on.
 
 ## Plugin (`plugin/kritamcp`)
 

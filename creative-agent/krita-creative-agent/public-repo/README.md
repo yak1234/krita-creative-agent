@@ -28,20 +28,47 @@
 ## Architecture
 
 ```mermaid
-flowchart LR
-  subgraph Krita
-    P[Creative Agent panel<br/>PyQt dock] --- B[Krita bridge plugin<br/>HTTP :5678 · command queue]
+flowchart TB
+  artist(["Artist"])
+  outside(["Other agents<br/>Claude Code, Codex"])
+
+  subgraph toska["Toska, our fork of Krita"]
+    panel["Agent panel<br/>chat, plan, approval cards"]
+    bridge["Bridge plugin<br/>checks every paint operation"]
+    canvas[("Canvas<br/>native layers and undo")]
+    bridge --> canvas
   end
-  P <-- JSON lines --> C[Node companion<br/>StudioRuntime]
-  C <-- HTTP --> B
-  C --> A[Agent Pi sessions<br/>painter · reviewer · preparation]
-  A --> OR[(OpenRouter models)]
-  C --> D[Decision models<br/>Luna / Unsloth]
-  C -. optional .-> L[(Langfuse)]
-  M[MCP server<br/>FastMCP] -- HTTP --> B
+
+  subgraph pi["Companion: agents running on Agent Pi"]
+    studio{{"Studio<br/>runs each chat"}}
+    planner["Planner<br/>vision model"]
+    painter["Painter<br/>tool-calling model"]
+    prep["Preparation workers<br/>draft moves in parallel"]
+    reviewer["Reviewer<br/>a fresh session that judges<br/>the canvas against the plan"]
+    checks["Checks<br/>a vision decision model:<br/>keep or undo, pace, goal reached"]
+    subgraph kit["What the painter can reach for"]
+      brushes["Native brushwork"]
+      refs["Reference images, each with a job:<br/>direction, likeness, composition,<br/>palette, material"]
+      images["AI image generator<br/>assets and canvas edit references"]
+      effects["Effects<br/>snow, fog and custom effects"]
+    end
+  end
+
+  artist <--> panel
+  panel <--> studio
+  studio --> planner
+  studio --> painter
+  prep -.-> painter
+  painter --> kit
+  kit --> bridge
+  canvas -- "what it sees" --> painter
+  canvas --> checks
+  checks --> studio
+  reviewer --> studio
+  outside -- MCP --> bridge
 ```
 
-The **plugin** (`plugin/kritamcp`) runs inside Krita. It owns the canvas, validates every operation, paints on Krita's main thread and saves the working `.kra`. The **companion** (`companion/`) runs the agent loop: planning, tools, batching, pacing, reviews and tracing. More detail is in [docs/architecture.md](docs/architecture.md).
+Toska is our fork of Krita. Inside it, a small plugin owns the canvas: it checks every operation before it runs, paints on Krita's own main thread with native brushes, and keeps every pass on a layer you can undo. The agents live next door in the companion, built on Agent Pi. The studio runs each chat and hands work to the agent that suits it: a planner that reads your references and splits the job into steps, a painter that makes one move at a time, preparation workers that draft moves in parallel, and a reviewer that comes in with fresh eyes. A fast vision model checks each pass as it lands and decides whether it stays, whether to slow down, and whether the goal has been reached. You stay in the loop through cards in the panel, and other agents such as Claude Code can drive Toska over MCP. More detail is in [docs/architecture.md](docs/architecture.md).
 
 ## Speed
 

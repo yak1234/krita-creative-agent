@@ -21,7 +21,7 @@
 #                 (default: one is built from this checkout)
 #   --overlay-plugin DIR  use that checkout's kritamcp folder instead of the installed plugin (before `ninja install` brings it up
 #                 to date; stamped into the notices)
-#   --source-url  the public repository named in the source offer (default: https://github.com/yak1234/krita-creative-agent)
+#   --source-url  the public repository named in the source offer (default: https://github.com/yak1234/toska)
 #
 # Signing: with KRITA_AGENT_SIGN_IDENTITY set to a keychain identity name the bundle is signed with it (hardened runtime);
 # otherwise ad hoc. A stable identity is what lets macOS remember "allow access to Documents" across rebuilds: see

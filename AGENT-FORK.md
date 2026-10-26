@@ -506,7 +506,7 @@ binaries were built from. The script refuses unless that commit is the source ch
 the source nor this checkout has uncommitted changes (`--allow-dirty`), and the commit is in `public/main` (`--allow-unpublished`;
 the public hash comes from `<git-dir>/publish-map`, because local and public hashes differ). Each allowance is written into
 the app (`notes:` in BUILD.txt, `KritaAgentNotes` in Info.plist, the README and the About box). The source offer names the
-public repository, `https://github.com/yak1234/krita-creative-agent` (branch main), and the exact public commit, with the local
+public repository, `https://github.com/yak1234/toska` (branch main), and the exact public commit, with the local
 commit beside it. That repository carries the fork's whole source tree at that commit (Krita's tree at its base plus ours,
 replayed onto the published main line), which is why the address is the corresponding source; no personal email is in the app.
 `Resources/BUILD.txt` is the one place the About box reads.
@@ -1085,7 +1085,7 @@ release task (1.3).
   host name address: rewrite them (mailmap or filter) only as a deliberate step before anything is published.
 
 ## Publishing (krita-fork, 19 October)
-- The public repository is `github.com/yak1234/krita-creative-agent`, branch `main`: the fork and the plugin in one repository.
+- The public repository is `github.com/yak1234/toska`, branch `main`: the fork and the plugin in one repository.
   Its earlier, plugin-only `main` is kept as the branch `plugin-only` by the first push.
 - Krita's own history is about 10 GB on GitHub, so it is not pushed. `agent/publish.sh` publishes a replay of the local main
   line: a root commit with Krita's tree at the base commit, then one commit per first-parent commit (message, author and dates

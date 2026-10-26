@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_SOURCE_URL = 'https://github.com/yak1234/krita-creative-agent'
+DEFAULT_SOURCE_URL = 'https://github.com/yak1234/toska'
 DEFAULT_BRANCH = 'main'
 UPSTREAM_URL = 'https://invent.kde.org/graphics/krita.git'
 NOT_PUBLISHED = 'not published yet'

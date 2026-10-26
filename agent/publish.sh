@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 Yakub Rabiutheen <yakub.rabiutheen@gmail.com>
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Publish the fork to its public repository (github.com/yak1234/krita-creative-agent, branch main), as a replay.
+# Publish the fork to its public repository (github.com/yak1234/toska, branch main), as a replay.
 #
 #   agent/publish.sh                 dry run: build the public history in the local ref refs/publish/main, report, push nothing
 #   agent/publish.sh --push          the same, then push main (only new commits after the first push)
@@ -82,7 +82,7 @@ if [ "$push" = 0 ]; then
     echo "dry run: nothing pushed. To publish: agent/publish.sh --push$([ "$first" = 1 ] && echo ' --first')"
     exit 0
 fi
-git remote get-url "$remote" > /dev/null 2>&1 || { echo "no remote '$remote' (git remote add $remote https://github.com/yak1234/krita-creative-agent.git)" >&2; exit 1; }
+git remote get-url "$remote" > /dev/null 2>&1 || { echo "no remote '$remote' (git remote add $remote https://github.com/yak1234/toska.git)" >&2; exit 1; }
 export GIT_TERMINAL_PROMPT=0
 # Use the GitHub CLI's login for this push only (no change to the repository's or the artist's git configuration).
 if command -v gh > /dev/null 2>&1; then

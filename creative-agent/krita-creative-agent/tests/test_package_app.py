@@ -1096,7 +1096,7 @@ class BuildRecordTests(unittest.TestCase):
         statement = notices.source_statement(record)
         self.assertIn(self.first, statement)
         self.assertIn(self.second, statement)                                            # both are stated
-        self.assertIn('https://github.com/yak1234/krita-creative-agent', statement)
+        self.assertIn('https://github.com/yak1234/toska', statement)
         self.assertNotIn('@', statement)
 
     def test_a_dirty_tree_is_refused_unless_allowed_and_then_stamped(self):
@@ -1139,7 +1139,7 @@ class BuildRecordTests(unittest.TestCase):
         record, _ = self.record()
         parsed = notices.parse_record(notices.record_text(record))
         self.assertEqual(parsed['build commit'], self.second)
-        self.assertEqual(parsed['source'], 'https://github.com/yak1234/krita-creative-agent')
+        self.assertEqual(parsed['source'], 'https://github.com/yak1234/toska')
         self.assertEqual(parsed['public commit'], self.second)
         self.assertNotIn('@', notices.record_text(record))
 

@@ -1,106 +1,9 @@
-# Krita Creative Agent
+# The companion
 
-A macOS painting assistant inside Krita, powered by **Agent Pi**. Discuss a canvas, develop a painting plan, and let Agent execute it with native brushes and editable layers. Connect models through Pi instead of tying the painting experience to one provider.
+The agent half of Toska: a Node program, built on **Agent Pi**, that runs the chat, the planner, the painter and the reviewer, and drives the plugin inside Toska. Discuss a canvas, develop a painting plan, and let Agent execute it with native brushes and editable layers. Connect models through Pi instead of tying the painting experience to one provider.
 
 **The product goal is simple: give Agent a painting task and let it work through to completion.** The artist should be able to watch, guide it, or press Stop. They should not need to manage tool permissions, repeat Resume after ordinary progress, or manipulate an internal stage number.
 
-**Version 0.2 is still a development candidate.** We have demonstrated native painting, saving, stage advancement and recovery in live Krita. We have not yet demonstrated consistently finished, professional-quality artwork. Tool execution, a passing test suite and a model declaring success are different from a convincing painting. [Product progress](docs/PRODUCT_GOAL_PROGRESS.md) records the evidence and remaining gaps; the [redesign plan](../CREATIVE_AGENT_PRODUCT_REDESIGN_PLAN.md) defines the broader product requirements.
-
-## Native painting craft — 11 October 2026 (build `d68f840d…`)
-
-The painter now builds areas with Krita itself instead of only brush strokes. It works layer-first: flats, then form on clipped layers, then filters, with strokes last. Each step is one reversible pass.
-
-| Tool | What it does |
-| --- | --- |
-| `fill_region`, `select` | Flats, gradients and patterns in exact shapes or saved selections |
-| `colorize_flats` | Flat colours from closed line art, with Krita's colorize mask |
-| `create_layer`, `set_layer` | Blend modes, alpha lock, clipping (masks when clipping to the artist's layers), layer styles (shadow, glow, outline) and live gradient fill layers |
-| `apply_filter` | Filter masks, filter layers or filtered copies; fading a mask works |
-| `transform_layer` | Move, scale or rotate one of the agent's layers with a transform mask |
-| `composition_guides` | Thirds, centre or horizon guides; the artist's own guides come back when the chat ends |
-
-- **Following the artist.** Observations include the artist's selected layers and current colours.
-- **On-canvas progress.** A short message shows on the canvas when each operation starts.
-- **Always on.** The panel no longer offers a strokes-only mode; scripts can still pass `native_craft: false` for comparisons.
-- **Hot reload.** The bridge's `reload` command loads a new build without restarting Krita.
-
-The rules for the artist's layers are in [safety](docs/safety.md), and the modules are described in [architecture](docs/architecture.md).
-
-**Live evidence (Krita 5.3.3):**
-
-- **Lit sphere.** `deepseek-flash` in Autopilot made a sphere with a cast shadow in 5 `fill_region` calls with no strokes. Painting took 0.8 minutes, and the independent review met 5 of 5 checks.
-- **Colorize flats.** Three regions came out in their exact colours, and the line art was unchanged.
-- **Groups 1–4 and 8.** Every live check passed.
-
-**Speed benchmark: incomplete.**
-
-| Starry Night, `deepseek-flash`, 20-minute cap | Craft on | Strokes only |
-| --- | --- | --- |
-| Passes (craft / `paint_pass`) | 92 (37 / 38) | no valid run |
-| Strokes | 5,992 | — |
-| Review | not reached (stopped at the cap) | — |
-
-Both strokes-only attempts were cut short. One stalled on the provider, and in the other the active Krita document changed. Rerun them with `scripts/live-craft-acceptance.mjs --scenario starry --craft on|off --idle-seconds 300`, and don't switch documents during the run. Until then, craft has no measured speed advantage.
-
-## Luna decisions — 9 October 2026 (candidate `ff04b944…`)
-
-TypeSafe routing has been replaced by **Luna decisions**: fast, image-based checks from GPT-6 Luna Decisions (`openai/gpt-6-luna-decisions`) on OpenRouter's Decisions API. A single setting, **Luna decisions**, controls all three checks:
-
-- **Off.** No requests.
-- **Evaluate only.** Checks run, are recorded in diagnostics and are shown in the panel. The painter and the loop are unchanged.
-- **Guide agent.** Results also reach the painter and drive the stall rules.
-
-The three checks:
-
-- **Routing.** The same operation and brush advice as before, now with the attached canvas image. It gives advice only at ≥ 0.8 confidence.
-- **Per-pass check.** After each paint pass, compares that pass's before and after images for six recorded failure types: hard join, duplicated band, flat block, mechanical stripes, pasted ellipses and hard graphic look. Each finding comes with its location on a 3×3 grid. It never hides or undoes a pass.
-- **Progress check.** When the reviewer fails the same checks again, it scores how much they improved (0–3). In Guide mode, clear progress ends a stall run, and three reviews without real improvement trigger the change of strategy.
-
-Luna can't mark a painting complete or skip a review. Any refusal, timeout or error falls back to the behaviour without Luna.
-
-**Credentials and data.** Luna uses the OpenRouter key you already connected for the painter, falling back to `OPENROUTER_API_KEY`. There is no separate key field. When the setting is on, the canvas and pass images and your direction are sent to OpenRouter and OpenAI. A typical cost is about $0.0003 per pass check. A TypeSafe key saved earlier in macOS Keychain is left in place and no longer used.
-
-**Evaluation (9 Oct, OpenRouter):**
-
-- Routing held-out: 26/26, the same as the previous router.
-- Labelled visual checks on crops of finished paintings (detection rates are for injected failures):
-  - join, flat block, stripes, ellipses and graphic look: 12/12 each;
-  - duplicated band: 7/12;
-  - false flags on unchanged, ordinary-brushwork and already-present-flaw passes: 0/36;
-  - progress ordering unchanged < half-fixed < fixed: 12/12.
-
-Injected failures are more obvious than real ones, so run **Evaluate only** before using Guide. Evidence: `output/routing-eval/`, `output/visual-checks/`. Evaluate with `doppler run -- node scripts/evaluate-routing.mjs` and `doppler run -- uv run scripts/evaluate-visual-checks.py`.
-
-## History: TypeSafe candidate and live acceptance — 23 September 2026
-
-*Superseded by Luna decisions above; kept as a record.*
-
-
-Optional TypeSafe routing supports Off, Evaluate only, and Guide agent. It advises the existing vision painter; it cannot authorize edits or replace visual review. The official SDK is pinned to 0.6.0. Credentials can come from `TYPESAFE_API_KEY`, macOS Keychain, or an explicitly configured `typesafe_doppler` project/config. The current local connection uses Doppler `secrets/dev`; keys are not copied into artwork or reports.
-
-**Live results:** 26/26 held-out intent cases matched using the real Jev API. Separate full-agent runs demonstrated Gradient and Smart Patch on the installed bridge, with pixel confinement and saved-art checks. A live document-switch check prevented mutation of either tab; a real rejection restored the test defect. These are specific workflow checks, not proof of finished artistic quality. The matched Off/Guide Smart Patch runs chose the same tool, so routing has not demonstrated a tool-choice improvement on that task.
-
-The 23 September inspect-loop fix makes an Agent inspection hint a one-time preliminary step. It was included in the previous `55ae42f6…` release; its behavior during a resumed painting run still needs live confirmation. See [live test instructions and evidence](docs/TYPESAFE_LIVE_ACCEPTANCE.md).
-
-The latest `test.kra` run had TypeSafe routing **Off**. Its main measured delays were macOS idle sleep and repeated large layer metadata, rather than native brush execution. The previous `55ae42f6…` release added an Agent-only Mac wake hold and reduced duplicate layer metadata in model context and mutation receipts. See the [performance evidence and limits](docs/PERFORMANCE_2026-09-23.md). Live speed improvement is not yet verified.
-
-`npm test` and `npm run test:live` now run the live acceptance entry point and require explicit target/output arguments. Missing credentials, missing Krita, mismatched builds, and unrun scenarios report **blocked** (exit 2), not passed. `npm run test:unit` runs the separate unit/regression suite; its totals are not evidence of real API or canvas behavior.
-
-## Lower-house recovery update — 23 September 2026
-
-The installed and loaded build is now `1ca04445…`. The Agent records accepted requirement corrections separately and gives the latest artist direction precedence during visual review, including when an older stage check or reference geometry conflicts. Repeated failures of the same review checks trigger a strategy change after three changed passes and pause after five; a new user direction starts a fresh review window. Historical reviews do not consume this window when an old conversation is restored. This prevents an unlimited run from mistaking small pixel changes for progress. It does not guarantee the reviewer or painter will make the right artistic judgment.
-
-`painting_toolbox` now accepts `projection_region` and optional `projection_feather` to copy a bounded area of the **visible composite** onto a new reversible top layer. It intersects the mask with an existing selection and the stage region, then supports selection-aware brush, eraser, gradient, and Smart Patch commands. The source document and underlying layers stay intact. The first version requires RGBA/U8, opaque source pixels and at most two million pixels per contribution; whole-layer transforms and filled shapes are rejected in this mode.
-
-Live acceptance on a separate copy of `test.kra` ran a brush stroke across the mask edge on this loaded build: 540 pixels changed inside the region, zero outside, and rejecting the pass restored the copy's merged image exactly. The original `test.kra` remained saved and unchanged. This validates the native retouch and rejection path on Krita 5.3.3, **not** an autonomous finish of the Victorian house. [Recovery notes and remaining artistic work](docs/LOWER_HOUSE_RECOVERY_2026-09-23.md).
-
-## Earlier reference-workflow milestone
-
-At the **14 September 2026** milestone, reference-driven stroke generation, coarse/fine/focal refinement and resumable execution were implemented; 99 Node tests and 58 Python tests passed. That milestone used release `1cda2b8dabf4d1b23eefa55403161b4f06eb5afe24687535e4106cb4b1359c10`. The currently loaded release is `1ca04445…`, as recorded above.
-
-The new reference workflow has passed automated generator, native-policy and real Pi SDK/controller tests with simulated provider/bridge responses. Its updated native bridge and real-provider painting still need live validation. Installation, loaded component versions and artistic quality are separate checks. See [implementation and validation status](docs/REFERENCE_PAINTING_IMPLEMENTATION.md).
-
-The [accepted faces-and-shawl study](../projects/moonlit-canal/faces-and-shawl-finished.png) demonstrates the reference-sampled method under Codex direction using a local script. It was not painted by the Creative Agent. [Working notes](docs/REFERENCE_BRUSH_RECONSTRUCTION.md) preserve the exact method and limitations. The [13 September capability review](docs/PAINTING_CAPABILITY_REVIEW_2026-09-13.md) is historical: procedural stroke generation and reference reconstruction have since been implemented; a reusable calibrated brush catalogue remains incomplete.
 
 ## Using it
 
@@ -237,11 +140,11 @@ The renderer computes the marks locally; the model does not write thousands of c
 
 Each scale uses **one editable layer** inside its plan-step group, even across many chunks. Chunks contain at most **128 strokes**, use native checkpoints, and count toward explicit operation allowances. The tool yields a saved result after roughly 45 seconds or when a scale finishes. A chunk yield is not artistic completion and ordinarily does not require the user to press Resume. The agent continues the saved job until the planned work is complete or a genuine stop condition occurs.
 
-**Stopping and recovery:** Stop lets the current chunk settle and prevents the next. Resume uses the same job ID. A lost acknowledgement is checked against Krita's operation receipt before any further painting; committed strokes are not repeated. Partial or uncertain results block continuation. If the canvas, source reference or planned stage has changed, the job preserves those changes and refuses automatic continuation. Inspect and resolve the discrepancy; do not delete receipts or restart the recipe blindly. See [full behavior and limitations](docs/REFERENCE_PAINTING_IMPLEMENTATION.md).
+**Stopping and recovery:** Stop lets the current chunk settle and prevents the next. Resume uses the same job ID. A lost acknowledgement is checked against Krita's operation receipt before any further painting; committed strokes are not repeated. Partial or uncertain results block continuation. If the canvas, source reference or planned stage has changed, the job preserves those changes and refuses automatic continuation. Inspect and resolve the discrepancy; do not delete receipts or restart the recipe blindly.
 
 ### Drawn contours
 
-`paint_contours` fills up to 32 deliberately drawn polygon outlines in back-to-front order using native brushes, as one editable contribution. The model supplies the geometry; this does not infer likeness or trace references. It validates outlines before dispatch and uses existing selection restoration, stage restrictions, saves and operation recovery. Painter and reviewer guidance now distinguishes recognizable construction from the requested finish. See [direct-painting lessons and limitations](docs/CONTOUR_CONSTRUCTION_LESSONS.md).
+`paint_contours` fills up to 32 deliberately drawn polygon outlines in back-to-front order using native brushes, as one editable contribution. The model supplies the geometry; this does not infer likeness or trace references. It validates outlines before dispatch and uses existing selection restoration, stage restrictions, saves and operation recovery. Painter and reviewer guidance now distinguishes recognizable construction from the requested finish.
 
 ### Generated painting recipes
 
@@ -252,8 +155,6 @@ For example, ask Agent: “Use a painting recipe to scumble this field with irre
 The first implementation supports up to 20,000 generated curves per request, executed in existing saved batches of at most 256. **Each batch still creates a named layer and counts toward any explicit operation allowance.** Stop prevents the next batch; the current batch finishes and saves. Recipe parameters, generator version and batch receipts live under the conversation's `recipes/` directory. Interrupted recipes do not automatically replay. The rectangular region clips the entire brush footprint and is intersected with any explicit stage region.
 
 This is a deterministic parameterized generator, not arbitrary script execution or automatic reference sampling. Irregularity varies placement, overlap, direction and curvature; brush behavior still needs visual assessment. Identical seeds reproduce the generated command plan, not a guarantee of identical pixels across changed presets or Krita versions.
-
-Historical validation of candidate 021: a real Krita test produced **1,200 strokes in five saved batches in 16.0 seconds**, excluding model latency, and Stop prevented a second batch in a separate test. See [validation](docs/RECIPE_TOOL_VALIDATION.md). End-to-end artistic performance through a real provider remains a separate evaluation.
 
 Agent has access to native curves and pressure strokes, brush selection/settings, shapes, selections and selection modification, erasing, layer movement/transformation, blending, opacity/visibility, colour selection, circular fills, solid-colour clearing and imported brush textures. `painting_tool_help` provides the implemented command formats.
 
@@ -277,8 +178,6 @@ Tools discover the installed plugin configuration (its `output` is the agent dat
 
 The live ring retains 500 events; a rotating local event journal survives companion exits. Local model turn identifiers are correlation IDs, not provider request IDs. Raw prompts, token deltas and tool arguments are omitted from this timeline. Existing report sanitization redacts credentials and removes image payloads. UI and bridge metadata are explicitly last-reported snapshots, not fresh visual inspections. If the companion is unavailable, tools return available previous report/journal paths labelled as non-live evidence. They never retry an uncertain painting operation or restart Krita.
 
-Validation and installed-build status: [diagnostic MCP validation](docs/DIAGNOSTIC_MCP_VALIDATION.md).
-
 ```text
 Krita Python/Qt panel
   ↕ local JSON messages
@@ -293,7 +192,7 @@ One painting controller owns continuation. Pi supplies model sessions, streaming
 
 ### Where your data lives
 
-Since 12 October 2026 (storage-layout, `openspec/changes/storage-layout`), only artwork stays in your painting folder. Agent records live in one SQLite database in the app's data folder, and nothing large or frequently rewritten is written next to your paintings (safe for iCloud Drive and Dropbox).
+Since 12 October 2026 (storage-layout, `openspec/changes/archive/2026-10-25-storage-layout`), only artwork stays in your painting folder. Agent records live in one SQLite database in the app's data folder, and nothing large or frequently rewritten is written next to your paintings (safe for iCloud Drive and Dropbox).
 
 ```text
 Your painting folder/
@@ -337,7 +236,7 @@ In Settings → Connections, choose **Export troubleshooting report**. This crea
 For troubleshooting without touching the app:
 
 ```sh
-node krita-creative-agent/scripts/export-diagnostics.mjs "$HOME/Library/Application Support/Creative Agent/data"
+node krita-creative-agent/scripts/dev/export-diagnostics.mjs "$HOME/Library/Application Support/Creative Agent/data"
 ```
 
 Optionally append a conversation UUID. Without one, this uses the last active-session marker, which can differ from the chat shown in the panel. The CLI report contains saved records; the panel export additionally includes live runtime state and build metadata.

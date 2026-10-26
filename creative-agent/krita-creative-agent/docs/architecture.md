@@ -1,65 +1,73 @@
 # Architecture
 
-Krita Creative Agent has two halves:
+Toska (our fork of Krita) owns the canvas, and the companion owns the agents. The models behind them are whichever ones you connect; the diagram names them by the job they do.
 
-- a **Krita plugin** (`krita-mcp/krita-plugin/kritamcp/`), which runs inside Krita and changes the painting;
-- a **Node companion** (`krita-creative-agent/src/`), which runs the chat, the painter model and the review.
+Every painting session is the same loop, one move at a time:
 
-They talk over a local HTTP bridge on `127.0.0.1:5678`. Every request is a JSON object: `{"action": "creative", "params": {operation, session_id, operation_id, params}}`.
+```mermaid
+flowchart LR
+  ask["You ask for something,<br/>or accept a plan"] --> step["The next step<br/>of the plan"]
+  step --> move["The painter makes one move:<br/>a batch of native strokes,<br/>an effect, or a reference transfer"]
+  move --> look["It looks at the canvas again"]
+  look --> check{"Checks:<br/>did that pass help?"}
+  check -- "no" --> undo["The pass is undone"] --> move
+  check -- "yes" --> done{"Is the step done?"}
+  done -- "not yet" --> move
+  done -- "yes" --> review["The reviewer judges the canvas<br/>against the plan, with evidence"]
+  review -- "something is missing" --> move
+  review -- "met" --> you{"Agent mode or Autopilot?"}
+  you -- "Agent" --> card["You keep it, undo it,<br/>or type a correction"] --> step
+  you -- "Autopilot" --> step
+```
 
-## The creative operation journal
+When a picture would help, the painter can ask for one: an AI image to repaint as an asset, or a canvas edit reference that shows the change before anything is painted. Both cost from the chat's AI image allowance, which is off unless you turn it on.
 
-Every change to the canvas goes through `cmd_creative` in `creative_tools.py`, which works like this:
+## Plugin (`creative-agent/krita-mcp/krita-plugin/kritamcp`)
 
-1. **Validate.** The whole request is checked before anything changes. A refused request leaves the painting untouched.
-2. **Record intent.** The operation is saved as `outcome_unknown` before the first change. A crash part-way leaves that record behind. Painting is then blocked until the artist inspects the canvas and acknowledges it with `reconcile`, and the operation is never repeated blindly.
-3. **Change the canvas.**
-4. **Checkpoint and record the pass.** The working `.kra` is saved, and a reversible pass is added to `.passes.json` with its before and after state. The pass history can compare, fade, hide or reject each pass. Passes of the same plan step or Agent move form a group that can be rejected together, which is Undo in Agent mode.
+- **`__init__.py`**: an HTTP server on `127.0.0.1` (port 5679 in Toska). Requests are queued and executed on Krita's main thread (`command_queue.py`), because Krita's API is not thread-safe.
+- **`creative_tools.py`**: the *creative* operations the agent uses:
+  - `begin` and `observe`;
+  - `paint_pass` (native cubic strokes);
+  - `painting_toolbox` (edits on a reversible copy);
+  - `adjust_layer`;
+  - `review_pass` (fade, hide or reject a pass);
+  - `checkpoint` and `end`.
 
-Replaying an `operation_id` returns the stored result and never paints twice.
+  Each operation is validated (`creative_validation.py`), is idempotent by operation id, and is recorded in an operation journal and a pass history next to the study.
+- **Saving:** full `.kra` saves happen every 5 actions or 60 seconds, and always at review, run end, `end` and the artist's pass-review actions. Between saves an action only re-reads the canvas.
+- **`creative_docker.py`**: the Creative Agent panel (chat, plan dialog, pass history, settings). It starts the companion as a child process and talks to it with JSON lines.
 
-## Native craft modules
+## Companion (`creative-agent/krita-creative-agent/src`)
 
-Craft tools make whole areas through Krita's own layers instead of brush strokes. Each one is a mixin on the plugin object:
+| Module | Role |
+|---|---|
+| `main.mjs` | Process entry: config, the JSON-line protocol with the panel, shutdown |
+| `studio.mjs` | `StudioRuntime`: chats (studies), modes (Ask / Plan / Agent), the plan brief, the run loop (`runGoal`), reviews (`reviewCanvas`), pacing (`afterPainting`), recovery, persistence |
+| `runtime.mjs` | `PaintingRuntime`: Pi session lifecycle, event handling, the context transform that keeps only recent canvas images |
+| `tools.mjs` | Painting tools exposed to the model, `paint_batch`, and lean model-visible results (`modelResultText`) |
+| `recipe-tool.mjs`, `contour-tool.mjs`, `reference-tool.mjs` | Higher-level painting tools built on native passes |
+| `pacing.ts` | Decision-model pacing: questions, the host's action policy, stall detection |
+| `luna-decisions.ts`, `routing.mjs`, `visual-checks.ts` | Decisions API client, request routing, per-pass defect checks, review progress |
+| `langfuse-tracing.mjs` | Optional Langfuse tracing: sessions, generations, tools, scores, typed decisions |
+| `decision-records.mjs` | Typed decisions for the decision-model dataset |
+| `bridge.mjs` | HTTP client for the plugin |
 
-| Module | Operations | What it does |
-| --- | --- | --- |
-| `capabilities.py` | `capabilities` | The manifest of what this Krita offers: filters and their settings, blend modes, fill generators, and the names of presets, patterns and gradients. It is cached per Krita version. Validators check ids, setting names and types before any change. |
-| `layer_craft.py` | `create_layer`, `set_layer` | Paint, fill and group layers with blend mode, opacity, alpha lock, clipping and layer styles. Also has the shared helpers for copies, clip groups and alpha masks. |
-| `layer_style.py` | (used by `set_layer`) | Drop shadow, inner shadow, outer glow and outline, written as the ASL XML that `Node.setLayerStyleFromAsl` reads. |
-| `region_craft.py` | `select`, `fill_region` | Named selections built from steps, saved in the study folder. Solid, gradient and pattern fills onto a new layer or a copy. |
-| `region_raster.py` | (Qt pixel work) | Shape masks, fills and partial blends. Also used by the toolbox's `selection` command. |
-| `filters.py` | `apply_filter` | Filter masks, filter layers or filtered copies, limited by a selection. Fading a mask rewrites its saved coverage, because Krita ignores filter-mask opacity. |
-| `colorize.py` | `colorize_flats` | Flat colours from closed line art with Krita's colorize mask. |
-| `transform_craft.py` | `transform_layer` | Moves, scales or rotates an agent layer with a transform mask. |
-| `canvas_view.py` | `guides`, and `artist_focus` in observations | The artist's selected layers and colours, composition guides that are restored when the chat ends, and a floating message on the canvas when an operation starts. |
-| `dev_reload.py` | bridge `reload` | Loads an installed build into the running Krita without a restart. |
+### A run, step by step
 
-### Recorded passes
+1. **Plan.** In Plan mode the model may only ask questions and propose a brief: requirements, freedoms, ordered steps and completion checks. The artist accepts it with **Start painting**.
+2. **Paint.** `runGoal` gives the painter the brief, the reference images and the current canvas. The painter sends `paint_batch` calls, each with 1–10 actions. Every action goes through `callNative`, which checks the plan revision and handles uncertain outcomes by observing, acknowledging and continuing.
+3. **Pace.** After each painting call, `afterPainting` asks the decision model whether to continue the current step, move to the next one, or call the reviewer. The answer is acted on by the host and reported back in the tool result.
+4. **Review.** `reviewCanvas` starts a separate reviewer session that sees only the references, the brief, the native technical evidence and the whole canvas. It must submit evidence for every check. The host marks the painting complete only when every check is met.
+5. **Repeat or finish.** A failed review feeds its unmet checks into the next painting turn. Repeated failures without progress trigger a change of strategy. Only the artist's **Stop** or a hard failure pauses the run.
 
-A pass records what was made and which existing layer it relates to:
+## Data on disk
 
-- the new layer, mask or copy (`layer_id`);
-- the related layer: `source_layer_id` for a copy, `target_id` for a filter or transform, `clip.base_id` for a clip.
+Each chat is a *study* in `<paintings folder>/.creative-agent/studies/<id>/`:
 
-Reject hides what the pass made. When the pass made a copy, reject also shows the original again.
-
-When an operation adds a mask or child layer, or a review hides one, the parent layers' recorded state is updated. The journal therefore doesn't mistake its own change for the artist's.
-
-## Companion
-
-- **`tools.mjs`** defines the painter's tools and their schemas. `paint_batch` runs up to 10 actions in one model call, and `"$N"` names a layer made earlier in the same batch.
-- **`craft.mjs`** lists the craft tools once, for the bridge, the pacing, the activity labels and the `native_craft` setting.
-- **`studio.mjs`** runs the four modes:
-  - Ask and Plan only read the canvas.
-  - Ask is teacher mode. It explains how a painter would build the picture in Krita, step by step, with the Krita feature for each step and an Agent message that does it. A full lesson starts with `# Lesson:`. The companion saves it as `goal.lesson`, and the panel's Lesson chip opens it in any mode, beside the plan. The lesson is for the artist: it is never added to the painter's context, unlike the plan.
-  - Agent makes one move per message.
-  - Autopilot works through the plan to completion.
-
-  It also decides which tools each phase offers. With `native_craft` (an execution setting, on by default) switched off, the craft tools disappear from the tool list, from `paint_batch` and from routing advice.
-- **`prompt.mjs`** holds the painter instructions. When craft tools are offered, the painter works layer-first:
-  1. flats;
-  2. clipped Multiply and Screen layers for form;
-  3. filters for colour and softness;
-  4. strokes last.
-- **`routing.mjs`** handles Luna routing. Fill, gradient, shade, light, grade, soften, move and transform intents go to the craft tools, each with a one-line hint on how to use them.
+| Path | Contents |
+|---|---|
+| `goal.json` | Plan, status, reviews, progress, pacing history |
+| `study.json` | Model, references, target document |
+| `sessions/`, `reviews/`, `preparations/` | Pi transcripts |
+| `.previews/` | Canvas images |
+| `.passes.json`, `.operations.json` | The plugin's pass history and journal |

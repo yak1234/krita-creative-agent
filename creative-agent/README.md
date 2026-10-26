@@ -23,4 +23,4 @@ cd ../krita-mcp && uv run --with pytest --with fastmcp --with httpx python -m py
 ## Release and public repo
 
 - `python3 krita-creative-agent/scripts/build-release.py` builds the bundle; `scripts/install-release.mjs` installs it into Krita.
-- `python3 krita-creative-agent/scripts/curate-public-repo.py <dest>` generates the public monorepo layout (`plugin/`, `companion/`, `mcp-server/`).
+- Publishing to the public repository is `agent/publish.sh` (see the root README).

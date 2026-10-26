@@ -1,16 +1,16 @@
 // Sends one real, small traced Agent Pi run to Langfuse, without Krita: a model
 // call that uses a fake `observe_canvas` tool returning a 64x64 image.
-//   node scripts/langfuse-smoke.mjs [provider/model]
+//   node scripts/dev/langfuse-smoke.mjs [provider/model]
 // Prints the trace id only. Needs Langfuse credentials (env or Keychain) and
 // OpenRouter connected in Agent Pi.
 import { join } from 'node:path';
-import { projectDir } from './project-dir.mjs';
+import { projectDir } from '../project-dir.mjs';
 import { tmpdir } from 'node:os';
 import { deflateSync } from 'node:zlib';
 import { createAgentSession, DefaultResourceLoader, getAgentDir, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import { connectLangfuse } from '../src/langfuse-tracing.mjs';
-import { BUILD_INFO } from '../src/build-info.mjs';
+import { connectLangfuse } from '../../src/langfuse-tracing.mjs';
+import { BUILD_INFO } from '../../src/build-info.mjs';
 
 const [provider, ...rest] = (process.argv[2] ?? 'openrouter/google/gemini-3.8-flash').split('/');
 let tracing;

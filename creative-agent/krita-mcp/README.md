@@ -8,12 +8,12 @@ This bridge allows Claude (or any MCP client) to create canvases, paint strokes,
 
 Two components:
 
-1. **Krita Plugin** (`krita-plugin/`) — A Python plugin that runs inside Krita, exposing an HTTP server on `localhost:5678`. It receives paint commands and executes them on Krita's main thread via a command queue.
+1. **Krita Plugin** (`krita-plugin/`) — A Python plugin that runs inside Krita, exposing an HTTP server on `localhost:5679` in Toska (`5678` in stock Krita). It receives paint commands and executes them on Krita's main thread via a command queue.
 
 2. **MCP Server** (`server.py`) — A [FastMCP](https://github.com/jlowin/fastmcp) server that exposes painting tools to any MCP client. It translates MCP tool calls into HTTP requests to the Krita plugin.
 
 ```
-MCP Client (Claude, etc.)  ←→  MCP Server (server.py)  ←→  Krita Plugin (HTTP on :5678)  ←→  Krita
+MCP Client (Claude, etc.)  ←→  MCP Server (server.py)  ←→  Krita Plugin (HTTP on :5679)  ←→  Krita
 ```
 
 ## Setup
@@ -125,8 +125,8 @@ diagnostic readback (image paths, layer lists, brush settings) is not truncated.
 
 | Setting | Default | How to Change |
 |---------|---------|---------------|
-| Plugin HTTP port | `5678` | Edit `SERVER_PORT` in plugin `__init__.py` |
-| MCP server URL | `http://localhost:5678` | Set `KRITA_URL` env var |
+| Plugin HTTP port | `5679` in Toska, `5678` in stock Krita | Chosen by the app (`bridge_config.py` server_port) |
+| MCP server URL | `http://localhost:5679` in Toska | Set `KRITA_URL` env var |
 | Shared token | none | Set the same `KRITA_MCP_TOKEN` for Krita and the MCP server |
 | Canvas output dir | `~/krita-mcp-output` | Edit `CANVAS_OUTPUT_DIR` in plugin `__init__.py` |
 

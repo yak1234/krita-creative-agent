@@ -14,6 +14,68 @@ undoable tools), and ships the agent with the app.
 > ([krita.org](https://krita.org)), and is distributed under the GNU GPL, as Krita is. Krita is a trademark of the Krita
 > Foundation; Toska is an independent fork and is not affiliated with or endorsed by the Krita project.
 
+## What it can do
+
+- **Four ways to work.** Ask and Plan only talk. Agent makes one substantial move per message (a whole sky of strokes, say), and
+  you keep it, undo it or type a correction. Autopilot paints an agreed plan through to the end, or until you press Stop.
+- **Every move is reversible.** Strokes go on native Krita layers through Krita's own brush engine, and Undo takes back the whole
+  move.
+- **References with a job.** Each reference image says what it is for: overall direction, a character's likeness, composition,
+  palette or material. A goal picture much smaller than the canvas is sharpened on your Mac first.
+- **It checks its own work.** A separate reviewer judges the result against the plan, with evidence. With Decision checks on, a
+  vision model also looks at each pass as it lands and undoes one that made the painting worse.
+- **Paint only here.** Name a part ("the sky", "the left buildings"); Toska finds it and Krita blocks every stroke outside it.
+- **AI images, only if you allow them.** The painter can ask for an image to repaint as an asset, or a canvas edit reference that
+  shows a change before anything is painted. Both are off until you give the chat an allowance.
+- **Effects that need a method,** such as falling and settled snow, painted as thousands of soft flakes in depth with faces kept
+  clear.
+
+## How it works
+
+```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 320}}}%%
+flowchart TD
+  artist(["Artist"])
+
+  subgraph toska["Toska, our fork of Krita"]
+    panel["Agent panel<br/>chat, plan, approval cards"]
+    bridge["Bridge plugin<br/>checks every paint operation"]
+    canvas[("Canvas<br/>native layers, full undo")]
+  end
+
+  subgraph pi["Companion: agents on Agent Pi"]
+    studio{{"Studio<br/>runs each chat"}}
+    planner["Planner<br/>vision model"]
+    painter["Painter<br/>tool-calling model"]
+    reviewer["Reviewer<br/>fresh eyes on the plan"]
+    prep["Preparation workers<br/>draft moves in parallel"]
+    kit["<b>The painter's kit</b><br/>native brushwork<br/>references, each with a job<br/>AI images and canvas edit references<br/>snow, falling and settled"]
+    checks["Checks<br/>vision decision model:<br/>keep or undo, pace, done?"]
+  end
+
+  artist <--> panel
+  panel <--> studio
+  studio --> planner
+  studio --> painter
+  studio --> reviewer
+  painter --> kit
+  studio ~~~ prep
+  prep -. drafts .-> painter
+  kit -- "paints through" --> bridge
+  bridge --> canvas
+  canvas -. "looks at" .-> checks
+  checks -. verdicts .-> studio
+```
+
+Toska is our fork of Krita. Inside it, a small plugin owns the canvas: it checks every operation before it runs, paints on Krita's own main thread with native brushes, and keeps every pass on a layer you can undo. The agents live next door in the companion, built on Agent Pi. The studio runs each chat and hands work to the agent that suits it: a planner that reads your references and splits the job into steps, a painter that makes one move at a time, preparation workers that draft moves in parallel, and a reviewer that comes in with fresh eyes. A fast vision model checks each pass as it lands and decides whether it stays, whether to slow down, and whether the goal has been reached. You stay in the loop through cards in the panel.
+
+For development and testing, an MCP server (`creative-agent/krita-mcp/server.py`) lets a coding agent such as Claude Code drive Toska the same way. You don't need it to paint.
+
+More detail: [architecture](creative-agent/krita-creative-agent/docs/architecture.md),
+[safety](creative-agent/krita-creative-agent/docs/safety.md),
+[decision models](creative-agent/krita-creative-agent/docs/decision-models.md) and
+[tracing](creative-agent/krita-creative-agent/docs/tracing.md).
+
 ## What is in this repository
 
 | Path | What it is |

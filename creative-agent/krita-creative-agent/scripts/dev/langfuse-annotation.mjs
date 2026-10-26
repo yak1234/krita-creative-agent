@@ -6,13 +6,13 @@
 //       `decide-pass-failures` traces (BEFORE/AFTER images, Luna's probability),
 //       so misses are measured as well as false alarms.
 // Re-runnable: decisions and queue items already sent are skipped.
-//   node scripts/langfuse-annotation.mjs [--checks 150] [--luna-since 2026-10-01] [--seed krita] [--dry-run]
+//   node scripts/dev/langfuse-annotation.mjs [--checks 150] [--luna-since 2026-10-01] [--seed krita] [--dry-run]
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { projectDir } from './project-dir.mjs';
-import { connectLangfuse } from '../src/langfuse-tracing.mjs';
-import { hardGraphicDecision, reviewCheckDecision, sampleKey } from '../src/decision-records.mjs';
-import { BUILD_INFO } from '../src/build-info.mjs';
+import { projectDir } from '../project-dir.mjs';
+import { connectLangfuse } from '../../src/langfuse-tracing.mjs';
+import { hardGraphicDecision, reviewCheckDecision, sampleKey } from '../../src/decision-records.mjs';
+import { BUILD_INFO } from '../../src/build-info.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => v.startsWith('--') ? [...a, [v.slice(2), all[i + 1]?.startsWith('--') || all[i + 1] === undefined ? true : all[i + 1]]] : a, []));
 const CHECKS = Number(args.checks ?? 150), SEED = String(args.seed ?? 'krita'), DRY = !!args['dry-run'];

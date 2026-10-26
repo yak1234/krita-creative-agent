@@ -4,8 +4,7 @@
 """Can GPT-6 Luna Decisions detect the failure modes our painting runs produced?
 
 Paired, labelled test: crops of finished paintings are judged clean and with one
-injected defect taken from recorded failures (docs/LOWER_HOUSE_RECOVERY_2026-09-23.md,
-docs/CONTOUR_CONSTRUCTION_LESSONS.md, docs/STAGE_ONE_EVALUATION.md):
+injected defect taken from recorded failures (the lower-house, contour and stage-one studies of September 2026):
 
   splice      hard horizontal join from rectangle-to-rectangle reference transfer
   duplicate   repeated architecture/content band from a misaligned transfer

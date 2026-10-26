@@ -14,7 +14,7 @@ LANGFUSE_BASE_URL=https://cloud.langfuse.com   # or https://us.cloud.langfuse.co
 
 The companion looks for keys in the project `.env`, then the environment, then the macOS Keychain. A key pair is never mixed across sources.
 
-- `node companion/scripts/langfuse-credentials.mjs --check` prints the organization, project and key source.
+- `node scripts/langfuse-credentials.mjs --check` prints the organization, project and key source.
 - `--store-keychain` copies the `.env` keys into the Keychain.
 
 When it connects, the panel says what it connected to, for example *Langfuse tracing connected: Acme / krita · development, keys from .env*. A wrong project is visible immediately.
@@ -33,5 +33,4 @@ API keys are masked before export. Environment comes from `LANGFUSE_TRACING_ENVI
 
 ## Tools
 
-- `companion/scripts/langfuse-smoke.mjs <provider/model>`: one small traced run without Krita (environment `smoke-test`).
-- `companion/scripts/benchmark-run.mjs <chat-id>`: speed report for a chat (minutes per category, painter calls, tokens, review results).
+- `scripts/dev/langfuse-smoke.mjs <provider/model>`: one small traced run without Krita (environment `smoke-test`).

@@ -5,7 +5,7 @@ PyQt6 directly. Every name of QtCore, QtGui and QtWidgets is here, so a class th
 QtWidgets to QtGui) is found either way. Enum names are written scoped (`Qt.TransformationMode.SmoothTransformation`,
 `QImage.Format.Format_Alpha8`): PyQt6 requires them, and the PyQt5 5.15.11 bundled with Krita 5.3.3 accepts them too.
 Write `exec()` and `sizeInBytes()`: `exec_()` and `byteCount()` are gone in Qt6. krita-mcp/scripts/qt6_scoped_enums.py
-rewrites old enum names. Decision: docs/2026-10-18-krita-fork-painting-speed-report.md, section 9.
+rewrites old enum names. Decision: the fork moved to Qt 6 (openspec krita-fork).
 
 The binding is the one the host already loaded (Krita imports its own before any plugin), so a PyQt6 installed into
 a Qt5 Krita's Python is never mixed in. With none loaded (tests, tools): PyQt6 when installed, else PyQt5.

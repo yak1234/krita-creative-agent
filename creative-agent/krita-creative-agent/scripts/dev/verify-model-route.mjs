@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { ModelRuntime } from '@earendil-works/pi-coding-agent';
-import { ModelCapabilities } from '../src/model-capabilities.mjs';
+import { ModelCapabilities } from '../../src/model-capabilities.mjs';
 
 const { values } = parseArgs({ options: { provider:{type:'string'}, model:{type:'string'}, output:{type:'string'} } });
 if (!values.provider || !values.model || !values.output) throw new Error('Provide --provider, --model and --output.');
@@ -13,7 +13,7 @@ const directory = resolve(values.output);
 await mkdir(directory); // keep each check's evidence, never replace an earlier run
 const report = { provider:values.provider, model:values.model, started_at:new Date().toISOString(),
   real_provider:true, artwork_sent:false, artwork_tools_available:false,
-  probe_source_sha256:createHash('sha256').update(await readFile(new URL('../src/model-capabilities.mjs',import.meta.url))).digest('hex') };
+  probe_source_sha256:createHash('sha256').update(await readFile(new URL('../../src/model-capabilities.mjs',import.meta.url))).digest('hex') };
 try {
   // Match the user's Pi catalogue without letting a diagnostic rewrite it.
   try { await copyFile(join(homedir(),'.pi/agent/models-store.json'),join(directory,'model-catalog.json')); }

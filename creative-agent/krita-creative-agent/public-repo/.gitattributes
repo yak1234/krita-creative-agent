@@ -1,7 +1,0 @@
-# Keep LF line endings on every OS: Windows checkouts otherwise get CRLF, and skill frontmatter,
-# fixtures and byte-for-byte comparisons differ from macOS and Linux.
-* text=auto eol=lf
-*.png binary
-*.jpg binary
-*.kra binary
-*.ico binary

@@ -124,5 +124,5 @@ agent/run.sh                   # start Toska (its own settings folder and bridge
 
 Krita is GPL-3.0-or-later (see `COPYING`), and the combined work is distributed under GPL-3.0-or-later. New files in Krita's
 libraries keep that library's licence (LGPL-2.0-or-later in `libs/libkis`, GPL-2.0-or-later in `libs/image` and `libs/ui`),
-copyright Yakub Rabiutheen, so that they can be offered upstream. The agent's own code (`creative-agent/`, `agent/`) is
+copyright Yakub Rabiutheen, so that they can be offered upstream. Toska's own code (`creative-agent/`, `agent/`) is
 GPL-3.0-or-later.

@@ -18,7 +18,8 @@ log="$(mktemp "${TMPDIR:-/tmp}/ci.XXXXXX")"; trap 'rm -f "$log"' EXIT
 
 group() {                                                 # group NAME COMMAND...
     local name="$1"; shift
-    if "$@" > "$log" 2>&1; then echo "PASS   $name"; else echo "FAIL   $name"; tail -40 "$log"; failed=1; fi
+    # On failure: the failing tests by name first (a long TAP log hides them above its last lines), then the tail.
+    if "$@" > "$log" 2>&1; then echo "PASS   $name"; else echo "FAIL   $name"; grep -E '^[[:space:]]*not ok |^(FAIL|ERROR): ' "$log" | head -20; tail -40 "$log"; failed=1; fi
 }
 
 if [ "$plain" = 1 ]; then

@@ -465,7 +465,9 @@ module.Krita = types.SimpleNamespace(instance=lambda: types.SimpleNamespace(open
 moscow = {'id': 'ref-moscow', 'name': 'New Moscow', 'path': image_path, 'purpose': 'general', 'notes': '', 'role': 'reference'}
 panel.attached_references = [moscow]; panel.show_references()
 preview = module.ReferencePreview(panel, moscow)
-assert [b.text() for b in preview.part_buttons] == ['Select a part in Krita…', 'Crop in Krita…'] and all(b.isEnabled() for b in preview.part_buttons)
+# The buttons name the application (product_name(): Toska in the fork, Krita in stock). Under a framework-build Python (the
+# hosted macOS runner's) this QApplication is called 'Python', so the expected text comes from product_name() as well.
+assert [b.text() for b in preview.part_buttons] == ['Select a part in %s…' % module.product_name(), 'Crop in %s…' % module.product_name()] and all(b.isEnabled() for b in preview.part_buttons)
 preview.close(); busy_preview = module.ReferencePreview(panel, moscow, readonly=True)
 assert not any(b.isEnabled() for b in busy_preview.part_buttons) and busy_preview.part_buttons[0].toolTip() == 'Pause the agent to select a part'
 busy_preview.close()

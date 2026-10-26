@@ -28,25 +28,24 @@
 ## Architecture
 
 ```mermaid
-%%{init: {"flowchart": {"wrappingWidth": 340}}}%%
-flowchart TB
+%%{init: {"flowchart": {"wrappingWidth": 320}}}%%
+flowchart TD
   artist(["Artist"])
 
   subgraph toska["Toska, our fork of Krita"]
-    direction LR
     panel["Agent panel<br/>chat, plan, approval cards"]
     bridge["Bridge plugin<br/>checks every paint operation"]
-    canvas[("Canvas<br/>native layers and undo")]
+    canvas[("Canvas<br/>native layers, full undo")]
   end
 
-  subgraph pi["Companion: agents running on Agent Pi"]
+  subgraph pi["Companion: agents on Agent Pi"]
     studio{{"Studio<br/>runs each chat"}}
     planner["Planner<br/>vision model"]
     painter["Painter<br/>tool-calling model"]
+    reviewer["Reviewer<br/>fresh eyes on the plan"]
     prep["Preparation workers<br/>draft moves in parallel"]
-    reviewer["Reviewer<br/>a fresh session that judges<br/>the canvas against the plan"]
-    checks["Checks<br/>a vision decision model:<br/>keep or undo, pace, goal reached"]
-    kit["<b>What the painter can reach for</b><br/>Native brushwork<br/>Reference images, each with a job:<br/>direction, likeness, composition, palette, material<br/>An AI image generator for assets and canvas edit references<br/>Effects such as falling and settled snow"]
+    kit["<b>The painter's kit</b><br/>native brushwork<br/>references, each with a job<br/>AI images and canvas edit references<br/>snow, falling and settled"]
+    checks["Checks<br/>vision decision model:<br/>keep or undo, pace, done?"]
   end
 
   artist <--> panel
@@ -54,12 +53,13 @@ flowchart TB
   studio --> planner
   studio --> painter
   studio --> reviewer
-  prep -.-> painter
   painter --> kit
+  studio ~~~ prep
+  prep -. drafts .-> painter
   kit -- "paints through" --> bridge
   bridge --> canvas
-  canvas -- "what it sees" --> checks
-  checks --> studio
+  canvas -. "looks at" .-> checks
+  checks -. verdicts .-> studio
 ```
 
 Toska is our fork of Krita. Inside it, a small plugin owns the canvas: it checks every operation before it runs, paints on Krita's own main thread with native brushes, and keeps every pass on a layer you can undo. The agents live next door in the companion, built on Agent Pi. The studio runs each chat and hands work to the agent that suits it: a planner that reads your references and splits the job into steps, a painter that makes one move at a time, preparation workers that draft moves in parallel, and a reviewer that comes in with fresh eyes. A fast vision model checks each pass as it lands and decides whether it stays, whether to slow down, and whether the goal has been reached. You stay in the loop through cards in the panel.

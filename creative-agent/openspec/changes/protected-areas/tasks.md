@@ -216,7 +216,7 @@ Protected areas section.
 **Files:** none new.
 
 - [ ] **Step 1: Build and install**: `env -u NODE_OPTIONS python3 scripts/build-release.py --output output/protected-areas`,
-  then `python3 scripts/install.py --bundle output/protected-areas --project /Users/yakubrabiutheen/Documents/digital_art`.
+  then `python3 scripts/install.py --bundle output/protected-areas --project <your paintings folder>`.
   Confirm `image-resize-worker.js` and `photon_rs_bg.wasm` are in `companion/src`.
 - [ ] **Step 2: Ask the artist to restart Krita** (panel change). Wait for them.
 - [ ] **Step 3: Live check on a copy of `new_moscow.kra`** (Krita idle, checked in its own command): ask Agent mode

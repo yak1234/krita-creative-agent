@@ -7,7 +7,7 @@ The agent half of Toska: a Node program, built on **Agent Pi**, that runs the ch
 
 ## Using it
 
-1. Open your painting and the **Creative Agent** docker. **Current canvas** is the default target. Choose **New painting** or **Copy current painting** only when you want a different document.
+1. Open your painting and the agent panel (its title is **Creative Agent**). **Current canvas** is the default target. Choose **New painting** or **Copy current painting** only when you want a different document.
 2. Choose a **provider and model**. The composer displays both: an official provider and a route through OpenRouter are distinct connections, even when the displayed model names resemble each other.
 3. Use **Ask** to learn how to paint it: a step-by-step Krita lesson that stays open beside the plan in every mode, without changing the canvas. Use **Plan** to develop an editable brief from ordinary language and reference images. State character requirements, things to preserve and creative freedom in the plan.
 4. Start **Agent**. It paints coherent batches, sees the resulting canvas, works through the plan's steps in order and requests one independent review when the whole painting meets the final checks. It does not stop between steps or wait for your approval mid-run.
@@ -108,7 +108,7 @@ The durable brief is supplied again during execution, so compaction must not era
 
 The agent should know the available tools and use a reusable brush reference. It should not rediscover the same preset pitfalls in every painting conversation. Today it can list installed preset names, inspect the current preset’s settings and observe the actual results. That is useful discovery, but it is not yet a reliable visual vocabulary of every installed brush.
 
-We already have useful evidence in the [painting experiment journal](../PAINTING_AGENT_EXPERIMENT_JOURNAL.md): some presets deposit strongly, some blend or barely deposit in particular conditions, and identical-looking parameter names can mean different things. Those observations need to become structured knowledge instead of remaining buried in transcripts.
+We already have useful evidence: some presets deposit strongly, some blend or barely deposit in particular conditions, and identical-looking parameter names can mean different things. Those observations need to become structured knowledge instead of remaining buried in transcripts.
 
 A useful brush record should include:
 

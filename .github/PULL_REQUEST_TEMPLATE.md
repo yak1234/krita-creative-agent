@@ -1,7 +1,6 @@
-DO NOT ISSUE PULL REQUESTS ON GITHUB
+## What this changes
 
-GitHub is only a mirror. Our real development happens on
-the KDE infrastructure. Post diffs and Merge requests
-against Krita here:
+## How it was tested
 
-https://invent.kde.org/graphics/krita
+- [ ] `agent/ci.sh` passes
+- [ ] A test fails without this change and passes with it

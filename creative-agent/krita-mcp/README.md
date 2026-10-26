@@ -1,8 +1,8 @@
-# Krita MCP Server
+# Toska's plugin and MCP server
 
-Let AI paint in [Krita](https://krita.org/) via the [Model Context Protocol](https://modelcontextprotocol.io/).
-
-This bridge allows Claude (or any MCP client) to create canvases, paint strokes, draw shapes, export images, and more — all inside a running Krita instance.
+The Python plugin that runs inside Toska (the agent panel, the painting tools and a local bridge), and an MCP server
+([Model Context Protocol](https://modelcontextprotocol.io/)) that lets a coding agent such as Claude Code drive Toska for
+development and testing. Painting in Toska doesn't need the MCP server.
 
 ## How It Works
 

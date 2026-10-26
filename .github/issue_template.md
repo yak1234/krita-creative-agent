@@ -1,7 +1,7 @@
-DO NOT REPORT ISSUES on GITHUB
+**What happened**
 
-GitHub is only a mirror. Our real development happens on
-the KDE infrastructure. Report bugs against Krita here:
+**What you expected**
 
-https://bugs.kde.org
+**How to reproduce it**
 
+**Your setup:** Toska version (Help > About), macOS version, the painter model you use

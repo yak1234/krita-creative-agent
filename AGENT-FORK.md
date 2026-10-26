@@ -1,9 +1,9 @@
-# Toska (formerly Krita Agent): how this fork stays close to upstream
+# How Toska tracks Krita
 
-This is a fork of [KDE/krita](https://invent.kde.org/graphics/krita) `master`, built on Qt6. The artist named the product
-**Toska** on 2026-10-20 (what that changed and what it did not: "Product name: Toska" below; the name is set in one place,
-`cmake/modules/KritaAppIdentity.cmake`). "Krita Agent" is the working name: it is still in internal identifiers, code
-comments and this document's older sections. The built
+Toska is a fork of [KDE/krita](https://invent.kde.org/graphics/krita) `master`, built on Qt6. This file lists every
+change the fork makes to Krita's own files and how those changes are kept small enough to merge Krita's master each
+month. The product name is set in one place, `cmake/modules/KritaAppIdentity.cmake`; older sections and internal
+identifiers still use the working name "Krita Agent". The built
 application is GPL-3.0-or-later: it is a combined work of files under several compatible licences, distributed as a
 whole under the GPL-3.0-or-later. Each new file takes the licence of the Krita library or folder it lives in, so it can
 be offered upstream as it is: `LGPL-2.0-or-later` in `libs/libkis` and its tests, `GPL-2.0-or-later` in `libs/image`

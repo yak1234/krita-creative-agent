@@ -11,11 +11,9 @@ regions of the canvas. The agent comes with the app.
 <p align="center"><img src="creative-agent/docs/gallery/five-minutes.jpg" alt="Pyat' minut (Five Minutes), a painting of Dostoevsky in a white shroud on Semyonovsky Square, snow falling at sunrise" width="800"><br>
 <em>Pyat' minut</em> (Five Minutes). Dostoevsky on Semyonovsky Square in 1849, waiting to be shot, not knowing the Tsar had already pardoned him. Painted in Toska.</p>
 
-> Status: pre-alpha, built and run on macOS (Apple silicon). Toska was called "Krita Agent" while it was being made, and the
-> repository, the settings folder (`KritaAgent`) and the app's bundle identifier (`local.kritaagent`) keep that name for now (see the
-> "Product name" section of AGENT-FORK.md). Toska is based on Krita, the free digital painting program by the Krita developers
-> ([krita.org](https://krita.org)), and is distributed under the GNU GPL, as Krita is. Krita is a trademark of the Krita
-> Foundation. Toska is an independent fork and is not affiliated with or endorsed by the Krita project.
+> Status: pre-alpha, built and run on macOS (Apple silicon). Toska is based on Krita, the free digital painting program by
+> the Krita developers ([krita.org](https://krita.org)), and is distributed under the GNU GPL, as Krita is. Krita is a
+> trademark of the Krita Foundation. Toska is an independent fork, not affiliated with or endorsed by the Krita project.
 
 ## What it can do
 
@@ -71,7 +69,7 @@ flowchart TD
 Toska is Krita with an agent built in. A small plugin inside it is the only part that changes the painting. It checks every
 operation before running it and puts each pass on a layer you can undo.
 
-The agents run beside it in a companion app built on Agent Pi. Each chat has a studio that hands out the work. The planner reads
+The agents run beside it in a companion app built on [Agent Pi](https://github.com/earendil-works/pi), an open-source agent framework. Each chat has a studio that hands out the work. The planner reads
 your references and breaks the job into steps. Then the painter makes one move at a time, while preparation workers draft the
 next ones in parallel. When a step is done, a reviewer comes in with fresh eyes and judges the result against the plan. Between those, a
 fast vision model looks at each pass as it lands and decides whether to keep it, slow down or call the step done.
@@ -100,6 +98,13 @@ More detail: [architecture](creative-agent/krita-creative-agent/docs/architectur
 
 The earlier plugin-only repository is the branch `plugin-only` of this repository.
 
+## Requirements
+
+- A Mac with Apple silicon, macOS 14 or later.
+- An API key for the painter model you choose, such as one from OpenRouter. A decision model for the vision checks
+  is optional. Without one, Toska paints without those checks.
+- There is no download yet. You build Toska yourself, as below. A full build takes a few hours.
+
 ## Build and test (macOS)
 
 ```sh
@@ -109,20 +114,6 @@ agent/run-tests.sh TestDocument TestStrokeJobs   # C++ tests, safely (see the he
 agent/ci.sh                    # every suite we own: plugin Python, companion JS and typecheck, C++ programs
 agent/run.sh                   # start Toska (its own settings folder and bridge port, never stock Krita's)
 ```
-
-## How changes get here
-
-Each change is made on a short-lived branch and checked by a fresh reviewer before it is merged into `krita-agent` locally.
-**A merge that passes `agent/ci.sh` and the pre-publication check (`agent/prepublish-check.sh`: secrets, paintings, personal
-data) is published to `main` of this repository by `agent/publish.sh`.** So `main` is always the last state that passed its
-tests.
-
-The public history replays the local main line. Its first commit is Krita's tree at the commit this fork started from. Krita's
-own history (about 10 GB) is at [invent.kde.org/graphics/krita](https://invent.kde.org/graphics/krita). After that comes one
-commit per merge or change, with its message and author. Krita's master is merged into the fork monthly (see AGENT-FORK.md).
-
-Continuous integration on GitHub is deliberately light: the agent's Python and JS suites, on free hosted runners. Building Krita
-takes hours and runs locally.
 
 ## Licence
 

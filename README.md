@@ -2,7 +2,7 @@
   <img src="creative-agent/docs/branding/toska-logo.png" alt="Toska" width="480">
 </p>
 
-**Toska** - Toska (тоска) is a Russian word expressing a deep, often indescribable longing. I chose it out of my appreciation for Russian literature and the emotion the word captures. I'm not a native Russian speaker, and the name reflects a literary and artistic interest, not an endorsement of the Russian government. I believe there's a particular kind of **Toska** in creativity, the longing to bring something you can vividly imagine into existence, but not quite having the means to express it. 
+**Toska** - Toska (тоска) is a Russian word expressing a deep, often indescribable longing. I chose it out of my appreciation for Russian literature and the emotion the word captures. I'm not a native Russian speaker, and the name reflects a literary and artistic interest. I believe there's a particular kind of **Toska** in creativity, the longing to bring something you can vividly imagine into existence, but not quite having the means to express it. 
 
 
 **Agentic painting inside Krita.** Toska is a fork of [Krita](https://krita.org) (master, Qt 6) with an AI painter built in.

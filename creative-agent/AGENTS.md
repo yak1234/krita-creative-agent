@@ -17,6 +17,33 @@ popup, opened settings off-screen, and miscounted plan progress; the artist foun
   previews ran; say "not run in Toska yet" instead.
 - If the live test can't run (the MCP server points elsewhere, Toska is busy), say so and hold the install.
 
+## Local or public: say which (the artist's rule, 2026-10-25)
+
+The goal of every change is **the public repository**: `yak1234/krita-creative-agent` on GitHub, branch `main`. Getting
+there has two steps, and reports must never blur them:
+
+- **Committed locally** (or "on this Mac"): a commit on `krita-agent` in this checkout, or on a worktree branch. Nobody
+  else can see it.
+- **Published** (or "on the public repo"): `bash agent/publish.sh --push` ran, CI and the pre-publication check passed,
+  and the push reached GitHub. Say the public commit it printed.
+
+Never write "pushed" or "in the repo" alone. Say "committed locally, not published yet" or "published to the public
+repo as `<sha>`". The artist approves each publish.
+
+## The public repository stays professional
+
+Everything committed here is published, so commit only what a stranger reading the repository should see:
+
+- Code, its tests, the scripts the build, tests, app or README use, and documentation written for a reader (how it works,
+  how to build, safety, design specs in `openspec/`).
+- **Not** working notes, dated session or incident write-ups, research diaries, one-off experiment scripts, AI process
+  artifacts (plans, specs or skills written for an assistant), personal paths or names of the artist's paintings. Keep
+  those in `creative-agent/local-notes/` (ignored) or out of the tree.
+- One README that says what Toska is (the root `README.md`); no second copy of it elsewhere. Finished OpenSpec changes
+  move to `openspec/changes/archive/<date>-<name>`.
+- Before publishing a batch, read the file list (`git diff --stat` against the last published commit) as that stranger
+  would, and take out anything that reads as a mess.
+
 ## Build for the general case
 
 The Creative Agent is a distributed plugin. Every feature is for every artist, every painting and every

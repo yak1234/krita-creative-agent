@@ -103,7 +103,8 @@ The earlier plugin-only repository is the branch `plugin-only` of this repositor
 - A Mac with Apple silicon, macOS 14 or later.
 - An API key for the painter model you choose, such as one from OpenRouter. A decision model for the vision checks
   is optional. Without one, Toska paints without those checks.
-- There is no download yet. You build Toska yourself, as below. A full build takes a few hours.
+- Download the app from [Releases](https://github.com/yak1234/toska/releases). It is signed and notarized by Apple. Or
+  build it yourself as below, which takes a few hours.
 
 ## Build and test (macOS)
 

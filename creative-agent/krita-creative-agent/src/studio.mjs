@@ -4,7 +4,7 @@ import { DecisionService } from './decisions/service.ts';
 import { chatShapes } from './shapes/chat.ts';
 import { chatCloseups, goalReference } from './closeups.ts';
 import {passCheck, progressCheck, moveCheck, seamCheck} from './visual-checks.ts';
-import { executionSettings, thinkingLevel, AUTO_REASONING_NOTE, migrateSettings } from './execution-settings.mjs';
+import { executionSettings, thinkingLevel, AUTO_REASONING_NOTE, migrateSettings, DEFAULT_DECISIONS } from './execution-settings.mjs';
 import { panelSchema, DEFAULT_PLANNER } from './settings-schema.mjs';
 import { COMIC_OPERATIONS, CRAFT_OPERATIONS, CRAFT_TOOLS, FORK_TOOLS, mutates } from './craft.mjs';
 import { GUARDS_CHANNEL, goalLikenessExtension, lunaReviewExtension, materialStampExtension, saveTimingExtension, seamCheckExtension, architectureTextureExtension, goalBrushworkExtension } from './extensions.mjs';
@@ -318,6 +318,8 @@ function planStepRequest(goal) {
   return 'Paint step ' + (index + 1) + ' of the plan: ' + String(steps[index].title).trim().replace(/[.\s]+$/, '') + '.';
 }
 
+// How long a decision-key lookup may take before the connection state is left as it was (refreshDecisionsConnected).
+const DECISIONS_LOOKUP_MS = 2000;
 export class StudioRuntime extends PaintingRuntime {
   constructor(options) {
     super(options);
@@ -535,7 +537,7 @@ export class StudioRuntime extends PaintingRuntime {
       const previous=this.models.getModel(command.provider,command.model);
       await super.configureProvider(command);
       // Luna decisions authenticate with the painter's OpenRouter credential.
-      if (command.provider==='openrouter') { this.lunaClient=undefined; this.lunaRouter=undefined; this.decisionsService=undefined; }
+      if (command.provider==='openrouter') { this.lunaClient=undefined; this.lunaRouter=undefined; this.decisionsService=undefined; await this.refreshDecisionsConnected(); }
       const service=await this.capabilityService();
       if (previous) await service.invalidate(previous);
       await service.invalidate(this.models.getModel(command.provider,command.model));
@@ -588,6 +590,7 @@ export class StudioRuntime extends PaintingRuntime {
     // The panel builds the generic settings' controls from their declarations, before it gets the values.
     await this.loadProbeRecords();
     this.emitSettingsSchema();
+    await this.refreshDecisionsConnected({apply:false});
     this.emitExecutionSettings();
     this.emitDecisions().catch(()=>{});   // endpoints and the live model list for the panel
     await this.capabilityService();this.emitModels();
@@ -623,11 +626,12 @@ export class StudioRuntime extends PaintingRuntime {
   // Panel: endpoints, the selected endpoint's live models, and whether visual decisions can run.
   async emitDecisions({endpoint,refresh=false}={}) {
     const service=await this.decisionService(), selection=this.executionSettings.decisions;
+    const connected=await this.refreshDecisionsConnected();
     const shown=endpoint ?? selection.endpoint;
     let models=[], error=null;
     try { models=await service.models(shown,{refresh}); } catch (failure) { error=this.redact(failure.message); }
     const selected=models.find(m=>m.id===selection.model && shown===selection.endpoint);
-    this.emit({type:'decisions',endpoints:await service.endpoints(),endpoint:shown,models,selection,error,
+    this.emit({type:'decisions',endpoints:await service.endpoints(),endpoint:shown,models,selection,error,connected,
       visual:selected ? selected.images : (await this.luna()).images,
       note:selected?.images===false ? 'This model is text only: it can route requests, but visual checks and pacing need a model that reads images.' : null});
   }
@@ -1601,7 +1605,33 @@ export class StudioRuntime extends PaintingRuntime {
   // Painting runs (Agent and Autopilot) have no fixed time cap: a 10-minute cap stopped Autopilot
   // mid-run and left it idle until the artist noticed (26 minutes in one traced chat).
   runDeadlineMs() { return isPaintingMode(this.mode) && this.executionPhase === 'agent' ? null : super.runDeadlineMs(); }
-  lunaMode() { return this.executionSettings?.routing ?? 'off'; }
+  // Decision checks need a key for the selected decision endpoint. Without one they act as Off (no decision call, no error)
+  // while the setting keeps its value, so they start as soon as a key is added. A client set deliberately (tests) is connected.
+  lunaMode() {
+    const mode=this.executionSettings?.routing ?? 'off';
+    const injected=this.lunaClient && !this.lunaClientKey;   // luna() keeps such a client and records no selection key
+    return mode!=='off' && this.decisionsConnected===false && !injected ? 'off' : mode;
+  }
+  // Cached so lunaMode() stays synchronous: refreshed at start, when execution settings change, and when decision
+  // endpoints or keys (the painter's OpenRouter key included) change. A change re-applies what depends on the mode.
+  // The lookup is local (saved keys, the painter's credential, .env); should it ever stall, the state stays as it was
+  // (unknown acts as before: the setting decides) rather than holding up a chat.
+  async refreshDecisionsConnected({apply=true}={}) {
+    let connected;
+    const lookup=(async()=>{
+      try {
+        const service=await this.decisionService(), endpoint=(this.executionSettings?.decisions ?? DEFAULT_DECISIONS).endpoint;
+        return !!(await service.key(endpoint)) || !!service.endpoint?.(endpoint)?.custom;   // a custom endpoint may need no key
+      } catch { return false; }
+    })();
+    let timer;
+    connected=await Promise.race([lookup,new Promise(r=>{timer=setTimeout(()=>r(undefined),DECISIONS_LOOKUP_MS);})]).finally(()=>clearTimeout(timer));
+    if (connected===undefined) return this.decisionsConnected;
+    const changed=this.decisionsConnected!==undefined && this.decisionsConnected!==connected;
+    this.decisionsConnected=connected;
+    if (changed && apply) this.applyExecutionSettings();
+    return connected;
+  }
   lunaSignal() { if (!this.visualAbort || this.visualAbort.signal.aborted) this.visualAbort=new AbortController(); return this.visualAbort.signal; }
   /** Which layer does `area` need next? Evaluate records Luna's choice beside what the painter does; Guide also advises the painter. */
   async checkLayerNeed(area, canvas) {
@@ -1683,7 +1713,7 @@ export class StudioRuntime extends PaintingRuntime {
   async routeDirection(text, stageKey=null) {
     if(stageKey && this.routingStageKey===stageKey)return;
     this.routingDecision=null;
-    if (!this.executionSettings?.routing || this.executionSettings.routing==='off') return;
+    if (this.lunaMode()==='off') return;
     this.routingStageKey=stageKey;
     this.routingAbort?.abort(); this.routingAbort=new AbortController();
     const controller=this.routingAbort;
@@ -1716,8 +1746,8 @@ export class StudioRuntime extends PaintingRuntime {
       this.diagnostics?.record({type:'routing',status:'discarded',reason:'stale_or_cancelled'});return;
     }
     this.routingDecision=decision;
-    this.diagnostics?.record({type:'routing',mode:this.executionSettings.routing,...decision});
-    if(decision.status==='recommended')this.emit({type:'action',message:'Luna '+(this.executionSettings.routing==='evaluate'?'evaluation':'suggestion')+': '+decision.operation.choice.replaceAll('_',' '),seconds:decision.elapsed_ms/1000});
+    this.diagnostics?.record({type:'routing',mode:this.lunaMode(),...decision});
+    if(decision.status==='recommended')this.emit({type:'action',message:'Luna '+(this.lunaMode()==='evaluate'?'evaluation':'suggestion')+': '+decision.operation.choice.replaceAll('_',' '),seconds:decision.elapsed_ms/1000});
   }
   emitExecutionSettings() {
     this.emit({type:'execution_settings',settings:this.executionSettings ?? executionSettings(),
@@ -1739,6 +1769,7 @@ export class StudioRuntime extends PaintingRuntime {
     this.executionSettings=executionSettings({...this.executionSettings,...value});
     if (this.goal) this.goal.execution_settings=this.executionSettings;
     this.parallelPreparation=undefined;
+    await this.refreshDecisionsConnected({apply:false});
     this.applyExecutionSettings(); this.emitSkills(); this.emitSettingsSchema();
     // folder-study: Off stops it; turned On again it studies the open folder (another setting saved changes nothing).
     if (!this.executionSettings.study_folder) { if (studied) { await this.folderStudy.close(); this.emitFolder(); } }
@@ -2325,7 +2356,7 @@ export class StudioRuntime extends PaintingRuntime {
   context(phase) {
     this.startMassMaps();
     return `HOST MODE: ${this.mode.toUpperCase()}. CURRENT PHASE: ${phase.toUpperCase()}.\n` + this.aiImageContext(phase) + JSON.stringify({
-      routing_advice:this.executionSettings?.routing==='guide' ? routingAdvice(this.routingDecision,{phase,offered:name=>this.toolOffered(name)}):null,
+      routing_advice:this.lunaMode()==='guide' ? routingAdvice(this.routingDecision,{phase,offered:name=>this.toolOffered(name)}):null,
       brief: this.goal.brief, current_step_in_order:this.goal.brief?.steps[this.goal.current_step],
       plan_step_marks:this.goal.brief ? stepMarksContext(this.goal.brief.steps,this.goal.step_marks) : undefined,
       ...(this.mode==='agent' ? {recent_moves:(this.goal.moves ?? []).slice(-4).map(({number,title,status,request})=>({number,title,status,request}))} : {}),
@@ -3409,6 +3440,7 @@ export class StudioRuntime extends PaintingRuntime {
     this.mode = modes.includes(p.chat_mode) ? p.chat_mode : 'ask';
     this.goal = freshGoal(this.mode, this.defaultAiImages());
     this.goal.execution_settings=this.executionSettings ?? executionSettings();
+    await this.refreshDecisionsConnected({apply:false});
     if (p.canvas) this.setCanvasSelection(p.canvas);
     this.goal.canvas_selection = this.canvasSelection; this.goal.region_selection=this.regionSelection;
     const contextRequest={selection:{...this.canvasSelection},region:structuredClone(this.regionSelection),ticket:this.contextTicket()};
@@ -4968,6 +5000,7 @@ export class StudioRuntime extends PaintingRuntime {
     // failed reviews as fresh attempts after a restart.
     this.goal.review_start_index=restoredReviewStart(goal);
     this.mode = this.goal.mode; this.executionSettings=executionSettings(this.goal.execution_settings ?? this.executionSettings); this.parallelPreparation=undefined; this.protectDraftRequirements();
+    await this.refreshDecisionsConnected({apply:false});
     this.goal.status = this.goal.brief ? 'paused':this.goal.question ? 'needs_input':'draft';
     this.setCanvasSelection(this.goal.canvas_selection ?? {selected:true,follow_active:true});
     this.regionSelection=this.goal.region_selection ?? null;

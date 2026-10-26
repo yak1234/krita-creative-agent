@@ -83,9 +83,9 @@ export const SETTINGS = Object.freeze([
   { key: 'study_folder', type: 'boolean', default: true, panel: 'generic', label: 'Study folder images', accessible: 'Study folder images',
     error: 'Study folder images must be On or Off.', options: [[true, 'On: a short note per image'], [false, 'Off: file names only']],
     tooltip: 'When a project folder opens, a vision model writes a short note per image (what it shows, where it sits in the goal, its colours and shapes), so the planner and painter know every image without receiving them all. A folder of more than 20 images asks first. Under $0.001 an image with qwen3-vl (13 images: about 36 s).' },
-  { key: 'routing', type: 'choice', default: 'off', panel: 'generic', label: 'Decision checks', accessible: 'Decision checks',
+  { key: 'routing', type: 'choice', default: 'guide', panel: 'generic', label: 'Decision checks', accessible: 'Decision checks',
     error: 'Unknown decisions mode.', options: [['off', 'Off'], ['evaluate', 'Evaluate only'], ['guide', 'Guide agent']],
-    note: 'Fast typed decisions: request routing, artifacts a pass introduced, progress between reviews and run pacing. When on, the canvas, pass images and your direction go to the decision endpoint below. Evaluate only records results; Guide agent also acts on them. The painter still decides and edits the image.' },
+    note: 'Fast typed decisions: request routing, artifacts a pass introduced, progress between reviews and run pacing. When on, the canvas, pass images and your direction go to the decision endpoint below. Evaluate only records results; Guide agent also acts on them. The painter still decides and edits the image. Until the decision endpoint has a key, checks stay off.' },
   // Strokes only is no longer offered; scripts can still pass false for comparisons.
   { key: 'native_craft', type: 'boolean', default: true, panel: 'hidden', error: 'native_craft must be true or false.' },
 ]);

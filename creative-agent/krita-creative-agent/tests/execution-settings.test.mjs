@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { executionSettings, thinkingLevel } from '../src/execution-settings.mjs';
 import { StudioRuntime } from '../src/studio.mjs';
 test('execution defaults preserve one painter and capability-aware reasoning',()=>{
- assert.deepEqual(executionSettings(),{concurrency:1,reasoning:'auto',routing:'off',native_craft:true,move_size:'subject',merge_kept:true,auto_approve:'off',guides:true,reference_first:true,assets:'codex',ai_images:0,preview_additions:false,custom_effects:false,keep_screen_awake:false,sharpen_goal:'always',view_size:'auto',planner_model:'default',study_folder:true,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
+ assert.deepEqual(executionSettings(),{concurrency:1,reasoning:'auto',routing:'guide',native_craft:true,move_size:'subject',merge_kept:true,auto_approve:'off',guides:true,reference_first:true,assets:'codex',ai_images:0,preview_additions:false,custom_effects:false,keep_screen_awake:false,sharpen_goal:'always',view_size:'auto',planner_model:'default',study_folder:true,decisions:{endpoint:'openrouter',model:'openai/gpt-6-luna-decisions'}});
  assert.equal(thinkingLevel(executionSettings(),{reasoning:true}),'low');
  assert.equal(thinkingLevel(executionSettings({reasoning:'high'}),{reasoning:true}),'high');
  assert.equal(thinkingLevel(executionSettings({reasoning:'high'}),{reasoning:false}),'off');

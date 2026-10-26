@@ -1069,7 +1069,7 @@ test('Luna guide and evaluate modes preserve Pi tool permissions and read-only A
  for(const routing of ['guide','evaluate']) {
   const h=await harness(()=>({content:'I can discuss the gradient.'}));
   try {
-   await h.start('ask');
+   await h.start('ask'); h.runtime.decisionsService=keyedDecisions(fakeLuna(),'test-key');   // Decision checks need a key
    let count=0;
    h.runtime.lunaRouter={evaluate:async(_state,{identity})=>{count++;return {status:'recommended',context_identity:identity,operation:{choice:'gradient',confidence:.98},brush:{choice:'none',confidence:.95},elapsed_ms:1};}};
    await h.runtime.setExecutionSettings({routing});
@@ -1095,7 +1095,7 @@ test('Agent consumes an inspect route once and paints after a preliminary inspec
   return call('request_review',{reason:'The stage is ready.'});
  });
  try {
-  await h.start('plan','Make this painting stronger.');
+  await h.start('plan','Make this painting stronger.'); h.runtime.decisionsService=keyedDecisions(fakeLuna(),'test-key');   // Decision checks need a key
   await h.runtime.setMode('autopilot');
   h.runtime.lunaRouter={evaluate:async(_state,{identity})=>({status:'recommended',context_identity:identity,operation:{choice:'inspect',confidence:.95},brush:{choice:'none',confidence:.95},elapsed_ms:1})};
   await h.runtime.setExecutionSettings({routing:'guide'});
@@ -1112,7 +1112,8 @@ test('Agent consumes an inspect route once and paints after a preliminary inspec
 test('Luna late results are discarded when paused or the target revision changes',async()=>{
  const h=await harness(()=>({content:'Ready.'}));
  try {
-  await h.start('ask');await h.runtime.setExecutionSettings({routing:'guide'});
+  await h.start('ask'); h.runtime.decisionsService=keyedDecisions(fakeLuna(),'test-key');   // Decision checks need a key
+  await h.runtime.setExecutionSettings({routing:'guide'});
   for(const change of ['revision','stop']) {
    h.runtime.cancelRequested=false;
    let resolve,entered;
@@ -1176,6 +1177,7 @@ test('Luna layer need: Off asks nothing, Evaluate logs beside what the painter d
  const asked=()=>luna.requests.filter(r=>r.purpose==='choose-next-layer');
  try {
   await h.start('ask','Hello'); h.runtime.lunaClient=luna; await h.runtime.setMode('agent');
+  await h.runtime.setExecutionSettings({routing:'off'});   // Guide is the default
   await h.runtime.prompt('Paint her coat.');
   assert.equal(asked().length,0,'Off asks nothing');
   await h.runtime.setExecutionSettings({routing:'evaluate'});
@@ -1191,6 +1193,53 @@ test('Luna layer need: Off asks nothing, Evaluate logs beside what the painter d
   await h.runtime.setExecutionSettings({native_craft:false}); const before=asked().length;
   await h.runtime.prompt('Strokes only now.');
   assert.equal(asked().length,before,'no layer advice with Strokes only');
+ } finally {await h.close();}
+});
+
+// The artist (2026-10-25): Guide agent is the default. Without a key for the selected decision endpoint, Decision checks act
+// as Off (no decision call on any move, nothing in the chat) while the setting stays Guide, so they start once a key is added.
+function keyedDecisions(luna, key=null) {
+ return {key:async()=>key, saveKey:async(_endpoint,saved)=>{key=saved;}, client:async()=>luna, endpoints:async()=>[{id:'openrouter',name:'OpenRouter',custom:false,key_configured:!!key}], models:async()=>[], endpoint:id=>({id,custom:false})};
+}
+test('Decision checks default to Guide and act as Off while the decision endpoint has no key',{timeout:30000},async()=>{
+ const texture={name:'Coat fur',preset:'b) Basic-1',strokes:[{start:[50,100],segments:[[60,110,70,120,80,130]],size:8,opacity:1,flow:1,color:'#302018'}],clip_to:'base',blend_mode:'overlay'};
+ let h;
+ h=await harness(req=>{
+  if(!req.tools.some(t=>t.function.name==='paint_batch')) return {content:'Hello.'};
+  const text=latestUserText(req), turn=/HOST MODE/.test(text) && req.messages.at(-1).role==='user';
+  return turn ? call('paint_pass',texture) : call('finish_move',{summary:'Coat texture'});
+ },async(operation,params,_study,id)=>{
+  if(operation!=='paint_pass')return undefined;
+  const dir=h.runtime.study.directory, view=join(dir,'view-'+id+'.png'); await writeFile(view,png);
+  return {status:'ok',layer_id:'fur-'+id,document_id:'doc',name:'Untitled',filename:'',modified:true,width:768,height:1024,image_path:view,layers:[],revision:'r-'+id,content_id:'c-'+id,passes:[]};
+ });
+ const luna=fakeLuna(r=>r.purpose==='choose-next-layer' ? {answers:{need:{type:'choice',choice:'texture',confidence:0.8}}} : {fallback:'service_or_response_error'});
+ try {
+  h.runtime.decisionsService=keyedDecisions(luna);
+  await h.start('ask','Hello'); await h.runtime.setMode('agent');
+  assert.equal(h.runtime.executionSettings.routing,'guide','a new install guides');
+  assert.equal(h.runtime.lunaMode(),'off','no key: Decision checks act as Off');
+  await h.runtime.prompt('Paint her coat.');
+  await new Promise(r=>setTimeout(r,50));
+  assert.deepEqual(luna.requests.map(r=>r.purpose),[],'no decision call without a key');
+  assert.ok(h.events.some(e=>e.type==='move'),'the move completes'); assert.ok(!h.runtime.busy);
+  assert.ok(!h.events.some(e=>e.type==='error'),'no error in the chat');
+  assert.equal(h.runtime.executionSettings.routing,'guide','the setting stays Guide');
+  await h.runtime.emitDecisions();
+  const decisions=h.events.filter(e=>e.type==='decisions').at(-1);
+  assert.equal(decisions?.connected,false,'the panel is told the decision endpoint is not connected');
+ } finally {await h.close();}
+});
+test('Decision checks guide once the decision endpoint has a key',async()=>{
+ const h=await harness(()=>({content:'Ready.'}));
+ const service=keyedDecisions(fakeLuna());
+ try {
+  h.runtime.decisionsService=service;
+  await h.start('ask');
+  assert.equal(h.runtime.lunaMode(),'off');
+  await h.runtime.configureDecisions({action:'save_key',endpoint:'openrouter',key:'sk-test'});
+  assert.equal(h.runtime.lunaMode(),'guide','a key turns the Guide setting on');
+  assert.equal(h.events.filter(e=>e.type==='decisions').at(-1)?.connected,true);
  } finally {await h.close();}
 });
 

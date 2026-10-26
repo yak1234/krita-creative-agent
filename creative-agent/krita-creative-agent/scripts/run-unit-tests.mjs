@@ -14,8 +14,12 @@ const tests = (await readdir(join(root, 'tests'))).filter(f => f.endsWith('.test
 // No test may wait forever (a shapes-chat test once raced its own 10 ms tick under load and hung the suite for 35 minutes):
 // a test without its own timeout fails after TEST_TIMEOUT_MS. Tests that need longer set { timeout } themselves.
 const TEST_TIMEOUT_MS = 120000;
+// Decision endpoint keys stay out: Decision checks default to Guide and run only with a key, so a key in the developer's
+// shell would send unit tests to a paid endpoint and make them pass or fail by machine. Tests that need a key set their own.
+const env = { ...process.env, TMPDIR: scratch, TMP: scratch, TEMP: scratch };
+for (const name of ['OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'TYPESAFE_API_KEY']) delete env[name];
 const child = spawn(process.execPath, ['--test', `--test-timeout=${TEST_TIMEOUT_MS}`, ...process.argv.slice(2), ...tests], {
-  cwd: root, stdio: 'inherit', env: { ...process.env, TMPDIR: scratch, TMP: scratch, TEMP: scratch } });
+  cwd: root, stdio: 'inherit', env });
 const stop = signal => child.kill(signal);
 process.on('SIGINT', stop); process.on('SIGTERM', stop);
 const code = await new Promise(resolve => child.on('close', (status, signal) => resolve(status ?? (signal ? 1 : 0))));

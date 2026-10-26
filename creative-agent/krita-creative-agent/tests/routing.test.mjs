@@ -82,7 +82,7 @@ test('state is bounded, omits pixels and paths, and identities track target chan
  const s=routingState(r,'move /home/artist/file.png private-secret'); const encoded=JSON.stringify(s);
  assert.ok(!encoded.includes('/Users/'));assert.ok(!encoded.includes('/private/'));assert.ok(!encoded.includes('private-secret'));assert.ok(!encoded.includes('base64'));
  const first=contextIdentity(r);r.decisionObservation.revision='new';assert.notEqual(contextIdentity(r),first);
- assert.equal(executionSettings().routing,'off');assert.throws(()=>executionSettings({routing:'execute'}),/decisions mode/);
+ assert.equal(executionSettings().routing,'guide');assert.throws(()=>executionSettings({routing:'execute'}),/decisions mode/);
 });
 test('craft intents route to the native craft tools with a how-to hint',async()=>{
  const expected={fill:['fill_region','split_by_color','colorize_flats','painting_toolbox'],gradient:['fill_region','painting_toolbox'],shade:['create_layer','fill_region'],

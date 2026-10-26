@@ -1095,6 +1095,20 @@ release task (1.3).
   published to `main` with `agent/publish.sh --push`. The very first push (`--first`, which replaces the old `main`) waits for
   the artist's go. Never push anything else, never to KDE's `origin`.
 - Upstream edits: `README.md` is now ours (Krita's is `README.krita.md`, renamed). `.github/workflows/ci.yml` is ours.
+- A tidy top level (26 October): Krita's root files moved, contents unchanged. When an upstream merge touches one, git
+  follows the rename; if it conflicts, apply Krita's change at the new place.
+  - `cmake/config/`: every `config-*.h.cmake`/`.in`, `config_*.h.cmake`, `KoConfig.h.cmake`, `KoTestConfig.h.cmake` (the
+    root `CMakeLists.txt` `configure_file` lines point there; the generated headers still land in the build root).
+  - `cmake/COPYING-CMAKE-SCRIPTS`.
+  - `docs/krita/`: `README.krita.md`, `HACKING`, `HACKING.gitlab-ci.md`, `README.android.md`, `README.packagers.md`,
+    `Mainpage.dox`, `CODE_OF_CONDUCT.md`, `metainfo.yaml`.
+  - `dev-tools/i18n/`: KDE's translation scripts (`Messages.sh`, `StaticMessages.sh`, `ExtraDesktop.sh`, `action_i18n.pl`,
+    `extracti18n.pl`, `kundo2_aware_xgettext.sh`); Toska does not run them.
+  - `dev-tools/kde/`: `.gitlab-ci.yml`, `.gitlab/`, `.lgtm.yml` (KDE's GitLab CI; Toska's CI is `.github/workflows`).
+  - `dev-tools/python/setup.cfg` (flake8 settings: `flake8 --config dev-tools/python/setup.cfg`).
+  - Removed the root `snapcraft.yaml`, an exact copy of `packaging/linux/snap/snapcraft.yaml`.
+  - Kept at the top: `.kde-ci.yml` (`agent/fetch-deps.sh` reads it), `KoAlwaysInline.h` (root include path), `AUTHORS` and
+    `COPYING` (the packager copies them).
 
 ## Plugin craft: live checks (krita-fork 5.1 stamps, 5.3 tools)
 

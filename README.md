@@ -94,7 +94,7 @@ More detail: [architecture](creative-agent/krita-creative-agent/docs/architectur
 | `creative-agent/krita-native` | a native helper for stock Krita 5.3.3 (frozen: the fork has these abilities built in) |
 | `creative-agent/openspec` | the specs, design and task list for the fork |
 | `agent/` | build, test, CI and publishing scripts |
-| `README.krita.md` | Krita's own README, unchanged |
+| `docs/krita/` | Krita's own README and developer notes, unchanged |
 
 The earlier plugin-only repository is the branch `plugin-only` of this repository.
 

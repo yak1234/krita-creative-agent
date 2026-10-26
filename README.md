@@ -8,8 +8,8 @@ stays or type a correction. A separate reviewer checks the result against your r
 features a script needs to paint well, among them pen pressure and tilt, background stroke jobs, one-step agent moves and named
 regions of the canvas. The agent comes with the app.
 
-<p align="center"><img src="creative-agent/docs/gallery/the-last-minute.jpg" alt="The Last Minute, a painting of Dostoevsky in a white shroud before the mock execution on Semyonovsky Square, snow falling at sunrise" width="800"><br>
-<em>The Last Minute</em> (Dostoevsky before his mock execution, Semyonovsky Square, 1849), painted in Toska.</p>
+<p align="center"><img src="creative-agent/docs/gallery/five-minutes.jpg" alt="Pyat' minut (Five Minutes), a painting of Dostoevsky in a white shroud on Semyonovsky Square, snow falling at sunrise" width="800"><br>
+<em>Pyat' minut</em> (Five Minutes). Dostoevsky on Semyonovsky Square in 1849, waiting to be shot, not knowing the Tsar had already pardoned him. Painted in Toska.</p>
 
 > Status: pre-alpha, built and run on macOS (Apple silicon). Toska was called "Krita Agent" while it was being made, and the
 > repository, the settings folder (`KritaAgent`) and the app's bundle identifier (`local.kritaagent`) keep that name for now (see the

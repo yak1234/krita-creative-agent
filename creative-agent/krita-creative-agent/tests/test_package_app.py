@@ -29,6 +29,7 @@ _spec.loader.exec_module(_helpers)
 make_release = _helpers.make_release
 MACOS = sys.platform == 'darwin'
 HAVE_CC = MACOS and shutil.which('cc') is not None
+MACOS_ARM64 = MACOS and os.uname().machine == 'arm64'      # the app is built for Apple Silicon only
 
 
 def run(*command, **kwargs):
@@ -354,6 +355,7 @@ class OnnxRuntimeReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build_release.copy_onnxruntime(modules, pathlib.Path(root) / 'other', 'win32', 'ia32')
 
+    @unittest.skipUnless(MACOS_ARM64, 'the release layout is the Apple Silicon app\'s (onnxruntime-node darwin/arm64 only): needs macOS on arm64')
     @unittest.skipUnless(shutil.which('node') and (REPO / 'creative-agent/krita-creative-agent/node_modules/.bin/esbuild').exists(),
                          'needs node and npm ci in krita-creative-agent')
     def test_the_bundled_worker_and_onnx_runtime_load_from_the_release_layout(self):
@@ -368,6 +370,7 @@ class OnnxRuntimeReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'shape worker'):
                 build_release.validate_shape_worker(pathlib.Path(shutil.which('node')), companion)
 
+    @unittest.skipUnless(MACOS_ARM64, 'the release layout is the Apple Silicon app\'s (onnxruntime-node darwin/arm64 only): needs macOS on arm64')
     @unittest.skipUnless(shutil.which('node') and (REPO / 'creative-agent/krita-creative-agent/node_modules/.bin/esbuild').exists(),
                          'needs node and npm ci in krita-creative-agent')
     def test_the_bundled_sharpening_worker_loads_onnx_runtime_from_the_release_layout(self):

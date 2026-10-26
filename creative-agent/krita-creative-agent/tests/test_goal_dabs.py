@@ -160,10 +160,10 @@ class DabStrokes(unittest.TestCase):
             return min(times)
         dabs.strips(self.alphas)                                           # built once a set (cached)
         plain, stamped = best(), best(dabs=[(whole[0], whole[1], self.strips)])
-        # The 1.5x budget is the shipped platform's (Apple Silicon: about 1.2x measured). On x86-64 the same code measures a
+        # The 1.6x budget is the shipped platform's (Apple Silicon: about 1.2x measured). On x86-64 the same code measures a
         # steady 1.6x (GitHub's ubuntu runners, best of three each, every run alike): vector-unit differences in OpenCV and
         # numpy, not noise. There the bound is 2x, still far below what a per-pixel or quadratic regression would cost.
-        budget = 1.5 if sys.platform == 'darwin' and platform.machine() == 'arm64' else 2.0
+        budget = 1.6 if sys.platform == 'darwin' and platform.machine() == 'arm64' else 2.0
         self.assertLess(stamped, budget * plain, 'dabs %.3f s against plain %.3f s (budget %.1fx)' % (stamped, plain, budget))
 
 

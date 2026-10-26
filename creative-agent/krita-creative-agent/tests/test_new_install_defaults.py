@@ -161,6 +161,7 @@ class WorkspaceTest(unittest.TestCase):
         self.assertLessEqual(set(ids), self.names, 'a shipped Python docker would show on a new profile')
         self.assertIn('mutatorDocker', ids)
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'the committed window layout is made on macOS; its bytes depend on the platform fonts')
     def test_generator_reproduces_the_committed_blob(self):
         try:
             import PyQt6.QtCore  # noqa: F401

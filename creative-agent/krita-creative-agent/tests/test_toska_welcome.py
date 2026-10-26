@@ -241,7 +241,7 @@ class WelcomeCodeTest(unittest.TestCase):
     def test_layout_numbers_and_test_main(self):
         numbers = dict(re.findall(r'inline constexpr qreal (k\w+) = ([\d.]+);', LAYOUT_H.read_text()))
         self.assertEqual(numbers, {'kAnchorX': '1.0', 'kAnchorY': '0.25', 'kVeil': '0.30', 'kVeilLight': '0.62',
-                                   'kLeftShade': '0.88', 'kLeftFadeEnd': '0.45'})
+                                   'kLeftShade': '0.88', 'kLeftFadeEnd': '0.45', 'kEmptyStateFill': '0.78'})
         self.assertNotIn('static constexpr', LAYOUT_H.read_text(), 'namespace-scope constants are inline constexpr')
         test = LAYOUT_TEST.read_text()
         self.assertIn('QTEST_MAIN(KisWelcomeBackgroundLayoutTest)', test)

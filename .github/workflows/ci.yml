@@ -28,6 +28,13 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: creative-agent/krita-creative-agent/package-lock.json
+      - name: Qt's system libraries (Linux)
+        # PyQt's Linux wheels bundle Qt but not the system libraries it links. The runner image has what Qt 5 needs; Qt 6's
+        # QtGui also links libEGL.so.1 and libxkbcommon.so.0, which it lacks. The rest is listed so a leaner image still works.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libegl1 libgl1 libxkbcommon0 libfontconfig1 libfreetype6 libdbus-1-3
       - name: Install uv (runs the Python tests)
         # A virtual environment: the hosted runners' system Python refuses `pip install --user` (externally managed).
         run: |
